@@ -119,3 +119,24 @@ async fn put_get_changes_delete_roundtrip() {
         .bearer_auth(&tok).send().await.unwrap();
     assert_eq!(got2.status(), 404);
 }
+
+#[tokio::test]
+async fn ws_notifies_on_put() {
+    use futures_util::StreamExt;
+    let base = spawn().await; // http://127.0.0.1:PORT
+    let tok = { let r: new_livesync_server::protocol::LoginResponse =
+        login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
+    let ws_url = base.replace("http://", "ws://") + &format!("/api/ws?token={tok}");
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    // trigger a PUT from another task
+    let b2 = base.clone(); let t2 = tok.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        reqwest::Client::new().put(format!("{b2}/api/vault/file?path=w.md"))
+            .bearer_auth(t2).header("X-Mtime","1").body("x").send().await.unwrap();
+    });
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        .await.unwrap().unwrap().unwrap();
+    let txt = msg.into_text().unwrap();
+    assert!(txt.contains("\"type\":\"changed\""), "got: {txt}");
+}
