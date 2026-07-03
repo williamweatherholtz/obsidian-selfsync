@@ -31,7 +31,7 @@ fn config_defaults_and_env() {
     use new_livesync_server::config::Config;
     std::env::set_var("SYNC_USER", "will");
     let c = Config::from_env();
+    std::env::remove_var("SYNC_USER");
     assert_eq!(c.user, "will");
     assert_eq!(c.bind_addr, "0.0.0.0:8080");
-    std::env::remove_var("SYNC_USER");
 }
