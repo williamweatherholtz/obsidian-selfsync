@@ -35,3 +35,35 @@ fn config_defaults_and_env() {
     assert_eq!(c.user, "will");
     assert_eq!(c.bind_addr, "0.0.0.0:8080");
 }
+
+#[test]
+fn vault_put_changes_delete() {
+    use new_livesync_server::vault::Vault;
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    let base = v.changes(0).version; // startup version (>=1)
+    let m = v.put("notes/a.md", b"hello", 100).unwrap();
+    assert_eq!(m.size, 5);
+    assert!(m.version > base);
+    let ch = v.changes(base);
+    assert_eq!(ch.upserts.len(), 1);
+    assert_eq!(ch.upserts[0].path, "notes/a.md");
+    assert_eq!(v.read("notes/a.md").unwrap().unwrap(), b"hello");
+    // file exists on disk (bind mount is truth)
+    assert!(dir.path().join("notes/a.md").exists());
+    let d = v.delete("notes/a.md").unwrap().unwrap();
+    assert!(d.version > m.version);
+    assert!(!dir.path().join("notes/a.md").exists());
+    let ch2 = v.changes(m.version);
+    assert_eq!(ch2.deletes.len(), 1);
+    assert_eq!(ch2.deletes[0].path, "notes/a.md");
+}
+
+#[test]
+fn safe_rel_path_rejects_traversal() {
+    use new_livesync_server::vault::safe_rel_path;
+    assert!(safe_rel_path("../x").is_none());
+    assert!(safe_rel_path("/etc/passwd").is_none());
+    assert!(safe_rel_path("a/../../b").is_none());
+    assert!(safe_rel_path("ok/dir/file.md").is_some());
+}
