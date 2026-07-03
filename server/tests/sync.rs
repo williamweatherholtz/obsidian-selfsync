@@ -25,3 +25,13 @@ fn filemeta_roundtrips_json() {
     let back: FileMeta = serde_json::from_str(&s).unwrap();
     assert_eq!(m, back);
 }
+
+#[test]
+fn config_defaults_and_env() {
+    use new_livesync_server::config::Config;
+    std::env::set_var("SYNC_USER", "will");
+    let c = Config::from_env();
+    assert_eq!(c.user, "will");
+    assert_eq!(c.bind_addr, "0.0.0.0:8080");
+    std::env::remove_var("SYNC_USER");
+}
