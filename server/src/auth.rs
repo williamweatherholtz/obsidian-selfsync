@@ -12,8 +12,10 @@ pub async fn login(
     if req.username == st.cfg.user && req.password == st.cfg.password {
         let token = uuid::Uuid::new_v4().to_string();
         st.tokens.lock().unwrap().insert(token.clone());
+        eprintln!("[login] user='{}' -> OK (token issued)", req.username);
         Ok(Json(LoginResponse { token }))
     } else {
+        eprintln!("[login] user='{}' -> 401 (bad credentials)", req.username);
         Err(StatusCode::UNAUTHORIZED)
     }
 }
