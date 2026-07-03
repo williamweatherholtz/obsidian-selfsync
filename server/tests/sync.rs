@@ -16,3 +16,12 @@ async fn health_ok() {
     let body = reqwest::get(format!("{base}/health")).await.unwrap().text().await.unwrap();
     assert_eq!(body, "ok");
 }
+
+#[test]
+fn filemeta_roundtrips_json() {
+    use new_livesync_server::protocol::FileMeta;
+    let m = FileMeta { path: "a/b.md".into(), hash: "h".into(), size: 3, mtime: 42, version: 1 };
+    let s = serde_json::to_string(&m).unwrap();
+    let back: FileMeta = serde_json::from_str(&s).unwrap();
+    assert_eq!(m, back);
+}
