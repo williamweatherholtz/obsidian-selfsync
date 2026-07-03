@@ -16,10 +16,12 @@ class ObsidianVaultIo implements VaultIo {
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     await this.plugin.app.vault.adapter.write(p, data);
+    this.plugin.noteSynced(p, data);
   }
   async remove(path: string) {
     const p = normalizePath(path);
     if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
+    this.plugin.forgetSynced(p);
   }
 }
 
@@ -31,6 +33,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private state: SyncState = { version: 0 };
   private known = new Set<string>();
   private applying = false; // guard: don't echo server-driven writes back as pushes
+  private lastSynced = new Map<string, string>(); // content-equality echo-suppression (async event race)
 
   async onload() {
     await this.loadSettings();
@@ -50,7 +53,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.api = new HttpTransport(this.settings.serverUrl, token);
       this.applying = true;
       await pull(this.api, this.io, this.state);          // get server state first
-      for (const p of (await this.io.list()).keys()) this.known.add(p);
+      const manifest = await this.api.changes(0);
+      this.known = new Set(manifest.upserts.map((m) => m.path));
       await pushLocal(this.api, this.io, this.state, this.known); // push anything server lacks
       this.applying = false;
       this.ws = this.api.connectWs(() => this.onRemoteChanged());
@@ -67,16 +71,22 @@ export default class NewLiveSyncPlugin extends Plugin {
   private async onLocalChange(f: any) {
     if (this.applying || !this.api || !(f instanceof TFile)) return;
     const data = await this.io.read(f.path);
+    if (this.lastSynced.get(f.path) === data) return; // echo of a server-driven write, not a real edit
     const meta = await this.api.putFile(f.path, data, f.stat.mtime);
     this.state.version = Math.max(this.state.version, meta.version);
     this.known.add(f.path);
+    this.lastSynced.set(f.path, data);
   }
 
   private async onLocalDelete(path: string) {
     if (this.applying || !this.api) return;
     await this.api.deleteFile(path);
     this.known.delete(path);
+    this.lastSynced.delete(path);
   }
+
+  noteSynced(path: string, data: string) { this.lastSynced.set(path, data); }
+  forgetSynced(path: string) { this.lastSynced.delete(path); }
 
   async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
   async saveSettings() { await this.saveData(this.settings); }
