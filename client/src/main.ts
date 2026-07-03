@@ -58,6 +58,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private logs: string[] = [];
   private connState: ConnState = "off";
   private reconnectTimer?: number;
+  private pollTimer?: number;
   private backoff = 3000; // ms, doubles up to 30s
   private unloading = false;
 
@@ -83,6 +84,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   onunload() {
     this.unloading = true;
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
+    if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
     this.ws?.close();
     this.log("plugin unloaded");
   }
@@ -96,6 +98,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (notice || this.settings.verbose) new Notice(`LiveSync: ${msg}`);
   }
   getLogText() { return this.logs.join("\n"); }
+  showLog() { new LogModal(this.app, this).open(); }
 
   private setStatus(state: ConnState, detail = "") {
     this.connState = state;
@@ -128,15 +131,17 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`initial push (server had ${this.known.size} files) → v${this.state.version}`);
       this.applying = false;
 
-      this.ws = this.api.connectWs(() => this.onRemoteChanged());
-      this.ws.addEventListener("open", () => this.log("ws channel open"));
-      this.ws.addEventListener("close", () => {
-        if (this.unloading) return;
-        this.log("ws closed — scheduling reconnect");
-        this.setStatus("offline");
-        this.scheduleReconnect();
-      });
-      this.ws.addEventListener("error", () => this.log("ws error"));
+      // Best-effort instant channel; the polling loop below is the reliable path.
+      const ws = this.api.connectWs(() => this.onRemoteChanged());
+      this.ws = ws ?? undefined;
+      if (ws) {
+        ws.addEventListener("open", () => this.log("ws channel open (instant sync)"));
+        ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
+        ws.addEventListener("close", () => { if (!this.unloading) this.log("ws closed — polling continues"); });
+      } else {
+        this.log("ws not available — polling fallback active");
+      }
+      this.startPolling();
 
       this.backoff = 3000;
       this.setStatus("connected", `v${this.state.version}`);
@@ -157,16 +162,30 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.backoff = Math.min(this.backoff * 2, 30000);
   }
 
+  private startPolling() {
+    if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
+    // Reliable propagation even if the WebSocket is blocked: pull every few seconds.
+    this.pollTimer = window.setInterval(() => this.poll(), 4000);
+  }
+  private async poll() {
+    if (!this.api || this.applying) return;
+    await this.onRemoteChanged();
+  }
+
   private async onRemoteChanged() {
     if (!this.api) return;
     this.applying = true;
     try {
       const before = this.state.version;
       await pull(this.api, this.io, this.state);
-      this.log(`remote change → pulled (v${before} → v${this.state.version})`);
-      this.setStatus("connected", `v${this.state.version}`);
+      if (this.state.version !== before) {
+        this.log(`remote change → pulled (v${before} → v${this.state.version})`);
+        this.setStatus("connected", `v${this.state.version}`);
+      }
     } catch (e: any) {
-      this.log(`pull FAILED: ${e?.message ?? e}`);
+      const msg = e?.message ?? String(e);
+      this.log(`pull FAILED: ${msg}`);
+      if (msg.includes("401")) { this.applying = false; this.scheduleReconnect(); }
     } finally { this.applying = false; }
   }
 
@@ -208,8 +227,6 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`local rename ${oldPath} → ${file.path} (v${meta.version})`);
     } catch (e: any) { this.log(`rename push FAILED for ${file.path}: ${e?.message ?? e}`); }
   }
-
-  showLog() { new LogModal(this.app, this).open(); }
 
   noteSynced(path: string, data: string) { this.lastSynced.set(path, data); }
   forgetSynced(path: string) { this.lastSynced.delete(path); }
