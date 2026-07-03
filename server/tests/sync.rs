@@ -231,3 +231,10 @@ async fn two_client_propagation() {
         .bearer_auth(&tok_a).send().await.unwrap();
     assert_eq!(got2.status(), 404);
 }
+
+#[test]
+fn sha256_hex_known_vector() {
+    use new_livesync_server::hash::sha256_hex;
+    // SHA-256("abc")
+    assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
