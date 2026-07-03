@@ -1,0 +1,57 @@
+# End-to-End Testing Process
+
+> How we verify the self-hosted Obsidian sync system works, end to end, before calling a milestone done. Repeatable per milestone. Harness: `scripts/e2e.sh`.
+
+## Why a process (not ad-hoc)
+
+E2E recurs at every milestone (M1…M6), and the most valuable checks — real files syncing between two real Obsidian vaults through the real server — can't be fully automated headlessly (Obsidian is a GUI app). So this process splits E2E into layers, automates everything automatable, and gives the human a fixed, low-friction checklist for the rest.
+
+## Layers
+
+| Layer | What | How | Automated? |
+|-------|------|-----|:---:|
+| **L1 — Unit / logic** | Pure sync logic (`pull`/`pushLocal`), protocol types | `client` vitest | ✅ CI-able |
+| **L2 — Server protocol integration** | Real axum server over real HTTP+WS: auth, changes/get/put/delete, WS push, **two-client propagation**, large-file (>2 MB) | `server` `cargo test` (spawns the app on a real port, drives it with reqwest + a WS client) | ✅ CI-able |
+| **L3 — Obsidian GUI integration** | Two real Obsidian vaults ↔ the running server: create/edit/delete/rename propagation, initial sync, bind-mount truth | **Manual** (this doc's checklist), staged by `scripts/e2e.sh` | ⚠️ Manual |
+| **L4 — On-device mobile** (future) | Plugin inside Obsidian mobile (iOS/Android) | On-device (see `spikes/mobile-benchmark.html`) | ⚠️ Manual, M5 |
+
+**Gate rule:** L1 + L2 must be green (`scripts/e2e.sh` aborts if not) before doing L3. A milestone is "done" only after L1+L2 green **and** the L3 checklist passes for that milestone's scenarios.
+
+## Running it
+
+```bash
+bash scripts/e2e.sh          # build + L1/L2 tests + stage two ready vaults
+bash scripts/e2e.sh --clean  # same, but reset server data + vault notes to empty
+```
+
+The harness builds the server + plugin, runs L1/L2, then stages `.e2e/vaultA` and `.e2e/vaultB` (gitignored) each with the plugin installed **and pre-configured** (server URL + admin/admin seeded, plugin marked enabled). It prints the one command to start the server and the two vault paths to open. The server materializes files at `.e2e/data/vault/`.
+
+## Manual scenarios (L3 checklist)
+
+Start the server + open both vaults (harness prints exact commands). Then:
+
+| # | Scenario | Steps | Expected (pass) |
+|---|----------|-------|-----------------|
+| S1 | **Create → propagate** | In vault A create `n1.md` = "hello from A" | Within ~1–2 s `n1.md` appears in vault B with same content; `.e2e/data/vault/n1.md` exists on disk with that content |
+| S2 | **Edit → propagate** | Edit `n1.md` in vault B → "edited in B" | Change reflects in vault A within ~1–2 s; disk file updated |
+| S3 | **Delete → propagate** | Delete `n1.md` in vault A | `n1.md` disappears in vault B and from `.e2e/data/vault/` |
+| S4 | **Rename → propagate** | Create `r.md`, let it sync, then rename to `r2.md` in vault A | Vault B ends with `r2.md` (not `r.md`); disk shows `r2.md` only |
+| S5 | **Initial upload of existing content** | Stop server; put a few `.md` files directly in vault A (or use `--clean` then add files before connecting); start server + connect A | All pre-existing A files upload to the server and appear in vault B |
+| S6 | **New device pulls everything** | With content on the server, connect vault B fresh (or `--clean` B only) | Vault B downloads the full current set of notes |
+| S7 | **Large file (>2 MB)** | Create a markdown note >2 MB in vault A (regression for the body-limit fix) | Syncs to B without a 413/error |
+| S8 | **Bind mount is real truth** | `grep`/open files under `.e2e/data/vault/` | Files are the actual current note contents (browsable, backup-able) |
+| S9 | **No echo loop** | After any propagation, watch the console/logs | Content settles; no runaway pull→push→pull chatter on unchanged content |
+
+Record results (pass/fail + notes) in `docs/design/plans/mN-e2e-results.md` for the milestone under test.
+
+## Known caveats while testing (M1)
+
+Test **markdown/text only** — binary attachments are M2 (would corrupt today). Conflicts resolve **last-write-wins** with no merge yet (M3). Sync is **foreground-only** on mobile (M5). Deletions/version are **not persisted across a server restart** yet (M4) — don't restart the server mid-scenario when testing deletes. Full list: `docs/design/plans/m1-e2e-results.md`.
+
+## How this process grows per milestone
+
+- **M2 (chunking + binary):** add L2 assertions for chunk dedup/delta; add L3 scenarios for binary attachments (images/PDFs) round-tripping intact, and large-vault/large-file transfer efficiency.
+- **M3 (conflict/merge):** add L3 scenarios for concurrent offline edits to the same note → three-way Markdown merge (not LWW); binary conflict-copy; delete-vs-edit safety.
+- **M4 (durable persistence + multi-tenant):** add scenarios for server restart mid-delete (no resurrection), multiple accounts/vault isolation.
+- **M5 (mobile):** promote L4 — run the plugin in Obsidian mobile against the server; verify foreground sync, resumable initial sync, and the on-device benchmark budget.
+- **M6 (packaging):** add a scenario that runs the whole thing via `docker compose` + a reverse proxy over TLS.
