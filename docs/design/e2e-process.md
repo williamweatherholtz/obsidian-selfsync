@@ -19,12 +19,25 @@ E2E recurs at every milestone (M1…M6), and the most valuable checks — real f
 
 ## Running it
 
-```bash
-bash scripts/e2e.sh          # build + L1/L2 tests + stage two ready vaults
-bash scripts/e2e.sh --clean  # same, but reset server data + vault notes to empty
+**Windows / PowerShell** (native — sets env vars correctly, and by default starts the server for you):
+
+```powershell
+./scripts/e2e.ps1            # build + L1/L2 tests + stage two vaults + start server
+./scripts/e2e.ps1 -Clean     # also reset server data + vault notes to empty
+./scripts/e2e.ps1 -NoServe   # set everything up but don't start the server
+./scripts/e2e.ps1 -SkipTests # build + stage only
 ```
 
-The harness builds the server + plugin, runs L1/L2, then stages `.e2e/vaultA` and `.e2e/vaultB` (gitignored) each with the plugin installed **and pre-configured** (server URL + admin/admin seeded, plugin marked enabled). It prints the one command to start the server and the two vault paths to open. The server materializes files at `.e2e/data/vault/`.
+**macOS / Linux / git-bash**:
+
+```bash
+bash scripts/e2e.sh          # build + L1/L2 tests + stage two vaults (prints server cmd)
+bash scripts/e2e.sh --clean  # also reset server data + vault notes to empty
+```
+
+> On PowerShell, do **not** use the bash inline-env form (`DATA_ROOT=... cargo run`) — that's a bash-ism. Set env vars first: `$env:DATA_ROOT='...'; $env:SYNC_USER='admin'; $env:SYNC_PASSWORD='admin'; cargo run` (the `.ps1` does this for you, or prints it under `-NoServe`).
+
+Both harnesses build the server + plugin, run L1/L2, then stage `.e2e/vaultA` and `.e2e/vaultB` (gitignored) each with the plugin installed **and pre-configured** (server URL + admin/admin seeded, plugin marked enabled). The server materializes files at `.e2e/data/vault/`.
 
 ## Manual scenarios (L3 checklist)
 
