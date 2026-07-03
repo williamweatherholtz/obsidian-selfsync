@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 
 pub mod api;
 pub mod auth;
@@ -13,5 +13,6 @@ pub use state::AppState;
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/api/login", post(auth::login))
         .with_state(state)
 }

@@ -67,3 +67,19 @@ fn safe_rel_path_rejects_traversal() {
     assert!(safe_rel_path("a/../../b").is_none());
     assert!(safe_rel_path("ok/dir/file.md").is_some());
 }
+
+async fn login(base: &str, u: &str, p: &str) -> reqwest::Response {
+    reqwest::Client::new().post(format!("{base}/api/login"))
+        .json(&serde_json::json!({"username":u,"password":p})).send().await.unwrap()
+}
+
+#[tokio::test]
+async fn login_issues_token_and_rejects_bad_creds() {
+    let base = spawn().await; // default creds admin/admin (see AppState::for_test)
+    let ok = login(&base, "admin", "admin").await;
+    assert_eq!(ok.status(), 200);
+    let token: new_livesync_server::protocol::LoginResponse = ok.json().await.unwrap();
+    assert!(!token.token.is_empty());
+    let bad = login(&base, "admin", "nope").await;
+    assert_eq!(bad.status(), 401);
+}
