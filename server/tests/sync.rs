@@ -238,3 +238,21 @@ fn sha256_hex_known_vector() {
     // SHA-256("abc")
     assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 }
+
+#[test]
+fn chunkstore_put_get_verify_remove() {
+    use new_livesync_server::chunkstore::ContentStore;
+    use new_livesync_server::hash::sha256_hex;
+    let dir = tempfile::tempdir().unwrap();
+    let cs = ContentStore::open(dir.path()).unwrap();
+    let data = b"chunk-bytes";
+    let h = sha256_hex(data);
+    assert!(!cs.has(&h));
+    cs.put(&h, data).unwrap();
+    assert!(cs.has(&h));
+    assert_eq!(cs.get(&h).unwrap().unwrap(), data);
+    // wrong hash rejected
+    assert!(cs.put("deadbeef", data).is_err());
+    cs.remove(&h).unwrap();
+    assert!(!cs.has(&h));
+}

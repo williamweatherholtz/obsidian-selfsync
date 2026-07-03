@@ -2,6 +2,7 @@ use axum::Router;
 
 pub mod api;
 pub mod auth;
+pub mod chunkstore;
 pub mod config;
 pub mod hash;
 pub mod protocol;
