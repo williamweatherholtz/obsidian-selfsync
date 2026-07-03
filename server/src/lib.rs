@@ -12,6 +12,8 @@ pub use state::AppState;
 
 pub fn app(state: AppState) -> Router {
     use axum::routing::{get, post};
+    use tower_http::cors::{Any, CorsLayer};
+    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/login", post(auth::login))
@@ -19,4 +21,5 @@ pub fn app(state: AppState) -> Router {
         .route("/api/vault/file", get(api::get_file).put(api::put_file).delete(api::delete_file))
         .route("/api/ws", get(ws::ws_handler))
         .with_state(state)
+        .layer(cors)
 }
