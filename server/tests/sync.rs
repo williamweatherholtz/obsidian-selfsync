@@ -256,3 +256,17 @@ fn chunkstore_put_get_verify_remove() {
     cs.remove(&h).unwrap();
     assert!(!cs.has(&h));
 }
+
+#[test]
+fn chunkstore_rejects_malicious_hash() {
+    use new_livesync_server::chunkstore::ContentStore;
+    let dir = tempfile::tempdir().unwrap();
+    let cs = ContentStore::open(dir.path()).unwrap();
+    // path-traversal attempt and a non-hex/short hash must be safely rejected, no panic, no escape
+    assert!(!cs.has("../../../../etc/passwd"));
+    assert!(cs.get("../../../../etc/passwd").unwrap().is_none());
+    assert!(cs.remove("../../../../etc/passwd").is_ok());
+    assert!(cs.put("../../etc/passwd", b"x").is_err());
+    assert!(!cs.has("€€€")); // multi-byte: must not panic
+    assert!(!cs.has("abc")); // too short
+}
