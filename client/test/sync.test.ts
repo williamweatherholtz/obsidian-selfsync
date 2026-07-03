@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pull, SyncApi, VaultIo, SyncState } from "../src/sync";
+import { pull, pushLocal, SyncApi, VaultIo, SyncState } from "../src/sync";
 import { ChangesResponse, FileMeta } from "../src/protocol";
 
 function fakeIo(initial: Record<string, string> = {}) {
@@ -37,5 +37,27 @@ describe("pull", () => {
     expect(io.files.get("new.md")).toBe("abc");
     expect(io.files.has("old.md")).toBe(false);
     expect(state.version).toBe(7);
+  });
+});
+
+describe("pushLocal", () => {
+  it("skips known paths, pushes new ones, updates version and knownPaths", async () => {
+    const server: Record<string, string> = {};
+    const io = fakeIo({ "a.md": "aaa", "b.md": "bbb" });
+    const resp: ChangesResponse = {
+      version: 0,
+      upserts: [],
+      deletes: [],
+    };
+    const api = fakeApi(server, resp);
+    const knownPaths = new Set(["a.md"]);
+    const state: SyncState = { version: 0 };
+
+    await pushLocal(api, io, state, knownPaths);
+
+    expect(server["b.md"]).toBe("bbb");
+    expect(server["a.md"]).toBeUndefined();
+    expect(knownPaths.has("b.md")).toBe(true);
+    expect(state.version).toBe(9);
   });
 });
