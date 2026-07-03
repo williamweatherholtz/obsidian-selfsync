@@ -43,7 +43,7 @@ impl Vault {
                 .map(|d| d.as_millis() as i64).unwrap_or(0);
             files.insert(rel_str.clone(), FileMeta {
                 path: rel_str, hash: blake3::hash(&bytes).to_hex().to_string(),
-                size: bytes.len() as u64, mtime, version,
+                size: bytes.len() as u64, mtime, version, chunks: vec![],
             });
         }
         let v = Vault { root: root.to_path_buf(), version, files, deletions: Vec::new() };
@@ -86,6 +86,7 @@ impl Vault {
             size: bytes.len() as u64,
             mtime,
             version: self.version,
+            chunks: vec![],
         };
         self.files.insert(path.to_string(), meta.clone());
         self.deletions.retain(|d| d.path != path);

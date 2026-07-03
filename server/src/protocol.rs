@@ -7,6 +7,7 @@ pub struct FileMeta {
     pub size: u64,
     pub mtime: i64,
     pub version: u64,
+    pub chunks: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -31,4 +32,23 @@ pub struct LoginRequest {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoginResponse {
     pub token: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CommitRequest {
+    pub path: String,
+    pub hash: String,
+    pub size: u64,
+    pub mtime: i64,
+    pub chunks: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MissingRequest {
+    pub hashes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MissingResponse {
+    pub missing: Vec<String>,
 }

@@ -22,7 +22,7 @@ async fn health_ok() {
 #[test]
 fn filemeta_roundtrips_json() {
     use new_livesync_server::protocol::FileMeta;
-    let m = FileMeta { path: "a/b.md".into(), hash: "h".into(), size: 3, mtime: 42, version: 1 };
+    let m = FileMeta { path: "a/b.md".into(), hash: "h".into(), size: 3, mtime: 42, version: 1, chunks: vec![] };
     let s = serde_json::to_string(&m).unwrap();
     let back: FileMeta = serde_json::from_str(&s).unwrap();
     assert_eq!(m, back);
@@ -269,4 +269,12 @@ fn chunkstore_rejects_malicious_hash() {
     assert!(cs.put("../../etc/passwd", b"x").is_err());
     assert!(!cs.has("€€€")); // multi-byte: must not panic
     assert!(!cs.has("abc")); // too short
+}
+
+#[test]
+fn commit_request_roundtrips() {
+    use new_livesync_server::protocol::CommitRequest;
+    let c = CommitRequest { path:"a.md".into(), hash:"h".into(), size:3, mtime:1, chunks:vec!["c1".into(),"c2".into()] };
+    let s = serde_json::to_string(&c).unwrap();
+    assert_eq!(serde_json::from_str::<CommitRequest>(&s).unwrap(), c);
 }
