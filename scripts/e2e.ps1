@@ -79,7 +79,7 @@ function Stage-Vault($name) {
   Copy-Item (Join-Path $client 'main.js')      $pdir -Force -ErrorAction Stop
   Copy-Item (Join-Path $client 'manifest.json') $pdir -Force -ErrorAction Stop
   # Pre-seed plugin settings so it auto-connects on open (no manual config).
-  Write-Utf8NoBom (Join-Path $pdir 'data.json') '{"serverUrl":"http://localhost:8080","username":"admin","password":"admin"}'
+  Write-Utf8NoBom (Join-Path $pdir 'data.json') '{"serverUrl":"http://127.0.0.1:8789","username":"admin","password":"admin"}'
   # Mark the plugin enabled for this vault.
   Write-Utf8NoBom (Join-Path $e2e "$name\.obsidian\community-plugins.json") '["new-livesync"]'
   Write-Host "  staged $name  ->  $(Join-Path $e2e $name)"
@@ -101,10 +101,11 @@ Write-Host 'Scenario checklist: docs\design\e2e-process.md'
 if ($NoServe) {
   Write-Host "`nStart the server yourself in this window with:" -ForegroundColor Yellow
   Write-Host "  Set-Location `"$server`""
-  Write-Host "  `$env:DATA_ROOT='$dataDir'; `$env:SYNC_USER='admin'; `$env:SYNC_PASSWORD='admin'; cargo run"
+  Write-Host "  `$env:DATA_ROOT='$dataDir'; `$env:BIND_ADDR='127.0.0.1:8789'; `$env:SYNC_USER='admin'; `$env:SYNC_PASSWORD='admin'; cargo run"
 } else {
-  Step 'Starting server (Ctrl+C to stop) - now open the two vaults in Obsidian'
+  Step 'Starting server on 127.0.0.1:8789 (Ctrl+C to stop) - now open the two vaults in Obsidian'
   $env:DATA_ROOT    = $dataDir
+  $env:BIND_ADDR    = '127.0.0.1:8789'
   $env:SYNC_USER    = 'admin'
   $env:SYNC_PASSWORD = 'admin'
   Push-Location $server

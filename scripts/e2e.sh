@@ -42,7 +42,7 @@ stage_vault() {
   mkdir -p "$pdir"
   cp "$ROOT/client/main.js" "$ROOT/client/manifest.json" "$pdir/"
   # Pre-seed plugin settings so it auto-connects on open (no manual config).
-  printf '{"serverUrl":"http://localhost:8080","username":"admin","password":"admin"}\n' > "$pdir/data.json"
+  printf '{"serverUrl":"http://127.0.0.1:8789","username":"admin","password":"admin"}\n' > "$pdir/data.json"
   # Mark the plugin enabled for this vault.
   printf '["new-livesync"]\n' > "$E2E/$name/.obsidian/community-plugins.json"
   echo "  staged $name  ->  $E2E/$name"
@@ -54,7 +54,7 @@ step "READY — manual Obsidian verification"
 cat <<EOF
 1) Start the server in a separate terminal:
 
-     cd "$ROOT/server" && DATA_ROOT="$E2E/data" SYNC_USER=admin SYNC_PASSWORD=admin cargo run
+     cd "$ROOT/server" && DATA_ROOT="$E2E/data" BIND_ADDR=127.0.0.1:8789 SYNC_USER=admin SYNC_PASSWORD=admin cargo run
 
 2) In Obsidian, "Open folder as vault" for BOTH (open two windows):
 

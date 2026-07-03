@@ -8,7 +8,7 @@ export interface NewLiveSyncSettings {
   verbose: boolean; // show routine sync events as notices (noisy; for debugging)
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
-  serverUrl: "http://localhost:8080",
+  serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
   username: "admin",
   password: "admin",
   verbose: false,

@@ -1,0 +1,30 @@
+# Containerized end-to-end test: build + run the server, then run the headless
+# two-client E2E (client/test/e2e.spec.ts) against it. Fully reproducible; no host
+# toolchain beyond Docker required.
+#
+#   docker compose -f docker-compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+#
+# Exit code 0 = sync verified end-to-end (create/edit/delete/large-file propagate
+# between two clients through the real server). Non-zero = a failure to inspect.
+services:
+  server:
+    build: ./server
+    environment:
+      BIND_ADDR: 0.0.0.0:8080     # inside the container's isolated network; no host port needed
+      DATA_ROOT: /data
+      SYNC_USER: admin
+      SYNC_PASSWORD: admin
+    # (no host port published — only the e2e container talks to it, over the compose network)
+
+  e2e:
+    image: node:20-bookworm-slim
+    working_dir: /app/client
+    environment:
+      SYNC_SERVER_URL: http://server:8080
+    volumes:
+      - ./:/app
+      - /app/client/node_modules   # anonymous volume: keep container deps off the host tree
+    depends_on:
+      server:
+        condition: service_healthy
+    command: sh -c "npm install --no-audit --no-fund --silent && npx vitest run test/e2e.spec.ts"

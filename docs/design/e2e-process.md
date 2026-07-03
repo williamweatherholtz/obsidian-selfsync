@@ -35,9 +35,15 @@ bash scripts/e2e.sh          # build + L1/L2 tests + stage two vaults (prints se
 bash scripts/e2e.sh --clean  # also reset server data + vault notes to empty
 ```
 
-> On PowerShell, do **not** use the bash inline-env form (`DATA_ROOT=... cargo run`) — that's a bash-ism. Set env vars first: `$env:DATA_ROOT='...'; $env:SYNC_USER='admin'; $env:SYNC_PASSWORD='admin'; cargo run` (the `.ps1` does this for you, or prints it under `-NoServe`).
+> On PowerShell, do **not** use the bash inline-env form (`DATA_ROOT=... cargo run`) — that's a bash-ism. Set env vars first: `$env:DATA_ROOT='...'; $env:BIND_ADDR='127.0.0.1:8789'; $env:SYNC_USER='admin'; $env:SYNC_PASSWORD='admin'; cargo run` (the `.ps1` does this for you, or prints it under `-NoServe`).
 
 Both harnesses build the server + plugin, run L1/L2, then stage `.e2e/vaultA` and `.e2e/vaultB` (gitignored) each with the plugin installed **and pre-configured** (server URL + admin/admin seeded, plugin marked enabled). The server materializes files at `.e2e/data/vault/`.
+
+> **Ports (learned the hard way):** the dev server binds **`127.0.0.1:8789`**, not `localhost:8080`. Port **8080 is commonly held by Docker Desktop / WSL**, and on Windows `localhost` resolves to IPv6 `::1` first — so `http://localhost:8080` from the plugin hit Docker's proxy and returned `405`. Using `127.0.0.1` forces IPv4 and `8789` sidesteps the collision. (Production, behind a reverse proxy, still binds `0.0.0.0:8080` per the design spec.)
+
+### Headless full-stack E2E (no Obsidian) — the primary automated gate
+
+`client/test/e2e.spec.ts` (runs under `npx vitest run`) spawns the real server binary and drives **two real sync clients** — the actual `sync.ts` engine + a Node HTTP transport + real files on disk — asserting create/edit/delete/large-file propagation and the bind-mount. This exercises the whole stack (server + protocol + client engine) **without Obsidian**, so most regressions are caught automatically; the manual L3 GUI pass is only needed to verify the thin Obsidian glue (`requestUrl` transport + vault-adapter I/O). It skips itself if the server binary isn't built (or targets `SYNC_SERVER_URL` if set — see the Docker compose).
 
 ## Manual scenarios (L3 checklist)
 
