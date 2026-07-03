@@ -1,0 +1,8 @@
+{
+  "id": "new-livesync",
+  "name": "New LiveSync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Self-hosted vault sync (walking skeleton).",
+  "isDesktopOnly": false
+}
