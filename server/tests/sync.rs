@@ -83,3 +83,39 @@ async fn login_issues_token_and_rejects_bad_creds() {
     let bad = login(&base, "admin", "nope").await;
     assert_eq!(bad.status(), 401);
 }
+
+#[tokio::test]
+async fn put_get_changes_delete_roundtrip() {
+    let base = spawn().await;
+    let tok = {
+        let r: new_livesync_server::protocol::LoginResponse =
+            login(&base, "admin", "admin").await.json().await.unwrap();
+        r.token
+    };
+    let c = reqwest::Client::new();
+    // PUT
+    let put: new_livesync_server::protocol::FileMeta = c
+        .put(format!("{base}/api/vault/file?path=n/a.md"))
+        .bearer_auth(&tok).header("X-Mtime", "123").body("hello")
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(put.size, 5);
+    // GET file
+    let got = c.get(format!("{base}/api/vault/file?path=n/a.md"))
+        .bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
+    assert_eq!(&got[..], b"hello");
+    // changes since 0 include it
+    let ch: new_livesync_server::protocol::ChangesResponse = c
+        .get(format!("{base}/api/vault/changes?since=0"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert!(ch.upserts.iter().any(|m| m.path == "n/a.md"));
+    // unauthorised without token
+    let no = c.get(format!("{base}/api/vault/changes?since=0")).send().await.unwrap();
+    assert_eq!(no.status(), 401);
+    // DELETE
+    let del = c.delete(format!("{base}/api/vault/file?path=n/a.md"))
+        .bearer_auth(&tok).send().await.unwrap();
+    assert_eq!(del.status(), 200);
+    let got2 = c.get(format!("{base}/api/vault/file?path=n/a.md"))
+        .bearer_auth(&tok).send().await.unwrap();
+    assert_eq!(got2.status(), 404);
+}

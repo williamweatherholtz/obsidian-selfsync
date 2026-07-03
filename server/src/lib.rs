@@ -1,4 +1,4 @@
-use axum::{routing::{get, post}, Router};
+use axum::Router;
 
 pub mod api;
 pub mod auth;
@@ -11,8 +11,11 @@ pub mod ws;
 pub use state::AppState;
 
 pub fn app(state: AppState) -> Router {
+    use axum::routing::{delete, get, post, put};
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/login", post(auth::login))
+        .route("/api/vault/changes", get(api::changes))
+        .route("/api/vault/file", get(api::get_file).put(api::put_file).delete(api::delete_file))
         .with_state(state)
 }
