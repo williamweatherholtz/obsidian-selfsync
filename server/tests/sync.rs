@@ -140,3 +140,71 @@ async fn ws_notifies_on_put() {
     let txt = msg.into_text().unwrap();
     assert!(txt.contains("\"type\":\"changed\""), "got: {txt}");
 }
+
+#[tokio::test]
+async fn two_client_propagation() {
+    use futures_util::StreamExt;
+    let base = spawn().await;
+    // Two logins with the same creds represent two devices/clients, A and B.
+    let tok_a = { let r: new_livesync_server::protocol::LoginResponse =
+        login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
+    let tok_b = { let r: new_livesync_server::protocol::LoginResponse =
+        login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
+
+    // Client A opens a WebSocket to observe server-pushed changes.
+    let ws_url = base.replace("http://", "ws://") + &format!("/api/ws?token={tok_a}");
+    let (mut ws_a, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+
+    let c = reqwest::Client::new();
+
+    // Client B PUTs a new file.
+    let put_resp = c.put(format!("{base}/api/vault/file?path=shared/note.md"))
+        .bearer_auth(&tok_b).header("X-Mtime", "1000").body("from B")
+        .send().await.unwrap();
+    assert_eq!(put_resp.status(), 200);
+    let put_meta: new_livesync_server::protocol::FileMeta = put_resp.json().await.unwrap();
+
+    // Client A's WS must receive a "changed" notification within 2s.
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws_a.next())
+        .await.expect("timed out waiting for WS notification after B's PUT")
+        .unwrap().unwrap();
+    let txt = msg.into_text().unwrap();
+    assert!(txt.contains("\"type\":\"changed\""), "got: {txt}");
+
+    // Client A pulls changes and reads the file B wrote — proving real propagation
+    // through the server, not just a notification.
+    let ch: new_livesync_server::protocol::ChangesResponse = c
+        .get(format!("{base}/api/vault/changes?since=0"))
+        .bearer_auth(&tok_a).send().await.unwrap().json().await.unwrap();
+    assert!(ch.upserts.iter().any(|m| m.path == "shared/note.md"),
+        "A's changes should list B's new file: {ch:?}");
+
+    let got = c.get(format!("{base}/api/vault/file?path=shared/note.md"))
+        .bearer_auth(&tok_a).send().await.unwrap().bytes().await.unwrap();
+    assert_eq!(&got[..], b"from B");
+
+    // Client B deletes the file.
+    let del_resp = c.delete(format!("{base}/api/vault/file?path=shared/note.md"))
+        .bearer_auth(&tok_b).send().await.unwrap();
+    assert_eq!(del_resp.status(), 200);
+
+    // Client A's WS must also observe the delete notification.
+    let msg2 = tokio::time::timeout(std::time::Duration::from_secs(2), ws_a.next())
+        .await.expect("timed out waiting for WS notification after B's DELETE")
+        .unwrap().unwrap();
+    let txt2 = msg2.into_text().unwrap();
+    assert!(txt2.contains("\"type\":\"changed\""), "got: {txt2}");
+
+    // Client A pulls changes since the file's put version and sees the delete.
+    let ch2: new_livesync_server::protocol::ChangesResponse = c
+        .get(format!("{base}/api/vault/changes?since={}", put_meta.version))
+        .bearer_auth(&tok_a).send().await.unwrap().json().await.unwrap();
+    assert!(ch2.deletes.iter().any(|d| d.path == "shared/note.md"),
+        "A's changes should list B's delete: {ch2:?}");
+    assert!(!ch2.upserts.iter().any(|m| m.path == "shared/note.md"));
+
+    // And a direct GET now 404s for client A.
+    let got2 = c.get(format!("{base}/api/vault/file?path=shared/note.md"))
+        .bearer_auth(&tok_a).send().await.unwrap();
+    assert_eq!(got2.status(), 404);
+}
