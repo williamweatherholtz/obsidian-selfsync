@@ -1,4 +1,4 @@
-import { Plugin, TFile, normalizePath } from "obsidian";
+import { Plugin, TAbstractFile, TFile, normalizePath } from "obsidian";
 import { HttpTransport } from "./transport";
 import { pull, pushLocal, SyncState, VaultIo } from "./sync";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
@@ -42,6 +42,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (f) => this.onLocalChange(f)));
     this.registerEvent(this.app.vault.on("create", (f) => this.onLocalChange(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => this.onLocalDelete(f.path)));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
   }
 
   onunload() { this.ws?.close(); }
@@ -68,7 +69,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     try { await pull(this.api, this.io, this.state); } finally { this.applying = false; }
   }
 
-  private async onLocalChange(f: any) {
+  private async onLocalChange(f: TAbstractFile) {
     if (this.applying || !this.api || !(f instanceof TFile)) return;
     const data = await this.io.read(f.path);
     if (this.lastSynced.get(f.path) === data) return; // echo of a server-driven write, not a real edit
@@ -83,6 +84,21 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.api.deleteFile(path);
     this.known.delete(path);
     this.lastSynced.delete(path);
+  }
+
+  private async onLocalRename(file: TAbstractFile, oldPath: string) {
+    if (this.applying || !this.api || !(file instanceof TFile)) return;
+    // Obsidian has no separate rename API on our transport: sync it as a delete of the
+    // old path followed by a create/push of the new path (mirrors onLocalChange).
+    await this.api.deleteFile(oldPath);
+    this.known.delete(oldPath);
+    this.lastSynced.delete(oldPath);
+
+    const data = await this.io.read(file.path);
+    const meta = await this.api.putFile(file.path, data, file.stat.mtime);
+    this.state.version = Math.max(this.state.version, meta.version);
+    this.known.add(file.path);
+    this.lastSynced.set(file.path, data);
   }
 
   noteSynced(path: string, data: string) { this.lastSynced.set(path, data); }

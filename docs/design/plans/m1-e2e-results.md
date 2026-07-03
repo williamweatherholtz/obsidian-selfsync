@@ -95,9 +95,10 @@ headlessly and still needs a human pass with two real vaults:
 - **Last-write-wins, no merge** — concurrent edits from two clients are
   resolved by whichever PUT lands last; there is no conflict detection or
   three-way merge. Proper conflict handling is deferred to M3.
-- **Deletions and version state are not persisted across a server restart**
-  — the vault's change log/version counter is in-memory only. Durable
-  persistence is deferred to M4.
+- **Deletions and the vault version are not persisted across a server
+  restart (in-memory).** Concretely this can RESURRECT a deleted file — a
+  client that was offline during a delete re-uploads it after a server
+  restart. → fixed by durable persistence in M4.
 - **Sync is foreground-only on mobile** — there is no background sync
   process; the plugin only syncs while Obsidian is running and active.
 - **Echo suppression is content-equality based** — the plugin's guard
@@ -105,3 +106,14 @@ headlessly and still needs a human pass with two real vaults:
   base/version handshake, so it is best-effort (Obsidian may still fire a
   spurious local `modify` event after a server-driven write). Full
   base/version-aware echo handling is deferred to M3.
+- **Binary/attachment files (images, PDFs, etc.) are NOT supported in
+  M1** — the client transfers file content as UTF-8 text, so binary files
+  would corrupt on round-trip. M1 is markdown/text-only — do not sync a
+  vault containing binary attachments yet. Proper binary support arrives
+  with the M2 byte/chunk pipeline.
+- **Offline local edits can be overwritten on reconnect** — the initial
+  `pull` applies server content before `pushLocal`, with no conflict
+  marker → addressed by M3 conflict handling.
+- **The WebSocket has no auto-reconnect/backoff yet** — a dropped socket
+  pauses real-time sync until reconnecting → M2; folder renames/deletes
+  aren't specially handled → verify/M2.

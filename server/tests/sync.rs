@@ -13,7 +13,9 @@ async fn spawn() -> String {
 #[tokio::test]
 async fn health_ok() {
     let base = spawn().await;
-    let body = reqwest::get(format!("{base}/health")).await.unwrap().text().await.unwrap();
+    let resp = reqwest::get(format!("{base}/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
     assert_eq!(body, "ok");
 }
 
@@ -118,6 +120,27 @@ async fn put_get_changes_delete_roundtrip() {
     let got2 = c.get(format!("{base}/api/vault/file?path=n/a.md"))
         .bearer_auth(&tok).send().await.unwrap();
     assert_eq!(got2.status(), 404);
+}
+
+#[tokio::test]
+async fn put_large_file_over_2mb() {
+    let base = spawn().await;
+    let tok = {
+        let r: new_livesync_server::protocol::LoginResponse =
+            login(&base, "admin", "admin").await.json().await.unwrap();
+        r.token
+    };
+    let c = reqwest::Client::new();
+    let size = 3 * 1024 * 1024;
+    let body = vec![b'x'; size];
+    let put: new_livesync_server::protocol::FileMeta = c
+        .put(format!("{base}/api/vault/file?path=big.bin"))
+        .bearer_auth(&tok).header("X-Mtime", "123").body(body.clone())
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(put.size, size as u64);
+    let got = c.get(format!("{base}/api/vault/file?path=big.bin"))
+        .bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
+    assert_eq!(got.len(), size);
 }
 
 #[tokio::test]
