@@ -4,7 +4,7 @@ import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
-import { OnboardingModal } from "./onboarding";
+import { SetupWizardModal } from "./setupwizard";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 
@@ -106,7 +106,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.renderLight(this.machine.get()); // initial: off
 
-    this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => new OnboardingModal(this.app, this).open() });
+    this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => this.openSetup() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
     this.addCommand({ id: "clear-log", name: "Clear sync log", callback: () => this.clearLogs() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
@@ -117,7 +117,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
 
     this.log("plugin loaded", true);
-    this.app.workspace.onLayoutReady(() => this.reconnect());
+    this.app.workspace.onLayoutReady(() => {
+      if (!this.settings.vaultId || !this.settings.serverUrl || !this.settings.username) this.openSetup();
+      else void this.reconnect();
+    });
   }
 
   onunload() {
@@ -140,7 +143,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   getLogText() { return this.logs.join("\n"); }
   clearLogs() { this.logs = []; this.log("log cleared"); }
   showLog() { new LogModal(this.app, this).open(); }
-  openSetup() { new OnboardingModal(this.app, this).open(); }
+  openSetup() { new SetupWizardModal(this.app, this).open(); }
 
   // --- selective config sync: guarded, best-effort live reload -----------------
   // The IO records each synced .obsidian/ file here; we flush once per reconcile so a
