@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { ChangesResponse, CommitRequest, FileMeta } from "./protocol";
+import { ChangesResponse, CommitRequest, FileMeta, StatusResponse } from "./protocol";
 import { SyncApi } from "./sync";
 
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
@@ -42,6 +42,15 @@ export class HttpTransport implements SyncApi {
   private v(suffix: string): string { return `${this.baseUrl}/api/v/${encodeURIComponent(this.vault)}${suffix}`; }
   private toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+
+  // Per-vault health. "error" means the server's index is corrupt and every sync op
+  // will 503 until an operator reindexes — checked before reconciling so we surface a
+  // clear reason rather than a bare "HTTP 503", and never act on a degraded manifest.
+  async status(): Promise<StatusResponse> {
+    const r = await requestUrl({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
+    if (r.status !== 200) throw new Error(`status: HTTP ${r.status}`);
+    return r.json as StatusResponse;
   }
 
   async changes(since: number): Promise<ChangesResponse> {

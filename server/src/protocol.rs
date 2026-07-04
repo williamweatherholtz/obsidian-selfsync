@@ -70,3 +70,13 @@ pub struct VaultListResponse {
 pub struct CreateVaultRequest {
     pub name: String,
 }
+
+// Per-vault health, surfaced so a client never treats a degraded/empty manifest as
+// authoritative: status "ready" = normal; "error" = index corrupt, sync ops 503 until
+// an operator reindexes. `detail` is a human-readable reason (empty when ready).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StatusResponse {
+    pub status: String,
+    pub detail: String,
+    pub version: u64,
+}

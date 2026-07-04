@@ -229,17 +229,18 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
 }
 
 #[test]
-fn vault_open_fails_loud_on_corrupt_index() {
+fn vault_open_locks_on_corrupt_index_not_blank_reset() {
     use new_livesync_server::vault::Vault;
     let dir = tempfile::tempdir().unwrap();
-    // a genuinely-absent index starts fresh (first run)
-    assert!(Vault::open(dir.path()).is_ok());
-    // a present-but-corrupt index must NOT silently reset (would hide all files)
+    // a genuinely-absent index starts fresh (first run), not corrupt
+    let fresh = Vault::open(dir.path()).unwrap();
+    assert!(!fresh.is_corrupt());
+    // a present-but-corrupt index must NOT silently reset (would hide all files):
+    // it opens in a LOCKED error state (fail-loud, requires explicit reindex) rather
+    // than either resetting to blank OR crashing the whole open.
     std::fs::write(dir.path().join(".sync-index.json"), b"{ this is not json").unwrap();
-    match Vault::open(dir.path()) {
-        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
-        Ok(_) => panic!("expected corrupt index to fail loud, got Ok"),
-    }
+    let v = Vault::open(dir.path()).unwrap();
+    assert!(v.is_corrupt(), "corrupt index must open in ERROR state, not blank/OK");
 }
 
 #[test]
@@ -295,4 +296,46 @@ async fn vaults_are_isolated_and_listable() {
     let indefault: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(!indefault.upserts.iter().any(|m| m.path=="w.md"));
+}
+
+#[tokio::test]
+async fn corrupt_vault_refuses_sync_then_recovers_via_reindex() {
+    use new_livesync_server::protocol::{StatusResponse, ChangesResponse};
+    // Pre-seed a vault "broken" (NOT the bootstrap "default", so it isn't opened until
+    // first request) with a materialized file and a corrupt on-disk index.
+    let dir = tempfile::tempdir().unwrap();
+    let vroot = dir.path().join("admin").join("broken");
+    std::fs::create_dir_all(vroot.join("vault")).unwrap();
+    std::fs::write(vroot.join("vault").join("seed.md"), b"survivor").unwrap();
+    std::fs::write(vroot.join(".sync-index.json"), b"{ not valid json").unwrap();
+
+    let state = AppState::for_test(dir.path());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::mem::forget(dir);
+    tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
+    let base = format!("http://{addr}");
+
+    let tok = { let r: new_livesync_server::protocol::LoginResponse =
+        login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
+    let c = reqwest::Client::new();
+
+    // status reports error
+    let st: StatusResponse = c.get(format!("{base}/api/v/broken/status"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert_eq!(st.status, "error");
+
+    // sync ops are refused with 503 (must NOT serve an empty manifest)
+    let ch = c.get(format!("{base}/api/v/broken/changes?since=0")).bearer_auth(&tok).send().await.unwrap();
+    assert_eq!(ch.status(), 503);
+
+    // operator reindex recovers it
+    let re: StatusResponse = c.post(format!("{base}/api/v/broken/reindex"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert_eq!(re.status, "ready");
+
+    // now changes works and advertises the materialized file
+    let ch2: ChangesResponse = c.get(format!("{base}/api/v/broken/changes?since=0"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert!(ch2.upserts.iter().any(|m| m.path == "seed.md"));
 }

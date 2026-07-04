@@ -30,6 +30,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/v/:vault/chunks/missing", post(api::chunks_missing))
         .route("/api/v/:vault/chunk/:hash", put(api::put_chunk).get(api::get_chunk))
         .route("/api/v/:vault/commit", post(api::commit))
+        .route("/api/v/:vault/status", get(api::status))
+        .route("/api/v/:vault/reindex", post(api::reindex))
         .route("/api/v/:vault/file", axum::routing::delete(api::delete_file))
         .route("/api/ws", get(ws::ws_handler))
         .with_state(state)

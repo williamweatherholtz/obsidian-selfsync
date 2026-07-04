@@ -151,6 +151,17 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log("login OK");
       this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default");
 
+      // Never reconcile against a degraded server: a corrupt index makes the server
+      // 503 all sync ops, and acting on the resulting empty manifest could delete
+      // local files. Surface the operator action clearly instead of a bare 503.
+      const health = await this.api.status();
+      if (health.status !== "ready") {
+        this.machine.dispatch("error");
+        this.log(`server vault '${this.settings.vaultId || "default"}' is ${health.status.toUpperCase()}: ${health.detail || "unavailable"} — run reindex on the server; NOT syncing`, true);
+        this.scheduleReconnect();
+        return;
+      }
+
       this.applying = true;
       try { await reconcileAll(this.deps()); } finally { this.applying = false; }
       this.log(`reconciled → v${this.state.version}`);
