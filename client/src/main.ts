@@ -5,6 +5,7 @@ import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
+import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 
@@ -145,6 +146,46 @@ export default class NewLiveSyncPlugin extends Plugin {
   showLog() { new LogModal(this.app, this).open(); }
   openSetup() { new SetupWizardModal(this.app, this).open(); }
 
+  setAuthToken(token: string) { this.settings.authToken = token; void this.saveSettings(); }
+
+  // Reuse the cached token when it still works; otherwise re-login with the stored
+  // password (tokens are ephemeral server-side until B7). listVaults is a cheap
+  // authenticated probe. Throws if neither path yields a working token.
+  private async acquireToken(): Promise<string> {
+    const url = this.settings.serverUrl;
+    if (this.settings.authToken) {
+      try { await HttpTransport.listVaults(url, this.settings.authToken); this.log("token OK"); return this.settings.authToken; }
+      catch { this.log("cached token rejected — re-logging in"); }
+    }
+    if (!this.settings.password) throw new Error("no password stored; re-run setup");
+    const token = await HttpTransport.login(url, this.settings.username, this.settings.password);
+    this.setAuthToken(token);
+    this.log("login OK");
+    return token;
+  }
+
+  // Unbind this vault (keep local files); return to the unconfigured state.
+  async disconnect() {
+    this.settings.vaultId = "";
+    await this.saveSettings();
+    this.ws?.close();
+    if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
+    this.machine.dispatch("unload");
+    this.log("disconnected (local files kept)", true);
+  }
+
+  // Sign out: forget credentials + token, drop to Not-set-up.
+  async signOut() {
+    this.settings.authToken = undefined;
+    this.settings.password = "";
+    await this.disconnect();
+  }
+
+  // A shareable setup link for another device (server + username only, never password).
+  addDeviceLink(): string {
+    return encodeSetupLink({ server: this.settings.serverUrl, user: this.settings.username });
+  }
+
   // --- selective config sync: guarded, best-effort live reload -----------------
   // The IO records each synced .obsidian/ file here; we flush once per reconcile so a
   // plugin is reloaded at most once even if several of its files changed.
@@ -219,8 +260,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
     try {
       this.ws?.close();
-      const token = await HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password);
-      this.log("login OK");
+      const token = await this.acquireToken();
       this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default");
 
       // Never reconcile against a degraded server: a corrupt index makes the server
@@ -252,6 +292,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
       this.backoff = 3000;
       this.machine.dispatch("connected");
+      this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`, true);
     } catch (e: any) {
       this.applying = false;
@@ -296,6 +337,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       await this.flushConfigReload();
       if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
       this.machine.dispatch("syncDone");
+      this.settings.lastSyncedAt = Date.now();
     } catch (e: any) {
       // Any failure (server down, 401, network) means we're NOT up to date: go red
       // and hand recovery to the backoff reconnect (which restarts polling + WS on
