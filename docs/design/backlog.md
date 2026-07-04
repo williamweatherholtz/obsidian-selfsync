@@ -2,6 +2,18 @@
 
 > Tracked future work surfaced during use. Each item names its target milestone (the process that will handle it) and the desired behavior, so nothing is lost. Convert to formal engine `Issue` items when the `keel` tooling is in the loop. Newest first.
 
+## B6 — Server durability hardening (persist-failure rollback + startup consistency check)
+**Raised:** 2026-07-03 (M2 final review). **Target:** M4 (durability pass).
+`Vault::commit`/`delete` mutate the in-memory index (and may `store.remove` a GC'd blob) *before* `persist()`; if `persist()` fails (disk full / IO error) the in-memory state is ahead of disk, and on restart the loaded index can dangle-reference a physically-removed chunk. Add: roll back in-memory state on persist failure, and a startup consistency check (index `chunk_refs` vs. blobs actually on disk). Pair with B4.
+
+## B5 — Orphan-chunk garbage collection
+**Raised:** 2026-07-03 (M2 final review). **Target:** M4.
+`put_chunk` writes a blob without touching `chunk_refs`; only `commit` increments. A chunk uploaded but never committed (client drops between upload and commit) is never refcounted and never GC'd — a bounded disk-space leak (no data loss; a later commit referencing it "adopts" it). Add an orphan sweep: remove blobs with no `chunk_refs` entry older than N.
+
+## B4 — Perf pass (deferred from M2)
+**Raised:** 2026-07-03. **Target:** later perf milestone.
+(a) `sha256_hex` allocates a String per byte — use `write!`/`hex` crate. (b) The Vault `Mutex` is held across all disk IO (reassembly reads, file write, JSON persist), serializing even reads/`missing`/`get_chunk` — fine for single-user M2, revisit for M4 multi-tenant. (c) Client chunker/hash is pure-TS + SHA-256; the design's FastCDC + blake3 (WASM) speed upgrade was deliberately deferred. (d) No automated coverage of the real Obsidian `requestUrl` binary transport (CI uses a parallel Node-fetch transport) — add a smoke test or document manual-only. (e) `main.ts` echo-guard/connect wiring is only covered by manual E2E.
+
 ## B3 — Intelligent reconciliation of pre-existing / untracked content on connect
 **Raised:** 2026-07-03 (from live use of M1). **Target:** M3 (conflict/reconciliation).
 **Problem:** When a vault with pre-existing content connects, the plugin doesn't handle that content intelligently. M1's initial reconcile is a blunt pull-then-push: a *local-only* file uploads, but a file present on **both sides with different content is clobbered by the server's copy**, and untracked content can appear "ignored." No merge, no conflict-copy, no "keep both."
