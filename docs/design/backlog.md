@@ -2,6 +2,17 @@
 
 > Tracked future work surfaced during use. Each item names its target milestone (the process that will handle it) and the desired behavior, so nothing is lost. Convert to formal engine `Issue` items when the `keel` tooling is in the loop. Newest first.
 
+## B8 — BRAT-installable distribution (release pipeline)  ✅ DONE (2026-07-04)
+**Resolved 2026-07-04:** the plugin now installs via BRAT from `williamweatherholtz/obsidian-selfsync`.
+Set up: a root-level `manifest.json` (canonical; `id` new-livesync, name "SelfSync", version 0.1.0) +
+`versions.json` for BRAT to read the version; a `.github/workflows/release.yml` that builds `client/`
+and publishes a GitHub release (assets `main.js` + `manifest.json` + `versions.json`) on a version-tag
+push; and an initial `0.1.0` release. The 385 leftover vrtmrz-fork tags (up to 0.25.79, no releases)
+were nuked so the version namespace is clean. `client/manifest.json` was removed (root is the single
+source); the e2e staging scripts copy the root manifest. Future release = bump `manifest.json`/
+`versions.json` + push a matching tag. (Community-store submission is a later, separate step.)
+**Raised:** 2026-07-04 (goal-#1 brainstorming, then made real). **Target:** distribution.
+
 ## B7 — Auth hardening (expiring/revocable tokens + public-exposure security)
 **Raised:** 2026-07-04 (during goal-#1 config-UX brainstorming). **Target:** a dedicated auth/security milestone (NOT goal #1).
 Today the server issues a non-expiring, in-memory UUID token on `POST /api/login` (lost on restart; the client re-logins with a stored password each reconnect). For publicly-exposed self-hosted instances this needs: expiring/refresh tokens with server-side **revocation**; an option for the client to persist **only a token** (never the password); documented **TLS/public-exposure guidance** (the shipped Caddy reverse-proxy example is the vehicle); and — deferred 2026-07-04 during goal-#1 brainstorming — optional **client-side E2E encryption** (a separate encryption password à la official Obsidian Sync). Our current model is trusted-server + TLS-in-transit, NOT content E2EE; adding E2EE would insert an encryption-password step into the setup wizard, so the wizard is designed to leave room for it. Explicitly scoped OUT of goal #1 — that overhaul builds on today's login→token flow and its connection string carries server+username only (never the password), leaving clean seams for this work. Full token lifecycle in the UI overhaul would be cart-before-horse.

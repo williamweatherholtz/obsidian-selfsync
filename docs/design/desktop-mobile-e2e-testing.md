@@ -33,16 +33,26 @@ add-a-device (link + QR), server-error/reindex recovery, offline/reconnect, and 
 - **`Test connection` in the wizard is your friend** — it pings `/health` and tells you immediately if
   the phone can't reach the server, before you fight the login step.
 
-### 0.3 Installing the plugin
-- **Desktop:** copy `main.js`, `manifest.json`, `styles.css` into
-  `<vault>/.obsidian/plugins/obsidian-selfsync/`, then enable it in Settings → Community plugins.
-  (`scripts/e2e.ps1` stages Vault A/B with the plugin pre-installed.)
-- **Mobile (sideload):** Obsidian mobile has no plugin-file picker. Get the three files into
-  `<vault>/.obsidian/plugins/obsidian-selfsync/` on the device by either:
-  1. letting the folder **sync from a desktop** (note: SelfSync will never sync *its own* plugin folder,
-     so the *first* install must be copied manually — via Files app / USB / a temporary transfer), or
-  2. using the Files app (iOS) / a file manager (Android) to drop the files in.
-  Then enable Community plugins → toggle SelfSync on.
+### 0.3 Installing the plugin — via BRAT (both desktop and mobile)
+SelfSync isn't in the official community store yet, so the short-term install path is **BRAT**
+(*Obsidian42 - BRAT*), which installs a plugin straight from its GitHub repo and keeps it auto-updated.
+This is the **same flow on desktop and mobile** — no manual file-copying, no per-device sideload.
+
+1. In Obsidian: Settings → Community plugins → Browse → install **"BRAT"** → enable it.
+2. BRAT → **Add beta plugin** → enter the repo `williamweatherholtz/obsidian-selfsync` → Add.
+   BRAT downloads the release assets and installs SelfSync.
+3. Settings → Community plugins → enable **SelfSync** (`new-livesync`).
+4. To update later: BRAT → "Check for updates" (or it auto-updates on launch).
+
+> **How this works (B8, done):** the repo publishes a GitHub **release** (via
+> `.github/workflows/release.yml` on a version-tag push) with `main.js` + `manifest.json` +
+> `versions.json` attached, and a root-level `manifest.json` BRAT reads for the version. For local dev,
+> `scripts/e2e.ps1` stages Vault A/B by copying the freshly-built `main.js` + root `manifest.json` into
+> `<vault>/.obsidian/plugins/new-livesync/` — a dev shortcut, **not** the user install path.
+
+> Note: SelfSync never syncs its own plugin folder (its per-device server/login stay local), so SelfSync
+> can't distribute *itself* device-to-device — which is exactly why BRAT (or the store) is the install
+> path, on every device.
 
 ### 0.4 Reset between runs
 `./scripts/e2e.ps1 -Clean` resets server data + staged vault notes. For mobile, remove the vault's
@@ -122,7 +132,7 @@ auto-opens.
 
 | # | Scenario | Steps | Expected |
 |---|----------|-------|----------|
-| M1 | **Sideload + enable** | Install per §0.3(2); enable SelfSync in Community plugins | Plugin loads; status bar / settings show the "Not set up" card |
+| M1 | **Install via BRAT + enable** | Install BRAT → Add beta plugin `williamweatherholtz/obsidian-selfsync` → enable SelfSync (§0.3) | Plugin loads on mobile; status bar / settings show the "Not set up" card |
 | M2 | **Wizard on mobile** | Setup opens; enter the **LAN IP or HTTPS** URL → Test connection | "Reachable ✓" (if not: you used 127.0.0.1, or wrong network, or HTTP blocked — see §0.2) |
 | M3 | **Bootstrap via QR from desktop** | On desktop: Add a device → QR. On phone: scan the QR **with the phone's camera app** to get the `selfsync://` text, copy it, then in Obsidian mobile Setup → "I have a setup link" → paste | Server + username prefill; you only type the password. (The `selfsync://` scheme does not deep-link into Obsidian — the camera app just yields the text you paste.) |
 | M4 | **Login + vault pick** | Finish the wizard: log in, pick the existing vault | Status goes green "Fully synced" |
@@ -151,8 +161,8 @@ Do at least one full loop with **desktop + mobile as the two devices** (not two 
 ## 4. Known caveats to expect (not bugs)
 
 - **Mobile sync is foreground-only** — no background sync; it catches up on foreground (M8).
-- **First mobile install is manual** — SelfSync never syncs its own plugin folder, so device #1→#2
-  bootstrap of the *plugin files themselves* can't ride SelfSync; copy them once (§0.3).
+- **Install is via BRAT, on every device** (§0.3) — SelfSync never syncs its own plugin folder, so it
+  can't distribute *itself* device-to-device; BRAT (or, later, the community store) is the install path.
 - **`127.0.0.1` never works from the phone** — use LAN IP or HTTPS (§0.2).
 - **No E2E content encryption / no version history** — deliberate (trusted-server + TLS; history at the
   NAS layer). Don't test for an encryption password or a restore-previous-version UI; they don't exist.
