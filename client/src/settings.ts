@@ -11,6 +11,8 @@ export interface NewLiveSyncSettings {
   deviceName: string; // shown in conflict-copy filenames; blank = auto
   vaultId: string;    // which server-side vault this Obsidian vault syncs to
   configSync: ConfigSyncSelection; // which .obsidian/ config surfaces to sync (see configsync.ts)
+  authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
+  lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -21,6 +23,8 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   deviceName: "",
   vaultId: "default",
   configSync: { ...DEFAULT_CONFIG_SYNC },
+  authToken: undefined,
+  lastSyncedAt: undefined,
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {

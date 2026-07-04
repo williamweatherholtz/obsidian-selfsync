@@ -7,6 +7,17 @@ import { SyncApi } from "./sync";
 export class HttpTransport implements SyncApi {
   constructor(private baseUrl: string, private token: string, private vault: string) {}
 
+  // Lightweight reachability probe for the setup wizard's "Test connection" button.
+  // Hits the unauthenticated /health endpoint; true iff the server answers 200 "ok".
+  static async testConnection(baseUrl: string): Promise<boolean> {
+    try {
+      const r = await requestUrl({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
+      return r.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
   static async login(baseUrl: string, username: string, password: string): Promise<string> {
     const r = await requestUrl({
       url: `${baseUrl}/api/login`, method: "POST", contentType: "application/json",
