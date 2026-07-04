@@ -31,6 +31,9 @@ fn filemeta_roundtrips_json() {
 #[test]
 fn config_defaults_and_env() {
     use new_livesync_server::config::Config;
+    // Control the environment: clear any ambient value (e.g. BIND_ADDR leaked into
+    // the shell by the e2e harness) so the default assertion is deterministic.
+    std::env::remove_var("BIND_ADDR");
     std::env::set_var("SYNC_USER", "will");
     let c = Config::from_env();
     std::env::remove_var("SYNC_USER");

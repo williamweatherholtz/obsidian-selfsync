@@ -30,6 +30,11 @@ function Step($m) { Write-Host "`n== $m ==" -ForegroundColor Cyan }
 function Fail($m) { Write-Host "FAILED: $m" -ForegroundColor Red; exit 1 }
 function Write-Utf8NoBom($path, $content) { [System.IO.File]::WriteAllText($path, $content) }
 
+# The serve step below sets DATA_ROOT/BIND_ADDR/etc. as process env, which PowerShell
+# keeps in the session after the script exits. Clear them up front so a prior run's
+# leftovers can't taint `cargo test` (the config test asserts pristine defaults).
+Remove-Item Env:DATA_ROOT, Env:BIND_ADDR, Env:SYNC_USER, Env:SYNC_PASSWORD, Env:VAULT -ErrorAction SilentlyContinue
+
 # --- Build server ---
 Step 'Build server'
 Push-Location $server
