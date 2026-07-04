@@ -37,6 +37,23 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+// Fetch + reassemble a single file's bytes from its chunk list (cache-first).
+export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[]): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  for (const h of chunks) {
+    let b = cache.get(h);
+    if (!b) { b = await api.getChunk(h); cachePut(cache, h, b); }
+    parts.push(b);
+  }
+  return concat(parts);
+}
+
+// Write explicit bytes to a path then push it (used for merged/conflict results).
+export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array): Promise<string> {
+  await io.write(path, bytes);
+  return pushFile(api, io, state, cache, path);
+}
+
 // Apply server changes since state.version: fetch each upsert's missing chunks
 // (cache-first), reassemble, write; apply deletes; advance version.
 export async function pull(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache): Promise<void> {
