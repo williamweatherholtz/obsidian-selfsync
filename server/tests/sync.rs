@@ -340,3 +340,28 @@ fn vault_index_persists_across_reopen() {
     let f = ch.upserts.iter().find(|m| m.path=="n.md").unwrap();
     assert_eq!(f.chunks, vec![h]);
 }
+
+#[test]
+fn vault_recommit_same_path_keeps_shared_chunks() {
+    use new_livesync_server::vault::Vault;
+    use new_livesync_server::hash::sha256_hex;
+    use new_livesync_server::protocol::CommitRequest;
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    let c1 = b"AAAA".to_vec(); let h1 = sha256_hex(&c1);
+    let c2 = b"BBBB".to_vec(); let h2 = sha256_hex(&c2);
+    v.put_chunk(&h1, &c1).unwrap();
+    v.put_chunk(&h2, &c2).unwrap();
+    // v1 of p.md = [h1, h2]
+    let body1 = [c1.clone(), c2.clone()].concat();
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body1), size: body1.len() as u64, mtime:1, chunks: vec![h1.clone(), h2.clone()] }).unwrap();
+    // re-commit SAME path with a list that still uses h1 but drops h2: [h1]
+    let body2 = c1.clone();
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:2, chunks: vec![h1.clone()] }).unwrap();
+    // h1 is still referenced by the new version -> MUST survive; h2 no longer referenced -> GC'd
+    assert!(v.has_chunk(&h1), "shared chunk h1 must survive the re-commit");
+    assert!(!v.has_chunk(&h2), "dropped chunk h2 should be GC'd");
+    // and re-committing the identical content again keeps h1 alive (incr-before-decr on full overlap)
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:3, chunks: vec![h1.clone()] }).unwrap();
+    assert!(v.has_chunk(&h1), "h1 must survive an identical-content re-commit (incr-before-decr)");
+}
