@@ -31,12 +31,18 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
   return "merge";                                   // both changed
 }
 
+// Files above this size are skipped (not synced) — reading them whole into RAM would
+// OOM a mobile device (Obsidian's adapter/requestUrl don't stream). Overridable per deps.
+export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
+
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
   device: string; strategy: "auto-merge" | "conflict-file";
+  maxSyncBytes?: number;
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
+  onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
 }
 
 async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null> {
@@ -62,7 +68,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   const guardBulkDelete = remote.size === 0 && d.base.paths().length > 0;
   const local = await d.io.list();
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
-  for (const p of paths) await reconcileOne(d, p, remote.get(p), guardBulkDelete);
+  for (const p of paths) await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0);
   // Advance our cursor to the server's version so idle polls can check incrementally.
   d.state.version = Math.max(d.state.version, resp.version);
 }
@@ -73,7 +79,15 @@ export async function reconcilePath(d: ReconcileDeps, path: string): Promise<voi
   await reconcileOne(d, path, rmeta ?? undefined);
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false): Promise<void> {
+async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0): Promise<void> {
+  // Size gate: skip a file too large to hold in RAM — BEFORE reading it — and skip the
+  // path ENTIRELY (no push, no pull, no delete), so a skipped huge file is never
+  // mistaken for a deletion. Gates both a large local file and a large remote one.
+  const max = d.maxSyncBytes ?? DEFAULT_MAX_SYNC_BYTES;
+  if (localSize > max || (rmeta?.size ?? 0) > max) {
+    d.onSkip?.(path, Math.max(localSize, rmeta?.size ?? 0));
+    return;
+  }
   const localBytes = await readOrNull(d.io, path);
   const localHash = localBytes ? await sha256hex(localBytes) : null;
   const baseEntry = d.base.get(path) ?? null;

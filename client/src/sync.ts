@@ -2,7 +2,7 @@ import { ChangesResponse, CommitRequest, FileMeta } from "./protocol";
 import { chunk, sha256hex } from "./chunker";
 
 export interface VaultIo {
-  list(): Promise<Map<string, { mtime: number }>>;
+  list(): Promise<Map<string, { mtime: number; size: number }>>;
   read(path: string): Promise<Uint8Array>;
   write(path: string, bytes: Uint8Array): Promise<void>;
   remove(path: string): Promise<void>;

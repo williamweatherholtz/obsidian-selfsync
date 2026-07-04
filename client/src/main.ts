@@ -19,11 +19,11 @@ class ObsidianVaultIo implements VaultIo {
   }
 
   async list() {
-    const m = new Map<string, { mtime: number }>();
+    const m = new Map<string, { mtime: number; size: number }>();
     // getFiles() returns notes/attachments only (never .obsidian); passes() is a
     // belt-and-suspenders guard.
     for (const f of this.plugin.app.vault.getFiles()) {
-      if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime });
+      if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size });
     }
     if (this.plugin.settings.configSync.enabled) await this.enumerateConfig(".obsidian", m);
     return m;
@@ -31,13 +31,13 @@ class ObsidianVaultIo implements VaultIo {
 
   // Recursively enumerate the hidden .obsidian/ config surface via the low-level
   // adapter (getFiles() can't see it), keeping only paths that pass the filter.
-  private async enumerateConfig(dir: string, m: Map<string, { mtime: number }>): Promise<void> {
+  private async enumerateConfig(dir: string, m: Map<string, { mtime: number; size: number }>): Promise<void> {
     const adapter = this.plugin.app.vault.adapter;
     let listing: { files: string[]; folders: string[] };
     try { listing = await adapter.list(dir); } catch { return; }
     for (const file of listing.files) {
       if (!this.passes(file)) continue;
-      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0 }); } catch { /* skip unreadable */ }
+      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0, size: st?.size ?? 0 }); } catch { /* skip unreadable */ }
     }
     for (const folder of listing.folders) await this.enumerateConfig(folder, m);
   }
@@ -304,6 +304,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       device: this.deviceLabel(), strategy: this.settings.conflictStrategy,
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
       onBaseChanged: () => { void this.persist(); },
+      onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),
+      onSkip: (p, bytes) => this.log(`skipped '${p}' — too large to sync (${Math.round(bytes / 1048576)} MB)`, true),
     };
   }
 

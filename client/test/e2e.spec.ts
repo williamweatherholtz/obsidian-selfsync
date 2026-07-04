@@ -94,12 +94,12 @@ class FsVaultIo implements VaultIo {
   constructor(private root: string) {}
   private abs(p: string) { return path.join(this.root, p); }
   async list() {
-    const m = new Map<string, { mtime: number }>();
+    const m = new Map<string, { mtime: number; size: number }>();
     const walk = async (d: string) => {
       for (const e of await fs.readdir(d, { withFileTypes: true })) {
         const full = path.join(d, e.name);
         if (e.isDirectory()) await walk(full);
-        else { const rel = path.relative(this.root, full).split(path.sep).join("/"); m.set(rel, { mtime: (await fs.stat(full)).mtimeMs }); }
+        else { const rel = path.relative(this.root, full).split(path.sep).join("/"); const st = await fs.stat(full); m.set(rel, { mtime: st.mtimeMs, size: st.size }); }
       }
     };
     await walk(this.root).catch(() => {});

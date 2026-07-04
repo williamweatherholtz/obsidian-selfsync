@@ -41,7 +41,7 @@ function fakeIo(seed: Record<string, string> = {}) {
   const m = new Map<string, Uint8Array>(Object.entries(seed).map(([k, v]) => [k, enc(v)]));
   const io: VaultIo & { m: Map<string, Uint8Array> } = {
     m,
-    async list() { const r = new Map<string, { mtime: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0 }); return r; },
+    async list() { const r = new Map<string, { mtime: number; size: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0, size: m.get(k)!.length }); return r; },
     async read(p) { const b = m.get(p); if (!b) throw new Error("ENOENT"); return b; },
     async write(p, b) { m.set(p, b); },
     async remove(p) { m.delete(p); },
@@ -115,6 +115,16 @@ describe("reconcileAll", () => {
     expect((io as any).m.has("keep.md")).toBe(true);   // NOT deleted
     expect(guarded).toContain("keep.md");               // guard fired
     expect(base.get("keep.md")).toBeDefined();          // base preserved
+  });
+
+  it("skips a file larger than the sync limit (no push, path untouched)", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({ "big.md": "x".repeat(100), "ok.md": "small" });
+    const skipped: string[] = [];
+    await reconcileAll(deps(api, io, { maxSyncBytes: 10, onSkip: (p) => skipped.push(p) }));
+    expect(skipped).toContain("big.md");
+    expect(files.has("big.md")).toBe(false); // over-limit file not pushed
+    expect(files.has("ok.md")).toBe(true);   // small file still syncs
   });
 
   it("still honors delete-local when the server has other files (not a suspicious empty)", async () => {

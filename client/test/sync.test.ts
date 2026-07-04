@@ -29,7 +29,7 @@ function fakeIo(seed: Record<string, string> = {}) {
   const m = new Map<string, Uint8Array>(Object.entries(seed).map(([k, v]) => [k, enc(v)]));
   const io: VaultIo & { m: Map<string, Uint8Array> } = {
     m,
-    async list() { const r = new Map<string, { mtime: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0 }); return r; },
+    async list() { const r = new Map<string, { mtime: number; size: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0, size: m.get(k)!.length }); return r; },
     async read(p) { return m.get(p)!; },
     async write(p, b) { m.set(p, b); },
     async remove(p) { m.delete(p); },
