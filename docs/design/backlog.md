@@ -2,11 +2,24 @@
 
 > Tracked future work surfaced during use. Each item names its target milestone (the process that will handle it) and the desired behavior, so nothing is lost. Convert to formal engine `Issue` items when the `keel` tooling is in the loop. Newest first.
 
-## B6 — Server durability hardening (persist-failure rollback + startup consistency check)
+## B6 — Server durability hardening (persist-failure rollback + startup consistency check)  ✅ DONE (2026-07-03)
+**Resolved 2026-07-03:** `commit`/`delete` now snapshot the index, defer all physical
+blob removal until AFTER `persist()` succeeds, and roll the in-memory index back to the
+snapshot on persist failure — so a failed write never leaves the on-disk index ahead of
+disk or dangling-referencing a removed chunk (no data loss). Chunk writes are atomic
+(tmp+rename, no truncated blobs). Startup runs `verify_and_gc`: a referenced-but-missing
+chunk marks the vault ERROR (→ operator reindex, reusing the M5 recovery path). Tests:
+`commit_rolls_back_on_persist_failure_without_losing_blobs`,
+`startup_marks_corrupt_on_dangling_reference`.
 **Raised:** 2026-07-03 (M2 final review). **Target:** M4 (durability pass).
 `Vault::commit`/`delete` mutate the in-memory index (and may `store.remove` a GC'd blob) *before* `persist()`; if `persist()` fails (disk full / IO error) the in-memory state is ahead of disk, and on restart the loaded index can dangle-reference a physically-removed chunk. Add: roll back in-memory state on persist failure, and a startup consistency check (index `chunk_refs` vs. blobs actually on disk). Pair with B4.
 
-## B5 — Orphan-chunk garbage collection
+## B5 — Orphan-chunk garbage collection  ✅ DONE (2026-07-03)
+**Resolved 2026-07-03:** `verify_and_gc` at startup sweeps the chunk store and removes
+any blob with no `chunk_refs` entry (e.g. uploaded-but-never-committed before a crash).
+Startup is the safe point — no in-flight uploads — so no time-based grace window is
+needed; a mid-session client-drop leak is bounded and reclaimed at next restart. Test:
+`startup_reclaims_orphan_chunks`.
 **Raised:** 2026-07-03 (M2 final review). **Target:** M4.
 `put_chunk` writes a blob without touching `chunk_refs`; only `commit` increments. A chunk uploaded but never committed (client drops between upload and commit) is never refcounted and never GC'd — a bounded disk-space leak (no data loss; a later commit referencing it "adopts" it). Add an orphan sweep: remove blobs with no `chunk_refs` entry older than N.
 

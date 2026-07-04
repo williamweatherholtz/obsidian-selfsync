@@ -29,7 +29,12 @@ impl ContentStore {
         let p = self.path_for(hash);
         if p.exists() { return Ok(()); }
         if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
-        std::fs::write(p, bytes)
+        // Write atomically: a crash mid-write must not leave a truncated blob that
+        // has() would report present but get() would return corrupt. (Vault ops are
+        // serialized by the per-vault mutex, so a fixed .tmp name can't collide.)
+        let tmp = p.with_extension("tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(tmp, p)
     }
     pub fn get(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
         if !Self::is_valid_hash(hash) { return Ok(None); }
@@ -44,5 +49,20 @@ impl ContentStore {
         let p = self.path_for(hash);
         if p.exists() { std::fs::remove_file(p)?; }
         Ok(())
+    }
+
+    // Every blob hash currently on disk (walks the 2-char shard dirs). Used by the
+    // startup consistency check + orphan GC. Ignores stray .tmp/non-hash files.
+    pub fn list_hashes(&self) -> std::io::Result<Vec<String>> {
+        let mut out = Vec::new();
+        for shard in std::fs::read_dir(&self.root)?.flatten() {
+            if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            for f in std::fs::read_dir(shard.path())?.flatten() {
+                if let Some(name) = f.file_name().to_str() {
+                    if Self::is_valid_hash(name) { out.push(name.to_string()); }
+                }
+            }
+        }
+        Ok(out)
     }
 }

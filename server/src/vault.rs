@@ -62,7 +62,40 @@ impl Vault {
         };
         let mut idx = idx;
         if idx.version == 0 { idx.version = 1; }
-        Ok(Vault { root: root.to_path_buf(), vault_dir, store, idx, corrupt })
+        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, idx, corrupt };
+        if !v.corrupt { v.verify_and_gc(); }
+        Ok(v)
+    }
+
+    // Startup integrity pass — safe because `open` runs before the handle is published,
+    // so there are no concurrent uploads/commits:
+    //   * dangling reference (index cites a chunk with no blob on disk) → mark the
+    //     vault ERROR so the operator reindexes (rebuilds from the intact materialized
+    //     files). This catches a crash between a blob removal and its would-be persist.
+    //   * orphan blob (on disk but unreferenced — e.g. uploaded then the client dropped
+    //     before committing) → reclaim it (bounded disk leak, B5).
+    fn verify_and_gc(&mut self) {
+        let missing: Vec<String> = self.idx.chunk_refs.keys().filter(|h| !self.store.has(h)).cloned().collect();
+        if !missing.is_empty() {
+            eprintln!(
+                "[vault] {}: {} referenced chunk(s) missing on disk (e.g. {}); marking ERROR — run reindex",
+                self.root.display(), missing.len(), &missing[0]
+            );
+            self.corrupt = true;
+            return; // don't GC a vault we're about to rebuild
+        }
+        match self.store.list_hashes() {
+            Ok(hashes) => {
+                let mut reclaimed = 0usize;
+                for h in hashes {
+                    if !self.idx.chunk_refs.contains_key(&h) && self.store.remove(&h).is_ok() { reclaimed += 1; }
+                }
+                if reclaimed > 0 {
+                    eprintln!("[vault] {}: reclaimed {reclaimed} orphan chunk(s)", self.root.display());
+                }
+            }
+            Err(e) => eprintln!("[vault] {}: orphan GC skipped (list failed: {e})", self.root.display()),
+        }
     }
 
     // True while the persisted index was corrupt and has not yet been reindexed.
@@ -129,13 +162,18 @@ impl Vault {
     }
     pub fn version(&self) -> u64 { self.idx.version }
 
-    fn decref(&mut self, chunks: &[String]) -> std::io::Result<()> {
+    // Decrement refcounts and RETURN the hashes that dropped to zero. The physical
+    // blob removal is deferred to AFTER the index is durably persisted (see commit/
+    // delete): removing a blob before persist risks a persist failure leaving the
+    // on-disk index dangling-referencing a chunk that's already gone.
+    fn decref_collect(&mut self, chunks: &[String]) -> Vec<String> {
+        let mut to_remove = Vec::new();
         for h in chunks {
             let n = self.idx.chunk_refs.get(h).copied().unwrap_or(0);
-            if n <= 1 { self.idx.chunk_refs.remove(h); self.store.remove(h)?; }
+            if n <= 1 { self.idx.chunk_refs.remove(h); to_remove.push(h.clone()); }
             else { self.idx.chunk_refs.insert(h.clone(), n - 1); }
         }
-        Ok(())
+        to_remove
     }
 
     pub fn commit(&mut self, req: CommitRequest) -> std::io::Result<FileMeta> {
@@ -151,15 +189,18 @@ impl Vault {
         if body.len() as u64 != req.size || sha256_hex(&body) != req.hash {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file hash/size mismatch"));
         }
-        // write bind-mount file
+        // write bind-mount file (content is already safe in the chunk store; do this
+        // before mutating the index so the index stays the source of truth)
         let abs = self.vault_dir.join(&rel);
         if let Some(p) = abs.parent() { std::fs::create_dir_all(p)?; }
         std::fs::write(&abs, &body)?;
-        // refcounts: incr new, decr old
+        // --- durable mutation: snapshot so a persist failure rolls back cleanly ---
+        let snapshot = self.idx.clone();
         for h in &req.chunks { *self.idx.chunk_refs.entry(h.clone()).or_insert(0) += 1; }
-        if let Some(old) = self.idx.files.get(&req.path).map(|m| m.chunks.clone()) {
-            self.decref(&old)?;
-        }
+        let to_remove = match self.idx.files.get(&req.path).map(|m| m.chunks.clone()) {
+            Some(old) => self.decref_collect(&old),
+            None => Vec::new(),
+        };
         self.idx.version += 1;
         let meta = FileMeta {
             path: req.path.clone(), hash: req.hash, size: req.size, mtime: req.mtime,
@@ -167,21 +208,48 @@ impl Vault {
         };
         self.idx.files.insert(req.path.clone(), meta.clone());
         self.idx.deletions.retain(|d| d.path != req.path);
-        self.persist()?;
+        if let Err(e) = self.persist() {
+            self.idx = snapshot; // disk is unchanged; match it. Blobs untouched -> consistent.
+            return Err(e);
+        }
+        // Index is durable; NOW drop de-referenced blobs. A failure here is a
+        // recoverable orphan (startup GC reclaims it), never corruption.
+        self.remove_blobs(&to_remove);
         Ok(meta)
     }
 
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
         let Some(rel) = safe_rel_path(path) else { return Ok(None); };
-        let Some(old) = self.idx.files.remove(path) else { return Ok(None); };
-        self.decref(&old.chunks)?;
-        let abs = self.vault_dir.join(rel);
-        if abs.exists() { std::fs::remove_file(&abs)?; }
+        if !self.idx.files.contains_key(path) { return Ok(None); }
+        let snapshot = self.idx.clone();
+        let old = self.idx.files.remove(path).expect("present: checked above");
+        let to_remove = self.decref_collect(&old.chunks);
         self.idx.version += 1;
         let d = Deletion { path: path.to_string(), version: self.idx.version };
         self.idx.deletions.push(d.clone());
-        self.persist()?;
+        if let Err(e) = self.persist() {
+            self.idx = snapshot; // roll back; bind-mount file + blobs still intact
+            return Err(e);
+        }
+        // Durable; now remove the materialized file + de-referenced blobs (best-effort).
+        let abs = self.vault_dir.join(rel);
+        if abs.exists() {
+            if let Err(e) = std::fs::remove_file(&abs) {
+                eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+            }
+        }
+        self.remove_blobs(&to_remove);
         Ok(Some(d))
+    }
+
+    // Best-effort physical blob removal, called only after a durable persist. A
+    // failure leaves a reclaimable orphan (logged), never a dangling reference.
+    fn remove_blobs(&self, hashes: &[String]) {
+        for h in hashes {
+            if let Err(e) = self.store.remove(h) {
+                eprintln!("[vault] warning: chunk {h} de-referenced but not removed ({e}); will be reclaimed at next startup");
+            }
+        }
     }
 
     pub fn changes(&self, since: u64) -> ChangesResponse {
@@ -289,5 +357,69 @@ mod tests {
         v.reindex().unwrap();
         let map2: HashMap<_, _> = v.changes(0).upserts.iter().map(|m| (m.path.clone(), m.hash.clone())).collect();
         assert_eq!(map1, map2, "same files -> same path->hash mapping");
+    }
+
+    // B6: a persist failure mid-commit must roll back in-memory state and never drop a
+    // referenced blob (no data loss, no dangling reference).
+    #[test]
+    fn commit_rolls_back_on_persist_failure_without_losing_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let b1 = b"version one"; let h1 = sha256_hex(b1);
+        v.put_chunk(&h1, b1).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()] }).unwrap();
+        let good_version = v.version();
+
+        // Sabotage persist: a directory at the temp path makes std::fs::write fail.
+        std::fs::create_dir(dir.path().join(".sync-index.json.tmp")).unwrap();
+        let b2 = b"version two"; let h2 = sha256_hex(b2);
+        v.put_chunk(&h2, b2).unwrap();
+        let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()] });
+        assert!(res.is_err(), "commit must fail when persist fails");
+
+        // rolled back: version unchanged, file still points at v1, v1's blob intact
+        assert_eq!(v.version(), good_version);
+        let meta = v.changes(0).upserts.into_iter().find(|m| m.path == "f.md").unwrap();
+        assert_eq!(meta.chunks, vec![h1.clone()]);
+        assert!(v.has_chunk(&h1), "referenced blob must NOT be removed on rollback");
+
+        // and the vault is still usable once the fault clears
+        std::fs::remove_dir(dir.path().join(".sync-index.json.tmp")).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 3, chunks: vec![h2] }).unwrap();
+        assert!(v.version() > good_version);
+    }
+
+    // B5: a chunk uploaded but never committed (client dropped) is reclaimed at startup.
+    #[test]
+    fn startup_reclaims_orphan_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"uploaded but never committed";
+        let orphan = sha256_hex(body);
+        {
+            let v = Vault::open(dir.path()).unwrap();
+            v.put_chunk(&orphan, body).unwrap();
+            assert!(v.has_chunk(&orphan));
+        }
+        let v2 = Vault::open(dir.path()).unwrap(); // startup GC runs
+        assert!(!v2.has_chunk(&orphan), "orphan chunk should be reclaimed at startup");
+    }
+
+    // B6: a referenced chunk missing from disk on startup marks the vault ERROR so it
+    // is reindexed rather than silently serving a dangling reference.
+    #[test]
+    fn startup_marks_corrupt_on_dangling_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"committed data";
+        let h = sha256_hex(body);
+        {
+            let mut v = Vault::open(dir.path()).unwrap();
+            v.put_chunk(&h, body).unwrap();
+            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+        }
+        // Simulate a lost blob: delete it straight off disk (sharded by first 2 chars).
+        let blob = dir.path().join(".chunks").join(&h[0..2]).join(&h);
+        std::fs::remove_file(&blob).unwrap();
+        let v2 = Vault::open(dir.path()).unwrap();
+        assert!(v2.is_corrupt(), "dangling chunk reference must mark the vault ERROR");
     }
 }
