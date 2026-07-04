@@ -42,6 +42,11 @@ class NodeTransport implements SyncApi {
     });
     if (!r.ok) throw new Error(`createVault ${r.status}`);
   }
+  static async listVaults(base: string, token: string): Promise<string[]> {
+    const r = await fetch(`${base}/api/vaults`, { headers: { authorization: `Bearer ${token}` } });
+    if (!r.ok) throw new Error(`listVaults ${r.status}`);
+    return ((await r.json()) as { vaults: string[] }).vaults;
+  }
   private h() { return { authorization: `Bearer ${this.token}` }; }
   private v(suffix: string) { return `${this.base}/api/v/${encodeURIComponent(this.vault)}${suffix}`; }
   async changes(since: number): Promise<ChangesResponse> {
@@ -295,6 +300,29 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     // SECURITY: SelfSync's own config never left A (its server URL must not overwrite B):
     expect(await exists(path.join(a.root, ".obsidian", "plugins", SELF, "data.json"))).toBe(true);
     expect(await exists(path.join(b.root, ".obsidian", "plugins", SELF, "data.json"))).toBe(false);
+
+    rmSync(a.root, { recursive: true, force: true });
+    rmSync(b.root, { recursive: true, force: true });
+  }, 30000);
+
+  it("goal#1: wizard data flow — health ping, login, create+list vault, then sync works", async () => {
+    // /health reachability (what the wizard's Test-connection button checks)
+    const health = await fetch(`${base}/health`).then((r) => r.status);
+    expect(health).toBe(200);
+
+    // account → vault, mirroring SetupWizardModal.finish()
+    const token = await NodeTransport.login(base, "admin", "admin");
+    await NodeTransport.createVault(base, token, "wizardvault");
+    const vaults = await NodeTransport.listVaults(base, token);
+    expect(vaults).toContain("wizardvault");
+
+    // and the newly-created vault actually syncs a file between two clients
+    const a = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-wzA-")), "A", "wizardvault");
+    const b = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-wzB-")), "B", "wizardvault");
+    await a.io.write("hello.md", enc("hi from wizard vault"));
+    await pushFile(a.api, a.io, a.state, a.cache, "hello.md");
+    await pull(b.api, b.io, b.state, b.cache);
+    expect(dec(await b.io.read("hello.md"))).toBe("hi from wizard vault");
 
     rmSync(a.root, { recursive: true, force: true });
     rmSync(b.root, { recursive: true, force: true });
