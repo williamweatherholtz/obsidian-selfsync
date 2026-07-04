@@ -79,7 +79,7 @@ if ($Clean) {
 New-Item -ItemType Directory -Force -Path (Join-Path $e2e 'data') | Out-Null
 
 function Stage-Vault($name) {
-  $pdir = Join-Path $e2e "$name\.obsidian\plugins\new-livesync"
+  $pdir = Join-Path $e2e "$name\.obsidian\plugins\selfsync"
   New-Item -ItemType Directory -Force -Path $pdir | Out-Null
   Copy-Item (Join-Path $client 'main.js')     $pdir -Force -ErrorAction Stop
   Copy-Item (Join-Path $client 'styles.css')  $pdir -Force -ErrorAction Stop
@@ -87,7 +87,7 @@ function Stage-Vault($name) {
   # Pre-seed plugin settings so it auto-connects on open (no manual config).
   Write-Utf8NoBom (Join-Path $pdir 'data.json') '{"serverUrl":"http://127.0.0.1:8789","username":"admin","password":"admin"}'
   # Mark the plugin enabled for this vault.
-  Write-Utf8NoBom (Join-Path $e2e "$name\.obsidian\community-plugins.json") '["new-livesync"]'
+  Write-Utf8NoBom (Join-Path $e2e "$name\.obsidian\community-plugins.json") '["selfsync"]'
   Write-Host "  staged $name  ->  $(Join-Path $e2e $name)"
 }
 Stage-Vault 'vaultA'

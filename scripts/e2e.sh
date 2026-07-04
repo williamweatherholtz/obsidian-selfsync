@@ -38,13 +38,13 @@ mkdir -p "$E2E/data"
 
 stage_vault() {
   local name="$1"
-  local pdir="$E2E/$name/.obsidian/plugins/new-livesync"
+  local pdir="$E2E/$name/.obsidian/plugins/selfsync"
   mkdir -p "$pdir"
   cp "$ROOT/client/main.js" "$ROOT/client/styles.css" "$ROOT/manifest.json" "$pdir/"
   # Pre-seed plugin settings so it auto-connects on open (no manual config).
   printf '{"serverUrl":"http://127.0.0.1:8789","username":"admin","password":"admin"}\n' > "$pdir/data.json"
   # Mark the plugin enabled for this vault.
-  printf '["new-livesync"]\n' > "$E2E/$name/.obsidian/community-plugins.json"
+  printf '["selfsync"]\n' > "$E2E/$name/.obsidian/community-plugins.json"
   echo "  staged $name  ->  $E2E/$name"
 }
 stage_vault vaultA

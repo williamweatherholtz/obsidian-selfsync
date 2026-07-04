@@ -142,7 +142,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     const line = `${new Date().toLocaleTimeString()}  ${msg}`;
     this.logs.push(line);
     if (this.logs.length > 500) this.logs.shift();
-    console.debug(`[new-livesync] ${line}`);
+    console.debug(`[selfsync] ${line}`);
     if (notice || this.settings.verbose) new Notice(`SelfSync: ${msg}`);
   }
   getLogText() { return this.logs.join("\n"); }
