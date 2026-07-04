@@ -18,6 +18,18 @@ export interface SyncApi {
 export type SyncState = { version: number };
 export type ChunkCache = Map<string, Uint8Array>;
 
+// Bound the in-session chunk cache so it can't grow to ~whole-vault-in-RAM
+// (chunks are subarray views that also pin their parent file buffers). ~2048
+// chunks * up to 64 KiB ≈ 128 MiB worst case; evict oldest (Map is insertion-ordered).
+const MAX_CACHE_ENTRIES = 2048;
+function cachePut(cache: ChunkCache, hash: string, bytes: Uint8Array): void {
+  if (!cache.has(hash) && cache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(hash, bytes);
+}
+
 function concat(parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
@@ -33,7 +45,7 @@ export async function pull(api: SyncApi, io: VaultIo, state: SyncState, cache: C
     const parts: Uint8Array[] = [];
     for (const h of f.chunks) {
       let bytes = cache.get(h);
-      if (!bytes) { bytes = await api.getChunk(h); cache.set(h, bytes); }
+      if (!bytes) { bytes = await api.getChunk(h); cachePut(cache, h, bytes); }
       parts.push(bytes);
     }
     await io.write(f.path, concat(parts));
@@ -47,7 +59,7 @@ export async function pull(api: SyncApi, io: VaultIo, state: SyncState, cache: C
 export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string): Promise<string> {
   const bytes = await io.read(path);
   const chunks = await chunk(bytes);
-  for (const c of chunks) cache.set(c.hash, c.bytes);
+  for (const c of chunks) cachePut(cache, c.hash, c.bytes);
   const hashes = chunks.map((c) => c.hash);
   const missing = new Set(await api.missing(hashes));
   for (const c of chunks) if (missing.has(c.hash)) await api.putChunk(c.hash, c.bytes);

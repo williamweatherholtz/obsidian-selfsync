@@ -35,9 +35,19 @@ impl Vault {
         let vault_dir = root.join("vault");
         std::fs::create_dir_all(&vault_dir)?;
         let store = ContentStore::open(&root.join(".chunks"))?;
+        // Fail LOUD on a corrupt index rather than silently resetting: a blank
+        // default would drop every file->chunk mapping (materialized files stay on
+        // disk but stop being advertised), so fresh clients would pull an empty
+        // vault. Only a genuinely-absent file (first run) starts fresh.
         let idx: Index = match std::fs::read(root.join(".sync-index.json")) {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
-            Err(_) => Index::default(),
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(".sync-index.json is corrupt ({e}); move it aside or restore a backup"),
+                )
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Index::default(),
+            Err(e) => return Err(e),
         };
         let mut idx = idx;
         if idx.version == 0 { idx.version = 1; }

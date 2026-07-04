@@ -224,3 +224,17 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
         .json(&serde_json::json!({"path":"x.md","hash":"h","size":1,"mtime":0,"chunks":["nope"]})).send().await.unwrap();
     assert_eq!(bad.status(), 404);
 }
+
+#[test]
+fn vault_open_fails_loud_on_corrupt_index() {
+    use new_livesync_server::vault::Vault;
+    let dir = tempfile::tempdir().unwrap();
+    // a genuinely-absent index starts fresh (first run)
+    assert!(Vault::open(dir.path()).is_ok());
+    // a present-but-corrupt index must NOT silently reset (would hide all files)
+    std::fs::write(dir.path().join(".sync-index.json"), b"{ this is not json").unwrap();
+    match Vault::open(dir.path()) {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
+        Ok(_) => panic!("expected corrupt index to fail loud, got Ok"),
+    }
+}
