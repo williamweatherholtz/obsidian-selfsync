@@ -14,16 +14,17 @@ pub use state::AppState;
 
 pub fn app(state: AppState) -> Router {
     use axum::extract::DefaultBodyLimit;
-    use axum::routing::{delete, get, post};
+    use axum::routing::{get, post, put};
     use tower_http::cors::{Any, CorsLayer};
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/login", post(auth::login))
         .route("/api/vault/changes", get(api::changes))
-        // TODO Task 5: replace get/put with chunk API, stub for Task 4
-        // .route("/api/vault/file", get(api::get_file).put(api::put_file).delete(api::delete_file))
-        .route("/api/vault/file", delete(api::delete_file))
+        .route("/api/vault/chunks/missing", post(api::chunks_missing))
+        .route("/api/vault/chunk/:hash", put(api::put_chunk).get(api::get_chunk))
+        .route("/api/vault/commit", post(api::commit))
+        .route("/api/vault/file", axum::routing::delete(api::delete_file))
         .route("/api/ws", get(ws::ws_handler))
         .with_state(state)
         .layer(cors)
