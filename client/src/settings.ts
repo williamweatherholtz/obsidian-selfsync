@@ -8,6 +8,7 @@ export interface NewLiveSyncSettings {
   verbose: boolean; // show routine sync events as notices (noisy; for debugging)
   conflictStrategy: "auto-merge" | "conflict-file";
   deviceName: string; // shown in conflict-copy filenames; blank = auto
+  vaultId: string;    // which server-side vault this Obsidian vault syncs to
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -16,6 +17,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   verbose: false,
   conflictStrategy: "auto-merge",
   deviceName: "",
+  vaultId: "default",
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
@@ -24,7 +26,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this; containerEl.empty();
     const s = this.plugin.settings;
 
-    new Setting(containerEl).setName("Status").setDesc(`Connection: ${this.plugin.statusText()}`);
+    new Setting(containerEl).setName("Status").setDesc(`Connection: ${this.plugin.statusText()} · vault: ${s.vaultId || "(none)"}`);
+    new Setting(containerEl).setName("Account & vault")
+      .setDesc("Log in / register and choose which server vault this Obsidian vault syncs to.")
+      .addButton((b) => b.setButtonText("Set up / switch vault").setCta().onClick(() => this.plugin.openSetup()));
 
     new Setting(containerEl).setName("Server URL").addText((t) =>
       t.setValue(s.serverUrl).onChange(async (v) => { s.serverUrl = v.trim(); await this.plugin.saveSettings(); }));

@@ -4,6 +4,7 @@ import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
+import { OnboardingModal } from "./onboarding";
 
 type ConnState = "off" | "connecting" | "connected" | "offline";
 
@@ -76,6 +77,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.setStatus("off");
 
+    this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => new OnboardingModal(this.app, this).open() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
     this.addCommand({ id: "clear-log", name: "Clear sync log", callback: () => this.clearLogs() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
@@ -103,20 +105,34 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.logs.push(line);
     if (this.logs.length > 500) this.logs.shift();
     console.debug(`[new-livesync] ${line}`);
-    if (notice || this.settings.verbose) new Notice(`LiveSync: ${msg}`);
+    if (notice || this.settings.verbose) new Notice(`SelfSync: ${msg}`);
   }
   getLogText() { return this.logs.join("\n"); }
   clearLogs() { this.logs = []; this.log("log cleared"); }
   showLog() { new LogModal(this.app, this).open(); }
+  openSetup() { new OnboardingModal(this.app, this).open(); }
 
   private setStatus(state: ConnState, detail = "") {
     this.connState = state;
-    const label =
-      state === "connected" ? `LiveSync ● connected${detail ? " " + detail : ""}`
-      : state === "connecting" ? "LiveSync ◌ connecting…"
-      : state === "offline" ? "LiveSync ⚠ offline (retrying)"
-      : "LiveSync ○ off";
-    if (this.statusEl) { this.statusEl.setText(label); this.statusEl.setAttribute("aria-label", label); }
+    // "SelfSync" + a status light: green = up to date, amber = connecting/syncing,
+    // red = offline, grey = off. Full detail lives in the hover tooltip.
+    const color =
+      state === "connected" ? "#3fb950"   // green — synced / up to date
+      : state === "connecting" ? "#d29922" // amber — connecting/syncing
+      : state === "offline" ? "#f85149"    // red — offline (retrying)
+      : "#8b949e";                          // grey — off
+    const tip =
+      state === "connected" ? `Up to date${detail ? " (" + detail + ")" : ""}`
+      : state === "connecting" ? "Connecting / syncing…"
+      : state === "offline" ? "Offline — retrying"
+      : "Not connected";
+    if (this.statusEl) {
+      this.statusEl.empty();
+      const dot = this.statusEl.createSpan({ text: "●" });
+      dot.setAttribute("style", `color:${color};margin-right:4px;`);
+      this.statusEl.createSpan({ text: "SelfSync" });
+      this.statusEl.setAttribute("aria-label", `SelfSync — ${tip}`);
+    }
   }
   statusText() { return this.connState; }
 
@@ -144,7 +160,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.ws?.close();
       const token = await HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password);
       this.log("login OK");
-      this.api = new HttpTransport(this.settings.serverUrl, token);
+      this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default");
 
       this.applying = true;
       try { await reconcileAll(this.deps()); } finally { this.applying = false; }

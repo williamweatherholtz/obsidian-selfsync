@@ -7,6 +7,8 @@ pub struct Config {
     pub vault: String,
     pub user: String,
     pub password: String,
+    pub registration: String, // "open" | "invite" | "closed"
+    pub invite_code: String,  // shared secret required when registration == "invite"
 }
 
 impl Config {
@@ -18,6 +20,8 @@ impl Config {
             vault: env("VAULT", "vault"),
             user: env("SYNC_USER", "admin"),
             password: env("SYNC_PASSWORD", "admin"),
+            registration: env("REGISTRATION", "closed"),
+            invite_code: env("INVITE_CODE", ""),
         }
     }
 }

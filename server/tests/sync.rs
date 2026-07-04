@@ -204,26 +204,26 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
     let body = b"hello chunk world".to_vec();
     let h = sha256_hex(&body); // single chunk (small)
     // missing?
-    let miss: new_livesync_server::protocol::MissingResponse = c.post(format!("{base}/api/vault/chunks/missing"))
+    let miss: new_livesync_server::protocol::MissingResponse = c.post(format!("{base}/api/v/default/chunks/missing"))
         .bearer_auth(&tok).json(&serde_json::json!({"hashes":[h]})).send().await.unwrap().json().await.unwrap();
     assert_eq!(miss.missing, vec![h.clone()]);
     // upload chunk
-    let up = c.put(format!("{base}/api/vault/chunk/{h}")).bearer_auth(&tok).body(body.clone()).send().await.unwrap();
+    let up = c.put(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).body(body.clone()).send().await.unwrap();
     assert_eq!(up.status(), 200);
     // commit
-    let meta: new_livesync_server::protocol::FileMeta = c.post(format!("{base}/api/vault/commit"))
+    let meta: new_livesync_server::protocol::FileMeta = c.post(format!("{base}/api/v/default/commit"))
         .bearer_auth(&tok).json(&serde_json::json!({"path":"n.md","hash":h,"size":body.len(),"mtime":1,"chunks":[h]}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(meta.chunks, vec![h.clone()]);
     // changes shows it with chunks
-    let ch: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/vault/changes?since=0"))
+    let ch: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(ch.upserts.iter().any(|m| m.path=="n.md" && m.chunks==vec![h.clone()]));
     // download the chunk back
-    let got = c.get(format!("{base}/api/vault/chunk/{h}")).bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
+    let got = c.get(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
     assert_eq!(&got[..], &body[..]);
     // commit with a missing chunk -> 404
-    let bad = c.post(format!("{base}/api/vault/commit")).bearer_auth(&tok)
+    let bad = c.post(format!("{base}/api/v/default/commit")).bearer_auth(&tok)
         .json(&serde_json::json!({"path":"x.md","hash":"h","size":1,"mtime":0,"chunks":["nope"]})).send().await.unwrap();
     assert_eq!(bad.status(), 404);
 }
@@ -240,4 +240,59 @@ fn vault_open_fails_loud_on_corrupt_index() {
         Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
         Ok(_) => panic!("expected corrupt index to fail loud, got Ok"),
     }
+}
+
+#[test]
+fn userstore_register_verify_persist() {
+    use new_livesync_server::users::{UserStore, safe_name};
+    assert!(safe_name("will"));
+    assert!(!safe_name("../etc"));
+    assert!(!safe_name("bad name"));
+    assert!(!safe_name(""));
+    assert!(!safe_name(".."));
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join(".users.json");
+    {
+        let mut us = UserStore::open(&p).unwrap();
+        assert!(us.is_empty());
+        us.register("will", "s3cret").unwrap();
+        assert!(us.verify("will", "s3cret"));
+        assert!(!us.verify("will", "wrong"));
+        assert!(us.register("will", "again").is_err()); // duplicate
+        assert!(us.register("../x", "p").is_err());      // unsafe name
+    }
+    // persisted across reopen
+    let us2 = UserStore::open(&p).unwrap();
+    assert!(us2.verify("will", "s3cret"));
+    assert!(!us2.is_empty());
+}
+
+#[tokio::test]
+async fn vaults_are_isolated_and_listable() {
+    use new_livesync_server::hash::sha256_hex;
+    let base = spawn().await; // admin/admin seeded, with a `default` vault
+    let tok = { let r: new_livesync_server::protocol::LoginResponse =
+        login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
+    let c = reqwest::Client::new();
+    // create a second vault
+    let mk = c.post(format!("{base}/api/vaults")).bearer_auth(&tok)
+        .json(&serde_json::json!({"name":"work"})).send().await.unwrap();
+    assert_eq!(mk.status(), 200);
+    // list shows both
+    let list: new_livesync_server::protocol::VaultListResponse = c.get(format!("{base}/api/vaults"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert!(list.vaults.contains(&"default".to_string()));
+    assert!(list.vaults.contains(&"work".to_string()));
+    // put a file in `work`
+    let body = b"work-only".to_vec(); let h = sha256_hex(&body);
+    c.put(format!("{base}/api/v/work/chunk/{h}")).bearer_auth(&tok).body(body.clone()).send().await.unwrap();
+    c.post(format!("{base}/api/v/work/commit")).bearer_auth(&tok)
+        .json(&serde_json::json!({"path":"w.md","hash":h,"size":body.len(),"mtime":1,"chunks":[h]})).send().await.unwrap();
+    // it appears in `work` but NOT in `default` (isolation)
+    let inwork: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/work/changes?since=0"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert!(inwork.upserts.iter().any(|m| m.path=="w.md"));
+    let indefault: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert!(!indefault.upserts.iter().any(|m| m.path=="w.md"));
 }

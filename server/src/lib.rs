@@ -7,7 +7,9 @@ pub mod config;
 pub mod hash;
 pub mod protocol;
 pub mod state;
+pub mod users;
 pub mod vault;
+pub mod vaults;
 pub mod ws;
 
 pub use state::AppState;
@@ -20,11 +22,14 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/login", post(auth::login))
-        .route("/api/vault/changes", get(api::changes))
-        .route("/api/vault/chunks/missing", post(api::chunks_missing))
-        .route("/api/vault/chunk/:hash", put(api::put_chunk).get(api::get_chunk))
-        .route("/api/vault/commit", post(api::commit))
-        .route("/api/vault/file", axum::routing::delete(api::delete_file))
+        .route("/api/register", post(auth::register))
+        .route("/api/vaults", get(vaults::list_vaults).post(vaults::create_vault))
+        // vault-scoped sync routes: /api/v/{vault}/...
+        .route("/api/v/:vault/changes", get(api::changes))
+        .route("/api/v/:vault/chunks/missing", post(api::chunks_missing))
+        .route("/api/v/:vault/chunk/:hash", put(api::put_chunk).get(api::get_chunk))
+        .route("/api/v/:vault/commit", post(api::commit))
+        .route("/api/v/:vault/file", axum::routing::delete(api::delete_file))
         .route("/api/ws", get(ws::ws_handler))
         .with_state(state)
         .layer(cors)

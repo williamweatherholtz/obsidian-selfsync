@@ -26,7 +26,7 @@ const canRun = !!externalUrl || existsSync(serverBin);
 
 /** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). Chunk API. */
 class NodeTransport implements SyncApi {
-  constructor(private base: string, private token: string) {}
+  constructor(private base: string, private token: string, private vault = "default") {}
   static async login(base: string, u: string, p: string): Promise<string> {
     const r = await fetch(`${base}/api/login`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -35,37 +35,44 @@ class NodeTransport implements SyncApi {
     if (!r.ok) throw new Error(`login ${r.status}`);
     return ((await r.json()) as { token: string }).token;
   }
+  static async createVault(base: string, token: string, name: string): Promise<void> {
+    const r = await fetch(`${base}/api/vaults`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error(`createVault ${r.status}`);
+  }
   private h() { return { authorization: `Bearer ${this.token}` }; }
+  private v(suffix: string) { return `${this.base}/api/v/${encodeURIComponent(this.vault)}${suffix}`; }
   async changes(since: number): Promise<ChangesResponse> {
-    const r = await fetch(`${this.base}/api/vault/changes?since=${since}`, { headers: this.h() });
+    const r = await fetch(this.v(`/changes?since=${since}`), { headers: this.h() });
     if (!r.ok) throw new Error(`changes ${r.status}`);
     return (await r.json()) as ChangesResponse;
   }
   async missing(hashes: string[]): Promise<string[]> {
-    const r = await fetch(`${this.base}/api/vault/chunks/missing`, {
+    const r = await fetch(this.v("/chunks/missing"), {
       method: "POST", headers: { ...this.h(), "content-type": "application/json" }, body: JSON.stringify({ hashes }),
     });
     if (!r.ok) throw new Error(`missing ${r.status}`);
     return ((await r.json()) as { missing: string[] }).missing;
   }
   async getChunk(hash: string): Promise<Uint8Array> {
-    const r = await fetch(`${this.base}/api/vault/chunk/${hash}`, { headers: this.h() });
+    const r = await fetch(this.v(`/chunk/${hash}`), { headers: this.h() });
     if (!r.ok) throw new Error(`getChunk ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
   }
   async putChunk(hash: string, bytes: Uint8Array): Promise<void> {
-    const r = await fetch(`${this.base}/api/vault/chunk/${hash}`, { method: "PUT", headers: this.h(), body: new Blob([bytes as BlobPart]) });
+    const r = await fetch(this.v(`/chunk/${hash}`), { method: "PUT", headers: this.h(), body: new Blob([bytes as BlobPart]) });
     if (!r.ok) throw new Error(`putChunk ${r.status}`);
   }
   async commit(req: CommitRequest): Promise<FileMeta> {
-    const r = await fetch(`${this.base}/api/vault/commit`, {
+    const r = await fetch(this.v("/commit"), {
       method: "POST", headers: { ...this.h(), "content-type": "application/json" }, body: JSON.stringify(req),
     });
     if (!r.ok) throw new Error(`commit ${r.status}`);
     return (await r.json()) as FileMeta;
   }
   async deleteFile(p: string): Promise<void> {
-    const r = await fetch(`${this.base}/api/vault/file?path=${encodeURIComponent(p)}`, { method: "DELETE", headers: this.h() });
+    const r = await fetch(this.v(`/file?path=${encodeURIComponent(p)}`), { method: "DELETE", headers: this.h() });
     if (!r.ok && r.status !== 404) throw new Error(`delete ${r.status}`);
   }
 }
@@ -97,10 +104,10 @@ function dep(c: Client): ReconcileDeps {
   return { api: c.api, io: c.io, base: c.base, cache: c.cache, state: c.state, device: c.device, strategy: "auto-merge" };
 }
 
-async function connect(base: string, root: string, device = "Dev"): Promise<Client> {
+async function connect(base: string, root: string, device = "Dev", vault = "default"): Promise<Client> {
   await fs.mkdir(root, { recursive: true });
   const token = await NodeTransport.login(base, "admin", "admin");
-  const api = new NodeTransport(base, token);
+  const api = new NodeTransport(base, token, vault);
   const c: Client = { io: new FsVaultIo(root), api, state: { version: 0 }, known: new Set(), cache: new Map(), base: new BaseStore(), device, root };
   await reconcileAll(dep(c));
   return c;
@@ -183,8 +190,8 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     await pull(b.api, b.io, b.state, b.cache);
     expect(await exists(path.join(b.root, "n1.md"))).toBe(false);
 
-    // Bind mount is real truth (only when we spawned the server ourselves)
-    if (dataDir) expect(await exists(path.join(dataDir, "vault", "img.bin"))).toBe(true);
+    // Bind mount is real truth (namespaced per user/vault: DATA_ROOT/<user>/<vault>/vault/…)
+    if (dataDir) expect(await exists(path.join(dataDir, "admin", "default", "vault", "img.bin"))).toBe(true);
 
     rmSync(a.root, { recursive: true, force: true });
     rmSync(b.root, { recursive: true, force: true });
@@ -223,5 +230,23 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
 
     rmSync(a.root, { recursive: true, force: true });
     rmSync(b.root, { recursive: true, force: true });
+  }, 30000);
+
+  it("M4: multiple vaults are isolated (a file in one vault never appears in another)", async () => {
+    const token = await NodeTransport.login(base, "admin", "admin");
+    await NodeTransport.createVault(base, token, "work");
+    // one client on `default`, one on `work` (same account)
+    const d = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-def-")), "D", "default");
+    const w = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-work-")), "W", "work");
+
+    await w.io.write("secret.md", enc("work only"));
+    await reconcileAll(dep(w));       // push into `work`
+    await reconcileAll(dep(d));       // reconcile `default` — must NOT receive it
+
+    expect(await exists(path.join(w.root, "secret.md"))).toBe(true);
+    expect(await exists(path.join(d.root, "secret.md"))).toBe(false); // isolation
+
+    rmSync(d.root, { recursive: true, force: true });
+    rmSync(w.root, { recursive: true, force: true });
   }, 30000);
 });

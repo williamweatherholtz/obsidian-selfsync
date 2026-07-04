@@ -52,3 +52,21 @@ pub struct MissingRequest {
 pub struct MissingResponse {
     pub missing: Vec<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub invite: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct VaultListResponse {
+    pub vaults: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CreateVaultRequest {
+    pub name: String,
+}
