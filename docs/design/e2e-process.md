@@ -60,12 +60,14 @@ Start the server + open both vaults (harness prints exact commands). Then:
 | S7 | **Large file (>2 MB)** | Create a markdown note >2 MB in vault A (regression for the body-limit fix) | Syncs to B without a 413/error |
 | S8 | **Bind mount is real truth** | `grep`/open files under `.e2e/data/vault/` | Files are the actual current note contents (browsable, backup-able) |
 | S9 | **No echo loop** | After any propagation, watch the console/logs | Content settles; no runaway pull→push→pull chatter on unchanged content |
+| S10 | **Binary files (M2+)** | Add an image/PDF in vault A | Attachment appears byte-identical in vault B and under `.e2e/data/vault/` |
+| S11 | **Dedup (M2+)** | Copy a large note to a new name in vault A | Second file syncs without re-uploading its chunks (chunk store doesn't grow by the full size) |
 
 Record results (pass/fail + notes) in `docs/design/plans/mN-e2e-results.md` for the milestone under test.
 
-## Known caveats while testing (M1)
+## Known caveats while testing (as of M2)
 
-Test **markdown/text only** — binary attachments are M2 (would corrupt today). Conflicts resolve **last-write-wins** with no merge yet (M3). Sync is **foreground-only** on mobile (M5). Deletions/version are **not persisted across a server restart** yet (M4) — don't restart the server mid-scenario when testing deletes. Full list: `docs/design/plans/m1-e2e-results.md`.
+Binary files **are** supported as of M2 (chunked, content-addressed, deduped). Conflicts still resolve **last-write-wins** with no merge yet (M3) — a file edited on two sides while offline: one side wins. Sync is **foreground-only** on mobile (M5). Accounts are a single fixed `admin` (multi-user + vault selection UI is M4 — see `backlog.md`). As of M2 the server index (file→chunks, refcounts, version, deletions) **is** persisted to `DATA_ROOT/.sync-index.json` across restart; chunk blobs live in `DATA_ROOT/.chunks`, materialized files in `DATA_ROOT/vault`.
 
 ## How this process grows per milestone
 
