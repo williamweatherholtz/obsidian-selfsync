@@ -20,7 +20,12 @@ pub async fn changes(
     let h = handle(&st, &user, &vault)?;
     let since = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     let resp = h.vault.lock().unwrap().changes(since);
-    eprintln!("[{user}/{vault} changes] since={} -> v{}", since, resp.version);
+    // Only log when there's actually something to report — routine idle polls (which
+    // return nothing new for the client's version) stay silent.
+    if !resp.upserts.is_empty() || !resp.deletes.is_empty() {
+        eprintln!("[{user}/{vault} changes] since={} -> v{} (+{} upserts, {} deletes)",
+            since, resp.version, resp.upserts.len(), resp.deletes.len());
+    }
     Ok(Json(resp))
 }
 

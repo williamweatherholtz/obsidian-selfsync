@@ -209,9 +209,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api || this.applying) return;
     this.applying = true;
     try {
+      // Cheap incremental check first: only reconcile if the server advanced past
+      // our version. Idle polls do one tiny request and stay silent (no log spam,
+      // no full re-list). Local edits are handled separately by vault events.
+      const delta = await this.api.changes(this.state.version);
+      if (delta.upserts.length === 0 && delta.deletes.length === 0) {
+        this.setStatus("connected", `v${this.state.version}`);
+        return;
+      }
       const before = this.state.version;
       await reconcileAll(this.deps());
-      // Reachable + reconciled → up to date (green). Log only on an actual change.
       if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
       this.setStatus("connected", `v${this.state.version}`);
     } catch (e: any) {

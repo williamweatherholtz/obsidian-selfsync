@@ -58,10 +58,14 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 }
 
 export async function reconcileAll(d: ReconcileDeps): Promise<void> {
-  const remote = await remoteManifest(d.api);
+  const resp = await d.api.changes(0);
+  const remote = new Map<string, FileMeta>();
+  for (const f of resp.upserts) remote.set(f.path, f);
   const local = await d.io.list();
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
   for (const p of paths) await reconcileOne(d, p, remote.get(p));
+  // Advance our cursor to the server's version so idle polls can check incrementally.
+  d.state.version = Math.max(d.state.version, resp.version);
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string): Promise<void> {
