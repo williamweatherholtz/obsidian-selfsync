@@ -1,7 +1,8 @@
 import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath } from "obsidian";
 import { HttpTransport } from "./transport";
-import { pull, pushFile, pushLocalNew, SyncState, VaultIo, ChunkCache } from "./sync";
-import { sha256hex } from "./chunker";
+import { SyncState, VaultIo, ChunkCache } from "./sync";
+import { BaseStore } from "./base";
+import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 
 type ConnState = "off" | "connecting" | "connected" | "offline";
@@ -22,12 +23,10 @@ class ObsidianVaultIo implements VaultIo {
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await this.plugin.app.vault.adapter.writeBinary(p, buf);
-    await this.plugin.noteSyncedBytes(p, bytes);
   }
   async remove(path: string): Promise<void> {
     const p = normalizePath(path);
     if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
-    this.plugin.forgetSynced(p);
   }
 }
 
@@ -53,10 +52,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   private ws?: WebSocket;
   private io = new ObsidianVaultIo(this);
   private state: SyncState = { version: 0 };
-  private known = new Set<string>();
-  private applying = false; // guard: don't echo server-driven writes back as pushes
-  private lastHash = new Map<string, string>(); // path -> last-synced file SHA-256 (echo-suppression)
-  private cache: ChunkCache = new Map(); // content-addressed chunk cache
+  private base = new BaseStore();
+  private cache: ChunkCache = new Map();
+  private applying = false; // guard: suppress reconcile re-entrancy from our own writes
 
   // --- observability + connection lifecycle ---
   private statusEl?: HTMLElement;
@@ -64,7 +62,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private connState: ConnState = "off";
   private reconnectTimer?: number;
   private pollTimer?: number;
-  private backoff = 3000; // ms, doubles up to 30s
+  private backoff = 3000;
   private unloading = false;
 
   async onload() {
@@ -77,12 +75,12 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
 
-    this.registerEvent(this.app.vault.on("modify", (f) => this.onLocalChange(f)));
-    this.registerEvent(this.app.vault.on("create", (f) => this.onLocalChange(f)));
+    this.registerEvent(this.app.vault.on("modify", (f) => this.onLocalEvent(f)));
+    this.registerEvent(this.app.vault.on("create", (f) => this.onLocalEvent(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => this.onLocalDelete(f.path)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
 
-    this.log("plugin loaded", true); // Notice confirms the plugin is actually enabled
+    this.log("plugin loaded", true);
     this.app.workspace.onLayoutReady(() => this.reconnect());
   }
 
@@ -116,6 +114,21 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   statusText() { return this.connState; }
 
+  // ---- reconcile deps ----
+  private deviceLabel(): string {
+    if (this.settings.deviceName) return this.settings.deviceName;
+    const plat = (navigator as unknown as { platform?: string }).platform ?? "device";
+    return plat.replace(/[^A-Za-z0-9]+/g, "").slice(0, 12) || "device";
+  }
+  private deps(): ReconcileDeps {
+    return {
+      api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
+      device: this.deviceLabel(), strategy: this.settings.conflictStrategy,
+      onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
+      onBaseChanged: () => { void this.persist(); },
+    };
+  }
+
   // ---- connection lifecycle (self-healing) ----
   async reconnect() {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
@@ -128,14 +141,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.api = new HttpTransport(this.settings.serverUrl, token);
 
       this.applying = true;
-      await pull(this.api, this.io, this.state, this.cache);
-      this.log(`initial pull → now at v${this.state.version}`);
-      this.known = new Set((await this.api.changes(0)).upserts.map((m) => m.path));
-      await pushLocalNew(this.api, this.io, this.state, this.cache, this.known);
-      this.log(`initial push (server had ${this.known.size} files) → v${this.state.version}`);
-      this.applying = false;
+      try { await reconcileAll(this.deps()); } finally { this.applying = false; }
+      this.log(`reconciled → v${this.state.version}`);
 
-      // Best-effort instant channel; the polling loop below is the reliable path.
       const ws = this.api.connectWs(() => this.onRemoteChanged());
       this.ws = ws ?? undefined;
       if (ws) {
@@ -168,7 +176,6 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   private startPolling() {
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
-    // Reliable propagation even if the WebSocket is blocked: pull every few seconds.
     this.pollTimer = window.setInterval(() => this.poll(), 4000);
   }
   private async poll() {
@@ -177,62 +184,51 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
 
   private async onRemoteChanged() {
-    if (!this.api) return;
+    if (!this.api || this.applying) return;
     this.applying = true;
     try {
       const before = this.state.version;
-      await pull(this.api, this.io, this.state, this.cache);
+      await reconcileAll(this.deps());
       if (this.state.version !== before) {
-        this.log(`remote change → pulled (v${before} → v${this.state.version})`);
+        this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
         this.setStatus("connected", `v${this.state.version}`);
       }
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      this.log(`pull FAILED: ${msg}`);
-      if (msg.includes("401")) { this.applying = false; this.scheduleReconnect(); }
+      this.log(`reconcile FAILED: ${msg}`);
+      if (msg.includes("401")) this.scheduleReconnect();
     } finally { this.applying = false; }
   }
 
-  private async onLocalChange(f: TAbstractFile) {
+  private async onLocalEvent(f: TAbstractFile) {
     if (this.applying || !this.api || !(f instanceof TFile)) return;
-    try {
-      const bytes = await this.io.read(f.path);
-      const h = await sha256hex(bytes);
-      if (this.lastHash.get(f.path) === h) return; // echo of a server-driven write
-      await pushFile(this.api, this.io, this.state, this.cache, f.path);
-      this.known.add(f.path);
-      this.lastHash.set(f.path, h);
-      this.log(`local edit ${f.path} → pushed (v${this.state.version})`);
-      this.setStatus("connected", `v${this.state.version}`);
-    } catch (e: any) { this.log(`push FAILED for ${f.path}: ${e?.message ?? e}`); }
+    this.applying = true;
+    try { await reconcilePath(this.deps(), f.path); this.setStatus("connected", `v${this.state.version}`); }
+    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); }
+    finally { this.applying = false; }
   }
 
   private async onLocalDelete(path: string) {
     if (this.applying || !this.api) return;
-    try {
-      await this.api.deleteFile(path);
-      this.known.delete(path);
-      this.lastHash.delete(path);
-      this.log(`local delete ${path} → pushed`);
-    } catch (e: any) { this.log(`delete push FAILED for ${path}: ${e?.message ?? e}`); }
+    this.applying = true;
+    try { await reconcilePath(this.deps(), path); }
+    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); }
+    finally { this.applying = false; }
   }
 
   private async onLocalRename(file: TAbstractFile, oldPath: string) {
     if (this.applying || !this.api || !(file instanceof TFile)) return;
-    try {
-      await this.api.deleteFile(oldPath);
-      this.known.delete(oldPath);
-      this.lastHash.delete(oldPath);
-      await pushFile(this.api, this.io, this.state, this.cache, file.path);
-      this.known.add(file.path);
-      this.lastHash.set(file.path, await sha256hex(await this.io.read(file.path)));
-      this.log(`local rename ${oldPath} → ${file.path} (v${this.state.version})`);
-    } catch (e: any) { this.log(`rename push FAILED for ${file.path}: ${e?.message ?? e}`); }
+    this.applying = true;
+    try { await reconcilePath(this.deps(), oldPath); await reconcilePath(this.deps(), file.path); }
+    catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); }
+    finally { this.applying = false; }
   }
 
-  async noteSyncedBytes(path: string, bytes: Uint8Array) { this.lastHash.set(path, await sha256hex(bytes)); }
-  forgetSynced(path: string) { this.lastHash.delete(path); }
-
-  async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
-  async saveSettings() { await this.saveData(this.settings); }
+  async loadSettings() {
+    const data = (await this.loadData()) ?? {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
+    this.base = new BaseStore(data.base ?? {});
+  }
+  async saveSettings() { await this.persist(); }
+  private async persist() { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
 }
