@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canAdvance, nextStep, statusTitle, WizardState } from "../src/wizardsteps";
+import { canAdvance, nextStep, statusTitle, isValidVaultName, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -34,6 +34,19 @@ describe("nextStep", () => {
     expect(nextStep("account")).toBe("vault");
     expect(nextStep("vault")).toBe("done");
     expect(nextStep("done")).toBe("done");
+  });
+});
+
+describe("isValidVaultName", () => {
+  it("accepts safe names, rejects traversal/separators/empty/overlong", () => {
+    expect(isValidVaultName("notes")).toBe(true);
+    expect(isValidVaultName("my_vault-2.0")).toBe(true);
+    expect(isValidVaultName("")).toBe(false);
+    expect(isValidVaultName(".")).toBe(false);
+    expect(isValidVaultName("..")).toBe(false);
+    expect(isValidVaultName("a/b")).toBe(false);
+    expect(isValidVaultName("has space")).toBe(false);
+    expect(isValidVaultName("x".repeat(65))).toBe(false);
   });
 });
 

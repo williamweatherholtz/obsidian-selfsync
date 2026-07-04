@@ -3,6 +3,18 @@ use argon2::Argon2;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+// A valid argon2 PHC to verify against when the requested user doesn't exist, so an
+// absent-user login does the SAME work as a wrong-password login — no timing oracle
+// that leaks which usernames are valid.
+fn dummy_hash() -> &'static str {
+    static D: OnceLock<String> = OnceLock::new();
+    D.get_or_init(|| {
+        let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+        Argon2::default().hash_password(b"selfsync-dummy", &salt).unwrap().to_string()
+    })
+}
 
 // Namespace-safe name: no path traversal, no separators. Used for usernames and
 // vault ids, which both become filesystem path segments.
@@ -63,8 +75,12 @@ impl UserStore {
     }
 
     pub fn verify(&self, user: &str, password: &str) -> bool {
-        let Some(phc) = self.file.users.get(user) else { return false; };
+        // Always run an argon2 verify — against the real hash if the user exists, else a
+        // dummy — so timing doesn't reveal whether the username is valid.
+        let present = self.file.users.contains_key(user);
+        let phc = self.file.users.get(user).map(String::as_str).unwrap_or_else(|| dummy_hash());
         let Ok(parsed) = PasswordHash::new(phc) else { return false; };
-        Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
+        let ok = Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok();
+        present && ok
     }
 }

@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
-import { WizardStep, WizardState, canAdvance, nextStep } from "./wizardsteps";
+import { WizardStep, WizardState, canAdvance, nextStep, isValidVaultName } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
 // Guided first-run setup: Welcome → Server(test) → Account → Remote vault → Done.
@@ -10,6 +10,7 @@ import type NewLiveSyncPlugin from "./main";
 export class SetupWizardModal extends Modal {
   private step: WizardStep = "welcome";
   private token = "";
+  private serverMsg = ""; // Test-connection result, persisted across re-renders
   private s: WizardState;
 
   constructor(app: App, private plugin: NewLiveSyncPlugin) {
@@ -57,20 +58,27 @@ export class SetupWizardModal extends Modal {
       .addButton((b) => b.setButtonText("Use link").setCta().onClick(() => {
         try {
           const link = parseSetupLink(text);
-          this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false;
-          this.goto(nextStep("welcome", { haveLink: true })); // → account
+          this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false; this.serverMsg = "";
+          // Land on the Server step (not straight to login) so reachability is tested —
+          // a link's URL (LAN IP / 127.0.0.1) is exactly what may not resolve on device #2.
+          this.goto("server");
         } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
       }));
   }
 
   private renderServer(c: HTMLElement) {
     new Setting(c).setName("Server URL")
-      .addText((t) => t.setValue(this.s.server).onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; }));
-    const statusEl = c.createEl("p", { text: "" });
+      .addText((t) => t.setValue(this.s.server).onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }));
+    // Persisted across re-renders (a re-render used to wipe this message).
+    if (this.serverMsg) c.createEl("p", { text: this.serverMsg }).setAttribute("style", "font-size:12px;opacity:0.85;");
     new Setting(c)
       .addButton((b) => b.setButtonText("Test connection").onClick(async () => {
         this.s.serverOk = await HttpTransport.testConnection(this.s.server);
-        statusEl.setText(this.s.serverOk ? "Reachable ✓" : "Couldn't reach that server. Check the URL and that the server is running.");
+        this.serverMsg = this.s.serverOk
+          ? "Reachable ✓"
+          : (/\/\/(127\.0\.0\.1|localhost)/.test(this.s.server)
+              ? "Couldn't reach that server. Note: on a phone, 127.0.0.1/localhost is the phone itself — use the server's LAN IP or https address."
+              : "Couldn't reach that server. Check the URL and that the server is running.");
         this.render();
       }));
     this.renderNav(c, "server", () => this.goto("welcome"));
@@ -122,7 +130,10 @@ export class SetupWizardModal extends Modal {
   private async finish() {
     try {
       let vault = this.s.chosenVault;
-      if (this.s.newVault) { await HttpTransport.createVault(this.s.server, this.token, this.s.newVault); vault = this.s.newVault; }
+      if (this.s.newVault) {
+        if (!isValidVaultName(this.s.newVault)) { new Notice("SelfSync: vault name — use letters, numbers, dashes."); return; }
+        await HttpTransport.createVault(this.s.server, this.token, this.s.newVault); vault = this.s.newVault;
+      }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       const st = this.plugin.settings;
       st.serverUrl = this.s.server; st.username = this.s.username; st.password = this.s.password;

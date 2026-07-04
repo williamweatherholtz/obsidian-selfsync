@@ -34,12 +34,19 @@ function lcsPairs(base: string[], other: string[]): Array<[number, number]> {
 // Line-level three-way merge (diff3). `clean` is false when both sides changed the
 // same region differently. Predictable and conflict-detecting — unlike a fuzzy
 // character patch, an overlapping edit is a conflict, never silently mangled.
+// Above this line count, the LCS DP matrix (O(n·m)) would allocate hundreds of MB and
+// freeze the UI thread — fall back to a conflict copy (clean:false) instead of merging.
+const MAX_MERGE_LINES = 5000;
+
 export function merge3(base: string, local: string, remote: string): { merged: string; clean: boolean } {
   if (local === remote) return { merged: local, clean: true };
   if (base === local) return { merged: remote, clean: true };
   if (base === remote) return { merged: local, clean: true };
 
   const B = splitLines(base), L = splitLines(local), R = splitLines(remote);
+  if (B.length > MAX_MERGE_LINES || L.length > MAX_MERGE_LINES || R.length > MAX_MERGE_LINES) {
+    return { merged: local, clean: false }; // too large to merge safely -> conflict-copy path
+  }
   const lb = new Map(lcsPairs(B, L)); // baseIdx -> localIdx (anchors vs local)
   const rb = new Map(lcsPairs(B, R)); // baseIdx -> remoteIdx (anchors vs remote)
   // Anchors = base lines stable in BOTH local and remote (present + aligned).

@@ -4,6 +4,12 @@ import { Phase } from "./syncstate";
 
 export type WizardStep = "welcome" | "server" | "account" | "vault" | "done";
 
+// Mirrors the server's safe_name: letters/numbers/.-_ , 1–64 chars, not "."/"..".
+// Validated client-side so a bad new-vault name gets a clear message, not a raw 400.
+export function isValidVaultName(name: string): boolean {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(name) && name !== "." && name !== "..";
+}
+
 export interface WizardState {
   server: string;
   serverOk: boolean;          // set true once "Test connection" succeeds

@@ -101,6 +101,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private unloading = false;
   private connecting = false;               // H2: only one reconnect() in flight at a time
   private pendingLocal = new Set<string>(); // H1: local edits that arrived mid-sync; drained after
+  private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
+  getLastIssue(): string | undefined { return this.lastIssue; }
 
   async onload() {
     await this.loadSettings();
@@ -315,7 +317,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       const health = await this.api.status();
       if (health.status !== "ready") {
         this.machine.dispatch("error");
-        this.log(`server vault '${this.settings.vaultId || "default"}' is ${health.status.toUpperCase()}: ${health.detail || "unavailable"} — run reindex on the server; NOT syncing`, true);
+        this.lastIssue = `Server vault '${this.settings.vaultId || "default"}' needs repair (${health.detail || health.status}) — run reindex on the server. Not syncing until then.`;
+        this.log(this.lastIssue, true);
         this.scheduleReconnect();
         return;
       }
@@ -338,12 +341,16 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.startPolling();
 
       this.backoff = 3000;
+      this.lastIssue = undefined;
       this.machine.dispatch("connected");
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`, true);
     } catch (e: any) {
       this.applying = false;
       this.machine.dispatch("error");
+      this.lastIssue = /no password stored/.test(String(e?.message))
+        ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
+        : `Can't reach the server (${e?.message ?? e}). Retrying…`;
       this.log(`connect FAILED: ${e?.message ?? e}`, true);
       this.scheduleReconnect();
     } finally {
@@ -440,5 +447,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.base = new BaseStore(data.base ?? {});
   }
   async saveSettings() { await this.persist(); }
-  private async persist() { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
+  private async persist() {
+    // Never silently swallow a persist failure: a lost base write corrupts the next
+    // merge's ancestor, and callers fire this with `void`. Log loudly instead.
+    try { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
+    catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
+  }
 }

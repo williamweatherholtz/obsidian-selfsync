@@ -68,6 +68,11 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     if (!configured) {
       card.createEl("div", { text: "Sync your notes to your own server." })
         .setAttribute("style", "opacity:0.75;font-size:12px;margin-top:2px;");
+    } else {
+      const issue = this.plugin.getLastIssue();
+      if (phase !== "idle" && issue) {
+        card.createEl("div", { text: issue }).setAttribute("style", "font-size:12px;margin-top:4px;color:var(--text-error);");
+      }
     }
     const bar = card.createEl("div"); bar.setAttribute("style", "display:flex;gap:8px;margin-top:12px;");
     if (!configured) {
