@@ -14,5 +14,8 @@
     "obsidian": "^1.5.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "qrcode-generator": "^1.5.2"
   }
 }

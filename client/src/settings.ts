@@ -3,6 +3,7 @@ import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC } from "./configsync";
 import { statusLine } from "./wizardsteps";
 import { light } from "./syncstate";
+import { DeviceLinkModal } from "./devicelink";
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -72,11 +73,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   }
 
   private showDeviceLink(): void {
-    const link = this.plugin.addDeviceLink();
-    navigator.clipboard?.writeText(link).then(
-      () => new Notice("SelfSync: setup link copied — paste it on the other device"),
-      () => new Notice(`SelfSync setup link: ${link}`),
-    );
+    new DeviceLinkModal(this.app, this.plugin.addDeviceLink()).open();
   }
 
   private renderConnection(c: HTMLElement, s: NewLiveSyncSettings): void {
