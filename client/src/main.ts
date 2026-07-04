@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath } from 
 import { HttpTransport } from "./transport";
 import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
-import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
+import { reconcileAll, reconcilePath, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { encodeSetupLink } from "./connstr";
@@ -102,6 +102,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private unloading = false;
   private connecting = false;               // H2: only one reconnect() in flight at a time
   private pendingLocal = new Set<string>(); // H1: local edits that arrived mid-sync; drained after
+  private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
   getLastIssue(): string | undefined { return this.lastIssue; }
 
@@ -166,6 +167,13 @@ export default class NewLiveSyncPlugin extends Plugin {
     return this.manifest.id;
   }
 
+  // Local file size (0 if unknown/absent) — lets reconcilePath apply the size gate on
+  // the event path, not just the batch path.
+  private localSizeOf(path: string): number {
+    const f = this.app.vault.getAbstractFileByPath(path);
+    return f instanceof TFile ? f.stat.size : 0;
+  }
+
   // H1: drain local edits that were queued because they fired while a sync was running.
   // Each reconcilePath re-guards `applying`; loop until the queue empties (new edits may
   // arrive during draining and are picked up).
@@ -174,8 +182,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       const path = this.pendingLocal.values().next().value as string;
       this.pendingLocal.delete(path);
       this.applying = true;
-      try { await reconcilePath(this.deps(), path); }
-      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); }
+      this.machine.dispatch("syncStart");
+      try { await reconcilePath(this.deps(), path, this.localSizeOf(path)); this.machine.dispatch("syncDone"); }
+      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
       finally { this.applying = false; }
     }
   }
@@ -305,7 +314,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),
-      onSkip: (p, bytes) => this.log(`skipped '${p}' — too large to sync (${Math.round(bytes / 1048576)} MB)`, true),
+      onSkip: (p, bytes) => {
+        if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
+        this.skipNotified.add(p);
+        this.log(`skipped '${p}' — too large to sync (${Math.round(bytes / 1048576)} MB, over the ${Math.round(DEFAULT_MAX_SYNC_BYTES / 1048576)} MB limit)`, true);
+      },
     };
   }
 
@@ -327,7 +340,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       const health = await this.api.status();
       if (health.status !== "ready") {
         this.machine.dispatch("error");
-        this.lastIssue = `Server vault '${this.settings.vaultId || "default"}' needs repair (${health.detail || health.status}) — run reindex on the server. Not syncing until then.`;
+        this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
         this.log(this.lastIssue, true);
         this.scheduleReconnect();
         return;
@@ -394,7 +407,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       // our version. Idle polls do one tiny request and stay silent (no log spam,
       // no full re-list). Local edits are handled separately by vault events.
       const delta = await this.api.changes(this.state.version);
-      if (delta.upserts.length === 0 && delta.deletes.length === 0) {
+      // Short-circuit only when nothing changed AND the server version matches ours.
+      // A version MISMATCH with no upserts/deletes means the server manifest was
+      // rebuilt/rewound (e.g. reindex reset the version, or a delete burst was
+      // compacted out of the tombstone window) — fall through to a full reconcile.
+      if (delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
         this.machine.dispatch("syncDone"); // reachable + up to date
         return;
       }
@@ -422,7 +439,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.applying) { this.pendingLocal.add(f.path); return; } // H1: queue, don't drop
     this.applying = true;
     this.machine.dispatch("syncStart");
-    try { await reconcilePath(this.deps(), f.path); this.machine.dispatch("syncDone"); }
+    try { await reconcilePath(this.deps(), f.path, f.stat.size); this.machine.dispatch("syncDone"); }
     catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
     void this.drainPending();
@@ -432,8 +449,9 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api) return;
     if (this.applying) { this.pendingLocal.add(path); return; }
     this.applying = true;
-    try { await reconcilePath(this.deps(), path); }
-    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); }
+    this.machine.dispatch("syncStart");
+    try { await reconcilePath(this.deps(), path); this.machine.dispatch("syncDone"); }
+    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
     void this.drainPending();
   }
@@ -442,8 +460,12 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api || !(file instanceof TFile)) return;
     if (this.applying) { this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); return; }
     this.applying = true;
-    try { await reconcilePath(this.deps(), oldPath); await reconcilePath(this.deps(), file.path); }
-    catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); }
+    this.machine.dispatch("syncStart");
+    try {
+      await reconcilePath(this.deps(), oldPath);                    // old path removed
+      await reconcilePath(this.deps(), file.path, file.stat.size); // new path created
+      this.machine.dispatch("syncDone");
+    } catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
     void this.drainPending();
   }

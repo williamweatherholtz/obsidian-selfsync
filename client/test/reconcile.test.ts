@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, ReconcileDeps } from "../src/reconcile";
+import { decide, reconcileAll, reconcilePath, ReconcileDeps } from "../src/reconcile";
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -125,6 +125,26 @@ describe("reconcileAll", () => {
     expect(skipped).toContain("big.md");
     expect(files.has("big.md")).toBe(false); // over-limit file not pushed
     expect(files.has("ok.md")).toBe(true);   // small file still syncs
+  });
+
+  it("reconcilePath (event path) gates a large local file — no push", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({ "big.md": "x".repeat(100) });
+    const skipped: string[] = [];
+    await reconcilePath(deps(api, io, { maxSyncBytes: 10, onSkip: (p) => skipped.push(p) }), "big.md", 100);
+    expect(skipped).toContain("big.md");
+    expect(files.has("big.md")).toBe(false);
+  });
+
+  it("reconcilePath (event path) applies the C2 guard — no delete-local vs a wholesale-empty server", async () => {
+    const { api } = fakeServer(); // empty (lost index → /meta 404 for everything)
+    const io = fakeIo({ "keep.md": "data" });
+    const base = new BaseStore();
+    base.set("keep.md", { hash: await sha256hex(enc("data")) });
+    const guarded: string[] = [];
+    await reconcilePath(deps(api, io, { base, onGuard: (p) => guarded.push(p) }), "keep.md", 4);
+    expect((io as any).m.has("keep.md")).toBe(true); // NOT deleted by a stray event
+    expect(guarded).toContain("keep.md");
   });
 
   it("still honors delete-local when the server has other files (not a suspicious empty)", async () => {

@@ -106,11 +106,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     const cs = s.configSync;
     new Setting(c).setName("Obsidian settings")
-      .setDesc("Sync your .obsidian config (settings, plugins, hotkeys) between devices. SelfSync's own connection is never synced.")
+      .setDesc("Sync your .obsidian config — settings, hotkeys, themes — between devices. Community-plugin CODE is a separate opt-in below (off by default). SelfSync's own login is never synced.")
       .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
         cs.enabled = v; await this.plugin.saveSettings(); this.display();
       }));
     if (!cs.enabled) return;
+
+    // The key trust signal — shown whenever config sync is on, not gated on community.
+    const locked = c.createEl("div"); locked.addClass("selfsync-locked");
+    locked.createEl("span", { text: "🔒", cls: "selfsync-lock" });
+    locked.createEl("span", { text: "SelfSync's own settings (server, login, vault) are never synced — they stay on this device." });
 
     // Minor categories: compact toggles (see styles.css) so hotkeys/snippets don't
     // read as major decisions.
@@ -125,9 +130,12 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     cat("CSS snippets", "snippets/", "snippets");
     cat("Community plugins", "Each plugin's code + settings across devices. Off by default — pushing plugin code (incl. desktop-only plugins to mobile) is riskier.", "community");
 
-    // Community plugins are the "major" surface — the per-plugin list + the locked
-    // SelfSync row get real prominence below.
-    if (cs.community) this.renderPluginChecklist(c, cs);
+    if (cs.community) {
+      this.renderPluginChecklist(c, cs);
+    } else {
+      c.createEl("div", { text: "Community plugins are NOT syncing — turn on “Community plugins” above to include their code + settings." })
+        .setAttribute("style", "font-size:12px;opacity:0.7;margin:6px 0 0 6px;");
+    }
   }
 
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
@@ -167,19 +175,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     );
   }
 
-  // Per-plugin allow/deny. SelfSync is shown as a LOCKED info row (not a toggle) so
-  // it's unmistakable that it can never sync; every other plugin gets a real toggle.
+  // Per-plugin allow/deny (the SelfSync-never-syncs reassurance is shown once, above).
   private renderPluginChecklist(c: HTMLElement, cs: NewLiveSyncSettings["configSync"]): void {
-    const selfId = this.plugin.manifest.id;
+    const selfId = this.plugin.selfFolderId();
     const manifests = ((this.app as any).plugins?.manifests ?? {}) as Record<string, { id: string; name: string }>;
     const ids = Object.keys(manifests)
       .filter((id) => id !== selfId)
       .sort((a, b) => (manifests[a].name || a).localeCompare(manifests[b].name || b));
-
-    const locked = c.createEl("div"); locked.addClass("selfsync-locked");
-    locked.createEl("span", { text: "🔒", cls: "selfsync-lock" });
-    locked.createEl("span", { text: "SelfSync is never synced — this device keeps its own server & login." });
-
     if (ids.length === 0) return;
     const box = c.createEl("div"); box.addClass("selfsync-plugins");
     box.createEl("div", { text: "Community plugins — uncheck to exclude one:" })

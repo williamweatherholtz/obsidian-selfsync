@@ -12,7 +12,24 @@ pub struct ContentStore {
 impl ContentStore {
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        Ok(ContentStore { root: dir.to_path_buf(), tmp_seq: AtomicU64::new(0) })
+        let store = ContentStore { root: dir.to_path_buf(), tmp_seq: AtomicU64::new(0) };
+        store.sweep_temp(); // reclaim any `*.tmp.N` left by a crash between write and rename
+        Ok(store)
+    }
+
+    // Delete leftover atomic-write temp files (never valid blobs; would otherwise leak).
+    fn sweep_temp(&self) {
+        let Ok(shards) = std::fs::read_dir(&self.root) else { return; };
+        for shard in shards.flatten() {
+            if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            if let Ok(entries) = std::fs::read_dir(shard.path()) {
+                for e in entries.flatten() {
+                    if e.file_name().to_str().map(|n| n.contains(".tmp.")).unwrap_or(false) {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
     }
     fn path_for(&self, hash: &str) -> PathBuf {
         // shard by first 2 hex chars to avoid huge flat dirs

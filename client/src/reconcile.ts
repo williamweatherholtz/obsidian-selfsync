@@ -73,10 +73,18 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   d.state.version = Math.max(d.state.version, resp.version);
 }
 
-export async function reconcilePath(d: ReconcileDeps, path: string): Promise<void> {
+export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);
-  await reconcileOne(d, path, rmeta ?? undefined);
+  // C2 on the event path too: if this would delete a previously-synced file, first
+  // confirm the server isn't wholesale-empty (server data loss) — only then does the
+  // extra manifest fetch happen, so the common case stays a single /meta call.
+  let guardDelete = false;
+  if (rmeta === null && d.base.get(path)) {
+    const manifest = await d.api.changes(0);
+    guardDelete = manifest.upserts.length === 0 && d.base.paths().length > 0;
+  }
+  await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize);
 }
 
 async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0): Promise<void> {

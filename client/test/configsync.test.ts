@@ -28,6 +28,11 @@ describe("shouldSync — SelfSync self-exclusion is absolute", () => {
     expect(shouldSync(`.obsidian/plugins/${SELF}/main.js`, sel, SELF)).toBe(false);
     expect(shouldSync(`.obsidian/plugins/${SELF}`, sel, SELF)).toBe(false);
   });
+  it("also excludes a leftover FORMER self-folder (new-livesync) so old creds can't sync", () => {
+    const sel = on({ community: true });
+    expect(shouldSync(".obsidian/plugins/new-livesync/data.json", sel, SELF)).toBe(false);
+    expect(shouldSync(".obsidian/plugins/new-livesync/main.js", sel, SELF)).toBe(false);
+  });
   it("does not accidentally exclude a plugin whose id is a prefix of SelfSync's", () => {
     // ".../obsidian-sync/..." must still sync — only the exact SelfSync id is barred.
     expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on({ community: true }), SELF)).toBe(true);

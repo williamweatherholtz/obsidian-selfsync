@@ -84,8 +84,10 @@ impl Vault {
                 // never-committed orphans — safe to treat as fresh; startup GC reclaims
                 // them, so we deliberately do NOT trip on blobs alone.)
                 let mut existing = Vec::new();
-                let _ = collect_files(&vault_dir, &vault_dir, &mut existing);
-                if !existing.is_empty() {
+                // Fail CLOSED: if we can't scan the vault dir (permission/IO), we can't
+                // prove it's empty — treat as data-present (ERROR) rather than open blank.
+                let scan_ok = collect_files(&vault_dir, &vault_dir, &mut existing).is_ok();
+                if !existing.is_empty() || !scan_ok {
                     eprintln!(
                         "[vault] {} has data but NO .sync-index.json — opening in ERROR state; run reindex to rebuild",
                         root.display()
@@ -229,6 +231,12 @@ impl Vault {
             let c = self.store.get(h)?
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
             body.extend_from_slice(&c);
+            // Bound the running total: req.chunks may repeat a hash arbitrarily, so cap
+            // reassembly at the declared size (already ≤ MAX_FILE_BYTES) — aborts a
+            // "one small chunk × 250k repeats → 250 GB in RAM" DoS before it grows.
+            if body.len() as u64 > req.size {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "reassembled size exceeds declared size"));
+            }
         }
         if body.len() as u64 != req.size || sha256_hex(&body) != req.hash {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file hash/size mismatch"));
@@ -314,9 +322,18 @@ impl Vault {
 
 // Recursively collect every file under `dir` as (forward-slash rel path, abs path),
 // relative to `base`. Used by reindex to rebuild the manifest from materialized files.
+// OS/tooling junk that must never count as vault data (would trip the missing-index
+// ERROR check and get re-ingested by reindex). `.obsidian` config is NOT junk.
+fn is_junk(name: &str) -> bool {
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | ".git")
+}
+
 fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)?.flatten() {
         let abs = entry.path();
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or("");
+        if is_junk(name) { continue; }
         let ft = entry.file_type()?;
         if ft.is_dir() {
             collect_files(&abs, base, out)?;
@@ -501,6 +518,18 @@ mod tests {
         // under the cap: unchanged
         compact_tombstones(&mut dels, 100);
         assert_eq!(dels.len(), 4);
+    }
+
+    // H3: repeated hashes must not reassemble past the declared size (OOM DoS guard).
+    #[test]
+    fn commit_rejects_reassembly_exceeding_declared_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"0123456789"; let h = sha256_hex(body); // 10 bytes
+        v.put_chunk(&h, body).unwrap();
+        // declare size 10 but reference the chunk 5× (would reassemble to 50)
+        let res = v.commit(CommitRequest { path: "x.md".into(), hash: h.clone(), size: 10, mtime: 1, chunks: vec![h; 5] });
+        assert!(res.is_err(), "reassembly beyond declared size must abort");
     }
 
     // C4: a hostile declared size is rejected before any allocation.

@@ -4,8 +4,8 @@
 //   1. SelfSync's OWN plugin folder is NEVER synced, under any setting. Its data.json
 //      holds this device's server URL / credentials / vaultId — syncing it would let
 //      one device overwrite another's connection config ("the IP may differ").
-//   2. Appearance/themes/snippets are OFF by default (independent per device unless
-//      the user opts in); everything else under `.obsidian/` that we recognize is ON.
+//   2. Defaults mirror official Obsidian Sync: core settings, hotkeys, appearance and
+//      themes/snippets are ON; community-plugin CODE is OFF by default (opt-in).
 //   3. Anything under `.obsidian/` we don't explicitly recognize (workspace.json,
 //      graph.json, …) is device-local and NOT synced.
 //
@@ -38,6 +38,11 @@ export const DEFAULT_CONFIG_SYNC: ConfigSyncSelection = {
 
 const CONFIG_PREFIX = ".obsidian/";
 
+// Former plugin-folder ids that must ALSO never sync — a leftover folder from a prior
+// install (before the id rename) still holds this device's old credentials, and the
+// current plugin wouldn't otherwise recognize it as "self". Keep this list forever.
+const LEGACY_SELF_IDS = ["new-livesync"];
+
 // The plugin id of a given community-plugin path under `.obsidian/plugins/`, or null.
 export function pluginIdOf(path: string): string | null {
   if (!path.startsWith(CONFIG_PREFIX)) return null;
@@ -55,9 +60,10 @@ export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId:
 
   const p = path.slice(CONFIG_PREFIX.length);
 
-  // (1) HARD, non-optional exclusion: SelfSync's own plugin folder.
-  if (selfPluginId && (p === `plugins/${selfPluginId}` || p.startsWith(`plugins/${selfPluginId}/`))) {
-    return false;
+  // (1) HARD, non-optional exclusion: SelfSync's own plugin folder — plus any FORMER
+  // self-folder id, so a leftover pre-rename folder's credentials can never sync.
+  for (const self of [selfPluginId, ...LEGACY_SELF_IDS]) {
+    if (self && (p === `plugins/${self}` || p.startsWith(`plugins/${self}/`))) return false;
   }
 
   // (2) recognized categories

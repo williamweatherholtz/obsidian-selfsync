@@ -131,7 +131,7 @@ export class SetupWizardModal extends Modal {
     try {
       let vault = this.s.chosenVault;
       if (this.s.newVault) {
-        if (!isValidVaultName(this.s.newVault)) { new Notice("SelfSync: vault name — use letters, numbers, dashes."); return; }
+        if (!isValidVaultName(this.s.newVault)) { new Notice("SelfSync: vault name — use letters, numbers, dots, dashes or underscores (max 64)."); return; }
         await HttpTransport.createVault(this.s.server, this.token, this.s.newVault); vault = this.s.newVault;
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
