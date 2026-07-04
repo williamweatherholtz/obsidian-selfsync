@@ -5,6 +5,7 @@ pub mod auth;
 pub mod chunkstore;
 pub mod config;
 pub mod hash;
+pub mod error;
 pub mod protocol;
 pub mod state;
 pub mod users;

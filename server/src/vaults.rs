@@ -1,4 +1,5 @@
 use crate::auth::AuthToken;
+use crate::error::AppError;
 use crate::protocol::{CreateVaultRequest, VaultListResponse};
 use crate::state::AppState;
 use crate::users::safe_name;
@@ -14,15 +15,14 @@ pub async fn create_vault(
     AuthToken(user): AuthToken,
     State(st): State<AppState>,
     Json(req): Json<CreateVaultRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<StatusCode, AppError> {
     if !safe_name(&req.name) {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(AppError::BadRequest("invalid vault name".into()));
     }
     if st.list_vaults(&user).contains(&req.name) {
-        return Err(StatusCode::CONFLICT);
+        return Err(AppError::Conflict("vault exists".into()));
     }
-    // Opening the namespace materializes it on disk.
-    st.vault(&user, &req.name).map_err(|_| StatusCode::BAD_REQUEST)?;
+    st.vault(&user, &req.name).map_err(|e| AppError::BadRequest(e.to_string()))?;
     eprintln!("[vault create] user='{}' vault='{}'", user, req.name);
     Ok(StatusCode::OK)
 }
