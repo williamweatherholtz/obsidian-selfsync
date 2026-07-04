@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath, setIco
 import { HttpTransport } from "./transport";
 import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
-import { reconcileAll, reconcilePath, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
+import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { encodeSetupLink } from "./connstr";
@@ -239,10 +239,20 @@ export default class NewLiveSyncPlugin extends Plugin {
     const token = await this.acquireToken();
     await HttpTransport.createVault(this.settings.serverUrl, token, name);
   }
-  async switchToVault(name: string): Promise<void> {
+  // Switching which remote vault this local vault syncs to is a one-time transition, not
+  // a persistent setting: the caller (the switch modal) picks the resolution and it is
+  // applied ONCE on the next reconnect, then forgotten. `merge` is the safe default union.
+  private pendingSwitchMode?: SwitchMode;
+  async switchToVault(name: string, mode: SwitchMode = "merge"): Promise<void> {
     this.settings.vaultId = name;
     await this.saveSettings();
+    this.pendingSwitchMode = mode;
     await this.reconnect();
+  }
+  // Does this local vault hold any syncable content (notes + any enabled synced config)?
+  // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
+  async hasLocalData(): Promise<boolean> {
+    try { return (await this.io.list()).size > 0; } catch { return false; }
   }
 
   // --- selective config sync: guarded, best-effort live reload -----------------
@@ -352,8 +362,15 @@ export default class NewLiveSyncPlugin extends Plugin {
         return;
       }
 
+      // A pending vault switch applies its chosen resolution ONCE, then reverts to normal
+      // reconcile; captured-and-cleared up front so a failed switch never silently
+      // re-applies an authoritative overwrite on a later reconnect.
+      const switchMode = this.pendingSwitchMode; this.pendingSwitchMode = undefined;
       this.applying = true;
-      try { await reconcileAll(this.deps()); } finally { this.applying = false; }
+      try {
+        if (switchMode) await switchTo(this.deps(), switchMode);
+        else await reconcileAll(this.deps());
+      } finally { this.applying = false; }
       await this.flushConfigReload();
       this.log(`reconciled → v${this.state.version}`);
 

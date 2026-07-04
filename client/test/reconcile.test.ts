@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcilePath, ReconcileDeps } from "../src/reconcile";
+import { decide, reconcileAll, reconcilePath, switchTo, ReconcileDeps } from "../src/reconcile";
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -156,5 +156,66 @@ describe("reconcileAll", () => {
     base.set("other.md", { hash: await sha256hex(enc("still here")) });
     await reconcileAll(deps(api, io, { base }));
     expect((io as any).m.has("gone.md")).toBe(false);  // legit delete still happens
+  });
+});
+
+describe("switchTo (one-time vault switch resolution)", () => {
+  it("download: target wins — pulls target, drops local-only files, resets stale base", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "SERVER a");
+    await serverPut(api, "b.md", "SERVER b");
+    const io = fakeIo({ "a.md": "LOCAL a", "c.md": "LOCAL only" });
+    const base = new BaseStore();
+    base.set("stale.md", { hash: "deadbeef" }); // leftover from the OLD vault
+    await switchTo(deps(api, io, { base }), "download");
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect(dec(m.get("a.md")!)).toBe("SERVER a"); // target overwrites local divergence
+    expect(dec(m.get("b.md")!)).toBe("SERVER b"); // target-only pulled
+    expect(m.has("c.md")).toBe(false);             // local-only discarded
+    expect(base.get("stale.md")).toBeUndefined();  // old ancestor reset
+    expect(base.get("a.md")).toBeDefined();        // rebuilt for the target
+  });
+
+  it("upload: local wins — pushes local, drops target-only files", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "y.md", "SERVER y");
+    await serverPut(api, "z.md", "SERVER z only");
+    const io = fakeIo({ "x.md": "LOCAL x", "y.md": "LOCAL y" });
+    await switchTo(deps(api, io), "upload");
+    expect(files.has("x.md")).toBe(true);  // local-only pushed
+    expect(files.has("z.md")).toBe(false); // target-only removed
+    // Confirm the server now mirrors local by pulling into a fresh vault.
+    const io2 = fakeIo({});
+    await reconcileAll(deps(api, io2));
+    const m2 = (io2 as any).m as Map<string, Uint8Array>;
+    expect(dec(m2.get("y.md")!)).toBe("LOCAL y"); // target's y overwritten by local
+    expect(dec(m2.get("x.md")!)).toBe("LOCAL x");
+    expect(m2.has("z.md")).toBe(false);
+  });
+
+  it("merge: union — pushes local-only, pulls target-only, conflict-copies divergence (nothing lost)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "r.md", "remote only");
+    await serverPut(api, "d.md", "SERVER d");
+    const io = fakeIo({ "l.md": "local only", "d.md": "LOCAL d" });
+    await switchTo(deps(api, io), "merge");
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect(dec(m.get("r.md")!)).toBe("remote only"); // target-only pulled
+    expect(m.has("l.md")).toBe(true);                 // local-only kept
+    expect(dec(m.get("d.md")!)).toBe("SERVER d");      // remote canonical on divergence
+    const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);                     // divergence preserved as a copy
+    expect(dec(m.get(copies[0])!)).toBe("LOCAL d");
+  });
+
+  it("download into an EMPTY local vault (the auto case) just fetches the target", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n1.md", "one");
+    await serverPut(api, "n2.md", "two");
+    const io = fakeIo({}); // empty — nothing to lose
+    await switchTo(deps(api, io), "download");
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect(dec(m.get("n1.md")!)).toBe("one");
+    expect(dec(m.get("n2.md")!)).toBe("two");
   });
 });

@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
+import type { SwitchMode } from "./reconcile";
 
 // Switch which remote vault this Obsidian vault syncs to — WITHOUT re-asking for the
 // server or account. We're already signed in, so this reuses the existing session
@@ -10,6 +11,7 @@ export class SwitchVaultModal extends Modal {
   private newName = "";
   private loading = true;
   private error = "";
+  private target = "";
 
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
@@ -60,9 +62,48 @@ export class SwitchVaultModal extends Modal {
       let vault = this.chosen;
       if (this.newName) { await this.plugin.createRemoteVault(this.newName); vault = this.newName; }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
-      this.close();
-      await this.plugin.switchToVault(vault);
-      new Notice(`SelfSync: now syncing '${vault}'`);
+      this.target = vault;
+      // No local content to lose → adopt the target automatically (fetch), no prompt.
+      if (!(await this.plugin.hasLocalData())) { await this.applySwitch("download"); return; }
+      // Local content exists → the user adjudicates how to combine it with the target.
+      this.renderResolve();
+    } catch (e: any) {
+      new Notice(`SelfSync: ${e?.message ?? e}`);
+    }
+  }
+
+  // One-time transition prompt, shown only when this vault already holds content that a
+  // switch could overwrite. Merge is the safe (nothing-lost) default; the two mirror
+  // modes are marked as destructive.
+  private renderResolve() {
+    const c = this.contentEl; c.empty();
+    this.titleEl.setText("This vault already has content");
+    c.createEl("p", {
+      text: `Choose how to combine this vault's files with '${this.target}'. This is a one-time action for this switch.`,
+    }).setAttribute("style", "font-size:13px;margin-bottom:10px;");
+
+    new Setting(c).setName("Merge — keep everything")
+      .setDesc("Combine both sets. Files that differ on both sides are merged, or kept side-by-side as a conflict copy. Nothing is lost.")
+      .addButton((b) => b.setButtonText("Merge").setCta().onClick(() => void this.applySwitch("merge")));
+
+    new Setting(c).setName(`Download — mirror '${this.target}'`)
+      .setDesc("Replace this vault with the target's content. Local files that aren't on the target are removed.")
+      .addButton((b) => b.setButtonText("Download").setWarning().onClick(() => void this.applySwitch("download")));
+
+    new Setting(c).setName(`Upload — overwrite '${this.target}'`)
+      .setDesc("Replace the target with this vault's content. Target files that aren't in this vault are removed.")
+      .addButton((b) => b.setButtonText("Upload").setWarning().onClick(() => void this.applySwitch("upload")));
+
+    new Setting(c).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  private async applySwitch(mode: SwitchMode) {
+    this.close();
+    const verb = mode === "download" ? "fetching" : mode === "upload" ? "uploading to" : "merging with";
+    new Notice(`SelfSync: switching to '${this.target}' (${verb})…`);
+    try {
+      await this.plugin.switchToVault(this.target, mode);
+      new Notice(`SelfSync: now syncing '${this.target}'`);
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`);
     }

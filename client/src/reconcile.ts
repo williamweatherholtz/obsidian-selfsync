@@ -160,3 +160,53 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     }
   }
 }
+
+// How to resolve a one-time switch of which remote vault this local vault syncs to.
+export type SwitchMode =
+  | "download"  // target wins: adopt the target, discard local divergence
+  | "upload"    // local wins: overwrite the target with this vault's content
+  | "merge";    // union both: three-way merge / conflict-copy, nothing lost
+
+// Resolve a vault switch. The client's base (last-synced ancestor) belongs to the OLD
+// vault and is meaningless against the target, so it is reset here and rebuilt per the
+// chosen mode. Unlike reconcileAll (which never clobbers), upload/download are the
+// EXPLICIT authoritative overwrites the user selected at switch time; merge defers to
+// reconcileAll over an empty base (push local-only, pull remote-only, conflict-copy
+// same-path divergence — no data lost). io.list() is already selective-sync-filtered,
+// so a switch only ever touches syncable files, never SelfSync's own config.
+export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void> {
+  for (const p of d.base.paths()) d.base.delete(p); // no common ancestor across vaults
+  d.onBaseChanged?.();
+  if (mode === "merge") { await reconcileAll(d); return; }
+
+  const max = d.maxSyncBytes ?? DEFAULT_MAX_SYNC_BYTES;
+  const resp = await d.api.changes(0);
+  const remote = new Map<string, FileMeta>();
+  for (const f of resp.upserts) remote.set(f.path, f);
+  const local = await d.io.list();
+
+  if (mode === "download") {
+    for (const [p, meta] of remote) {
+      if (meta.size > max) { d.onSkip?.(p, meta.size); continue; }
+      const bytes = await fetchFileBytes(d.api, d.cache, meta.chunks);
+      await d.io.write(p, bytes);
+      setBase(d, p, bytes, meta.hash);
+    }
+    for (const [p, info] of local) {            // drop local files the target lacks
+      if (remote.has(p)) continue;
+      if (info.size > max) { d.onSkip?.(p, info.size); continue; }
+      await d.io.remove(p);
+    }
+  } else { // upload
+    for (const [p, info] of local) {
+      if (info.size > max) { d.onSkip?.(p, info.size); continue; }
+      const h = await pushFile(d.api, d.io, d.state, d.cache, p);
+      const bytes = await readOrNull(d.io, p);
+      if (bytes) setBase(d, p, bytes, h);
+    }
+    for (const p of remote.keys()) {            // drop remote files this vault lacks
+      if (!local.has(p)) await d.api.deleteFile(p);
+    }
+  }
+  d.state.version = Math.max(d.state.version, resp.version);
+}
