@@ -226,6 +226,25 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
     let bad = c.post(format!("{base}/api/v/default/commit")).bearer_auth(&tok)
         .json(&serde_json::json!({"path":"x.md","hash":"h","size":1,"mtime":0,"chunks":["nope"]})).send().await.unwrap();
     assert_eq!(bad.status(), 404);
+
+    // Concurrent reads of the same vault (B4b: per-vault RwLock) must all succeed and
+    // return the same data — a regression guard against deadlock/poison under the new
+    // shared-read path.
+    let mut reads = vec![];
+    for _ in 0..12 {
+        let (c, base, tok, h) = (c.clone(), base.clone(), tok.clone(), h.clone());
+        reads.push(tokio::spawn(async move {
+            let chg: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
+                .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+            let blob = c.get(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).send().await.unwrap();
+            (chg.upserts.len(), blob.status().as_u16())
+        }));
+    }
+    for r in reads {
+        let (upserts, blob_status) = r.await.unwrap();
+        assert!(upserts >= 1);
+        assert_eq!(blob_status, 200);
+    }
 }
 
 #[test]

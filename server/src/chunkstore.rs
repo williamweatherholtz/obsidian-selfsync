@@ -1,12 +1,18 @@
 use crate::hash::sha256_hex;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct ContentStore { root: PathBuf }
+pub struct ContentStore {
+    root: PathBuf,
+    // Monotonic counter for unique temp-file names, so concurrent puts of the SAME
+    // hash (now possible under a shared read lock) can't collide on one .tmp path.
+    tmp_seq: AtomicU64,
+}
 
 impl ContentStore {
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        Ok(ContentStore { root: dir.to_path_buf() })
+        Ok(ContentStore { root: dir.to_path_buf(), tmp_seq: AtomicU64::new(0) })
     }
     fn path_for(&self, hash: &str) -> PathBuf {
         // shard by first 2 hex chars to avoid huge flat dirs
@@ -30,9 +36,12 @@ impl ContentStore {
         if p.exists() { return Ok(()); }
         if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
         // Write atomically: a crash mid-write must not leave a truncated blob that
-        // has() would report present but get() would return corrupt. (Vault ops are
-        // serialized by the per-vault mutex, so a fixed .tmp name can't collide.)
-        let tmp = p.with_extension("tmp");
+        // has() would report present but get() would return corrupt. The temp name is
+        // unique per call (a shared read lock now permits concurrent puts of the same
+        // hash), and rename is atomic, so the worst case is a redundant write of
+        // identical content — never a torn blob.
+        let n = self.tmp_seq.fetch_add(1, Ordering::Relaxed);
+        let tmp = p.with_extension(format!("tmp.{n}"));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(tmp, p)
     }

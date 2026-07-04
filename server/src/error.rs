@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // One typed error for the whole request path. Handlers return Result<T, AppError>
 // and use `?`; axum turns AppError into the right HTTP status via IntoResponse.
@@ -34,4 +34,15 @@ impl IntoResponse for AppError {
 // unavailable," not pretend-it's-fine.
 pub fn lock<T>(m: &Mutex<T>) -> Result<MutexGuard<'_, T>, AppError> {
     m.lock().map_err(|_| AppError::Unavailable("resource temporarily unavailable".into()))
+}
+
+// A per-vault RwLock lets reads (changes/missing/get_chunk/status) and chunk uploads
+// run CONCURRENTLY, while mutations (commit/delete/reindex) stay exclusive — so one
+// client's large pull no longer blocks another's reads of the same vault. Poison →
+// 503, same honesty as `lock`.
+pub fn rlock<T>(l: &RwLock<T>) -> Result<RwLockReadGuard<'_, T>, AppError> {
+    l.read().map_err(|_| AppError::Unavailable("resource temporarily unavailable".into()))
+}
+pub fn wlock<T>(l: &RwLock<T>) -> Result<RwLockWriteGuard<'_, T>, AppError> {
+    l.write().map_err(|_| AppError::Unavailable("resource temporarily unavailable".into()))
 }

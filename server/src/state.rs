@@ -3,14 +3,15 @@ use crate::users::{safe_name, UserStore};
 use crate::vault::Vault;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
 // A lazily-opened per-(user,vault) namespace: the Vault plus its own change
-// broadcast channel (so a client only wakes for its own vault).
+// broadcast channel (so a client only wakes for its own vault). The Vault is behind
+// an RwLock so reads/uploads run concurrently and only mutations are exclusive.
 #[derive(Clone)]
 pub struct VaultHandle {
-    pub vault: Arc<Mutex<Vault>>,
+    pub vault: Arc<RwLock<Vault>>,
     pub tx: broadcast::Sender<u64>,
 }
 
@@ -60,7 +61,7 @@ impl AppState {
         }
         let v = Vault::open(&self.ns_dir(user, vault))?;
         let (tx, _rx) = broadcast::channel(256);
-        let handle = VaultHandle { vault: Arc::new(Mutex::new(v)), tx };
+        let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx };
         let mut map = self.ns.lock().unwrap();
         // Another thread may have opened it meanwhile — keep the first.
         Ok(map.entry(key).or_insert(handle).clone())

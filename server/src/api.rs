@@ -1,5 +1,5 @@
 use crate::auth::AuthToken;
-use crate::error::{lock, AppError};
+use crate::error::{rlock, wlock, AppError};
 use crate::protocol::{ChangesResponse, CommitRequest, Deletion, FileMeta, MissingRequest, MissingResponse, StatusResponse};
 use crate::state::{AppState, VaultHandle};
 use axum::body::Bytes;
@@ -30,7 +30,7 @@ pub async fn changes(
 ) -> Result<Json<ChangesResponse>, AppError> {
     let h = handle(&st, &user, &vault)?;
     let since = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let v = lock(&h.vault)?;
+    let v = rlock(&h.vault)?;
     ensure_ready(&v)?;
     let resp = v.changes(since);
     drop(v);
@@ -46,7 +46,7 @@ pub async fn chunks_missing(
     Path(vault): Path<String>, Json(req): Json<MissingRequest>,
 ) -> Result<Json<MissingResponse>, AppError> {
     let h = handle(&st, &user, &vault)?;
-    let v = lock(&h.vault)?;
+    let v = rlock(&h.vault)?;
     ensure_ready(&v)?;
     let missing = v.missing(&req.hashes);
     Ok(Json(MissingResponse { missing }))
@@ -57,7 +57,9 @@ pub async fn put_chunk(
     Path((vault, hash)): Path<(String, String)>, body: Bytes,
 ) -> Result<StatusCode, AppError> {
     let h = handle(&st, &user, &vault)?;
-    lock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Shared read lock: chunk uploads run concurrently (content-addressed, unique
+    // temp names) and don't block other reads. Commit takes the write lock later.
+    rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))?;
     Ok(StatusCode::OK)
 }
 
@@ -66,7 +68,7 @@ pub async fn get_chunk(
     Path((vault, hash)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
     let h = handle(&st, &user, &vault)?;
-    let result = lock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))?;
+    let result = rlock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))?;
     match result {
         Some(b) => Ok((StatusCode::OK, b).into_response()),
         None => Err(AppError::NotFound),
@@ -80,7 +82,7 @@ pub async fn commit(
     let h = handle(&st, &user, &vault)?;
     let path = req.path.clone();
     let meta = {
-        let mut v = lock(&h.vault)?;
+        let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
         v.commit(req).map_err(|e| {
             eprintln!("[{user}/{vault} commit] {} -> error ({e})", path);
@@ -99,7 +101,7 @@ pub async fn delete_file(
     let h = handle(&st, &user, &vault)?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
     let d = {
-        let mut v = lock(&h.vault)?;
+        let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
         v.delete(&path).map_err(|e| AppError::BadRequest(e.to_string()))?
     };
@@ -115,7 +117,7 @@ pub async fn status(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(vault): Path<String>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let h = handle(&st, &user, &vault)?;
-    let v = lock(&h.vault)?;
+    let v = rlock(&h.vault)?;
     let (status, detail) = if v.is_corrupt() {
         ("error".to_string(), "index corrupt; run reindex".to_string())
     } else {
@@ -132,7 +134,7 @@ pub async fn reindex(
 ) -> Result<Json<StatusResponse>, AppError> {
     let h = handle(&st, &user, &vault)?;
     let version = {
-        let mut v = lock(&h.vault)?;
+        let mut v = wlock(&h.vault)?;
         v.reindex().map_err(|e| AppError::Internal(e.to_string()))?;
         v.version()
     };
