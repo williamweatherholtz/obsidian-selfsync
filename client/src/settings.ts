@@ -112,7 +112,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .addToggle((tg) => tg.setValue(s.verbose).onChange(async (v) => { s.verbose = v; await this.plugin.saveSettings(); }));
     new Setting(adv).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
-      .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
+      .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)))
+      .addButton((b) => b.setButtonText("Clear log").onClick(() => { this.plugin.clearLogs(); new Notice("SelfSync: sync log cleared"); }));
     new Setting(adv).setName("Disconnect").setDesc("Stop syncing this vault. Local files are kept.")
       .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
   }

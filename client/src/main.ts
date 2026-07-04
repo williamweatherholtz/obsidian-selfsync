@@ -65,7 +65,7 @@ class ObsidianVaultIo implements VaultIo {
 class LogModal extends Modal {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
   onOpen() {
-    this.titleEl.setText("New LiveSync — sync log");
+    this.titleEl.setText("SelfSync — sync log");
     const pre = this.contentEl.createEl("pre", { text: this.plugin.getLogText() });
     pre.setAttribute("style", "max-height:60vh;overflow:auto;white-space:pre-wrap;user-select:text;font-size:12px;");
     const bar = this.contentEl.createEl("div");
