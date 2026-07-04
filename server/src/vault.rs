@@ -8,6 +8,21 @@ use std::path::{Component, Path, PathBuf};
 // Reject absurd/hostile declared file sizes before allocating anything for them.
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
+// Cap on retained deletion tombstones. Tombstones only serve the INCREMENTAL
+// changes(since) poll; a full reconcile infers deletions from absence, so dropping
+// the oldest beyond this cap is safe (online clients see each delete promptly as the
+// version advances; a long-offline client catches up via full reconcile on reconnect).
+// Prevents the deletions Vec from growing without bound on a churny, long-lived vault.
+const MAX_TOMBSTONES: usize = 10_000;
+
+// Keep only the newest `max` tombstones (they're appended in ascending version order,
+// so drop from the front). Pure + unit-tested.
+fn compact_tombstones(dels: &mut Vec<Deletion>, max: usize) {
+    if dels.len() > max {
+        dels.drain(0..dels.len() - max);
+    }
+}
+
 pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\\') || path.starts_with('/') { return None; }
     let p = PathBuf::from(path);
@@ -84,6 +99,7 @@ impl Vault {
         };
         let mut idx = idx;
         if idx.version == 0 { idx.version = 1; }
+        compact_tombstones(&mut idx.deletions, MAX_TOMBSTONES);
         let mut v = Vault { root: root.to_path_buf(), vault_dir, store, idx, corrupt };
         if !v.corrupt { v.verify_and_gc(); }
         Ok(v)
@@ -255,6 +271,7 @@ impl Vault {
         self.idx.version += 1;
         let d = Deletion { path: path.to_string(), version: self.idx.version };
         self.idx.deletions.push(d.clone());
+        compact_tombstones(&mut self.idx.deletions, MAX_TOMBSTONES);
         if let Err(e) = self.persist() {
             self.idx = snapshot; // roll back; bind-mount file + blobs still intact
             return Err(e);
@@ -472,6 +489,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = Vault::open(dir.path()).unwrap();
         assert!(!v.is_corrupt(), "a genuinely empty namespace is a fresh first run");
+    }
+
+    // Index scaling: tombstones are capped, keeping the NEWEST (highest-version) ones.
+    #[test]
+    fn compact_tombstones_keeps_newest() {
+        let mut dels: Vec<Deletion> = (1..=10).map(|v| Deletion { path: format!("f{v}"), version: v }).collect();
+        compact_tombstones(&mut dels, 4);
+        assert_eq!(dels.len(), 4);
+        assert_eq!(dels.iter().map(|d| d.version).collect::<Vec<_>>(), vec![7, 8, 9, 10]);
+        // under the cap: unchanged
+        compact_tombstones(&mut dels, 100);
+        assert_eq!(dels.len(), 4);
     }
 
     // C4: a hostile declared size is rejected before any allocation.
