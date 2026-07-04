@@ -17,13 +17,18 @@ export class BaseStore {
 
 function pad(n: number, w = 2): string { return n.toString().padStart(w, "0"); }
 
-export function conflictCopyName(path: string, device: string, when: Date): string {
-  const ts = `${when.getUTCFullYear()}${pad(when.getUTCMonth() + 1)}${pad(when.getUTCDate())}${pad(when.getUTCHours())}${pad(when.getUTCMinutes())}`;
+export function conflictCopyName(path: string, device: string, when: Date, tag = ""): string {
+  // Timestamp to the SECOND plus a short content tag (e.g. the local hash prefix), so
+  // two conflicts on the same path/device close in time produce DIFFERENT names and the
+  // second copy can never overwrite (and destroy) the first.
+  const ts = `${when.getUTCFullYear()}${pad(when.getUTCMonth() + 1)}${pad(when.getUTCDate())}`
+    + `${pad(when.getUTCHours())}${pad(when.getUTCMinutes())}${pad(when.getUTCSeconds())}`;
+  const suffix = tag ? `-${tag}` : "";
   const slash = path.lastIndexOf("/");
   const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
   const name = slash >= 0 ? path.slice(slash + 1) : path;
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
-  return `${dir}${stem} (conflict ${device} ${ts})${ext}`;
+  return `${dir}${stem} (conflict ${device} ${ts}${suffix})${ext}`;
 }

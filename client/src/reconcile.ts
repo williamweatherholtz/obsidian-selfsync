@@ -36,6 +36,7 @@ export interface ReconcileDeps {
   device: string; strategy: "auto-merge" | "conflict-file";
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
+  onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
 }
 
 async function remoteManifest(api: SyncApi): Promise<Map<string, FileMeta>> {
@@ -61,9 +62,14 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
   for (const f of resp.upserts) remote.set(f.path, f);
+  // C2: an empty server manifest while we hold synced history (a non-empty base) is
+  // the signature of server-side index loss, not a genuine "delete everything". Refuse
+  // to propagate the resulting bulk delete-local (push/pull still proceed, so real local
+  // files re-populate the server); a genuine delete-all is recoverable by re-deleting.
+  const guardBulkDelete = remote.size === 0 && d.base.paths().length > 0;
   const local = await d.io.list();
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
-  for (const p of paths) await reconcileOne(d, p, remote.get(p));
+  for (const p of paths) await reconcileOne(d, p, remote.get(p), guardBulkDelete);
   // Advance our cursor to the server's version so idle polls can check incrementally.
   d.state.version = Math.max(d.state.version, resp.version);
 }
@@ -73,7 +79,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string): Promise<voi
   await reconcileOne(d, path, remote.get(path));
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined): Promise<void> {
+async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false): Promise<void> {
   const localBytes = await readOrNull(d.io, path);
   const localHash = localBytes ? await sha256hex(localBytes) : null;
   const baseEntry = d.base.get(path) ?? null;
@@ -98,6 +104,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     }
     case "delete-local":
+      if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "delete-remote":
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
@@ -126,7 +133,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
         }
       }
       // Fallback / conflict-copy: remote becomes canonical; local kept as a copy.
-      const copy = conflictCopyName(path, d.device, nowUtc());
+      const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
       await d.io.write(copy, localBytes!);
       await d.io.write(path, remoteBytes);
       const ch = await pushFile(d.api, d.io, d.state, d.cache, copy);

@@ -15,7 +15,7 @@ class ObsidianVaultIo implements VaultIo {
   // The single selective-sync gate: notes always pass; `.obsidian/` paths pass only
   // per the config selection, and SelfSync's own folder never passes (see configsync).
   private passes(path: string): boolean {
-    return shouldSync(path, this.plugin.settings.configSync, this.plugin.manifest.id);
+    return shouldSync(path, this.plugin.settings.configSync, this.plugin.selfFolderId());
   }
 
   async list() {
@@ -99,6 +99,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private pollTimer?: number;
   private backoff = 3000;
   private unloading = false;
+  private connecting = false;               // H2: only one reconnect() in flight at a time
+  private pendingLocal = new Set<string>(); // H1: local edits that arrived mid-sync; drained after
 
   async onload() {
     await this.loadSettings();
@@ -145,6 +147,32 @@ export default class NewLiveSyncPlugin extends Plugin {
   clearLogs() { this.logs = []; this.log("log cleared"); }
   showLog() { new LogModal(this.app, this).open(); }
   openSetup() { new SetupWizardModal(this.app, this).open(); }
+
+  // The plugin's ACTUAL install-folder name (last segment of manifest.dir), which is
+  // what shouldSync must exclude. Keying on manifest.dir rather than manifest.id keeps
+  // the credential-bearing self folder excluded even if the folder ≠ the id (C3).
+  selfFolderId(): string {
+    const dir = this.manifest.dir;
+    if (dir) {
+      const seg = dir.replace(/[/\\]+$/, "").split(/[/\\]/).pop();
+      if (seg) return seg;
+    }
+    return this.manifest.id;
+  }
+
+  // H1: drain local edits that were queued because they fired while a sync was running.
+  // Each reconcilePath re-guards `applying`; loop until the queue empties (new edits may
+  // arrive during draining and are picked up).
+  private async drainPending() {
+    while (!this.applying && this.api && !this.unloading && this.pendingLocal.size > 0) {
+      const path = this.pendingLocal.values().next().value as string;
+      this.pendingLocal.delete(path);
+      this.applying = true;
+      try { await reconcilePath(this.deps(), path); }
+      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); }
+      finally { this.applying = false; }
+    }
+  }
 
   setAuthToken(token: string) { this.settings.authToken = token; void this.saveSettings(); }
 
@@ -224,7 +252,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Community plugins: disable+enable each touched plugin (never SelfSync itself;
     // tolerate a plugin whose code isn't installed yet — reload must not throw).
     const pluginIds = new Set<string>();
-    for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.manifest.id) pluginIds.add(id); }
+    for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.selfFolderId()) pluginIds.add(id); }
     for (const id of pluginIds) {
       try {
         if (app.plugins?.enabledPlugins?.has?.(id) && app.plugins?.plugins?.[id]) {
@@ -271,6 +299,8 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // ---- connection lifecycle (self-healing) ----
   async reconnect() {
+    if (this.connecting || this.unloading) return; // H2: one at a time; never after unload
+    this.connecting = true;
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     this.machine.dispatch("connect");
     this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
@@ -295,6 +325,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       await this.flushConfigReload();
       this.log(`reconciled → v${this.state.version}`);
 
+      if (this.unloading) return; // H2: torn down while awaiting — don't spin up WS/poll
       const ws = this.api.connectWs(() => this.onRemoteChanged());
       this.ws = ws ?? undefined;
       if (ws) {
@@ -315,7 +346,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.machine.dispatch("error");
       this.log(`connect FAILED: ${e?.message ?? e}`, true);
       this.scheduleReconnect();
+    } finally {
+      this.connecting = false;
     }
+    void this.drainPending(); // flush any edits queued during the initial reconcile
   }
 
   private scheduleReconnect() {
@@ -363,31 +397,38 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
       this.scheduleReconnect();
     } finally { this.applying = false; }
+    void this.drainPending(); // H1: flush edits queued during this reconcile
   }
 
   private async onLocalEvent(f: TAbstractFile) {
-    if (this.applying || !this.api || !(f instanceof TFile)) return;
+    if (!this.api || !(f instanceof TFile)) return;
+    if (this.applying) { this.pendingLocal.add(f.path); return; } // H1: queue, don't drop
     this.applying = true;
     this.machine.dispatch("syncStart");
     try { await reconcilePath(this.deps(), f.path); this.machine.dispatch("syncDone"); }
     catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
+    void this.drainPending();
   }
 
   private async onLocalDelete(path: string) {
-    if (this.applying || !this.api) return;
+    if (!this.api) return;
+    if (this.applying) { this.pendingLocal.add(path); return; }
     this.applying = true;
     try { await reconcilePath(this.deps(), path); }
     catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); }
     finally { this.applying = false; }
+    void this.drainPending();
   }
 
   private async onLocalRename(file: TAbstractFile, oldPath: string) {
-    if (this.applying || !this.api || !(file instanceof TFile)) return;
+    if (!this.api || !(file instanceof TFile)) return;
+    if (this.applying) { this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); return; }
     this.applying = true;
     try { await reconcilePath(this.deps(), oldPath); await reconcilePath(this.deps(), file.path); }
     catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); }
     finally { this.applying = false; }
+    void this.drainPending();
   }
 
   async loadSettings() {

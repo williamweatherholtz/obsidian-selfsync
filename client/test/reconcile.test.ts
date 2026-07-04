@@ -103,4 +103,27 @@ describe("reconcileAll", () => {
     expect(dec((io as any).m.get("d.md"))).toBe("v1-EDITED");
     expect(files.has("d.md")).toBe(true);
   });
+
+  it("C2: refuses bulk delete-local when the server manifest is empty but base is non-empty", async () => {
+    const { api } = fakeServer(); // empty server (e.g. lost index)
+    const io = fakeIo({ "keep.md": "important" });
+    const base = new BaseStore();
+    base.set("keep.md", { hash: await sha256hex(enc("important")) });
+    const guarded: string[] = [];
+    await reconcileAll(deps(api, io, { base, onGuard: (p) => guarded.push(p) }));
+    expect((io as any).m.has("keep.md")).toBe(true);   // NOT deleted
+    expect(guarded).toContain("keep.md");               // guard fired
+    expect(base.get("keep.md")).toBeDefined();          // base preserved
+  });
+
+  it("still honors delete-local when the server has other files (not a suspicious empty)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "other.md", "still here"); // server non-empty
+    const io = fakeIo({ "gone.md": "x", "other.md": "still here" });
+    const base = new BaseStore();
+    base.set("gone.md", { hash: await sha256hex(enc("x")) });
+    base.set("other.md", { hash: await sha256hex(enc("still here")) });
+    await reconcileAll(deps(api, io, { base }));
+    expect((io as any).m.has("gone.md")).toBe(false);  // legit delete still happens
+  });
 });

@@ -16,11 +16,19 @@ describe("BaseStore", () => {
 });
 
 describe("conflictCopyName", () => {
-  it("inserts a conflict marker before the extension", () => {
-    const when = new Date(Date.UTC(2026, 10, 28, 14, 30));
-    expect(conflictCopyName("notes/meeting.md", "Laptop", when)).toMatch(/^notes\/meeting \(conflict Laptop \d{12}\)\.md$/);
+  it("inserts a conflict marker (14-digit timestamp) before the extension", () => {
+    const when = new Date(Date.UTC(2026, 10, 28, 14, 30, 5));
+    expect(conflictCopyName("notes/meeting.md", "Laptop", when)).toMatch(/^notes\/meeting \(conflict Laptop \d{14}\)\.md$/);
   });
   it("handles a dotless filename", () => {
-    expect(conflictCopyName("README", "Phone", new Date(Date.UTC(2026, 0, 1, 0, 0)))).toMatch(/^README \(conflict Phone \d{12}\)$/);
+    expect(conflictCopyName("README", "Phone", new Date(Date.UTC(2026, 0, 1, 0, 0, 0)))).toMatch(/^README \(conflict Phone \d{14}\)$/);
+  });
+  it("H4: two conflicts on the same path/device in the same minute get DISTINCT names (no overwrite)", () => {
+    const when = new Date(Date.UTC(2026, 0, 1, 0, 0, 0)); // same instant
+    const a = conflictCopyName("n.md", "Dev", when, "aaaaaa");
+    const b = conflictCopyName("n.md", "Dev", when, "bbbbbb");
+    expect(a).not.toBe(b);                 // content tag disambiguates
+    expect(a).toContain("-aaaaaa");
+    expect(b).toContain("-bbbbbb");
   });
 });

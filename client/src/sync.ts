@@ -18,16 +18,18 @@ export interface SyncApi {
 export type SyncState = { version: number };
 export type ChunkCache = Map<string, Uint8Array>;
 
-// Bound the in-session chunk cache so it can't grow to ~whole-vault-in-RAM
-// (chunks are subarray views that also pin their parent file buffers). ~2048
-// chunks * up to 64 KiB ≈ 128 MiB worst case; evict oldest (Map is insertion-ordered).
+// Bound the in-session chunk cache. Chunks arrive as subarray VIEWS into a whole file
+// buffer; caching the view would pin the entire source file in RAM (2048 views from
+// 2048 files ≈ 2048 whole files, not ~128 MiB — a mobile OOM). We copy each chunk
+// (`slice`) so only its ~64 KiB is retained; evict oldest (Map is insertion-ordered).
 const MAX_CACHE_ENTRIES = 2048;
 function cachePut(cache: ChunkCache, hash: string, bytes: Uint8Array): void {
-  if (!cache.has(hash) && cache.size >= MAX_CACHE_ENTRIES) {
+  if (cache.has(hash)) return;
+  if (cache.size >= MAX_CACHE_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(hash, bytes);
+  cache.set(hash, bytes.slice()); // detach from the parent file buffer
 }
 
 function concat(parts: Uint8Array[]): Uint8Array {
