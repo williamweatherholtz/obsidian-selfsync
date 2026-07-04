@@ -1,7 +1,7 @@
 {
   "id": "new-livesync",
   "name": "SelfSync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
   "description": "Self-hosted vault sync to your own server — notes, attachments, and optional settings/plugin sync, with a guided setup.",
   "author": "William Weatherholtz",
