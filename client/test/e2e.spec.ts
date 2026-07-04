@@ -12,7 +12,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pull, pushFile, pushLocalNew, SyncApi, VaultIo, SyncState, ChunkCache } from "../src/sync";
+import { SyncApi, VaultIo, SyncState, ChunkCache } from "../src/sync";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 import { BaseStore } from "../src/base";
 import { reconcileAll, ReconcileDeps } from "../src/reconcile";
@@ -162,46 +162,46 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     const a = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-A-")));
     const b = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-B-")));
 
+    // Every scenario drives the REAL reconcile engine (reconcileAll) on both sides —
+    // the same path production uses — against the real server.
+
     // S1 — text create in A propagates to B
     await a.io.write("n1.md", enc("hello from A"));
-    await pushFile(a.api, a.io, a.state, a.cache, "n1.md");
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a)); // pushes
+    await reconcileAll(dep(b)); // pulls
     expect(dec(await b.io.read("n1.md"))).toBe("hello from A");
 
     // S2 — edit in B propagates to A
     await b.io.write("n1.md", enc("edited in B"));
-    await pushFile(b.api, b.io, b.state, b.cache, "n1.md");
-    await pull(a.api, a.io, a.state, a.cache);
+    await reconcileAll(dep(b));
+    await reconcileAll(dep(a));
     expect(dec(await a.io.read("n1.md"))).toBe("edited in B");
 
     // S3 — binary file (non-UTF8 bytes) round-trips intact
     const bin = new Uint8Array(80000); for (let i = 0; i < bin.length; i++) bin[i] = (i * 37) & 0xff;
     await a.io.write("img.bin", bin);
-    await pushFile(a.api, a.io, a.state, a.cache, "img.bin");
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a));
+    await reconcileAll(dep(b));
     expect(await b.io.read("img.bin")).toEqual(bin);
 
-    // S4 — dedup: a file whose content is a prefix of img.bin shares chunks, so
-    // fewer chunks are missing than a fresh file of the same size would need.
+    // S4 — dedup: identical content under a new path uploads ZERO new chunks
     const { chunk } = await import("../src/chunker");
     const csImg = await chunk(bin);
     expect(csImg.length).toBeGreaterThan(0);
-    const missingOwn = await a.api.missing(csImg.map((c) => c.hash));
-    expect(missingOwn.length).toBe(0); // every chunk of an already-synced file is present
-    // committing identical content under a new path uploads ZERO new chunks
+    expect((await a.api.missing(csImg.map((c) => c.hash))).length).toBe(0);
     await a.io.write("img-copy.bin", bin);
     let uploads = 0; const realPut = a.api.putChunk.bind(a.api);
     a.api.putChunk = async (h, by) => { uploads++; return realPut(h, by); };
-    await pushFile(a.api, a.io, a.state, a.cache, "img-copy.bin");
-    expect(uploads).toBe(0); // shared chunks -> zero new uploads
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a)); // reconcile pushes img-copy via shared chunks
+    expect(uploads).toBe(0);    // shared chunks -> zero new uploads
+    a.api.putChunk = realPut;
+    await reconcileAll(dep(b));
     expect(await b.io.read("img-copy.bin")).toEqual(bin);
 
-    // S5 — delete in A propagates to B
+    // S5 — delete in A propagates to B (engine: delete-remote on A, delete-local on B)
     await a.io.remove("n1.md");
-    await a.api.deleteFile("n1.md");
-    a.known.delete("n1.md");
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a));
+    await reconcileAll(dep(b));
     expect(await exists(path.join(b.root, "n1.md"))).toBe(false);
 
     // Bind mount is real truth (namespaced per user/vault: DATA_ROOT/<user>/<vault>/vault/…)
@@ -266,7 +266,9 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
 
   it("M6: syncs opted-in config but NEVER SelfSync's own folder or opted-out theming", async () => {
     const SELF = "obsidian-selfsync";
-    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true }; // community ON, appearance OFF
+    // Pin the selection this test exercises (independent of default changes): community
+    // plugins ON (to prove they propagate), appearance OFF (to prove opt-out holds).
+    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, community: true, appearance: false };
     const token = await NodeTransport.login(base, "admin", "admin");
     await NodeTransport.createVault(base, token, "cfgsync");
     const build = async (tag: string, device: string): Promise<Client> => {
@@ -288,8 +290,8 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     await fs.writeFile(path.join(a.root, ".obsidian", "appearance.json"), '{"theme":"moonstone"}');
     await fs.writeFile(path.join(a.root, ".obsidian", "plugins", SELF, "data.json"), '{"serverUrl":"http://A-only"}');
 
-    await pushLocalNew(a.api, a.io, a.state, a.cache, a.known);
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a));
+    await reconcileAll(dep(b));
 
     // Opted-in surfaces propagate:
     expect(dec(await b.io.read("Note.md"))).toBe("body");
@@ -320,8 +322,8 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     const a = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-wzA-")), "A", "wizardvault");
     const b = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-wzB-")), "B", "wizardvault");
     await a.io.write("hello.md", enc("hi from wizard vault"));
-    await pushFile(a.api, a.io, a.state, a.cache, "hello.md");
-    await pull(b.api, b.io, b.state, b.cache);
+    await reconcileAll(dep(a));
+    await reconcileAll(dep(b));
     expect(dec(await b.io.read("hello.md"))).toBe("hi from wizard vault");
 
     rmSync(a.root, { recursive: true, force: true });

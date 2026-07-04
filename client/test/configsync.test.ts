@@ -30,35 +30,34 @@ describe("shouldSync — SelfSync self-exclusion is absolute", () => {
   });
   it("does not accidentally exclude a plugin whose id is a prefix of SelfSync's", () => {
     // ".../obsidian-sync/..." must still sync — only the exact SelfSync id is barred.
-    expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on(), SELF)).toBe(true);
+    expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on({ community: true }), SELF)).toBe(true);
   });
 });
 
 describe("shouldSync — category defaults", () => {
-  it("core settings + hotkeys + community sync by default (when enabled)", () => {
+  it("core + hotkeys + appearance + themes + snippets sync by default (match official)", () => {
     const sel = on();
     expect(shouldSync(".obsidian/app.json", sel, SELF)).toBe(true);
     expect(shouldSync(".obsidian/core-plugins.json", sel, SELF)).toBe(true);
     expect(shouldSync(".obsidian/hotkeys.json", sel, SELF)).toBe(true);
-    expect(shouldSync(".obsidian/community-plugins.json", sel, SELF)).toBe(true);
-    expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(true);
+    expect(shouldSync(".obsidian/appearance.json", sel, SELF)).toBe(true);
+    expect(shouldSync(".obsidian/themes/Foo/theme.css", sel, SELF)).toBe(true);
+    expect(shouldSync(".obsidian/snippets/x.css", sel, SELF)).toBe(true);
   });
-  it("appearance + themes + snippets are OFF by default (opt-in)", () => {
+  it("community-plugin code is OFF by default (opt-in — pushing plugin code is riskier)", () => {
     const sel = on();
-    expect(shouldSync(".obsidian/appearance.json", sel, SELF)).toBe(false);
-    expect(shouldSync(".obsidian/themes/Foo/theme.css", sel, SELF)).toBe(false);
-    expect(shouldSync(".obsidian/snippets/x.css", sel, SELF)).toBe(false);
+    expect(shouldSync(".obsidian/community-plugins.json", sel, SELF)).toBe(false);
+    expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(false);
   });
-  it("opting in enables appearance/themes/snippets", () => {
-    expect(shouldSync(".obsidian/appearance.json", on({ appearance: true }), SELF)).toBe(true);
-    expect(shouldSync(".obsidian/themes/Foo/theme.css", on({ appearance: true }), SELF)).toBe(true);
-    expect(shouldSync(".obsidian/snippets/x.css", on({ snippets: true }), SELF)).toBe(true);
+  it("opting in enables community-plugin sync", () => {
+    expect(shouldSync(".obsidian/community-plugins.json", on({ community: true }), SELF)).toBe(true);
+    expect(shouldSync(".obsidian/plugins/dataview/data.json", on({ community: true }), SELF)).toBe(true);
   });
 });
 
 describe("shouldSync — per-plugin deny + community toggle", () => {
   it("a denied plugin id is excluded but others still sync", () => {
-    const sel = on({ pluginDeny: ["dataview"] });
+    const sel = on({ community: true, pluginDeny: ["dataview"] });
     expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(false);
     expect(shouldSync(".obsidian/plugins/templater/data.json", sel, SELF)).toBe(true);
   });

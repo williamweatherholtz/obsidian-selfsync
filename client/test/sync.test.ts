@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pull, pushFile, pushLocalNew, SyncApi, VaultIo, SyncState, ChunkCache } from "../src/sync";
+import { pushFile, fetchFileBytes, SyncApi, VaultIo, ChunkCache } from "../src/sync";
 import { chunk, sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 
@@ -60,34 +60,21 @@ describe("chunk sync engine", () => {
     expect(puts).toBe(0); // all chunks already on the server
   });
 
-  it("pull reassembles a file from chunks and writes bytes", async () => {
+  it("fetchFileBytes reassembles a file from its chunk list", async () => {
     const { api } = fakeServer();
     const ioA = fakeIo({ "n.md": "the quick brown fox" });
     await pushFile(api, ioA, { version: 0 }, new Map(), "n.md");
-    const ioB = fakeIo();
-    const state: SyncState = { version: 0 };
-    await pull(api, ioB, state, new Map());
-    expect(dec(ioB.m.get("n.md")!)).toBe("the quick brown fox");
-    expect(state.version).toBeGreaterThan(0);
+    const meta = (await api.changes(0)).upserts.find((f) => f.path === "n.md")!;
+    const bytes = await fetchFileBytes(api, new Map(), meta.chunks);
+    expect(dec(bytes)).toBe("the quick brown fox");
   });
 
-  it("pull round-trips a binary file (non-UTF8 bytes) intact", async () => {
+  it("fetchFileBytes round-trips a binary file (non-UTF8 bytes) intact", async () => {
     const { api } = fakeServer();
     const bin = new Uint8Array(40000); for (let i = 0; i < bin.length; i++) bin[i] = (i * 37) & 0xff;
     const ioA = fakeIo(); ioA.m.set("img.bin", bin);
     await pushFile(api, ioA, { version: 0 }, new Map(), "img.bin");
-    const ioB = fakeIo();
-    await pull(api, ioB, { version: 0 }, new Map());
-    expect(ioB.m.get("img.bin")).toEqual(bin);
-  });
-
-  it("pushLocalNew skips known paths and pushes only new ones", async () => {
-    const { api, files } = fakeServer();
-    const io = fakeIo({ "a.md": "aaa", "b.md": "bbb" });
-    const known = new Set(["a.md"]);
-    await pushLocalNew(api, io, { version: 0 }, new Map(), known);
-    expect(files.has("b.md")).toBe(true);
-    expect(files.has("a.md")).toBe(false);
-    expect(known.has("b.md")).toBe(true);
+    const meta = (await api.changes(0)).upserts.find((f) => f.path === "img.bin")!;
+    expect(await fetchFileBytes(api, new Map(), meta.chunks)).toEqual(bin);
   });
 });

@@ -56,23 +56,6 @@ export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cac
   return pushFile(api, io, state, cache, path);
 }
 
-// Apply server changes since state.version: fetch each upsert's missing chunks
-// (cache-first), reassemble, write; apply deletes; advance version.
-export async function pull(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache): Promise<void> {
-  const resp = await api.changes(state.version);
-  for (const f of resp.upserts) {
-    const parts: Uint8Array[] = [];
-    for (const h of f.chunks) {
-      let bytes = cache.get(h);
-      if (!bytes) { bytes = await api.getChunk(h); cachePut(cache, h, bytes); }
-      parts.push(bytes);
-    }
-    await io.write(f.path, concat(parts));
-  }
-  for (const d of resp.deletes) await io.remove(d.path);
-  state.version = resp.version;
-}
-
 // Chunk a local file, upload only the chunks the server lacks, then commit its
 // manifest. Returns the file's SHA-256. Populates the cache with its chunks.
 export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string): Promise<string> {
@@ -86,13 +69,4 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   const meta = await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes });
   state.version = Math.max(state.version, meta.version);
   return fileHash;
-}
-
-// Push local files the server doesn't yet know about (initial upload).
-export async function pushLocalNew(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, known: Set<string>): Promise<void> {
-  for (const path of (await io.list()).keys()) {
-    if (known.has(path)) continue;
-    await pushFile(api, io, state, cache, path);
-    known.add(path);
-  }
 }

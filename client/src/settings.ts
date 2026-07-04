@@ -110,15 +110,15 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // Minor categories: compact toggles (see styles.css) so hotkeys/snippets don't
     // read as major decisions.
     const cats = c.createEl("div"); cats.addClass("selfsync-cats");
-    const cat = (name: string, key: "core" | "hotkeys" | "appearance" | "snippets" | "community") =>
-      new Setting(cats).setName(name).addToggle((tg) => tg.setValue(cs[key]).onChange(async (v) => {
+    const cat = (name: string, desc: string, key: "core" | "hotkeys" | "appearance" | "snippets" | "community") =>
+      new Setting(cats).setName(name).setDesc(desc).addToggle((tg) => tg.setValue(cs[key]).onChange(async (v) => {
         cs[key] = v; await this.plugin.saveSettings(); if (key === "community") this.display();
       }));
-    cat("Core settings", "core");
-    cat("Hotkeys", "hotkeys");
-    cat("Appearance & themes", "appearance");
-    cat("CSS snippets", "snippets");
-    cat("Community plugins", "community");
+    cat("Core settings", "app.json, core-plugins.json", "core");
+    cat("Hotkeys", "hotkeys.json", "hotkeys");
+    cat("Appearance & themes", "appearance.json, themes/", "appearance");
+    cat("CSS snippets", "snippets/", "snippets");
+    cat("Community plugins", "Each plugin's code + settings across devices. Off by default — pushing plugin code (incl. desktop-only plugins to mobile) is riskier.", "community");
 
     // Community plugins are the "major" surface — the per-plugin list + the locked
     // SelfSync row get real prominence below.

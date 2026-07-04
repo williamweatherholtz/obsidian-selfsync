@@ -21,13 +21,18 @@ export interface ConfigSyncSelection {
   pluginDeny: string[];  // community plugin ids to exclude individually
 }
 
+// Category defaults mirror official Obsidian Sync's "Vault configuration sync": core
+// settings, hotkeys, appearance, and themes/snippets ON; community-plugin *code* OFF
+// (opt-in, since pushing plugin code across devices — incl. desktop-only plugins onto
+// mobile — is the riskier default). `enabled` is still off overall: config sync is
+// opt-in as a whole; notes always sync regardless.
 export const DEFAULT_CONFIG_SYNC: ConfigSyncSelection = {
-  enabled: false, // config sync is itself opt-in; notes still sync when this is off
+  enabled: false,
   core: true,
-  community: true,
-  appearance: false,
-  snippets: false,
   hotkeys: true,
+  appearance: true,
+  snippets: true,
+  community: false,
   pluginDeny: [],
 };
 
