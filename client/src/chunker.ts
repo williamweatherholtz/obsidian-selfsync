@@ -10,31 +10,40 @@ const GEAR = (() => {
   return g;
 })();
 
+// Precomputed byte→2-hex-digit table: avoids a toString(16)+padStart per byte on the
+// hot hashing path (every chunk of every file).
+const HEX: string[] = Array.from({ length: 256 }, (_, b) => b.toString(16).padStart(2, "0"));
+
 export async function sha256hex(bytes: Uint8Array): Promise<string> {
   // A Uint8Array is a BufferSource; digest hashes exactly its view (offset+length),
   // so subarray chunks hash correctly without copying.
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource));
-  let s = ""; for (const b of d) s += b.toString(16).padStart(2, "0");
+  let s = ""; for (let i = 0; i < d.length; i++) s += HEX[d[i]];
   return s;
 }
 
-// Content-defined chunking via a rolling gear-hash. Deterministic: identical
-// bytes always split into the same chunks, so all clients agree on chunk hashes
-// (the basis for dedup). A file shorter than MIN is a single chunk.
+// Content-defined chunking via a rolling gear-hash. Deterministic: identical bytes
+// always split into the same chunks, so all clients agree on chunk hashes (the basis
+// for dedup). A file shorter than MIN is a single chunk.
+//
+// Two phases so the CPU-bound boundary scan isn't interleaved with (async) hashing:
+//   1. scan synchronously to cut the byte range into slices (no awaits, no allocs
+//      beyond subarray views);
+//   2. hash all slices — native crypto.subtle.digest calls run concurrently, and
+//      Promise.all preserves order so the result is identical to a sequential hash.
 export async function chunk(bytes: Uint8Array): Promise<Chunk[]> {
-  const out: Chunk[] = [];
-  let start = 0, i = 0, hash = 0;
-  const push = async (end: number) => {
-    const slice = bytes.subarray(start, end);
-    out.push({ hash: await sha256hex(slice), bytes: slice });
-    start = end; hash = 0;
-  };
-  while (i < bytes.length) {
+  const slices: Uint8Array[] = [];
+  let start = 0, hash = 0;
+  for (let i = 0; i < bytes.length; i++) {
     hash = ((hash << 1) + GEAR[bytes[i]]) >>> 0;
     const len = i - start + 1;
-    if (len >= MIN && ((hash & AVG_MASK) === 0 || len >= MAX)) { await push(i + 1); }
-    i++;
+    if (len >= MIN && ((hash & AVG_MASK) === 0 || len >= MAX)) {
+      slices.push(bytes.subarray(start, i + 1));
+      start = i + 1; hash = 0;
+    }
   }
-  if (start < bytes.length || out.length === 0) await push(bytes.length);
-  return out;
+  if (start < bytes.length || slices.length === 0) slices.push(bytes.subarray(start, bytes.length));
+
+  const hashes = await Promise.all(slices.map((s) => sha256hex(s)));
+  return slices.map((bytes, i) => ({ hash: hashes[i], bytes }));
 }
