@@ -37,11 +37,15 @@ class LogModal extends Modal {
     this.titleEl.setText("New LiveSync — sync log");
     const pre = this.contentEl.createEl("pre", { text: this.plugin.getLogText() });
     pre.setAttribute("style", "max-height:60vh;overflow:auto;white-space:pre-wrap;user-select:text;font-size:12px;");
-    const btn = this.contentEl.createEl("button", { text: "Copy to clipboard" });
-    btn.onclick = async () => {
+    const bar = this.contentEl.createEl("div");
+    bar.setAttribute("style", "display:flex;gap:8px;margin-top:10px;");
+    const copyBtn = bar.createEl("button", { text: "Copy to clipboard" });
+    copyBtn.onclick = async () => {
       try { await navigator.clipboard.writeText(this.plugin.getLogText()); new Notice("Sync log copied"); }
       catch { new Notice("Copy failed — select the text manually"); }
     };
+    const clearBtn = bar.createEl("button", { text: "Clear log" });
+    clearBtn.onclick = () => { this.plugin.clearLogs(); pre.setText(this.plugin.getLogText()); new Notice("Sync log cleared"); };
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -73,6 +77,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.setStatus("off");
 
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
+    this.addCommand({ id: "clear-log", name: "Clear sync log", callback: () => this.clearLogs() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
 
     this.registerEvent(this.app.vault.on("modify", (f) => this.onLocalEvent(f)));
@@ -101,6 +106,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (notice || this.settings.verbose) new Notice(`LiveSync: ${msg}`);
   }
   getLogText() { return this.logs.join("\n"); }
+  clearLogs() { this.logs = []; this.log("log cleared"); }
   showLog() { new LogModal(this.app, this).open(); }
 
   private setStatus(state: ConnState, detail = "") {
