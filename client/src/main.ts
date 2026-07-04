@@ -186,6 +186,22 @@ export default class NewLiveSyncPlugin extends Plugin {
     return encodeSetupLink({ server: this.settings.serverUrl, user: this.settings.username });
   }
 
+  // --- switch vault without re-login: reuse the existing session (token / stored
+  // password), so the "Switch vault" flow never re-asks for server or account. ---
+  async currentVaults(): Promise<string[]> {
+    const token = await this.acquireToken();
+    return HttpTransport.listVaults(this.settings.serverUrl, token);
+  }
+  async createRemoteVault(name: string): Promise<void> {
+    const token = await this.acquireToken();
+    await HttpTransport.createVault(this.settings.serverUrl, token, name);
+  }
+  async switchToVault(name: string): Promise<void> {
+    this.settings.vaultId = name;
+    await this.saveSettings();
+    await this.reconnect();
+  }
+
   // --- selective config sync: guarded, best-effort live reload -----------------
   // The IO records each synced .obsidian/ file here; we flush once per reconcile so a
   // plugin is reloaded at most once even if several of its files changed.

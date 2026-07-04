@@ -33,6 +33,6 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           # BRAT downloads these from the release. manifest.json's version must equal the tag.
           gh release create "$tag" \
-            client/main.js manifest.json versions.json \
+            client/main.js client/styles.css manifest.json versions.json \
             --title "$tag" \
             --notes "SelfSync $tag — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync."

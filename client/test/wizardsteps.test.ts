@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canAdvance, nextStep, statusLine, WizardState } from "../src/wizardsteps";
+import { canAdvance, nextStep, statusTitle, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -37,22 +37,12 @@ describe("nextStep", () => {
   });
 });
 
-describe("statusLine", () => {
-  it("unconfigured (no user/vault) → Not set up regardless of phase", () => {
-    expect(statusLine("idle", {})).toEqual({ title: "Not set up", detail: "Sync your notes to your own server." });
-  });
-  it("phase → title, with who + optional last-synced label", () => {
-    const who = { user: "will", vault: "notes" };
-    expect(statusLine("connecting", who).title).toBe("Connecting…");
-    expect(statusLine("syncing", who).title).toBe("Syncing…");
-    expect(statusLine("offline", who).title).toBe("Offline — retrying");
-    const idle = statusLine("idle", { ...who, lastSyncedLabel: "Last synced 2m ago" });
-    expect(idle.title).toBe("Fully synced");
-    expect(idle.detail).toContain("will");
-    expect(idle.detail).toContain("notes");
-    expect(idle.detail).toContain("Last synced 2m ago");
-  });
-  it("configured but off → Not set up (signed out)", () => {
-    expect(statusLine("off", { user: "will", vault: "notes" }).title).toBe("Not set up");
+describe("statusTitle", () => {
+  it("maps each phase to its headline (identity lives under Connection, not here)", () => {
+    expect(statusTitle("off")).toBe("Not connected");
+    expect(statusTitle("connecting")).toBe("Connecting…");
+    expect(statusTitle("syncing")).toBe("Syncing…");
+    expect(statusTitle("idle")).toBe("Fully synced");
+    expect(statusTitle("offline")).toBe("Offline — retrying");
   });
 });

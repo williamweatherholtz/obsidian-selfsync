@@ -38,20 +38,15 @@ export function nextStep(step: WizardStep, opts?: { haveLink?: boolean }): Wizar
   }
 }
 
-export interface StatusLineInput { user?: string; vault?: string; lastSyncedLabel?: string; }
-export interface StatusLines { title: string; detail: string; }
-
-const NOT_SET_UP: StatusLines = { title: "Not set up", detail: "Sync your notes to your own server." };
-
-export function statusLine(phase: Phase, i: StatusLineInput): StatusLines {
-  const configured = Boolean(i.user && i.vault);
-  if (!configured || phase === "off") return NOT_SET_UP;
-  const who = `Signed in as ${i.user} · Remote vault '${i.vault}'`;
+// The status-card headline for a connection phase. Identity (account, remote vault)
+// and last-synced live under the Connection section, NOT the card — so this is just
+// the state title. The unconfigured "Not set up" case is handled by the renderer.
+export function statusTitle(phase: Phase): string {
   switch (phase) {
-    case "connecting": return { title: "Connecting…", detail: who };
-    case "syncing":    return { title: "Syncing…", detail: who };
-    case "offline":    return { title: "Offline — retrying", detail: who };
-    case "idle":       return { title: "Fully synced", detail: who + (i.lastSyncedLabel ? ` · ${i.lastSyncedLabel}` : "") };
-    default:           return NOT_SET_UP;
+    case "off":        return "Not connected";
+    case "connecting": return "Connecting…";
+    case "syncing":    return "Syncing…";
+    case "idle":       return "Fully synced";
+    case "offline":    return "Offline — retrying";
   }
 }
