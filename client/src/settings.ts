@@ -1,6 +1,8 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC } from "./configsync";
+import { statusLine } from "./wizardsteps";
+import { light } from "./syncstate";
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -32,43 +34,107 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this; containerEl.empty();
     const s = this.plugin.settings;
+    const configured = Boolean(s.vaultId && s.serverUrl && s.username);
 
-    new Setting(containerEl).setName("Status").setDesc(`Connection: ${this.plugin.statusText()} · vault: ${s.vaultId || "(none)"}`);
-    new Setting(containerEl).setName("Account & vault")
-      .setDesc("Log in / register and choose which server vault this Obsidian vault syncs to.")
-      .addButton((b) => b.setButtonText("Set up / switch vault").setCta().onClick(() => this.plugin.openSetup()));
+    this.renderStatusCard(containerEl, s, configured);
+    if (!configured) return; // unconfigured: only the status card + Set up button
 
-    new Setting(containerEl).setName("Server URL").addText((t) =>
-      t.setValue(s.serverUrl).onChange(async (v) => { s.serverUrl = v.trim(); await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName("Username").addText((t) =>
-      t.setValue(s.username).onChange(async (v) => { s.username = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl).setName("Password").addText((t) => {
-      t.setValue(s.password).onChange(async (v) => { s.password = v; await this.plugin.saveSettings(); });
-      t.inputEl.type = "password";
-    });
-    new Setting(containerEl)
-      .setName("Verbose notices")
-      .setDesc("Pop a notice for every push/pull (noisy — useful while debugging).")
-      .addToggle((tg) => tg.setValue(s.verbose).onChange(async (v) => { s.verbose = v; await this.plugin.saveSettings(); }));
-    new Setting(containerEl)
-      .setName("Conflict handling")
-      .setDesc("How to resolve a file edited on two devices before syncing.")
+    this.renderConnection(containerEl, s);
+    this.renderWhatSyncs(containerEl, s);
+    this.renderAdvanced(containerEl, s);
+  }
+
+  private lastSyncedLabel(s: NewLiveSyncSettings): string | undefined {
+    if (!s.lastSyncedAt) return undefined;
+    const mins = Math.round((Date.now() - s.lastSyncedAt) / 60000);
+    if (mins <= 0) return "Last synced just now";
+    if (mins < 60) return `Last synced ${mins}m ago`;
+    return `Last synced ${new Date(s.lastSyncedAt).toLocaleTimeString()}`;
+  }
+
+  private renderStatusCard(c: HTMLElement, s: NewLiveSyncSettings, configured: boolean): void {
+    const phase = this.plugin.statusText(); // FSM Phase
+    const spec = light(phase);
+    const lines = statusLine(phase, { user: s.username, vault: s.vaultId, lastSyncedLabel: this.lastSyncedLabel(s) });
+    const card = c.createEl("div");
+    card.setAttribute("style", "padding:12px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:16px;");
+    const head = card.createEl("div", { text: "● " + lines.title });
+    head.setAttribute("style", `font-weight:600;color:${spec.color};`);
+    card.createEl("div", { text: lines.detail }).setAttribute("style", "opacity:0.8;font-size:12px;margin-top:2px;");
+    const bar = card.createEl("div"); bar.setAttribute("style", "display:flex;gap:8px;margin-top:10px;");
+    if (!configured) {
+      const setup = bar.createEl("button", { text: "Set up SelfSync" }); setup.addClass("mod-cta");
+      setup.onclick = () => this.plugin.openSetup();
+      return;
+    }
+    if (phase === "offline") { const r = bar.createEl("button", { text: "Reconnect" }); r.onclick = () => this.plugin.reconnect(); }
+    const add = bar.createEl("button", { text: "Add a device" }); add.onclick = () => this.showDeviceLink();
+  }
+
+  private showDeviceLink(): void {
+    const link = this.plugin.addDeviceLink();
+    navigator.clipboard?.writeText(link).then(
+      () => new Notice("SelfSync: setup link copied — paste it on the other device"),
+      () => new Notice(`SelfSync setup link: ${link}`),
+    );
+  }
+
+  private renderConnection(c: HTMLElement, s: NewLiveSyncSettings): void {
+    c.createEl("h3", { text: "Connection" });
+    new Setting(c).setName("Server").setDesc(s.serverUrl)
+      .addButton((b) => b.setButtonText("Change").onClick(() => this.plugin.openSetup()));
+    new Setting(c).setName("Account").setDesc(s.username)
+      .addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); }));
+    new Setting(c).setName("Remote vault").setDesc(s.vaultId)
+      .addButton((b) => b.setButtonText("Switch vault").onClick(() => this.plugin.openSetup()));
+  }
+
+  private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
+    c.createEl("h3", { text: "What syncs" });
+    new Setting(c).setName("Notes & attachments").setDesc("Always synced.");
+    const cs = s.configSync;
+    const summary = !cs.enabled ? "Off" :
+      `On${cs.pluginDeny.length ? ` — ${cs.pluginDeny.length} plugin(s) excluded` : ""}`;
+    const detail = c.createEl("details");
+    detail.createEl("summary", { text: `Obsidian settings — ${summary}` });
+    this.renderSelectiveSync(detail, s); // existing M6 panel, now nested
+  }
+
+  private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
+    const adv = c.createEl("details");
+    adv.createEl("summary", { text: "Advanced" });
+    new Setting(adv).setName("Conflict resolution")
       .addDropdown((dd) => dd
-        .addOption("auto-merge", "Auto-merge Markdown (recommended)")
-        .addOption("conflict-file", "Always create a conflict copy")
+        .addOption("auto-merge", "Automatically merge")
+        .addOption("conflict-file", "Create conflict file")
         .setValue(s.conflictStrategy)
         .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); }));
-    new Setting(containerEl)
-      .setName("Device name")
-      .setDesc("Shown in conflict-copy filenames. Blank = auto.")
+    new Setting(adv).setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto.")
       .addText((t) => t.setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
+    new Setting(adv).setName("Detailed logging")
+      .addToggle((tg) => tg.setValue(s.verbose).onChange(async (v) => { s.verbose = v; await this.plugin.saveSettings(); }));
+    new Setting(adv).setName("Diagnostics")
+      .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
+      .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
+    new Setting(adv).setName("Disconnect").setDesc("Stop syncing this vault. Local files are kept.")
+      .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
+  }
 
-    this.renderSelectiveSync(containerEl, s);
-
-    new Setting(containerEl).setName("Connection").addButton((b) =>
-      b.setButtonText("Reconnect now").setCta().onClick(() => this.plugin.reconnect()));
-    new Setting(containerEl).setName("Diagnostics").addButton((b) =>
-      b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()));
+  private copyDebugInfo(s: NewLiveSyncSettings): void {
+    let host = s.serverUrl;
+    try { host = new URL(s.serverUrl).host; } catch { /* keep raw */ }
+    const info = [
+      `phase: ${this.plugin.statusText()}`,
+      `server: ${host}`,
+      `vault: ${s.vaultId}`,
+      `configSync: ${s.configSync.enabled ? "on" : "off"}`,
+      "--- recent log ---",
+      this.plugin.getLogText(),
+    ].join("\n");
+    navigator.clipboard?.writeText(info).then(
+      () => new Notice("SelfSync: debug info copied"),
+      () => new Notice("SelfSync: copy failed — open the sync log instead"),
+    );
   }
 
   // Panel: which .obsidian/ config surfaces sync. See configsync.ts for the rules.
