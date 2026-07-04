@@ -1,0 +1,34 @@
+# Intellij
+*.iml
+.idea
+
+# npm
+node_modules
+package-lock.json
+
+# build
+main.js
+main_org.js
+main_org_*.js
+*.js.map
+meta.json
+meta-*.json
+
+
+# obsidian
+data.json
+.vscode
+
+# environment variables
+.env
+
+# local config files
+*.local
+
+cov_profile/**
+
+coverage
+src/apps/cli/dist/*
+_testdata/**
+utils/bench/splitResults.csv
+.eslintcache

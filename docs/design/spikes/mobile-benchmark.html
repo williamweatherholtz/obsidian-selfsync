@@ -1,0 +1,284 @@
+<title>Sync Engine — Mobile Device Spike</title>
+<style>
+  :root {
+    --ground:#0e1116; --surface:#161b22; --surface2:#1b222b; --border:#232a33;
+    --text:#d5dbe3; --muted:#8b95a3; --accent:#56b6c2; --accent-dim:#2d4a50;
+    --ok:#7ec699; --warn:#e0b072; --bad:#e06c75;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--text); font-family:var(--sans);
+    line-height:1.5; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:640px; margin:0 auto; padding:24px 18px 80px; }
+  header h1 { font-size:1.4rem; margin:0 0 4px; letter-spacing:-0.01em; text-wrap:balance; }
+  header p { margin:0 0 20px; color:var(--muted); font-size:0.9rem; }
+  .eyebrow { text-transform:uppercase; letter-spacing:0.12em; font-size:0.68rem;
+    color:var(--accent); font-weight:600; }
+  section { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:16px; margin:14px 0; }
+  h2 { font-size:0.82rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted);
+    margin:0 0 12px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:500; font-size:0.74rem; text-transform:uppercase; letter-spacing:0.05em; }
+  td.num { font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  .val { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--text); }
+  button { font-family:var(--sans); font-size:1rem; font-weight:600; cursor:pointer;
+    border:1px solid var(--accent-dim); background:var(--accent-dim); color:#eafaff;
+    border-radius:9px; padding:13px 18px; width:100%; transition:filter .15s, background .15s; }
+  button.primary { background:var(--accent); color:#04191d; border-color:var(--accent); }
+  button:hover { filter:brightness(1.08); }
+  button:active { filter:brightness(0.95); }
+  button:disabled { opacity:0.5; cursor:default; filter:none; }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .btn-secondary { margin-top:10px; background:transparent; color:var(--accent); border-color:var(--border); }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px;
+    font-size:0.8rem; background:var(--surface2); border:1px solid var(--border); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.ok{background:var(--ok);} .dot.warn{background:var(--warn);} .dot.bad{background:var(--bad);}
+  .status { font-family:var(--mono); font-size:0.82rem; color:var(--muted); min-height:1.2em; margin-top:10px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:0.86rem; }
+  .kv .k { color:var(--muted); }
+  .kv .v { font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right; word-break:break-word; }
+  .note { color:var(--muted); font-size:0.78rem; margin-top:12px; }
+  .hint { font-size:0.8rem; color:var(--muted); }
+  .accent { color:var(--accent); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">new-livesync · device spike</div>
+    <h1>Mobile Sync-Engine Benchmark</h1>
+    <p>Open this on your phone (in Obsidian's browser or the OS browser), tap Run, and share the results. It measures the compute + storage primitives the sync client depends on: content-defined chunking, hashing, encryption, and local storage.</p>
+  </header>
+
+  <section>
+    <h2>Device</h2>
+    <div class="kv" id="device"><div class="k">reading…</div><div class="v"></div></div>
+  </section>
+
+  <section>
+    <button id="run" class="primary">Run benchmark</button>
+    <button id="copy" class="btn-secondary" disabled>Copy results</button>
+    <div class="status" id="status">Idle. Runs entirely on-device; nothing is uploaded.</div>
+  </section>
+
+  <section>
+    <h2>Throughput</h2>
+    <table>
+      <thead><tr><th>Test</th><th style="text-align:right">Size</th><th style="text-align:right">Rate</th><th style="text-align:right">Detail</th></tr></thead>
+      <tbody id="results"><tr><td colspan="4" class="hint">Not run yet.</td></tr></tbody>
+    </table>
+    <div class="note">Chunking = a gear-hash rolling CDC scan (FastCDC-class). SHA-256 &amp; AES-256-GCM use native WebCrypto. Rates are MB/s (higher is better).</div>
+  </section>
+
+  <section>
+    <h2>Capabilities</h2>
+    <div class="chips" id="caps"><span class="chip"><span class="dot"></span>pending</span></div>
+    <div class="note" id="storageNote"></div>
+  </section>
+
+  <section>
+    <h2>Result summary</h2>
+    <div class="kv"><div class="k">Plain-text export (for pasting back)</div><div class="v"></div></div>
+    <pre class="status" id="summary" style="white-space:pre-wrap; margin-top:8px;">—</pre>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const MB = 1024 * 1024;
+  const fmt = (n, d = 1) => (isFinite(n) ? n.toFixed(d) : "—");
+  const now = () => performance.now();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const results = [];
+  const caps = [];
+
+  // Fast, non-crypto fill (throughput test doesn't need real randomness)
+  function fillPseudo(buf) {
+    let x = 0x9e3779b9 ^ buf.length;
+    for (let i = 0; i < buf.length; i++) {
+      x ^= x << 13; x ^= x >>> 17; x ^= x << 5; x |= 0;
+      buf[i] = x & 0xff;
+    }
+  }
+
+  // Gear table for the rolling hash
+  const GEAR = (function () {
+    const g = new Uint32Array(256);
+    let s = 0x1234567;
+    for (let i = 0; i < 256; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; g[i] = s * 2654435761 >>> 0; }
+    return g;
+  })();
+
+  function chunkScan(buf) {
+    const MASK = (1 << 13) - 1;   // ~8 KB average
+    const MIN = 2048, MAX = 65536;
+    let hash = 0, last = 0, chunks = 0;
+    for (let i = 0; i < buf.length; i++) {
+      hash = ((hash << 1) + GEAR[buf[i]]) >>> 0;
+      const len = i - last;
+      if (len >= MIN && ((hash & MASK) === 0 || len >= MAX)) { chunks++; last = i; hash = 0; }
+    }
+    if (last < buf.length) chunks++;
+    return chunks;
+  }
+
+  async function benchSize(bytes) {
+    const label = (bytes / MB) + " MB";
+    const buf = new Uint8Array(bytes);
+    fillPseudo(buf);
+
+    // Chunking
+    setStatus("Chunking " + label + "…"); await sleep(0);
+    let t = now(); const chunks = chunkScan(buf); let dt = now() - t;
+    addRow("Chunk (CDC)", label, (bytes / MB) / (dt / 1000), chunks + " chunks");
+
+    // SHA-256
+    setStatus("Hashing " + label + "…"); await sleep(0);
+    t = now(); await crypto.subtle.digest("SHA-256", buf); dt = now() - t;
+    addRow("SHA-256", label, (bytes / MB) / (dt / 1000), fmt(dt, 0) + " ms");
+
+    // AES-256-GCM
+    setStatus("Encrypting " + label + "…"); await sleep(0);
+    try {
+      const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      t = now(); await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, buf); dt = now() - t;
+      addRow("AES-256-GCM", label, (bytes / MB) / (dt / 1000), fmt(dt, 0) + " ms");
+    } catch (e) { addRow("AES-256-GCM", label, NaN, "err: " + e.message); }
+  }
+
+  function idbOpen(name) {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(name, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("blobs");
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  async function benchIDB() {
+    setStatus("Testing IndexedDB…"); await sleep(0);
+    const N = 64, SZ = 64 * 1024, name = "spike_" + Date.now();
+    try {
+      const db = await idbOpen(name);
+      const blob = new Uint8Array(SZ); fillPseudo(blob);
+      let t = now();
+      await new Promise((res, rej) => {
+        const tx = db.transaction("blobs", "readwrite"); const st = tx.objectStore("blobs");
+        for (let i = 0; i < N; i++) st.put(blob.slice(), i);
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+      let dt = now() - t;
+      addRow("IndexedDB write", (N * SZ / MB) + " MB", (N * SZ / MB) / (dt / 1000), N + " records");
+      t = now();
+      await new Promise((res, rej) => {
+        const tx = db.transaction("blobs", "readonly"); const st = tx.objectStore("blobs");
+        let got = 0; for (let i = 0; i < N; i++) { const g = st.get(i); g.onsuccess = () => { if (++got === N) res(); }; }
+        tx.onerror = () => rej(tx.error);
+      });
+      dt = now() - t;
+      addRow("IndexedDB read", (N * SZ / MB) + " MB", (N * SZ / MB) / (dt / 1000), N + " records");
+      db.close(); indexedDB.deleteDatabase(name);
+      caps.push(["IndexedDB", "ok"]);
+    } catch (e) { addRow("IndexedDB", "—", NaN, "err: " + e.message); caps.push(["IndexedDB", "bad"]); }
+  }
+
+  async function benchOPFS() {
+    setStatus("Checking OPFS…"); await sleep(0);
+    if (!navigator.storage || !navigator.storage.getDirectory) { caps.push(["OPFS", "bad"]); return; }
+    try {
+      const dir = await navigator.storage.getDirectory();
+      const fh = await dir.getFileHandle("spike.bin", { create: true });
+      const w = await fh.createWritable();
+      const data = new Uint8Array(MB); fillPseudo(data);
+      const t = now(); await w.write(data); await w.close(); const dt = now() - t;
+      addRow("OPFS write", "1 MB", 1 / (dt / 1000), fmt(dt, 0) + " ms");
+      await dir.removeEntry("spike.bin");
+      caps.push(["OPFS", "ok"]);
+    } catch (e) { addRow("OPFS", "—", NaN, "err: " + e.message); caps.push(["OPFS", "warn"]); }
+  }
+
+  function addRow(test, size, rate, detail) {
+    results.push({ test, size, rate, detail });
+    const tb = $("results");
+    if (tb.querySelector(".hint")) tb.innerHTML = "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${test}</td><td class="num">${size}</td><td class="num accent">${isFinite(rate) ? fmt(rate) : "—"}</td><td class="num" style="color:var(--muted)">${detail}</td>`;
+    tb.appendChild(tr);
+  }
+  function setStatus(s) { $("status").textContent = s; }
+
+  function renderCaps() {
+    const box = $("caps"); box.innerHTML = "";
+    caps.push(["Web Workers", typeof Worker !== "undefined" ? "ok" : "bad"]);
+    caps.push(["WebCrypto", (crypto && crypto.subtle) ? "ok" : "bad"]);
+    for (const [name, st] of caps) {
+      const c = document.createElement("span"); c.className = "chip";
+      c.innerHTML = `<span class="dot ${st}"></span>${name}`;
+      box.appendChild(c);
+    }
+  }
+
+  async function deviceInfo() {
+    const d = $("device"); d.innerHTML = "";
+    const rows = [
+      ["User agent", navigator.userAgent],
+      ["CPU cores", navigator.hardwareConcurrency || "unknown"],
+      ["Device memory", (navigator.deviceMemory ? navigator.deviceMemory + " GB (approx)" : "unknown")],
+    ];
+    if (navigator.storage && navigator.storage.estimate) {
+      try {
+        const est = await navigator.storage.estimate();
+        rows.push(["Storage quota", (est.quota / MB).toFixed(0) + " MB"]);
+        rows.push(["Storage used", (est.usage / MB).toFixed(1) + " MB"]);
+        $("storageNote").textContent = "navigator.storage.estimate() reported ~" + (est.quota / MB / 1024).toFixed(1) + " GB quota. On iOS this can be evicted after ~7 days without app use — a design consideration for the local sync cache.";
+      } catch (e) {}
+    }
+    for (const [k, v] of rows) {
+      const kd = document.createElement("div"); kd.className = "k"; kd.textContent = k;
+      const vd = document.createElement("div"); vd.className = "v"; vd.textContent = v;
+      d.appendChild(kd); d.appendChild(vd);
+    }
+  }
+
+  function buildSummary() {
+    const lines = ["new-livesync mobile spike — " + new Date().toISOString()];
+    lines.push("UA: " + navigator.userAgent);
+    lines.push("cores=" + (navigator.hardwareConcurrency || "?") + " mem=" + (navigator.deviceMemory || "?") + "GB");
+    lines.push("--- throughput (MB/s) ---");
+    for (const r of results) lines.push(`${r.test} @ ${r.size}: ${isFinite(r.rate) ? fmt(r.rate) : "n/a"} (${r.detail})`);
+    lines.push("--- capabilities ---");
+    for (const [n, s] of caps) lines.push(`${n}: ${s}`);
+    return lines.join("\n");
+  }
+
+  $("run").addEventListener("click", async () => {
+    $("run").disabled = true; $("copy").disabled = true;
+    $("results").innerHTML = ""; results.length = 0; caps.length = 0;
+    const t0 = now();
+    try {
+      for (const mb of [1, 4, 16]) { await benchSize(mb * MB); await sleep(0); }
+      await benchIDB();
+      await benchOPFS();
+      renderCaps();
+      const sum = buildSummary(); $("summary").textContent = sum;
+      setStatus("Done in " + fmt((now() - t0) / 1000, 1) + " s. Tap “Copy results”.");
+      $("copy").disabled = false;
+    } catch (e) {
+      setStatus("Error: " + e.message);
+    } finally { $("run").disabled = false; }
+  });
+
+  $("copy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("summary").textContent); setStatus("Copied to clipboard."); }
+    catch (e) { setStatus("Copy failed — select the summary text manually."); }
+  });
+
+  deviceInfo();
+})();
+</script>

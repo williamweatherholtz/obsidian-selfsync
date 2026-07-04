@@ -1,0 +1,65 @@
+/* SelfSync settings tab styling. Class names are applied in settings.ts. */
+
+/* Collapsible section (Advanced) — a native-feeling disclosure with a rotating chevron
+   instead of the browser's default triangle. */
+.selfsync-section {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 12px;
+  padding-top: 4px;
+}
+.selfsync-section > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.selfsync-section > summary:hover { color: var(--text-normal); }
+.selfsync-section > summary::-webkit-details-marker { display: none; }
+.selfsync-section > summary::before {
+  content: "\203A"; /* › */
+  font-size: 1.1em;
+  line-height: 1;
+  transition: transform 0.15s ease;
+  opacity: 0.7;
+}
+.selfsync-section[open] > summary::before { transform: rotate(90deg); }
+
+/* Compact category toggles (minor settings: core / hotkeys / appearance / snippets /
+   community) — tighter than a full setting row so they don't read as major. */
+.selfsync-cats {
+  margin: 4px 0 6px;
+  padding-left: 6px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+.selfsync-cats .setting-item {
+  border-top: none;
+  padding: 5px 6px;
+}
+.selfsync-cats .setting-item-info { margin-right: 8px; }
+.selfsync-cats .setting-item-name { font-size: var(--font-ui-small); }
+
+/* SelfSync's own plugin: a locked, non-interactive row so it's obvious it can never
+   sync (no toggle that looks changeable). */
+.selfsync-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.selfsync-locked .selfsync-lock { font-size: 14px; opacity: 0.9; }
+
+/* Per-plugin allow/deny list (the "major" part of settings sync). */
+.selfsync-plugins .setting-item {
+  border-top: none;
+  padding: 6px 6px;
+}

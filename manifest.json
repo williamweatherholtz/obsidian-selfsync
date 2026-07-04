@@ -1,0 +1,10 @@
+{
+  "id": "selfsync",
+  "name": "SelfSync",
+  "version": "0.5.0",
+  "minAppVersion": "1.5.0",
+  "description": "Self-hosted vault sync to your own server — notes, attachments, and optional settings/plugin sync, with a guided setup.",
+  "author": "William Weatherholtz",
+  "authorUrl": "https://github.com/williamweatherholtz/obsidian-selfsync",
+  "isDesktopOnly": false
+}
