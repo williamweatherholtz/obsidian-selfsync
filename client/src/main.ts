@@ -93,6 +93,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // --- observability + connection lifecycle (explicit FSM, see syncstate.ts) ---
   private statusEl?: HTMLElement;
+  private ribbonEl?: HTMLElement; // state-colored ribbon icon (the sync indicator on mobile)
   private logs: string[] = [];
   private machine = new SyncMachine((phase) => this.renderLight(phase));
   private reconnectTimer?: number;
@@ -108,7 +109,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.loadSettings();
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
-    this.statusEl = this.addStatusBarItem();
+    this.statusEl = this.addStatusBarItem(); // desktop status bar (absent on mobile)
+    // Ribbon icon is the sync indicator that also shows on MOBILE (no status bar there);
+    // its color tracks state, tapping opens the sync log.
+    this.ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => this.showLog());
     this.renderLight(this.machine.get()); // initial: off
 
     this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => this.openSetup() });
@@ -280,6 +284,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       dot.setAttribute("style", `color:${spec.color};margin-right:4px;`);
       this.statusEl.createSpan({ text: spec.label });
       this.statusEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
+    }
+    if (this.ribbonEl) {
+      this.ribbonEl.style.color = spec.color; // SVG uses currentColor -> tints the icon
+      this.ribbonEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
     }
   }
   statusText() { return this.machine.get(); }
