@@ -1,0 +1,463 @@
+<style>
+  :root {
+    --ss-page-bg: #14151a;
+    --ss-page-fg: #c9ccd4;
+    --ss-page-muted: #8b8f9a;
+    --ss-page-rule: #2a2d36;
+    --ss-page-accent: #8b6cef;
+    --ss-note-bg: #1b1d24;
+    --ss-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --ss-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body.ss-doc { margin: 0; }
+  .ss-doc {
+    background: var(--ss-page-bg);
+    color: var(--ss-page-fg);
+    font-family: var(--ss-font-ui);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .ss-wrap { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* ---- doc-level typography ---- */
+  .ss-kicker { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ss-page-accent); font-weight: 600; margin: 0 0 10px; }
+  .ss-h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; margin: 0 0 14px; font-weight: 700; letter-spacing: -.02em; text-wrap: balance; color: #f3f4f8; }
+  .ss-lede { font-size: 17px; color: var(--ss-page-muted); max-width: 68ch; margin: 0 0 8px; }
+  .ss-doc h2.ss-sec { font-size: 22px; font-weight: 680; letter-spacing: -.01em; margin: 56px 0 6px; color: #eceef4; }
+  .ss-doc h2.ss-sec::before { content: ""; display: block; width: 34px; height: 3px; border-radius: 2px; background: var(--ss-page-accent); margin-bottom: 14px; }
+  .ss-sec-sub { color: var(--ss-page-muted); max-width: 70ch; margin: 0 0 24px; }
+
+  /* ---- layout with margin annotations ---- */
+  .ss-split { display: grid; grid-template-columns: minmax(0,1fr) 260px; gap: 28px; align-items: start; }
+  @media (max-width: 900px) { .ss-split { grid-template-columns: 1fr; } }
+  .ss-note { background: var(--ss-note-bg); border: 1px solid var(--ss-page-rule); border-left: 3px solid var(--ss-page-accent); border-radius: 8px; padding: 13px 15px; font-size: 13px; color: #aeb2bd; }
+  .ss-note h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ss-page-accent); font-weight: 700; }
+  .ss-note p { margin: 0 0 8px; } .ss-note p:last-child { margin: 0; }
+  .ss-note code { font-family: var(--ss-font-mono); font-size: 12px; background: rgba(139,108,239,.13); padding: 1px 5px; border-radius: 4px; color: #cbb8ff; }
+  .ss-notestack { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 20px; }
+
+  /* toolbar */
+  .ss-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 26px 0 8px; }
+  .ss-seg { display: inline-flex; border: 1px solid var(--ss-page-rule); border-radius: 8px; overflow: hidden; }
+  .ss-seg button { background: transparent; color: var(--ss-page-muted); border: 0; padding: 7px 13px; font: inherit; font-size: 13px; cursor: pointer; }
+  .ss-seg button[aria-pressed="true"] { background: var(--ss-page-accent); color: #fff; }
+  .ss-toolbar .ss-tlabel { font-size: 12px; color: var(--ss-page-muted); letter-spacing: .04em; }
+
+  /* =========================================================
+     Obsidian-faithful surface. Token values mirror Obsidian's
+     real light/dark defaults; SelfSync ships only the .ob-*
+     helper classes as CSS — everything else is Obsidian's own.
+     ========================================================= */
+  .ob {
+    --background-primary: #1e1e1e;
+    --background-secondary: #242424;
+    --background-modifier-border: #363636;
+    --background-modifier-hover: rgba(255,255,255,.055);
+    --text-normal: #dadada;
+    --text-muted: #9aa0a6;
+    --text-faint: #6a6f76;
+    --text-accent: #a390f0;
+    --interactive-accent: #8b6cef;
+    --interactive-accent-hover: #9c83f2;
+    --text-on-accent: #ffffff;
+    --color-green: #48c78e;
+    --color-yellow: #e0a33e;
+    --color-red: #e5534b;
+    --text-error: #e5534b;
+    --radius-m: 8px;
+    --font-interface: var(--ss-font-ui);
+    --font-monospace: var(--ss-font-mono);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--font-interface);
+    border-radius: 12px;
+    border: 1px solid var(--background-modifier-border);
+    overflow: hidden;
+  }
+  .ob.theme-light {
+    --background-primary: #ffffff;
+    --background-secondary: #f4f5f7;
+    --background-modifier-border: #e3e5e8;
+    --background-modifier-hover: rgba(0,0,0,.04);
+    --text-normal: #2b2f36;
+    --text-muted: #6a7076;
+    --text-faint: #a0a4ab;
+    --text-accent: #6b52e0;
+    --interactive-accent: #7b62ef;
+    --interactive-accent-hover: #6b52e0;
+    --color-green: #23a06a;
+    --color-yellow: #c68314;
+    --color-red: #d23f36;
+    --text-error: #d23f36;
+  }
+
+  /* window chrome (ribbon + status bar) */
+  .ob-window { display: grid; grid-template-columns: 44px 1fr; grid-template-rows: 1fr 26px; min-height: 560px; }
+  .ob-ribbon { grid-row: 1 / span 2; background: var(--background-secondary); border-right: 1px solid var(--background-modifier-border); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 14px; }
+  .ob-ribbon .ob-ribbon-icon { color: var(--text-faint); display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; }
+  .ob-ribbon .ob-ribbon-icon.is-sync { background: var(--background-modifier-hover); }
+  .ob-ribbon svg { width: 18px; height: 18px; }
+  .ob-main { grid-column: 2; overflow: auto; }
+  .ob-statusbar { grid-column: 2; border-top: 1px solid var(--background-modifier-border); background: var(--background-secondary); display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; gap: 14px; font-size: 12px; color: var(--text-muted); }
+  .ob-statusbar .ob-sb-item { display: inline-flex; align-items: center; gap: 5px; cursor: default; }
+
+  /* settings pane */
+  .ob-settings { padding: 18px 26px 30px; max-width: 720px; }
+  .setting-item { display: flex; align-items: center; gap: 18px; padding: 15px 0; border-top: 1px solid var(--background-modifier-border); }
+  .setting-item:first-of-type { border-top: 0; }
+  .setting-item-info { flex: 1 1 auto; min-width: 0; }
+  .setting-item-name { color: var(--text-normal); font-size: 15px; }
+  .setting-item-description { color: var(--text-muted); font-size: 13px; margin-top: 2px; }
+  .setting-item-control { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; }
+  /* setHeading */
+  .setting-item-heading { display: block; padding: 26px 0 8px; border-top: 0; }
+  .setting-item-heading .setting-item-name { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+
+  /* native-ish controls */
+  .ob-btn { font: inherit; font-size: 13px; border: 1px solid var(--background-modifier-border); background: var(--background-secondary); color: var(--text-normal); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  .ob-btn:hover { background: var(--background-modifier-hover); }
+  .ob-btn.mod-cta { background: var(--interactive-accent); border-color: transparent; color: var(--text-on-accent); font-weight: 550; }
+  .ob-btn.mod-cta:hover { background: var(--interactive-accent-hover); }
+  .ob-btn.mod-warning { color: var(--color-red); border-color: color-mix(in srgb, var(--color-red) 45%, transparent); }
+  .ob-toggle { width: 40px; height: 23px; border-radius: 23px; background: var(--background-modifier-border); position: relative; cursor: pointer; flex: 0 0 auto; transition: background .12s; }
+  .ob-toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; border-radius: 50%; background: #fff; transition: transform .12s; }
+  .ob-toggle.is-on { background: var(--interactive-accent); }
+  .ob-toggle.is-on::after { transform: translateX(17px); }
+  .ob-select { font: inherit; font-size: 13px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 6px 10px; }
+  .ob-radio { display: inline-flex; gap: 14px; align-items: center; font-size: 13px; color: var(--text-muted); }
+  .ob-radio label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .ob-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--text-faint); }
+  .ob-dot.on { border-color: var(--interactive-accent); background: radial-gradient(circle, var(--interactive-accent) 0 4px, transparent 5px); }
+
+  /* status card */
+  .ob-status-card { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-m); padding: 15px 16px; margin-bottom: 8px; background: var(--background-secondary); }
+  .ob-status-head { display: flex; align-items: center; gap: 9px; font-weight: 640; font-size: 15.5px; }
+  .ob-status-glyph { display: grid; place-items: center; width: 20px; height: 20px; }
+  .ob-status-glyph svg { width: 17px; height: 17px; }
+  .ob-status-detail { color: var(--text-muted); font-size: 12.5px; margin-top: 3px; padding-left: 29px; }
+  .ob-status-issue { color: var(--text-error); font-size: 12.5px; margin-top: 6px; padding-left: 29px; }
+  .ob-status-actions { display: flex; gap: 8px; margin-top: 13px; padding-left: 29px; }
+  .is-green { color: var(--color-green); } .is-amber { color: var(--color-yellow); } .is-red { color: var(--color-red); } .is-grey { color: var(--text-faint); }
+
+  /* config sub-blocks */
+  .ob-locked { display: flex; align-items: center; gap: 9px; margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 7px; background: var(--background-secondary); color: var(--text-muted); font-size: 13px; }
+  .ob-locked svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-faint); }
+  .ob-cats { margin: 8px 0 4px; padding-left: 8px; border-left: 2px solid var(--background-modifier-border); }
+  .ob-cats .setting-item { padding: 8px 6px; border-top: 0; }
+  .ob-cats .setting-item-name { font-size: 13.5px; }
+  .ob-collapse { border-top: 1px solid var(--background-modifier-border); margin-top: 18px; }
+  .ob-collapse summary { list-style: none; cursor: pointer; padding: 12px 2px; font-weight: 620; font-size: 15px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+  .ob-collapse summary::-webkit-details-marker { display: none; }
+  .ob-collapse summary::before { content: "\203A"; font-size: 17px; line-height: 1; transition: transform .15s; opacity: .8; }
+  .ob-collapse[open] summary::before { transform: rotate(90deg); }
+  .ob-hint { font-size: 12px; color: var(--text-muted); opacity: .82; margin: 6px 0 0 6px; }
+
+  /* state previewer grid */
+  .ss-states { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 14px; }
+  .ss-state-cell { border: 1px solid var(--ss-page-rule); border-radius: 10px; overflow: hidden; }
+  .ss-state-cell .ob { border: 0; border-radius: 0; }
+  .ss-state-cap { font-size: 12px; color: var(--ss-page-muted); padding: 8px 12px; border-top: 1px solid var(--ss-page-rule); background: var(--ss-note-bg); font-family: var(--ss-font-mono); }
+
+  /* modal mockups */
+  .ss-modals { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 18px; }
+  .ob-modal { background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,.5); overflow: hidden; }
+  .theme-light .ob-modal { box-shadow: 0 18px 50px rgba(0,0,0,.18); }
+  .ob-modal-head { padding: 16px 18px 0; font-size: 17px; font-weight: 640; }
+  .ob-modal-body { padding: 10px 18px 18px; }
+  .ob-modal-body p { color: var(--text-muted); font-size: 13.5px; margin: 4px 0 14px; }
+  .ob-field { margin: 12px 0; }
+  .ob-field label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 5px; }
+  .ob-input { width: 100%; font: inherit; font-size: 13.5px; background: var(--background-secondary); color: var(--text-normal); border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 8px 10px; }
+  .ob-input.mono { font-family: var(--font-monospace); font-size: 12px; }
+  .ob-steps { display: flex; gap: 6px; margin: 2px 0 4px; }
+  .ob-step { flex: 1; height: 3px; border-radius: 2px; background: var(--background-modifier-border); }
+  .ob-step.done { background: var(--interactive-accent); }
+  .ob-modal-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 16px; }
+  .ob-ok { color: var(--color-green); font-size: 12.5px; }
+  .ob-qr { display: grid; place-items: center; background: #fff; border-radius: 8px; padding: 12px; margin: 4px 0 12px; }
+  .ob-qr canvas { display: block; image-rendering: pixelated; width: 150px; height: 150px; }
+
+  /* principles list */
+  .ss-principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap: 14px; margin-top: 8px; }
+  .ss-principle { border: 1px solid var(--ss-page-rule); border-radius: 10px; padding: 15px 16px; background: var(--ss-note-bg); }
+  .ss-principle h4 { margin: 0 0 6px; font-size: 14.5px; color: #eceef4; }
+  .ss-principle p { margin: 0; font-size: 13px; color: #a7abb5; }
+  .ss-principle .ss-src { font-size: 11px; color: var(--ss-page-muted); margin-top: 8px; font-style: italic; }
+
+  .ss-foot { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--ss-page-rule); font-size: 12.5px; color: var(--ss-page-muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="ss-wrap">
+  <p class="ss-kicker">SelfSync · frontend design</p>
+  <h1 class="ss-h1">A sync UI that stays quiet, reads at a glance, and looks like it shipped with Obsidian.</h1>
+  <p class="ss-lede">The settings tab, first-run wizard, and status affordances for the SelfSync plugin — rendered in Obsidian's own visual language. Every choice here traces to what the Obsidian community actually praises (and complains about) in plugin UI, and to Obsidian's official plugin guidelines.</p>
+  <p class="ss-lede" style="font-size:15px;">The through-line from the research: <strong style="color:#dfe1e8;">trust comes from a single, unambiguous status you never have to hunt for</strong> — quiet in the status bar, loud only when it needs a decision.</p>
+
+  <div class="ss-toolbar">
+    <span class="ss-tlabel">Theme</span>
+    <div class="ss-seg" id="themeSeg">
+      <button data-theme="theme-dark" aria-pressed="true">Dark</button>
+      <button data-theme="theme-light" aria-pressed="false">Light</button>
+    </div>
+    <span class="ss-tlabel" style="margin-left:14px;">Sync state</span>
+    <div class="ss-seg" id="stateSeg">
+      <button data-state="idle" aria-pressed="true">Fully synced</button>
+      <button data-state="syncing" aria-pressed="false">Syncing</button>
+      <button data-state="offline" aria-pressed="false">Offline</button>
+      <button data-state="error" aria-pressed="false">Vault error</button>
+      <button data-state="off" aria-pressed="false">Not set up</button>
+    </div>
+  </div>
+
+  <!-- ============ MAIN SETTINGS PANE ============ -->
+  <h2 class="ss-sec">The settings tab</h2>
+  <p class="ss-sec-sub">Status-first: the one thing a sync user checks — “am I synced?” — is answered at the top. Everything else is organized by what you came to do, with advanced options tucked away. Sections use Obsidian's <code style="font-family:var(--ss-font-mono)">setHeading()</code>; colors are Obsidian CSS variables, never hardcoded.</p>
+
+  <div class="ss-split">
+    <div class="ob theme-dark" id="obPane">
+      <div class="ob-window">
+        <div class="ob-ribbon">
+          <div class="ob-ribbon-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg></div>
+          <div class="ob-ribbon-icon is-sync" id="ribbonIcon" title="SelfSync — Fully synced"></div>
+        </div>
+        <div class="ob-main">
+          <div class="ob-settings">
+            <!-- status card -->
+            <div class="ob-status-card" id="statusCard"></div>
+
+            <div class="setting-item setting-item-heading"><div class="setting-item-info"><div class="setting-item-name">Connection</div></div></div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Server</div><div class="setting-item-description">https://sync.example.com</div></div>
+              <div class="setting-item-control"><button class="ob-btn">Change</button></div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Account</div><div class="setting-item-description">Signed in as will. Sign out also forgets this device's login.</div></div>
+              <div class="setting-item-control"><button class="ob-btn mod-warning">Sign out</button></div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Remote vault</div><div class="setting-item-description">notes</div></div>
+              <div class="setting-item-control"><button class="ob-btn">Switch vault</button></div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Last synced</div><div class="setting-item-description" id="lastSynced">just now</div></div>
+            </div>
+
+            <div class="setting-item setting-item-heading"><div class="setting-item-info"><div class="setting-item-name">What syncs</div></div></div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Notes &amp; attachments</div><div class="setting-item-description">Always synced.</div></div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-item-info"><div class="setting-item-name">Obsidian settings</div><div class="setting-item-description">Sync your .obsidian config — settings, hotkeys, themes — between devices. Community-plugin code is a separate opt-in below. SelfSync's own login is never synced.</div></div>
+              <div class="setting-item-control"><div class="ob-toggle is-on"></div></div>
+            </div>
+            <div class="ob-locked">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+              <span>SelfSync's own settings (server, login, vault) are never synced — they stay on this device.</span>
+            </div>
+            <div class="ob-cats">
+              <div class="setting-item"><div class="setting-item-info"><div class="setting-item-name">Core settings</div></div><div class="setting-item-control"><div class="ob-toggle is-on"></div></div></div>
+              <div class="setting-item"><div class="setting-item-info"><div class="setting-item-name">Hotkeys</div></div><div class="setting-item-control"><div class="ob-toggle is-on"></div></div></div>
+              <div class="setting-item"><div class="setting-item-info"><div class="setting-item-name">Appearance &amp; themes</div></div><div class="setting-item-control"><div class="ob-toggle is-on"></div></div></div>
+              <div class="setting-item"><div class="setting-item-info"><div class="setting-item-name">CSS snippets</div></div><div class="setting-item-control"><div class="ob-toggle is-on"></div></div></div>
+              <div class="setting-item"><div class="setting-item-info"><div class="setting-item-name">Community plugins</div><div class="setting-item-description">Each plugin's code + settings. Off by default — pushing plugin code to mobile is riskier.</div></div><div class="setting-item-control"><div class="ob-toggle"></div></div></div>
+            </div>
+            <div class="ob-hint">Community plugins are NOT syncing — turn them on above to include their code + settings.</div>
+
+            <details class="ob-collapse">
+              <summary>Advanced</summary>
+              <div class="setting-item">
+                <div class="setting-item-info"><div class="setting-item-name">Conflict resolution</div></div>
+                <div class="setting-item-control"><select class="ob-select"><option>Automatically merge</option><option>Create conflict file</option></select></div>
+              </div>
+              <div class="setting-item">
+                <div class="setting-item-info"><div class="setting-item-name">Device name</div><div class="setting-item-description">Shown in conflict-copy filenames. Blank = auto.</div></div>
+                <div class="setting-item-control"><input class="ob-input" style="width:150px" value="WILLIAMS-PC"></div>
+              </div>
+              <div class="setting-item">
+                <div class="setting-item-info"><div class="setting-item-name">Detailed logging</div></div>
+                <div class="setting-item-control"><div class="ob-toggle"></div></div>
+              </div>
+              <div class="setting-item">
+                <div class="setting-item-info"><div class="setting-item-name">Diagnostics</div></div>
+                <div class="setting-item-control"><button class="ob-btn">Show sync log</button><button class="ob-btn">Copy debug info</button></div>
+              </div>
+              <div class="setting-item">
+                <div class="setting-item-info"><div class="setting-item-name">Disconnect</div><div class="setting-item-description">Stop syncing this vault (you stay signed in; local files are kept).</div></div>
+                <div class="setting-item-control"><button class="ob-btn mod-warning">Disconnect</button></div>
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="ob-statusbar">
+          <span class="ob-sb-item" id="sbItem"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="ss-notestack">
+      <div class="ss-note">
+        <h4>Status-first</h4>
+        <p>Sync users' one recurring question is “did my change make it?” The card answers it before anything else and pairs it with <strong>“last synced”</strong> — the trust signal the research kept surfacing.</p>
+      </div>
+      <div class="ss-note">
+        <h4>Native, not bolted-on</h4>
+        <p>Rows are Obsidian's <code>setting-item</code>; headings use <code>setHeading()</code>; every color is a token like <code>--color-green</code>, not a hex. Fixes our current raw <code>&lt;h3&gt;</code> + hardcoded <code>#3fb950</code>.</p>
+      </div>
+      <div class="ss-note">
+        <h4>Progressive disclosure</h4>
+        <p>Strong defaults mean most users never scroll past “What syncs.” Advanced collapses everything else — the pattern LiveSync's “power-user mode” is praised for.</p>
+      </div>
+      <div class="ss-note">
+        <h4>Trust, stated plainly</h4>
+        <p>The 🔒 line — “SelfSync's own login is never synced” — is shown whenever config sync is on, because it's the anxiety users voice about sync plugins.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ STATUS STATES ============ -->
+  <h2 class="ss-sec">One indicator, five unambiguous states</h2>
+  <p class="ss-sec-sub">The community's sharpest lesson (LiveSync issue #572): a status icon that <em>inverts</em> expectation — 💤 meaning “done” — destroys trust, and a spinner that never resolves is worse than none. So SelfSync uses a distinct <strong>glyph + semantic color + label</strong> for each state (glyph carries it for colorblind users), mirrored on the status bar and the mobile-visible ribbon. Toggle states in the toolbar above; every surface updates together.</p>
+  <div class="ss-states" id="stateGrid"></div>
+
+  <!-- ============ WIZARD ============ -->
+  <h2 class="ss-sec">First-run wizard — not a settings dump</h2>
+  <p class="ss-sec-sub">Opens automatically on first launch. Each step validates before the next unlocks (you can't advance past a server you can't reach). “I have a setup link” routes device #2 through the same reachability check — the Setup-URI idea LiveSync users specifically like, made safe.</p>
+  <div class="ss-modals" id="wizard"></div>
+
+  <!-- ============ ADD A DEVICE ============ -->
+  <h2 class="ss-sec">Add another device</h2>
+  <p class="ss-sec-sub">A <code>selfsync://</code> link + scannable QR carrying the server and username — never the password. Bootstraps a second device without re-deriving config, the friction point sync users call out.</p>
+  <div class="ss-modals" style="grid-template-columns:minmax(280px,420px);"><div id="deviceModal"></div></div>
+
+  <!-- ============ PRINCIPLES ============ -->
+  <h2 class="ss-sec">The principles behind it</h2>
+  <p class="ss-sec-sub">Distilled from Obsidian forum threads, plugin issues, and the official plugin guidelines — each maps to a decision above.</p>
+  <div class="ss-principles" id="principles"></div>
+
+  <div class="ss-foot" id="foot"></div>
+</div>
+
+<script>
+(function () {
+  var ICONS = {
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>',
+    refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.5"/></svg>',
+    slash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></svg>'
+  };
+  // state -> {title, detail, issue, color class, glyph, actions, sb, configured}
+  var STATES = {
+    idle:    { title: "Fully synced", detail: "Signed in as will · Remote vault 'notes'", color: "is-green", glyph: "check",   actions: [["Add a device", 0]], sb: "Fully synced", cfg: true },
+    syncing: { title: "Syncing…",     detail: "Signed in as will · Remote vault 'notes'", color: "is-amber", glyph: "refresh", actions: [["Add a device", 0]], sb: "Syncing…", cfg: true },
+    offline: { title: "Offline — retrying", detail: "Signed in as will · Remote vault 'notes'", color: "is-red", glyph: "alert", issue: "Can't reach the server. Retrying…", actions: [["Reconnect", 1], ["Add a device", 0]], sb: "Offline", cfg: true },
+    error:   { title: "Server vault needs repair", detail: "Signed in as will · Remote vault 'notes'", color: "is-red", glyph: "alert", issue: "This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it.", actions: [["Copy debug info", 0]], sb: "Needs repair", cfg: true },
+    off:     { title: "Not set up",   detail: "Sync your notes to your own server.", color: "is-grey", glyph: "slash", actions: [["Set up SelfSync", 1]], sb: "Not set up", cfg: false }
+  };
+
+  function cardHTML(s) {
+    var acts = s.actions.map(function (a) { return '<button class="ob-btn' + (a[1] ? ' mod-cta' : '') + '">' + a[0] + '</button>'; }).join("");
+    return '<div class="ob-status-head"><span class="ob-status-glyph ' + s.color + '">' + ICONS[s.glyph] + '</span>' + s.title + '</div>' +
+      '<div class="ob-status-detail">' + s.detail + '</div>' +
+      (s.issue ? '<div class="ob-status-issue">' + s.issue + '</div>' : '') +
+      '<div class="ob-status-actions">' + acts + '</div>';
+  }
+  function sbHTML(s) {
+    return '<span class="ob-status-glyph ' + s.color + '" style="width:14px;height:14px">' + ICONS[s.glyph] + '</span>SelfSync — ' + s.sb;
+  }
+
+  var cur = "idle";
+  function applyState(key) {
+    cur = key; var s = STATES[key];
+    document.getElementById("statusCard").innerHTML = cardHTML(s);
+    document.getElementById("sbItem").innerHTML = sbHTML(s);
+    var ri = document.getElementById("ribbonIcon");
+    ri.className = "ob-ribbon-icon is-sync " + s.color; ri.innerHTML = ICONS[s.glyph]; ri.title = "SelfSync — " + s.sb;
+    document.getElementById("lastSynced").textContent = key === "idle" ? "just now" : key === "offline" ? "—" : "2m ago";
+    document.querySelectorAll('#stateSeg button').forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.state === key)); });
+  }
+
+  // state matrix cells
+  var grid = document.getElementById("stateGrid");
+  Object.keys(STATES).forEach(function (k) {
+    var s = STATES[k];
+    var cell = document.createElement("div"); cell.className = "ss-state-cell";
+    cell.innerHTML = '<div class="ob theme-dark ss-mini"><div class="ob-settings" style="padding:14px 16px"><div class="ob-status-card">' + cardHTML(s) + '</div></div></div>' +
+      '<div class="ss-state-cap">status bar: ' + sbCap(s) + '</div>';
+    grid.appendChild(cell);
+  });
+  function sbCap(s) { return "● " + s.sb + "  ·  ribbon: " + s.glyph; }
+
+  // theme toggle
+  function setTheme(t) {
+    document.querySelectorAll(".ob").forEach(function (el) { el.classList.remove("theme-dark", "theme-light"); el.classList.add(t); });
+    document.querySelectorAll('#themeSeg button').forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.theme === t)); });
+  }
+  document.getElementById("themeSeg").addEventListener("click", function (e) { var b = e.target.closest("button"); if (b) setTheme(b.dataset.theme); });
+  document.getElementById("stateSeg").addEventListener("click", function (e) { var b = e.target.closest("button"); if (b) applyState(b.dataset.state); });
+
+  // wizard steps
+  var WSTEPS = [
+    { n: 1, title: "Welcome", body: "Sync your notes to your own server.", ctrl: '<div class="ob-modal-foot" style="justify-content:flex-start;gap:10px"><button class="ob-btn mod-cta">Get started</button><button class="ob-btn">I have a setup link</button></div>' },
+    { n: 2, title: "Server", body: "Where's your SelfSync server?", ctrl: '<div class="ob-field"><label>Server URL</label><input class="ob-input" value="https://sync.example.com"></div><div class="ob-ok">Reachable ✓</div><div class="ob-modal-foot"><button class="ob-btn">Back</button><button class="ob-btn mod-cta">Next</button></div>' },
+    { n: 3, title: "Account", body: "Log in, or create an account if your server allows it.", ctrl: '<div class="ob-field"><label>Username</label><input class="ob-input" value="will"></div><div class="ob-field"><label>Password</label><input class="ob-input" type="password" value="xxxxxxxx"></div><div class="ob-modal-foot"><button class="ob-btn">Back</button><button class="ob-btn mod-cta">Log in →</button></div>' },
+    { n: 4, title: "Remote vault", body: "Which vault should this device sync to?", ctrl: '<div class="ob-field"><label>Sync this vault to</label><select class="ob-select" style="width:100%"><option>notes</option><option>personal</option><option>+ Create new…</option></select></div><div class="ob-modal-foot"><button class="ob-btn">Back</button><button class="ob-btn mod-cta">Start syncing →</button></div>' },
+    { n: 5, title: "All set", body: "SelfSync is now syncing 'notes'.", ctrl: '<div style="margin:6px 0 4px"><span class="ob-status-glyph is-green" style="display:inline-grid;width:16px;height:16px;vertical-align:-3px">' + ICONS.check + '</span> Fully synced</div><div class="ob-modal-foot" style="justify-content:flex-end"><button class="ob-btn mod-cta">Done</button></div>' }
+  ];
+  var wz = document.getElementById("wizard");
+  WSTEPS.forEach(function (st) {
+    var steps = ""; for (var i = 1; i <= 5; i++) steps += '<div class="ob-step' + (i <= st.n ? " done" : "") + '"></div>';
+    var m = document.createElement("div"); m.className = "ob theme-dark"; m.style.borderRadius = "12px";
+    m.innerHTML = '<div class="ob-modal" style="border:0;box-shadow:none;background:transparent"><div class="ob-modal-head">Set up SelfSync</div>' +
+      '<div class="ob-modal-body"><div class="ob-steps">' + steps + '</div>' +
+      '<div style="font-size:12px;color:var(--text-faint);margin:2px 0 8px">Step ' + st.n + ' of 5 · ' + st.title + '</div>' +
+      '<p>' + st.body + '</p>' + st.ctrl + '</div></div>';
+    wz.appendChild(m);
+  });
+
+  // add-a-device modal + QR
+  var dm = document.getElementById("deviceModal");
+  dm.className = "ob theme-dark"; dm.style.borderRadius = "12px";
+  dm.innerHTML = '<div class="ob-modal" style="border:0;box-shadow:none;background:transparent"><div class="ob-modal-head">Add a device</div>' +
+    '<div class="ob-modal-body"><p>On the other device: install SelfSync, then scan this code or paste the link into “I have a setup link”.</p>' +
+    '<div class="ob-qr"><canvas id="qr" width="29" height="29"></canvas></div>' +
+    '<div class="ob-field"><input class="ob-input mono" readonly value="selfsync://connect?server=https%3A%2F%2Fsync.example.com&user=will"></div>' +
+    '<div class="ob-modal-foot" style="justify-content:flex-start"><button class="ob-btn mod-cta">Copy link</button></div>' +
+    '<div class="ob-hint" style="margin-left:0">Contains the server address and your username — but not your password.</div></div></div>';
+
+  // draw a representative QR (fixed pattern; not a real payload)
+  (function drawQR() {
+    var c = document.getElementById("qr"); if (!c) return; var g = c.getContext("2d"); var N = 29;
+    g.fillStyle = "#fff"; g.fillRect(0, 0, N, N);
+    // deterministic pseudo-random modules
+    var seed = 1337; function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >>> 8) & 1; }
+    g.fillStyle = "#111";
+    for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) { if (rnd()) g.fillRect(x, y, 1, 1); }
+    // finder patterns
+    function finder(ox, oy) {
+      g.fillStyle = "#fff"; g.fillRect(ox, oy, 7, 7);
+      g.fillStyle = "#111"; g.fillRect(ox, oy, 7, 1); g.fillRect(ox, oy + 6, 7, 1); g.fillRect(ox, oy, 1, 7); g.fillRect(ox + 6, oy, 1, 7);
+      g.fillRect(ox + 2, oy + 2, 3, 3);
+    }
+    finder(0, 0); finder(N - 7, 0); finder(0, N - 7);
+  })();
+
+  // principles
+  var PR = [
+    ["Quiet by default, loud only for decisions", "Ongoing sync lives in the status bar + ribbon; pop-up notices are reserved for conflicts, auth failures, and skipped files — the exact split the community asked Smart Connections for.", "forum + Smart Connections #1159"],
+    ["Unambiguous state", "Distinct glyph + color + label per state; never a resolved-looking icon that means “busy,” never a spinner that can hang. Directly answers LiveSync's #572.", "LiveSync #572"],
+    ["Guided setup, sane defaults", "A wizard picks a working configuration; strong defaults mean most users never open Advanced. Setup-URI onboards device #2.", "LiveSync Quick Setup / Setup URI"],
+    ["Native components only", "setHeading(), setting-item rows, documented CSS variables, sentence case, one control per row, no top-level heading, textareas → modals.", "Obsidian plugin guidelines"],
+    ["Mobile-first status", "The status bar is hidden on mobile, so the ribbon icon carries state there — the standing community request for on-mobile sync visibility.", "forum: on-mobile sync status"],
+    ["Colorblind-safe", "State is carried by shape as well as hue, so red/amber/green aren't the only signal.", "general accessibility hygiene"]
+  ];
+  var pr = document.getElementById("principles");
+  PR.forEach(function (p) { var d = document.createElement("div"); d.className = "ss-principle"; d.innerHTML = "<h4>" + p[0] + "</h4><p>" + p[1] + "</p><div class='ss-src'>" + p[2] + "</div>"; pr.appendChild(d); });
+
+  document.getElementById("foot").innerHTML = "Mockup for design review — faithful to Obsidian's token values, not a live plugin build. Maps to <code style='font-family:var(--ss-font-mono)'>settings.ts</code> / <code style='font-family:var(--ss-font-mono)'>setupwizard.ts</code> / <code style='font-family:var(--ss-font-mono)'>styles.css</code>. The chief implementation deltas from today: swap raw <code style='font-family:var(--ss-font-mono)'>&lt;h3&gt;</code> for <code style='font-family:var(--ss-font-mono)'>setHeading()</code>, replace hardcoded status hex with <code style='font-family:var(--ss-font-mono)'>--color-*</code> variables, and hold notices to decisions-only.";
+
+  applyState("idle"); setTheme("theme-dark");
+  document.body.classList.add("ss-doc");
+})();
+</script>
