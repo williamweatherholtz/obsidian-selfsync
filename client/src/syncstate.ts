@@ -36,11 +36,13 @@ export interface LightSpec { color: string; label: string; tip: string }
 // The status light is a pure function of the phase.
 export function light(phase: Phase, detail = ""): LightSpec {
   switch (phase) {
-    case "idle":       return { color: "#3fb950", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` };
-    case "syncing":    return { color: "#d29922", label: "SelfSync", tip: "Syncing…" };
-    case "connecting": return { color: "#d29922", label: "SelfSync", tip: "Connecting…" };
-    case "offline":    return { color: "#f85149", label: "SelfSync", tip: "Offline — retrying" };
-    case "off":        return { color: "#8b949e", label: "SelfSync", tip: "Not connected" };
+    // Colors are Obsidian CSS variables (resolved against the active theme), not
+    // hardcoded hex — so the indicator matches light/dark and custom themes.
+    case "idle":       return { color: "var(--color-green)", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` };
+    case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: "Syncing…" };
+    case "connecting": return { color: "var(--color-yellow)", label: "SelfSync", tip: "Connecting…" };
+    case "offline":    return { color: "var(--color-red)", label: "SelfSync", tip: "Offline — retrying" };
+    case "off":        return { color: "var(--text-faint)", label: "SelfSync", tip: "Not connected" };
   }
 }
 

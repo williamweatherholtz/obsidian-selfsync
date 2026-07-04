@@ -126,7 +126,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", (f) => this.onLocalDelete(f.path)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
 
-    this.log("plugin loaded", true);
+    this.log("plugin loaded");
     this.app.workspace.onLayoutReady(() => {
       if (!this.settings.vaultId || !this.settings.serverUrl || !this.settings.username) this.openSetup();
       else void this.reconnect();
@@ -373,14 +373,14 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.lastIssue = undefined;
       this.machine.dispatch("connected");
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
-      this.log(`connected @ v${this.state.version}`, true);
+      this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
       this.applying = false;
       this.machine.dispatch("error");
       this.lastIssue = /no password stored/.test(String(e?.message))
         ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
         : `Can't reach the server (${e?.message ?? e}). Retrying…`;
-      this.log(`connect FAILED: ${e?.message ?? e}`, true);
+      this.log(`connect FAILED: ${e?.message ?? e}`); // goes red in the status bar; no toast on each retry
       this.scheduleReconnect();
     } finally {
       this.connecting = false;

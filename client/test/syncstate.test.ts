@@ -33,12 +33,12 @@ describe("sync FSM transitions", () => {
 
 describe("light is a pure function of phase", () => {
   it("green only when idle (up to date)", () => {
-    expect(light("idle").color).toBe("#3fb950");
+    expect(light("idle").color).toBe("var(--color-green)");
     for (const s of ["off", "connecting", "syncing", "offline"] as Phase[]) {
-      expect(light(s).color).not.toBe("#3fb950");
+      expect(light(s).color).not.toBe("var(--color-green)");
     }
   });
-  it("offline is red", () => expect(light("offline").color).toBe("#f85149"));
+  it("offline is red", () => expect(light("offline").color).toBe("var(--color-red)"));
 });
 
 describe("SyncMachine fires onChange only on real transitions", () => {

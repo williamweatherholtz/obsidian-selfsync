@@ -89,7 +89,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   }
 
   private renderConnection(c: HTMLElement, s: NewLiveSyncSettings): void {
-    c.createEl("h3", { text: "Connection" });
+    new Setting(c).setName("Connection").setHeading();
     new Setting(c).setName("Server").setDesc(s.serverUrl)
       .addButton((b) => b.setButtonText("Change").onClick(() => this.plugin.openSetup()));
     new Setting(c).setName("Account").setDesc(`Signed in as ${s.username}. Sign out also forgets this device's password (you'll re-enter it next time).`)
@@ -101,7 +101,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   }
 
   private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
-    c.createEl("h3", { text: "What syncs" });
+    new Setting(c).setName("What syncs").setHeading();
     new Setting(c).setName("Notes & attachments").setDesc("Always synced.");
 
     const cs = s.configSync;
