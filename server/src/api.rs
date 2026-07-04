@@ -45,6 +45,19 @@ pub async fn changes(
     Ok(Json(resp))
 }
 
+// GET /api/v/:vault/meta?path=… — metadata for one file (or 404), so a client can
+// reconcile a single path without pulling the whole manifest.
+pub async fn file_meta(
+    AuthToken(user): AuthToken, State(st): State<AppState>,
+    Path(vault): Path<String>, Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<FileMeta>, AppError> {
+    let h = handle(&st, &user, &vault)?;
+    let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
+    let v = rlock(&h.vault)?;
+    ensure_ready(&v)?;
+    v.file_meta(&path).map(Json).ok_or(AppError::NotFound)
+}
+
 pub async fn chunks_missing(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(vault): Path<String>, Json(req): Json<MissingRequest>,

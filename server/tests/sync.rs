@@ -222,6 +222,14 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
     // download the chunk back
     let got = c.get(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
     assert_eq!(&got[..], &body[..]);
+    // single-path metadata endpoint: present file -> its FileMeta; absent -> 404
+    let one: new_livesync_server::protocol::FileMeta = c.get(format!("{base}/api/v/default/meta?path=n.md"))
+        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
+    assert_eq!(one.path, "n.md");
+    assert_eq!(one.chunks, vec![h.clone()]);
+    let miss_meta = c.get(format!("{base}/api/v/default/meta?path=absent.md")).bearer_auth(&tok).send().await.unwrap();
+    assert_eq!(miss_meta.status(), 404);
+
     // commit with a missing chunk -> 404
     let bad = c.post(format!("{base}/api/v/default/commit")).bearer_auth(&tok)
         .json(&serde_json::json!({"path":"x.md","hash":"h","size":1,"mtime":0,"chunks":["nope"]})).send().await.unwrap();

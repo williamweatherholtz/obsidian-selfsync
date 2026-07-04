@@ -69,6 +69,12 @@ export class HttpTransport implements SyncApi {
     if (r.status !== 200) throw new Error(`changes: HTTP ${r.status}`);
     return r.json as ChangesResponse;
   }
+  async fileMeta(path: string): Promise<FileMeta | null> {
+    const r = await requestUrl({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
+    if (r.status === 404) return null;
+    if (r.status !== 200) throw new Error(`meta: HTTP ${r.status}`);
+    return r.json as FileMeta;
+  }
   async missing(hashes: string[]): Promise<string[]> {
     const r = await requestUrl({
       url: this.v("/chunks/missing"), method: "POST", contentType: "application/json",

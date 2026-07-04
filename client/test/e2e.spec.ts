@@ -54,6 +54,12 @@ class NodeTransport implements SyncApi {
     if (!r.ok) throw new Error(`changes ${r.status}`);
     return (await r.json()) as ChangesResponse;
   }
+  async fileMeta(path: string): Promise<FileMeta | null> {
+    const r = await fetch(this.v(`/meta?path=${encodeURIComponent(path)}`), { headers: this.h() });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`meta ${r.status}`);
+    return (await r.json()) as FileMeta;
+  }
   async missing(hashes: string[]): Promise<string[]> {
     const r = await fetch(this.v("/chunks/missing"), {
       method: "POST", headers: { ...this.h(), "content-type": "application/json" }, body: JSON.stringify({ hashes }),

@@ -280,6 +280,12 @@ impl Vault {
         }
     }
 
+    // Metadata for a single path (or None) — lets a client reconcile one file without
+    // fetching the whole manifest.
+    pub fn file_meta(&self, path: &str) -> Option<FileMeta> {
+        self.idx.files.get(path).cloned()
+    }
+
     pub fn changes(&self, since: u64) -> ChangesResponse {
         ChangesResponse {
             version: self.idx.version,

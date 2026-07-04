@@ -27,6 +27,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/vaults", get(vaults::list_vaults).post(vaults::create_vault))
         // vault-scoped sync routes: /api/v/{vault}/...
         .route("/api/v/:vault/changes", get(api::changes))
+        .route("/api/v/:vault/meta", get(api::file_meta))
         .route("/api/v/:vault/chunks/missing", post(api::chunks_missing))
         .route("/api/v/:vault/chunk/:hash", put(api::put_chunk).get(api::get_chunk))
         .route("/api/v/:vault/commit", post(api::commit))

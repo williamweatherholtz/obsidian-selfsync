@@ -9,6 +9,7 @@ export interface VaultIo {
 }
 export interface SyncApi {
   changes(since: number): Promise<ChangesResponse>;
+  fileMeta(path: string): Promise<FileMeta | null>;
   missing(hashes: string[]): Promise<string[]>;
   getChunk(hash: string): Promise<Uint8Array>;
   putChunk(hash: string, bytes: Uint8Array): Promise<void>;

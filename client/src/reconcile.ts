@@ -39,13 +39,6 @@ export interface ReconcileDeps {
   onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
 }
 
-async function remoteManifest(api: SyncApi): Promise<Map<string, FileMeta>> {
-  const resp = await api.changes(0);
-  const m = new Map<string, FileMeta>();
-  for (const f of resp.upserts) m.set(f.path, f);
-  return m;
-}
-
 async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null> {
   try { return await io.read(path); } catch { return null; }
 }
@@ -75,8 +68,9 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string): Promise<void> {
-  const remote = await remoteManifest(d.api);
-  await reconcileOne(d, path, remote.get(path));
+  // Single-path fetch — no whole-manifest pull per file event.
+  const rmeta = await d.api.fileMeta(path);
+  await reconcileOne(d, path, rmeta ?? undefined);
 }
 
 async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false): Promise<void> {

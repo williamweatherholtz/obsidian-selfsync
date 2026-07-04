@@ -15,6 +15,7 @@ function fakeServer() {
     async changes(since) {
       return { version, upserts: [...files.values()].filter((f) => f.version > since), deletes: [] } as ChangesResponse;
     },
+    async fileMeta(p) { return files.get(p) ?? null; },
     async missing(hashes) { return hashes.filter((h) => !chunks.has(h)); },
     async getChunk(h) { return chunks.get(h)!; },
     async putChunk(h, b) { chunks.set(h, b); },
