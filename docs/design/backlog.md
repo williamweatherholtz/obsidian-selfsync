@@ -2,6 +2,10 @@
 
 > Tracked future work surfaced during use. Each item names its target milestone (the process that will handle it) and the desired behavior, so nothing is lost. Convert to formal engine `Issue` items when the `keel` tooling is in the loop. Newest first.
 
+## B7 — Auth hardening (expiring/revocable tokens + public-exposure security)
+**Raised:** 2026-07-04 (during goal-#1 config-UX brainstorming). **Target:** a dedicated auth/security milestone (NOT goal #1).
+Today the server issues a non-expiring, in-memory UUID token on `POST /api/login` (lost on restart; the client re-logins with a stored password each reconnect). For publicly-exposed self-hosted instances this needs: expiring/refresh tokens with server-side **revocation**; an option for the client to persist **only a token** (never the password); documented **TLS/public-exposure guidance** (the shipped Caddy reverse-proxy example is the vehicle); and — deferred 2026-07-04 during goal-#1 brainstorming — optional **client-side E2E encryption** (a separate encryption password à la official Obsidian Sync). Our current model is trusted-server + TLS-in-transit, NOT content E2EE; adding E2EE would insert an encryption-password step into the setup wizard, so the wizard is designed to leave room for it. Explicitly scoped OUT of goal #1 — that overhaul builds on today's login→token flow and its connection string carries server+username only (never the password), leaving clean seams for this work. Full token lifecycle in the UI overhaul would be cart-before-horse.
+
 ## B6 — Server durability hardening (persist-failure rollback + startup consistency check)  ✅ DONE (2026-07-03)
 **Resolved 2026-07-03:** `commit`/`delete` now snapshot the index, defer all physical
 blob removal until AFTER `persist()` succeeds, and roll the in-memory index back to the
