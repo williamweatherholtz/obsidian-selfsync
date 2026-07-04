@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath } from "obsidian";
 import { HttpTransport } from "./transport";
-import { pull, pushLocal, SyncState, VaultIo } from "./sync";
+import { pull, pushFile, pushLocalNew, SyncState, VaultIo, ChunkCache } from "./sync";
+import { sha256hex } from "./chunker";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 
 type ConnState = "off" | "connecting" | "connected" | "offline";
@@ -12,15 +13,18 @@ class ObsidianVaultIo implements VaultIo {
     for (const f of this.plugin.app.vault.getFiles()) m.set(f.path, { mtime: f.stat.mtime });
     return m;
   }
-  async read(path: string) { return this.plugin.app.vault.adapter.read(normalizePath(path)); }
-  async write(path: string, data: string) {
+  async read(path: string): Promise<Uint8Array> {
+    return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
+  }
+  async write(path: string, bytes: Uint8Array): Promise<void> {
     const p = normalizePath(path);
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
-    await this.plugin.app.vault.adapter.write(p, data);
-    this.plugin.noteSynced(p, data);
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    await this.plugin.app.vault.adapter.writeBinary(p, buf);
+    await this.plugin.noteSyncedBytes(p, bytes);
   }
-  async remove(path: string) {
+  async remove(path: string): Promise<void> {
     const p = normalizePath(path);
     if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
     this.plugin.forgetSynced(p);
@@ -51,7 +55,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private state: SyncState = { version: 0 };
   private known = new Set<string>();
   private applying = false; // guard: don't echo server-driven writes back as pushes
-  private lastSynced = new Map<string, string>(); // content-equality echo-suppression (async event race)
+  private lastHash = new Map<string, string>(); // path -> last-synced file SHA-256 (echo-suppression)
+  private cache: ChunkCache = new Map(); // content-addressed chunk cache
 
   // --- observability + connection lifecycle ---
   private statusEl?: HTMLElement;
@@ -123,11 +128,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.api = new HttpTransport(this.settings.serverUrl, token);
 
       this.applying = true;
-      await pull(this.api, this.io, this.state);
+      await pull(this.api, this.io, this.state, this.cache);
       this.log(`initial pull → now at v${this.state.version}`);
-      const manifest = await this.api.changes(0);
-      this.known = new Set(manifest.upserts.map((m) => m.path));
-      await pushLocal(this.api, this.io, this.state, this.known);
+      this.known = new Set((await this.api.changes(0)).upserts.map((m) => m.path));
+      await pushLocalNew(this.api, this.io, this.state, this.cache, this.known);
       this.log(`initial push (server had ${this.known.size} files) → v${this.state.version}`);
       this.applying = false;
 
@@ -177,7 +181,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.applying = true;
     try {
       const before = this.state.version;
-      await pull(this.api, this.io, this.state);
+      await pull(this.api, this.io, this.state, this.cache);
       if (this.state.version !== before) {
         this.log(`remote change → pulled (v${before} → v${this.state.version})`);
         this.setStatus("connected", `v${this.state.version}`);
@@ -192,13 +196,13 @@ export default class NewLiveSyncPlugin extends Plugin {
   private async onLocalChange(f: TAbstractFile) {
     if (this.applying || !this.api || !(f instanceof TFile)) return;
     try {
-      const data = await this.io.read(f.path);
-      if (this.lastSynced.get(f.path) === data) return; // echo of a server-driven write
-      const meta = await this.api.putFile(f.path, data, f.stat.mtime);
-      this.state.version = Math.max(this.state.version, meta.version);
+      const bytes = await this.io.read(f.path);
+      const h = await sha256hex(bytes);
+      if (this.lastHash.get(f.path) === h) return; // echo of a server-driven write
+      await pushFile(this.api, this.io, this.state, this.cache, f.path);
       this.known.add(f.path);
-      this.lastSynced.set(f.path, data);
-      this.log(`local edit ${f.path} → pushed (v${meta.version})`);
+      this.lastHash.set(f.path, h);
+      this.log(`local edit ${f.path} → pushed (v${this.state.version})`);
       this.setStatus("connected", `v${this.state.version}`);
     } catch (e: any) { this.log(`push FAILED for ${f.path}: ${e?.message ?? e}`); }
   }
@@ -208,7 +212,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     try {
       await this.api.deleteFile(path);
       this.known.delete(path);
-      this.lastSynced.delete(path);
+      this.lastHash.delete(path);
       this.log(`local delete ${path} → pushed`);
     } catch (e: any) { this.log(`delete push FAILED for ${path}: ${e?.message ?? e}`); }
   }
@@ -218,18 +222,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     try {
       await this.api.deleteFile(oldPath);
       this.known.delete(oldPath);
-      this.lastSynced.delete(oldPath);
-      const data = await this.io.read(file.path);
-      const meta = await this.api.putFile(file.path, data, file.stat.mtime);
-      this.state.version = Math.max(this.state.version, meta.version);
+      this.lastHash.delete(oldPath);
+      await pushFile(this.api, this.io, this.state, this.cache, file.path);
       this.known.add(file.path);
-      this.lastSynced.set(file.path, data);
-      this.log(`local rename ${oldPath} → ${file.path} (v${meta.version})`);
+      this.lastHash.set(file.path, await sha256hex(await this.io.read(file.path)));
+      this.log(`local rename ${oldPath} → ${file.path} (v${this.state.version})`);
     } catch (e: any) { this.log(`rename push FAILED for ${file.path}: ${e?.message ?? e}`); }
   }
 
-  noteSynced(path: string, data: string) { this.lastSynced.set(path, data); }
-  forgetSynced(path: string) { this.lastSynced.delete(path); }
+  async noteSyncedBytes(path: string, bytes: Uint8Array) { this.lastHash.set(path, await sha256hex(bytes)); }
+  forgetSynced(path: string) { this.lastHash.delete(path); }
 
   async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
   async saveSettings() { await this.saveData(this.settings); }

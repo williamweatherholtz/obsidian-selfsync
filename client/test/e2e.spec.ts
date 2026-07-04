@@ -1,6 +1,6 @@
 // Headless end-to-end test: drives TWO real sync clients (the actual sync.ts
-// engine + a Node HTTP transport + real files on disk) against the real server
-// binary, and asserts create/edit/delete/large-file propagation. No Obsidian.
+// chunk engine + a Node HTTP transport + real files on disk) against the real
+// server binary, and asserts create/edit/delete/binary/dedup propagation. No Obsidian.
 //
 // The server is either spawned from ../server/target/debug (build it first with
 // `cargo build`) or, if SYNC_SERVER_URL is set (e.g. in docker-compose), targeted
@@ -12,8 +12,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pull, pushLocal, SyncApi, VaultIo, SyncState } from "../src/sync";
-import { ChangesResponse, FileMeta } from "../src/protocol";
+import { pull, pushFile, pushLocalNew, SyncApi, VaultIo, SyncState, ChunkCache } from "../src/sync";
+import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverBin = path.resolve(
@@ -22,7 +22,7 @@ const serverBin = path.resolve(
 const externalUrl = process.env.SYNC_SERVER_URL;
 const canRun = !!externalUrl || existsSync(serverBin);
 
-/** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). */
+/** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). Chunk API. */
 class NodeTransport implements SyncApi {
   constructor(private base: string, private token: string) {}
   static async login(base: string, u: string, p: string): Promise<string> {
@@ -39,16 +39,27 @@ class NodeTransport implements SyncApi {
     if (!r.ok) throw new Error(`changes ${r.status}`);
     return (await r.json()) as ChangesResponse;
   }
-  async getFile(p: string): Promise<string> {
-    const r = await fetch(`${this.base}/api/vault/file?path=${encodeURIComponent(p)}`, { headers: this.h() });
-    if (!r.ok) throw new Error(`get ${r.status}`);
-    return await r.text();
-  }
-  async putFile(p: string, data: string, mtime: number): Promise<FileMeta> {
-    const r = await fetch(`${this.base}/api/vault/file?path=${encodeURIComponent(p)}`, {
-      method: "PUT", headers: { ...this.h(), "X-Mtime": String(mtime) }, body: data,
+  async missing(hashes: string[]): Promise<string[]> {
+    const r = await fetch(`${this.base}/api/vault/chunks/missing`, {
+      method: "POST", headers: { ...this.h(), "content-type": "application/json" }, body: JSON.stringify({ hashes }),
     });
-    if (!r.ok) throw new Error(`put ${r.status}`);
+    if (!r.ok) throw new Error(`missing ${r.status}`);
+    return ((await r.json()) as { missing: string[] }).missing;
+  }
+  async getChunk(hash: string): Promise<Uint8Array> {
+    const r = await fetch(`${this.base}/api/vault/chunk/${hash}`, { headers: this.h() });
+    if (!r.ok) throw new Error(`getChunk ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
+  async putChunk(hash: string, bytes: Uint8Array): Promise<void> {
+    const r = await fetch(`${this.base}/api/vault/chunk/${hash}`, { method: "PUT", headers: this.h(), body: new Blob([bytes as BlobPart]) });
+    if (!r.ok) throw new Error(`putChunk ${r.status}`);
+  }
+  async commit(req: CommitRequest): Promise<FileMeta> {
+    const r = await fetch(`${this.base}/api/vault/commit`, {
+      method: "POST", headers: { ...this.h(), "content-type": "application/json" }, body: JSON.stringify(req),
+    });
+    if (!r.ok) throw new Error(`commit ${r.status}`);
     return (await r.json()) as FileMeta;
   }
   async deleteFile(p: string): Promise<void> {
@@ -57,7 +68,7 @@ class NodeTransport implements SyncApi {
   }
 }
 
-/** Filesystem-backed VaultIo (mirrors the plugin's ObsidianVaultIo, on real fs). */
+/** Filesystem-backed binary VaultIo (mirrors the plugin's ObsidianVaultIo, on real fs). */
 class FsVaultIo implements VaultIo {
   constructor(private root: string) {}
   private abs(p: string) { return path.join(this.root, p); }
@@ -73,12 +84,12 @@ class FsVaultIo implements VaultIo {
     await walk(this.root).catch(() => {});
     return m;
   }
-  async read(p: string) { return fs.readFile(this.abs(p), "utf8"); }
-  async write(p: string, data: string) { await fs.mkdir(path.dirname(this.abs(p)), { recursive: true }); await fs.writeFile(this.abs(p), data); }
-  async remove(p: string) { await fs.rm(this.abs(p), { force: true }); }
+  async read(p: string): Promise<Uint8Array> { return new Uint8Array(await fs.readFile(this.abs(p))); }
+  async write(p: string, bytes: Uint8Array): Promise<void> { await fs.mkdir(path.dirname(this.abs(p)), { recursive: true }); await fs.writeFile(this.abs(p), bytes); }
+  async remove(p: string): Promise<void> { await fs.rm(this.abs(p), { force: true }); }
 }
 
-type Client = { io: FsVaultIo; api: NodeTransport; state: SyncState; known: Set<string>; root: string };
+type Client = { io: FsVaultIo; api: NodeTransport; state: SyncState; known: Set<string>; cache: ChunkCache; root: string };
 
 async function connect(base: string, root: string): Promise<Client> {
   await fs.mkdir(root, { recursive: true });
@@ -86,24 +97,21 @@ async function connect(base: string, root: string): Promise<Client> {
   const api = new NodeTransport(base, token);
   const io = new FsVaultIo(root);
   const state: SyncState = { version: 0 };
-  await pull(api, io, state);
+  const cache: ChunkCache = new Map();
+  await pull(api, io, state, cache);
   const known = new Set((await api.changes(0)).upserts.map((m) => m.path));
-  await pushLocal(api, io, state, known);
-  return { io, api, state, known, root };
+  await pushLocalNew(api, io, state, cache, known);
+  return { io, api, state, known, cache, root };
 }
-async function pushFile(c: Client, rel: string) {
-  const data = await c.io.read(rel);
-  const meta = await c.api.putFile(rel, data, Date.now());
-  c.state.version = Math.max(c.state.version, meta.version);
-  c.known.add(rel);
-}
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 const exists = (p: string) => fs.access(p).then(() => true, () => false);
 
 let srv: ChildProcess | undefined;
 let base = "";
 let dataDir = "";
 
-describe.skipIf(!canRun)("headless two-client E2E (real server + real sync engine)", () => {
+describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engine)", () => {
   beforeAll(async () => {
     if (externalUrl) { base = externalUrl; return; }
     dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
@@ -113,7 +121,6 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real sync engin
     });
     base = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("server did not report a listening address in time")), 15000);
-      // The server logs via eprintln! -> STDERR (both the "listening on" line and requests).
       const onData = (b: Buffer) => {
         const m = b.toString().match(/listening on (\S+)/);
         if (m) { clearTimeout(timer); resolve(`http://${m[1]}`); }
@@ -128,42 +135,56 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real sync engin
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it("propagates create, edit, delete, and a >2MB file between two clients", async () => {
-    const dirA = mkdtempSync(path.join(os.tmpdir(), "nls-A-"));
-    const dirB = mkdtempSync(path.join(os.tmpdir(), "nls-B-"));
-    const a = await connect(base, dirA);
-    const b = await connect(base, dirB);
+  it("propagates create/edit/delete, a binary file, and dedups shared chunks", async () => {
+    const a = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-A-")));
+    const b = await connect(base, mkdtempSync(path.join(os.tmpdir(), "nls-B-")));
 
-    // S1 — create in A propagates to B
-    await a.io.write("n1.md", "hello from A");
-    await pushFile(a, "n1.md");
-    await pull(b.api, b.io, b.state);
-    expect(await b.io.read("n1.md")).toBe("hello from A");
+    // S1 — text create in A propagates to B
+    await a.io.write("n1.md", enc("hello from A"));
+    await pushFile(a.api, a.io, a.state, a.cache, "n1.md");
+    await pull(b.api, b.io, b.state, b.cache);
+    expect(dec(await b.io.read("n1.md"))).toBe("hello from A");
 
     // S2 — edit in B propagates to A
-    await b.io.write("n1.md", "edited in B");
-    await pushFile(b, "n1.md");
-    await pull(a.api, a.io, a.state);
-    expect(await a.io.read("n1.md")).toBe("edited in B");
+    await b.io.write("n1.md", enc("edited in B"));
+    await pushFile(b.api, b.io, b.state, b.cache, "n1.md");
+    await pull(a.api, a.io, a.state, a.cache);
+    expect(dec(await a.io.read("n1.md"))).toBe("edited in B");
 
-    // S3 — >2MB file (regression for the body-limit fix)
-    const big = "x".repeat(3 * 1024 * 1024);
-    await a.io.write("big.md", big);
-    await pushFile(a, "big.md");
-    await pull(b.api, b.io, b.state);
-    expect((await fs.stat(path.join(dirB, "big.md"))).size).toBe(big.length);
+    // S3 — binary file (non-UTF8 bytes) round-trips intact
+    const bin = new Uint8Array(80000); for (let i = 0; i < bin.length; i++) bin[i] = (i * 37) & 0xff;
+    await a.io.write("img.bin", bin);
+    await pushFile(a.api, a.io, a.state, a.cache, "img.bin");
+    await pull(b.api, b.io, b.state, b.cache);
+    expect(await b.io.read("img.bin")).toEqual(bin);
 
-    // S4 — delete in A propagates to B
-    await fs.rm(path.join(dirA, "n1.md"));
+    // S4 — dedup: a file whose content is a prefix of img.bin shares chunks, so
+    // fewer chunks are missing than a fresh file of the same size would need.
+    const { chunk } = await import("../src/chunker");
+    const csImg = await chunk(bin);
+    expect(csImg.length).toBeGreaterThan(0);
+    const missingOwn = await a.api.missing(csImg.map((c) => c.hash));
+    expect(missingOwn.length).toBe(0); // every chunk of an already-synced file is present
+    // committing identical content under a new path uploads ZERO new chunks
+    await a.io.write("img-copy.bin", bin);
+    let uploads = 0; const realPut = a.api.putChunk.bind(a.api);
+    a.api.putChunk = async (h, by) => { uploads++; return realPut(h, by); };
+    await pushFile(a.api, a.io, a.state, a.cache, "img-copy.bin");
+    expect(uploads).toBe(0); // shared chunks -> zero new uploads
+    await pull(b.api, b.io, b.state, b.cache);
+    expect(await b.io.read("img-copy.bin")).toEqual(bin);
+
+    // S5 — delete in A propagates to B
+    await a.io.remove("n1.md");
     await a.api.deleteFile("n1.md");
     a.known.delete("n1.md");
-    await pull(b.api, b.io, b.state);
-    expect(await exists(path.join(dirB, "n1.md"))).toBe(false);
+    await pull(b.api, b.io, b.state, b.cache);
+    expect(await exists(path.join(b.root, "n1.md"))).toBe(false);
 
     // Bind mount is real truth (only when we spawned the server ourselves)
-    if (dataDir) expect(await exists(path.join(dataDir, "vault", "big.md"))).toBe(true);
+    if (dataDir) expect(await exists(path.join(dataDir, "vault", "img.bin"))).toBe(true);
 
-    rmSync(dirA, { recursive: true, force: true });
-    rmSync(dirB, { recursive: true, force: true });
+    rmSync(a.root, { recursive: true, force: true });
+    rmSync(b.root, { recursive: true, force: true });
   }, 30000);
 });

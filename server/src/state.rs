@@ -15,7 +15,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(cfg: Config) -> std::io::Result<Self> {
-        let vault = Vault::open(&cfg.data_root.join(&cfg.vault))?;
+        // Vault::open lays out DATA_ROOT/vault (materialized files = the bind mount),
+        // DATA_ROOT/.chunks, and DATA_ROOT/.sync-index.json under the given root, so
+        // pass DATA_ROOT itself (not DATA_ROOT/vault, which would double-nest).
+        let vault = Vault::open(&cfg.data_root)?;
         let (tx, _rx) = broadcast::channel(256);
         Ok(AppState {
             cfg: Arc::new(cfg),
