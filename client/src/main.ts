@@ -5,8 +5,7 @@ import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { OnboardingModal } from "./onboarding";
-
-type ConnState = "off" | "connecting" | "connected" | "offline";
+import { SyncMachine, Phase, light } from "./syncstate";
 
 class ObsidianVaultIo implements VaultIo {
   constructor(private plugin: NewLiveSyncPlugin) {}
@@ -61,10 +60,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   private cache: ChunkCache = new Map();
   private applying = false; // guard: suppress reconcile re-entrancy from our own writes
 
-  // --- observability + connection lifecycle ---
+  // --- observability + connection lifecycle (explicit FSM, see syncstate.ts) ---
   private statusEl?: HTMLElement;
   private logs: string[] = [];
-  private connState: ConnState = "off";
+  private machine = new SyncMachine((phase) => this.renderLight(phase));
   private reconnectTimer?: number;
   private pollTimer?: number;
   private backoff = 3000;
@@ -75,7 +74,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
     this.statusEl = this.addStatusBarItem();
-    this.setStatus("off");
+    this.renderLight(this.machine.get()); // initial: off
 
     this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => new OnboardingModal(this.app, this).open() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
@@ -93,6 +92,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   onunload() {
     this.unloading = true;
+    this.machine.dispatch("unload");
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
     this.ws?.close();
@@ -112,29 +112,18 @@ export default class NewLiveSyncPlugin extends Plugin {
   showLog() { new LogModal(this.app, this).open(); }
   openSetup() { new OnboardingModal(this.app, this).open(); }
 
-  private setStatus(state: ConnState, detail = "") {
-    this.connState = state;
-    // "SelfSync" + a status light: green = up to date, amber = connecting/syncing,
-    // red = offline, grey = off. Full detail lives in the hover tooltip.
-    const color =
-      state === "connected" ? "#3fb950"   // green — synced / up to date
-      : state === "connecting" ? "#d29922" // amber — connecting/syncing
-      : state === "offline" ? "#f85149"    // red — offline (retrying)
-      : "#8b949e";                          // grey — off
-    const tip =
-      state === "connected" ? `Up to date${detail ? " (" + detail + ")" : ""}`
-      : state === "connecting" ? "Connecting / syncing…"
-      : state === "offline" ? "Offline — retrying"
-      : "Not connected";
+  // The status light is a pure function of the FSM phase (see syncstate.ts).
+  private renderLight(phase: Phase) {
+    const spec = light(phase, `v${this.state.version}`);
     if (this.statusEl) {
       this.statusEl.empty();
       const dot = this.statusEl.createSpan({ text: "●" });
-      dot.setAttribute("style", `color:${color};margin-right:4px;`);
-      this.statusEl.createSpan({ text: "SelfSync" });
-      this.statusEl.setAttribute("aria-label", `SelfSync — ${tip}`);
+      dot.setAttribute("style", `color:${spec.color};margin-right:4px;`);
+      this.statusEl.createSpan({ text: spec.label });
+      this.statusEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
     }
   }
-  statusText() { return this.connState; }
+  statusText() { return this.machine.get(); }
 
   // ---- reconcile deps ----
   private deviceLabel(): string {
@@ -154,7 +143,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // ---- connection lifecycle (self-healing) ----
   async reconnect() {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
-    this.setStatus("connecting");
+    this.machine.dispatch("connect");
     this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
     try {
       this.ws?.close();
@@ -178,11 +167,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.startPolling();
 
       this.backoff = 3000;
-      this.setStatus("connected", `v${this.state.version}`);
+      this.machine.dispatch("connected");
       this.log(`connected @ v${this.state.version}`, true);
     } catch (e: any) {
       this.applying = false;
-      this.setStatus("offline");
+      this.machine.dispatch("error");
       this.log(`connect FAILED: ${e?.message ?? e}`, true);
       this.scheduleReconnect();
     }
@@ -214,19 +203,20 @@ export default class NewLiveSyncPlugin extends Plugin {
       // no full re-list). Local edits are handled separately by vault events.
       const delta = await this.api.changes(this.state.version);
       if (delta.upserts.length === 0 && delta.deletes.length === 0) {
-        this.setStatus("connected", `v${this.state.version}`);
+        this.machine.dispatch("syncDone"); // reachable + up to date
         return;
       }
+      this.machine.dispatch("syncStart");
       const before = this.state.version;
       await reconcileAll(this.deps());
       if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
-      this.setStatus("connected", `v${this.state.version}`);
+      this.machine.dispatch("syncDone");
     } catch (e: any) {
       // Any failure (server down, 401, network) means we're NOT up to date: go red
       // and hand recovery to the backoff reconnect (which restarts polling + WS on
       // success). Stop the redundant poll so the two don't retry in parallel.
       this.log(`reconcile FAILED: ${e?.message ?? e}`);
-      this.setStatus("offline");
+      this.machine.dispatch("error");
       if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
       this.scheduleReconnect();
     } finally { this.applying = false; }
@@ -235,8 +225,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   private async onLocalEvent(f: TAbstractFile) {
     if (this.applying || !this.api || !(f instanceof TFile)) return;
     this.applying = true;
-    try { await reconcilePath(this.deps(), f.path); this.setStatus("connected", `v${this.state.version}`); }
-    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); }
+    this.machine.dispatch("syncStart");
+    try { await reconcilePath(this.deps(), f.path); this.machine.dispatch("syncDone"); }
+    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
   }
 
