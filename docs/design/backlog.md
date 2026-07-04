@@ -25,12 +25,23 @@
 - On first connect of an existing vault, treat it as a reconcile of two populated sides, not a one-way overwrite.
 **Note:** verify the local-only-upload path with a dedicated headless E2E scenario when M3 starts (distinguish a real bug from the divergent-content case).
 
-## B2 — Vault selection / creation UI + multiple vaults per account
+## B2 — Vault selection / creation UI + multiple vaults per account  ✅ DONE (M4)
+**Resolved 2026-07-03 in M4:** one account → many vaults; `POST/GET /api/vaults`;
+the plugin's OnboardingModal lists/creates vaults and binds this Obsidian vault
+to one (`vaultId` setting); server enforces per-`(user,vault)` isolation
+(`DATA_ROOT/<user>/<vault>`), verified by unit + E2E isolation tests. The bigger
+config-UX overhaul remains deferred (goal #1).
 **Raised:** 2026-07-03. **Target:** M4 (multi-tenant) + onboarding UI.
 **Problem:** The plugin hardwires a single server-side vault; there's no way to pick which server vault an Obsidian vault syncs to, or to create a new one.
 **Desired behavior:** one account → many vaults; in the plugin, choose an existing server vault to sync the current Obsidian vault to, or create a new server vault; server enforces per-account vault isolation. Layout `/<data-root>/<user>/<vault>/…` (already in the design).
 
-## B1 — Login / account creation UI (real onboarding)
+## B1 — Login / account creation UI (real onboarding)  ✅ DONE (M4)
+**Resolved 2026-07-03 in M4:** real accounts with argon2id hashes (`.users.json`),
+`REGISTRATION=open|invite|closed` + `/api/register`, tokens resolve to a user, and
+the plugin OnboardingModal does login/register + vault pick/create. Status bar
+now shows "SelfSync" + a green/amber/red light. Follow-ups: per-user invites
+(currently a single shared `INVITE_CODE`); data migration from the pre-M4 single
+vault layout (`DATA_ROOT/vault`) to `DATA_ROOT/<user>/<vault>` (test data re-syncs).
 **Raised:** 2026-07-03. **Target:** M4 (multi-tenant) + onboarding UI.
 **Problem:** The server has a single fixed `admin/admin` from config; there's no way to create users, and login is just URL/username/password fields + a Connect button — not a clear onboarding flow.
 **Desired behavior:** server accounts with registration/creation (an admin/registration endpoint or CLI), and a plugin onboarding UI that logs in and (where allowed) creates an account. Clear connection state (the status-bar indicator + sync log added in M1 are the start).

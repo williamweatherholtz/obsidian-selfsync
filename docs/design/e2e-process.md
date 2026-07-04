@@ -65,6 +65,19 @@ Start the server + open both vaults (harness prints exact commands). Then:
 
 Record results (pass/fail + notes) in `docs/design/plans/mN-e2e-results.md` for the milestone under test.
 
+## Multi-vault / accounts (M4)
+
+The server is now multi-tenant: accounts (argon2id) + multiple named vaults per
+account at `DATA_ROOT/<user>/<vault>/`; sync routes are vault-scoped
+(`/api/v/{vault}/…`). The plugin's **Set up / switch vault** command (and the
+settings button) runs onboarding: log in or register, then pick or create the
+server vault this Obsidian vault syncs to. Manual scenarios: S14 — register a
+second account / create a second vault and confirm files in one never appear in
+the other; S15 — the status bar shows **SelfSync** with a green light when up to
+date (amber while connecting, red when offline). NOTE: the pre-M4 data layout
+(`DATA_ROOT/vault`) is not read by the M4 server — test data re-syncs into
+`DATA_ROOT/<user>/<vault>`.
+
 ## Known caveats while testing (as of M2)
 
 Binary files **are** supported as of M2 (chunked, content-addressed, deduped). Conflicts still resolve **last-write-wins** with no merge yet (M3) — a file edited on two sides while offline: one side wins. Sync is **foreground-only** on mobile (M5). Accounts are a single fixed `admin` (multi-user + vault selection UI is M4 — see `backlog.md`). As of M2 the server index (file→chunks, refcounts, version, deletions) **is** persisted to `DATA_ROOT/.sync-index.json` across restart; chunk blobs live in `DATA_ROOT/.chunks`, materialized files in `DATA_ROOT/vault`.
