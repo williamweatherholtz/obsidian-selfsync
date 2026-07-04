@@ -2,6 +2,28 @@
 
 > Tracked future work surfaced during use. Each item names its target milestone (the process that will handle it) and the desired behavior, so nothing is lost. Convert to formal engine `Issue` items when the `keel` tooling is in the loop. Newest first.
 
+## B9 — Larger critique follow-ups (deliberately deferred from the 2026-07-04 critique fix pass)
+**Raised:** 2026-07-04. **Target:** later, per-item. The critique's data-loss / credential / DoS
+cluster and the bounded UX/perf items were fixed in that pass; these remain because each is a real
+feature or architecture change, not a bounded fix — deferred with rationale rather than half-built:
+- **Server index scaling** — `persist()` re-serializes the WHOLE index on every commit, `commit`/`delete`
+  deep-clone the whole index for rollback, and deletion tombstones grow unbounded. Fine at current scale;
+  needs an incremental/append store + tombstone compaction (bounded by clients' min-acked version) for
+  large, churny, long-lived vaults.
+- **`reconcilePath` fetches the whole manifest (`changes(0)`) per single-file event** — O(vault) network +
+  parse per note save. Needs a single-path remote-meta endpoint or a WS-invalidated manifest cache.
+- **Streaming large files** — `io.read` + `requestUrl` buffer whole files in RAM (mobile OOM on big
+  attachments). Needs incremental chunk-from-disk + a size-gate/skip UI.
+- **Full re-auth modal** — currently the status card *tells* the user to re-run setup when the token+password
+  both fail; a dedicated "Session expired — re-enter password" inline prompt is nicer.
+- **Mobile status indicator** — the status-bar light is invisible on Obsidian mobile; add a ribbon-icon (or
+  Notice) fallback so mobile users see sync state.
+- **Case-only / Windows-reserved path collisions** — `README.md` vs `readme.md` key two index entries to
+  one file on a case-insensitive server FS; normalize/detect at commit.
+- **CORS is `Any`** — restrict to configured origins (pairs with B7 auth hardening).
+- **Config changes sync on reconnect, not live** — `.obsidian/` edits fire no vault events; optionally poll
+  the config surface on the sync timer (today it's honest: the copy no longer implies live).
+
 ## B8 — BRAT-installable distribution (release pipeline)  ✅ DONE (2026-07-04)
 **Resolved 2026-07-04:** the plugin now installs via BRAT from `williamweatherholtz/obsidian-selfsync`.
 Set up: a root-level `manifest.json` (canonical; `id` new-livesync, name "SelfSync", version 0.1.0) +

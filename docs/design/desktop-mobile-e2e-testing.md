@@ -104,7 +104,7 @@ auto-opens.
 |---|----------|-------|----------|
 | D19 | **Off by default** | Fresh setup, don't touch "What syncs" | Only notes/attachments sync; `.obsidian/` is not synced |
 | D20 | **Enable config sync** | What syncs → expand → toggle "Sync Obsidian settings" on | On next reconnect, `app.json`/`core-plugins.json`/`hotkeys.json` + community plugin folders propagate to the other vault |
-| D21 | **SelfSync's own config NEVER syncs** | With config sync ON, change SelfSync's own server URL on Vault A | Vault B's SelfSync server URL is **unchanged** (its `.obsidian/plugins/obsidian-selfsync/` is never synced) — this is the critical safety check |
+| D21 | **SelfSync's own config NEVER syncs** | With config sync ON, change SelfSync's own server URL on Vault A | Vault B's SelfSync server URL is **unchanged** (its `.obsidian/plugins/new-livesync/` folder is never synced) — this is the critical safety check |
 | D22 | **Theming opt-out holds** | Leave Appearance/Themes/Snippets off (default); change a theme on A | Vault B's appearance is **unchanged** until you explicitly enable that category |
 | D23 | **Per-plugin exclude** | Uncheck one plugin in the per-plugin checklist | That plugin's folder stops propagating; others still do |
 | D24 | **Live reload is non-fatal** | After a synced plugin's config lands on B | Either the plugin reloads live, or a "…will apply after you reload Obsidian" notice — never a crash |

@@ -92,8 +92,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     c.createEl("h3", { text: "Connection" });
     new Setting(c).setName("Server").setDesc(s.serverUrl)
       .addButton((b) => b.setButtonText("Change").onClick(() => this.plugin.openSetup()));
-    new Setting(c).setName("Account").setDesc(`Signed in as ${s.username}`)
-      .addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); }));
+    new Setting(c).setName("Account").setDesc(`Signed in as ${s.username}. Sign out also forgets this device's password (you'll re-enter it next time).`)
+      .addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); }));
     // Switch vault reuses the existing session — no server/account re-entry.
     new Setting(c).setName("Remote vault").setDesc(s.vaultId)
       .addButton((b) => b.setButtonText("Switch vault").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
@@ -146,7 +146,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     new Setting(adv).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
-    new Setting(adv).setName("Disconnect").setDesc("Stop syncing this vault. Local files are kept.")
+    new Setting(adv).setName("Disconnect").setDesc("Stop syncing this vault (you stay signed in; local files are kept).")
       .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
   }
 

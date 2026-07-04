@@ -36,7 +36,7 @@ export interface LightSpec { color: string; label: string; tip: string }
 // The status light is a pure function of the phase.
 export function light(phase: Phase, detail = ""): LightSpec {
   switch (phase) {
-    case "idle":       return { color: "#3fb950", label: "SelfSync", tip: `Up to date${detail ? " (" + detail + ")" : ""}` };
+    case "idle":       return { color: "#3fb950", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` };
     case "syncing":    return { color: "#d29922", label: "SelfSync", tip: "Syncing…" };
     case "connecting": return { color: "#d29922", label: "SelfSync", tip: "Connecting…" };
     case "offline":    return { color: "#f85149", label: "SelfSync", tip: "Offline — retrying" };
