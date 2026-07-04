@@ -211,14 +211,17 @@ export default class NewLiveSyncPlugin extends Plugin {
     try {
       const before = this.state.version;
       await reconcileAll(this.deps());
-      if (this.state.version !== before) {
-        this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
-        this.setStatus("connected", `v${this.state.version}`);
-      }
+      // Reachable + reconciled → up to date (green). Log only on an actual change.
+      if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
+      this.setStatus("connected", `v${this.state.version}`);
     } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      this.log(`reconcile FAILED: ${msg}`);
-      if (msg.includes("401")) this.scheduleReconnect();
+      // Any failure (server down, 401, network) means we're NOT up to date: go red
+      // and hand recovery to the backoff reconnect (which restarts polling + WS on
+      // success). Stop the redundant poll so the two don't retry in parallel.
+      this.log(`reconcile FAILED: ${e?.message ?? e}`);
+      this.setStatus("offline");
+      if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
+      this.scheduleReconnect();
     } finally { this.applying = false; }
   }
 
