@@ -17,6 +17,7 @@ export interface NewLiveSyncSettings {
   configSync: ConfigSyncSelection; // which .obsidian/ config surfaces to sync (see configsync.ts)
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
+  editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -29,22 +30,34 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   configSync: { ...DEFAULT_CONFIG_SYNC },
   authToken: undefined,
   lastSyncedAt: undefined,
+  editorStatus: false,
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
+  private statusCardEl?: HTMLElement;
+
   display(): void {
     const { containerEl } = this; containerEl.empty();
     const s = this.plugin.settings;
     const configured = Boolean(s.vaultId && s.serverUrl && s.username);
 
-    this.renderStatusCard(containerEl, s, configured);
+    // A stable container so the card can live-refresh in place (see refreshStatusCard);
+    // the plugin calls our listener whenever the sync state changes while this tab is open.
+    this.statusCardEl = containerEl.createEl("div");
+    this.refreshStatusCard();
+    this.plugin.statusListener = () => this.refreshStatusCard();
     if (!configured) return; // unconfigured: only the status card + Set up button
 
+    // Four groups, one home for each concern: transitions you perform, the standing
+    // connection facts, what gets synced, and the rarely-touched knobs.
+    this.renderSetup(containerEl);
     this.renderConnection(containerEl, s);
     this.renderWhatSyncs(containerEl, s);
     this.renderAdvanced(containerEl, s);
   }
+
+  hide(): void { this.plugin.statusListener = undefined; } // stop live-refreshing once closed
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—". The
   // "Last synced" label is the row/name; this is the value.
@@ -56,11 +69,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     return new Date(s.lastSyncedAt).toLocaleTimeString();
   }
 
-  // Lean status card: just the state (dot + title) + actions. Identity and last-synced
-  // live under Connection, not crammed onto one line here.
-  private renderStatusCard(c: HTMLElement, s: NewLiveSyncSettings, configured: boolean): void {
+  // Lean status card: state (dot + title) + issue, rendered into the stable container so
+  // it updates live as the sync state changes (called by the plugin's statusListener).
+  // This is the single state readout in settings — actions live in their own groups.
+  private refreshStatusCard(): void {
+    const card = this.statusCardEl;
+    if (!card) return;
+    card.empty();
+    const s = this.plugin.settings;
+    const configured = Boolean(s.vaultId && s.serverUrl && s.username);
     const phase = this.plugin.statusText(); // FSM Phase
-    const card = c.createEl("div");
     card.setAttribute("style", "padding:12px 14px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:18px;");
     const title = configured ? statusTitle(phase) : "Not set up";
     const color = configured ? light(phase).color : "var(--text-muted)";
@@ -81,28 +99,47 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       return;
     }
     if (phase === "offline") { const r = bar.createEl("button", { text: "Reconnect" }); r.onclick = () => this.plugin.reconnect(); }
-    const add = bar.createEl("button", { text: "Add a device" }); add.onclick = () => this.showDeviceLink();
+  }
+
+  // Setup & transitions — the explicit actions you perform (change wiring, switch vault,
+  // link a device). Kept separate from the standing Connection facts below.
+  private renderSetup(c: HTMLElement): void {
+    new Setting(c).setName("Setup & transitions").setHeading();
+    new Setting(c).setName("Server & account").setDesc("Change the server URL or the account you sign in with.")
+      .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup()));
+    new Setting(c).setName("Switch vault").setDesc("Point this Obsidian vault at a different remote vault (you choose how to combine the data at switch time).")
+      .addButton((b) => b.setButtonText("Switch vault").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
+    new Setting(c).setName("Add a device").setDesc("Show a link/QR to set SelfSync up on another device.")
+      .addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink()));
   }
 
   private showDeviceLink(): void {
     new DeviceLinkModal(this.app, this.plugin.addDeviceLink()).open();
   }
 
+  // Connection — the standing facts of the current connection (values), plus the two ways
+  // to end it. Changing these values is done via the Setup group above.
   private renderConnection(c: HTMLElement, s: NewLiveSyncSettings): void {
     new Setting(c).setName("Connection").setHeading();
-    new Setting(c).setName("Server").setDesc(s.serverUrl)
-      .addButton((b) => b.setButtonText("Change").onClick(() => this.plugin.openSetup()));
+    new Setting(c).setName("Server").setDesc(s.serverUrl);
     new Setting(c).setName("Account").setDesc(`Signed in as ${s.username}. Sign out also forgets this device's password (you'll re-enter it next time).`)
       .addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); }));
-    // Switch vault reuses the existing session — no server/account re-entry.
-    new Setting(c).setName("Remote vault").setDesc(s.vaultId)
-      .addButton((b) => b.setButtonText("Switch vault").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
+    new Setting(c).setName("Remote vault").setDesc(s.vaultId);
     new Setting(c).setName("Last synced").setDesc(this.lastSyncedAgo(s));
+    new Setting(c).setName("Disconnect").setDesc("Stop syncing this vault (you stay signed in; local files are kept).")
+      .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
   }
 
   private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
     new Setting(c).setName("What syncs").setHeading();
     new Setting(c).setName("Notes & attachments").setDesc("Always synced.");
+    new Setting(c).setName("Conflict resolution")
+      .setDesc("When the same file changed on two devices: merge the changes automatically, or keep both as a conflict file.")
+      .addDropdown((dd) => dd
+        .addOption("auto-merge", "Automatically merge")
+        .addOption("conflict-file", "Create conflict file")
+        .setValue(s.conflictStrategy)
+        .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); }));
 
     const cs = s.configSync;
     new Setting(c).setName("Obsidian settings")
@@ -141,12 +178,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
     const adv = c.createEl("details"); adv.addClass("selfsync-section");
     adv.createEl("summary", { text: "Advanced" });
-    new Setting(adv).setName("Conflict resolution")
-      .addDropdown((dd) => dd
-        .addOption("auto-merge", "Automatically merge")
-        .addOption("conflict-file", "Create conflict file")
-        .setValue(s.conflictStrategy)
-        .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); }));
+    new Setting(adv).setName("Show sync status in the editor")
+      .setDesc("Also show a sync-status icon on open notes. Off by default — the status bar (or the ribbon on mobile) is the primary indicator.")
+      .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v)));
     new Setting(adv).setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto.")
       .addText((t) => t.setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(adv).setName("Detailed logging")
@@ -154,8 +188,6 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     new Setting(adv).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
-    new Setting(adv).setName("Disconnect").setDesc("Stop syncing this vault (you stay signed in; local files are kept).")
-      .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
   }
 
   private copyDebugInfo(s: NewLiveSyncSettings): void {

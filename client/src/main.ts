@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
+import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport } from "./transport";
 import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
@@ -94,6 +94,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   // --- observability + connection lifecycle (explicit FSM, see syncstate.ts) ---
   private statusEl?: HTMLElement;
   private ribbonEl?: HTMLElement; // state-colored ribbon icon (the sync indicator on mobile)
+  statusListener?: () => void;    // settings tab registers this to live-refresh its status card
+  private editorActionEls = new Set<HTMLElement>(); // optional in-editor indicators (opt-in)
+  private editorViews = new WeakSet<MarkdownView>();
   private logs: string[] = [];
   private machine = new SyncMachine((phase) => this.renderLight(phase));
   private reconnectTimer?: number;
@@ -110,10 +113,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.loadSettings();
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
-    this.statusEl = this.addStatusBarItem(); // desktop status bar (absent on mobile)
-    // Ribbon icon is the sync indicator that also shows on MOBILE (no status bar there);
-    // its color tracks state, tapping opens the sync log.
-    this.ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => this.showLog());
+    // ONE state indicator per platform — two would be redundant (the anti-pattern we're
+    // avoiding): the quiet status-bar item on desktop (click → log), the ribbon icon on
+    // mobile (which has no status bar). An optional in-editor indicator is opt-in below.
+    if (Platform.isMobile) {
+      this.ribbonEl = this.addRibbonIcon("refresh-cw", "SelfSync", () => this.showLog());
+    } else {
+      this.statusEl = this.addStatusBarItem();
+      this.statusEl.addClass("mod-clickable");
+      this.statusEl.onClickEvent(() => this.showLog());
+    }
     this.renderLight(this.machine.get()); // initial: off
 
     this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => this.openSetup() });
@@ -125,9 +134,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("create", (f) => this.onLocalEvent(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => this.onLocalDelete(f.path)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.applyEditorStatus()));
 
     this.log("plugin loaded");
     this.app.workspace.onLayoutReady(() => {
+      this.applyEditorStatus();
       if (!this.settings.vaultId || !this.settings.serverUrl || !this.settings.username) this.openSetup();
       else void this.reconnect();
     });
@@ -294,9 +305,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     else this.log(`applied synced config (${paths.length} file(s))`);
   }
 
-  // The status light is a pure function of the FSM phase (see syncstate.ts).
+  // The status light is a pure function of the FSM phase (see syncstate.ts). It drives
+  // the one platform indicator, any opt-in editor indicators, and (if the settings tab is
+  // open) its live status card — all from a single source of truth, never diverging.
   private renderLight(phase: Phase) {
     const spec = light(phase, `v${this.state.version}`);
+    // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users).
+    const glyph = phase === "idle" ? "check"
+      : phase === "offline" ? "alert-triangle"
+      : phase === "off" ? "circle-slash"
+      : "refresh-cw"; // connecting / syncing
     if (this.statusEl) {
       this.statusEl.empty();
       const dot = this.statusEl.createSpan({ text: "●" });
@@ -306,14 +324,35 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     if (this.ribbonEl) {
       this.ribbonEl.style.color = spec.color; // SVG uses currentColor -> tints the icon
-      // Vary the GLYPH too, so state isn't conveyed by color alone (colorblind users).
-      const glyph = phase === "idle" ? "check"
-        : phase === "offline" ? "alert-triangle"
-        : phase === "off" ? "circle-slash"
-        : "refresh-cw"; // connecting / syncing
       setIcon(this.ribbonEl, glyph);
       this.ribbonEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
     }
+    for (const el of this.editorActionEls) {
+      if (!el.isConnected) { this.editorActionEls.delete(el); continue; } // view closed — prune
+      el.style.color = spec.color;
+      setIcon(el, glyph);
+      el.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
+    }
+    this.statusListener?.(); // refresh the settings status card if it's on screen
+  }
+
+  // Opt-in in-editor indicator: a state-tinted action button on the active markdown view.
+  // Off by default; added lazily per view and pruned automatically when views close.
+  applyEditorStatus() {
+    if (!this.settings.editorStatus) return;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || this.editorViews.has(view)) { this.renderLight(this.machine.get()); return; }
+    this.editorViews.add(view);
+    this.editorActionEls.add(view.addAction("refresh-cw", "SelfSync sync status", () => this.showLog()));
+    this.renderLight(this.machine.get());
+  }
+  setEditorStatus(on: boolean) {
+    this.settings.editorStatus = on;
+    void this.saveSettings();
+    if (on) { this.applyEditorStatus(); return; }
+    for (const el of this.editorActionEls) el.remove();
+    this.editorActionEls.clear();
+    this.editorViews = new WeakSet();
   }
   statusText() { return this.machine.get(); }
 
