@@ -6,25 +6,55 @@ import { reconcileAll, reconcilePath, ReconcileDeps } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { OnboardingModal } from "./onboarding";
 import { SyncMachine, Phase, light } from "./syncstate";
+import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 
 class ObsidianVaultIo implements VaultIo {
   constructor(private plugin: NewLiveSyncPlugin) {}
+
+  // The single selective-sync gate: notes always pass; `.obsidian/` paths pass only
+  // per the config selection, and SelfSync's own folder never passes (see configsync).
+  private passes(path: string): boolean {
+    return shouldSync(path, this.plugin.settings.configSync, this.plugin.manifest.id);
+  }
+
   async list() {
     const m = new Map<string, { mtime: number }>();
-    for (const f of this.plugin.app.vault.getFiles()) m.set(f.path, { mtime: f.stat.mtime });
+    // getFiles() returns notes/attachments only (never .obsidian); passes() is a
+    // belt-and-suspenders guard.
+    for (const f of this.plugin.app.vault.getFiles()) {
+      if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime });
+    }
+    if (this.plugin.settings.configSync.enabled) await this.enumerateConfig(".obsidian", m);
     return m;
   }
+
+  // Recursively enumerate the hidden .obsidian/ config surface via the low-level
+  // adapter (getFiles() can't see it), keeping only paths that pass the filter.
+  private async enumerateConfig(dir: string, m: Map<string, { mtime: number }>): Promise<void> {
+    const adapter = this.plugin.app.vault.adapter;
+    let listing: { files: string[]; folders: string[] };
+    try { listing = await adapter.list(dir); } catch { return; }
+    for (const file of listing.files) {
+      if (!this.passes(file)) continue;
+      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0 }); } catch { /* skip unreadable */ }
+    }
+    for (const folder of listing.folders) await this.enumerateConfig(folder, m);
+  }
+
   async read(path: string): Promise<Uint8Array> {
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
   }
   async write(path: string, bytes: Uint8Array): Promise<void> {
+    if (!this.passes(path)) return; // excluded path must never overwrite locally
     const p = normalizePath(path);
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await this.plugin.app.vault.adapter.writeBinary(p, buf);
+    this.plugin.onConfigWritten(path); // best-effort live-reload of the affected surface
   }
   async remove(path: string): Promise<void> {
+    if (!this.passes(path)) return;
     const p = normalizePath(path);
     if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
   }
@@ -112,6 +142,45 @@ export default class NewLiveSyncPlugin extends Plugin {
   showLog() { new LogModal(this.app, this).open(); }
   openSetup() { new OnboardingModal(this.app, this).open(); }
 
+  // --- selective config sync: guarded, best-effort live reload -----------------
+  // The IO records each synced .obsidian/ file here; we flush once per reconcile so a
+  // plugin is reloaded at most once even if several of its files changed.
+  private pendingReload = new Set<string>();
+  onConfigWritten(path: string) { this.pendingReload.add(path); }
+
+  async flushConfigReload(): Promise<void> {
+    if (this.pendingReload.size === 0) return;
+    const paths = [...this.pendingReload];
+    this.pendingReload.clear();
+    const app = this.app as any; // app.plugins / app.customCss are not in the public typings
+    let needsRestart = false;
+
+    // Appearance: reload theme + snippet CSS live.
+    if (paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"))) {
+      try { app.customCss?.loadData?.(); app.customCss?.loadSnippets?.(); this.app.workspace.trigger("css-change"); }
+      catch { needsRestart = true; }
+    }
+
+    // Community plugins: disable+enable each touched plugin (never SelfSync itself;
+    // tolerate a plugin whose code isn't installed yet — reload must not throw).
+    const pluginIds = new Set<string>();
+    for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.manifest.id) pluginIds.add(id); }
+    for (const id of pluginIds) {
+      try {
+        if (app.plugins?.enabledPlugins?.has?.(id) && app.plugins?.plugins?.[id]) {
+          await app.plugins.disablePlugin(id);
+          await app.plugins.enablePlugin(id);
+        }
+      } catch { needsRestart = true; }
+    }
+
+    // Core settings / hotkeys / the plugin-enable list can't be fully re-applied live.
+    if (paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p))) needsRestart = true;
+
+    if (needsRestart) new Notice("SelfSync: some synced settings will apply after you reload Obsidian.");
+    else this.log(`applied synced config (${paths.length} file(s))`);
+  }
+
   // The status light is a pure function of the FSM phase (see syncstate.ts).
   private renderLight(phase: Phase) {
     const spec = light(phase, `v${this.state.version}`);
@@ -164,6 +233,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
       this.applying = true;
       try { await reconcileAll(this.deps()); } finally { this.applying = false; }
+      await this.flushConfigReload();
       this.log(`reconciled → v${this.state.version}`);
 
       const ws = this.api.connectWs(() => this.onRemoteChanged());
@@ -220,6 +290,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.machine.dispatch("syncStart");
       const before = this.state.version;
       await reconcileAll(this.deps());
+      await this.flushConfigReload();
       if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
       this.machine.dispatch("syncDone");
     } catch (e: any) {
@@ -261,6 +332,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   async loadSettings() {
     const data = (await this.loadData()) ?? {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
+    // Fresh, fully-defaulted configSync object (never share the module constant, and
+    // backfill any categories added since this vault last saved).
+    this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(data.settings?.configSync ?? {}) };
     this.base = new BaseStore(data.base ?? {});
   }
   async saveSettings() { await this.persist(); }

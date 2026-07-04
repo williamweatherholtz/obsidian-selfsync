@@ -1,0 +1,74 @@
+// Decides which paths sync. Notes/attachments always sync; the `.obsidian/` config
+// surface is opt-in per category. This is the SECURITY core of selective sync:
+//
+//   1. SelfSync's OWN plugin folder is NEVER synced, under any setting. Its data.json
+//      holds this device's server URL / credentials / vaultId — syncing it would let
+//      one device overwrite another's connection config ("the IP may differ").
+//   2. Appearance/themes/snippets are OFF by default (independent per device unless
+//      the user opts in); everything else under `.obsidian/` that we recognize is ON.
+//   3. Anything under `.obsidian/` we don't explicitly recognize (workspace.json,
+//      graph.json, …) is device-local and NOT synced.
+//
+// Pure and total: no Obsidian API, so it's exhaustively unit-testable.
+
+export interface ConfigSyncSelection {
+  enabled: boolean;      // master switch: sync the .obsidian/ surface at all
+  core: boolean;         // app.json, core-plugins.json
+  community: boolean;    // community-plugins.json + other plugins' folders
+  appearance: boolean;   // appearance.json, themes/**  (default OFF)
+  snippets: boolean;     // snippets/**                 (default OFF)
+  hotkeys: boolean;      // hotkeys.json
+  pluginDeny: string[];  // community plugin ids to exclude individually
+}
+
+export const DEFAULT_CONFIG_SYNC: ConfigSyncSelection = {
+  enabled: false, // config sync is itself opt-in; notes still sync when this is off
+  core: true,
+  community: true,
+  appearance: false,
+  snippets: false,
+  hotkeys: true,
+  pluginDeny: [],
+};
+
+const CONFIG_PREFIX = ".obsidian/";
+
+// The plugin id of a given community-plugin path under `.obsidian/plugins/`, or null.
+export function pluginIdOf(path: string): string | null {
+  if (!path.startsWith(CONFIG_PREFIX)) return null;
+  const rest = path.slice(CONFIG_PREFIX.length);
+  if (!rest.startsWith("plugins/")) return null;
+  const id = rest.slice("plugins/".length).split("/")[0];
+  return id || null;
+}
+
+// True if `path` should participate in sync given the selection and this device's own
+// SelfSync plugin id (the folder that must never sync).
+export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId: string): boolean {
+  if (!path.startsWith(CONFIG_PREFIX)) return true; // ordinary note/attachment
+  if (!sel.enabled) return false;                   // config sync switched off entirely
+
+  const p = path.slice(CONFIG_PREFIX.length);
+
+  // (1) HARD, non-optional exclusion: SelfSync's own plugin folder.
+  if (selfPluginId && (p === `plugins/${selfPluginId}` || p.startsWith(`plugins/${selfPluginId}/`))) {
+    return false;
+  }
+
+  // (2) recognized categories
+  if (p === "app.json" || p === "core-plugins.json") return sel.core;
+  if (p === "hotkeys.json") return sel.hotkeys;
+  if (p === "appearance.json" || p.startsWith("themes/")) return sel.appearance;
+  if (p.startsWith("snippets/")) return sel.snippets;
+  if (p === "community-plugins.json") return sel.community;
+  if (p.startsWith("plugins/")) {
+    if (!sel.community) return false;
+    const id = p.slice("plugins/".length).split("/")[0];
+    if (!id) return false;
+    if (sel.pluginDeny.includes(id)) return false;
+    return true;
+  }
+
+  // (3) unrecognized .obsidian/ file → device-local, never synced
+  return false;
+}

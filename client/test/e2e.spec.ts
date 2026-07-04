@@ -16,6 +16,7 @@ import { pull, pushFile, pushLocalNew, SyncApi, VaultIo, SyncState, ChunkCache }
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 import { BaseStore } from "../src/base";
 import { reconcileAll, ReconcileDeps } from "../src/reconcile";
+import { shouldSync, DEFAULT_CONFIG_SYNC, ConfigSyncSelection } from "../src/configsync";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverBin = path.resolve(
@@ -96,6 +97,14 @@ class FsVaultIo implements VaultIo {
   async read(p: string): Promise<Uint8Array> { return new Uint8Array(await fs.readFile(this.abs(p))); }
   async write(p: string, bytes: Uint8Array): Promise<void> { await fs.mkdir(path.dirname(this.abs(p)), { recursive: true }); await fs.writeFile(this.abs(p), bytes); }
   async remove(p: string): Promise<void> { await fs.rm(this.abs(p), { force: true }); }
+}
+
+/** FsVaultIo + the selective-sync filter, mirroring how ObsidianVaultIo gates list/write. */
+class FilteredFsVaultIo extends FsVaultIo {
+  constructor(root: string, private sel: ConfigSyncSelection, private selfId: string) { super(root); }
+  private passes(p: string) { return shouldSync(p, this.sel, this.selfId); }
+  async list() { const m = await super.list(); for (const k of [...m.keys()]) if (!this.passes(k)) m.delete(k); return m; }
+  async write(p: string, bytes: Uint8Array): Promise<void> { if (!this.passes(p)) return; return super.write(p, bytes); }
 }
 
 type Client = { io: FsVaultIo; api: NodeTransport; state: SyncState; known: Set<string>; cache: ChunkCache; base: BaseStore; device: string; root: string };
@@ -248,5 +257,46 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
 
     rmSync(d.root, { recursive: true, force: true });
     rmSync(w.root, { recursive: true, force: true });
+  }, 30000);
+
+  it("M6: syncs opted-in config but NEVER SelfSync's own folder or opted-out theming", async () => {
+    const SELF = "obsidian-selfsync";
+    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true }; // community ON, appearance OFF
+    const token = await NodeTransport.login(base, "admin", "admin");
+    await NodeTransport.createVault(base, token, "cfgsync");
+    const build = async (tag: string, device: string): Promise<Client> => {
+      const root = mkdtempSync(path.join(os.tmpdir(), tag));
+      const api = new NodeTransport(base, token, "cfgsync");
+      const c: Client = { io: new FilteredFsVaultIo(root, sel, SELF), api, state: { version: 0 }, known: new Set(), cache: new Map(), base: new BaseStore(), device, root };
+      await reconcileAll(dep(c));
+      return c;
+    };
+    const a = await build("nls-cfgA-", "A");
+    const b = await build("nls-cfgB-", "B");
+
+    // A synced note + an opted-in plugin's config go through the filtered IO.
+    await a.io.write("Note.md", enc("body"));
+    await a.io.write(".obsidian/plugins/dataview/data.json", enc('{"n":1}'));
+    // Obsidian (not us) writes appearance + SelfSync's own config to disk — simulate
+    // with raw fs so the filter's job is purely to keep them from being UPLOADED.
+    await fs.mkdir(path.join(a.root, ".obsidian", "plugins", SELF), { recursive: true });
+    await fs.writeFile(path.join(a.root, ".obsidian", "appearance.json"), '{"theme":"moonstone"}');
+    await fs.writeFile(path.join(a.root, ".obsidian", "plugins", SELF, "data.json"), '{"serverUrl":"http://A-only"}');
+
+    await pushLocalNew(a.api, a.io, a.state, a.cache, a.known);
+    await pull(b.api, b.io, b.state, b.cache);
+
+    // Opted-in surfaces propagate:
+    expect(dec(await b.io.read("Note.md"))).toBe("body");
+    expect(dec(await b.io.read(".obsidian/plugins/dataview/data.json"))).toBe('{"n":1}');
+    // Opted-out theming stays on A only:
+    expect(await exists(path.join(a.root, ".obsidian", "appearance.json"))).toBe(true);
+    expect(await exists(path.join(b.root, ".obsidian", "appearance.json"))).toBe(false);
+    // SECURITY: SelfSync's own config never left A (its server URL must not overwrite B):
+    expect(await exists(path.join(a.root, ".obsidian", "plugins", SELF, "data.json"))).toBe(true);
+    expect(await exists(path.join(b.root, ".obsidian", "plugins", SELF, "data.json"))).toBe(false);
+
+    rmSync(a.root, { recursive: true, force: true });
+    rmSync(b.root, { recursive: true, force: true });
   }, 30000);
 });
