@@ -36,5 +36,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/ws", get(ws::ws_handler))
         .with_state(state)
         .layer(cors)
-        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
+        // Requests are small: one CDC chunk (~64 KiB) or a JSON metadata body. Cap the
+        // buffered body at 16 MiB so a client can't force the server to buffer a huge
+        // body in RAM (was 1 GiB — far larger than any legitimate request).
+        .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
 }

@@ -56,13 +56,13 @@ impl AppState {
         }
         let key = (user.to_string(), vault.to_string());
         {
-            let map = self.ns.lock().unwrap();
+            let map = self.ns.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "namespace lock poisoned"))?;
             if let Some(h) = map.get(&key) { return Ok(h.clone()); }
         }
         let v = Vault::open(&self.ns_dir(user, vault))?;
         let (tx, _rx) = broadcast::channel(256);
         let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx };
-        let mut map = self.ns.lock().unwrap();
+        let mut map = self.ns.lock().map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "namespace lock poisoned"))?;
         // Another thread may have opened it meanwhile — keep the first.
         Ok(map.entry(key).or_insert(handle).clone())
     }

@@ -9,6 +9,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use std::collections::HashMap;
 
+// A content-defined chunk is ~64 KiB max; 1 MiB is a generous ceiling that still
+// bounds a single upload well below the body limit.
+const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+
 // Resolve the caller's (user, vault) namespace, or 404 if it can't be opened.
 fn handle(st: &AppState, user: &str, vault: &str) -> Result<VaultHandle, AppError> {
     st.vault(user, vault).map_err(|_| AppError::NotFound)
@@ -57,6 +61,12 @@ pub async fn put_chunk(
     Path((vault, hash)): Path<(String, String)>, body: Bytes,
 ) -> Result<StatusCode, AppError> {
     let h = handle(&st, &user, &vault)?;
+    // A CDC chunk is bounded (~64 KiB); reject anything wildly larger so a client
+    // can't store giant blobs to defeat chunking / fill disk. (Server-internal
+    // whole-file chunks from reindex bypass this — they don't come through the API.)
+    if body.len() > MAX_CHUNK_BYTES {
+        return Err(AppError::BadRequest("chunk exceeds size limit".into()));
+    }
     // Shared read lock: chunk uploads run concurrently (content-addressed, unique
     // temp names) and don't block other reads. Commit takes the write lock later.
     rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))?;

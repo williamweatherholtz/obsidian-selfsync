@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
+// Reject absurd/hostile declared file sizes before allocating anything for them.
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
 pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\\') || path.starts_with('/') { return None; }
     let p = PathBuf::from(path);
@@ -57,7 +60,26 @@ impl Vault {
                     (Index::default(), true)
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Index::default(), false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // A MISSING index is only "fresh" if there are no MATERIALIZED FILES.
+                // Committed files live in vault/; if any exist but the index is gone
+                // (e.g. a backup restored without it), opening blank would let clients
+                // mass-delete against the empty manifest AND wipe chunks — open ERROR
+                // instead and require reindex. (Blobs WITHOUT files are uploaded-but-
+                // never-committed orphans — safe to treat as fresh; startup GC reclaims
+                // them, so we deliberately do NOT trip on blobs alone.)
+                let mut existing = Vec::new();
+                let _ = collect_files(&vault_dir, &vault_dir, &mut existing);
+                if !existing.is_empty() {
+                    eprintln!(
+                        "[vault] {} has data but NO .sync-index.json — opening in ERROR state; run reindex to rebuild",
+                        root.display()
+                    );
+                    (Index::default(), true)
+                } else {
+                    (Index::default(), false) // truly fresh first run
+                }
+            }
             Err(e) => return Err(e),
         };
         let mut idx = idx;
@@ -179,8 +201,14 @@ impl Vault {
     pub fn commit(&mut self, req: CommitRequest) -> std::io::Result<FileMeta> {
         let rel = safe_rel_path(&req.path)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad path"))?;
-        // reassemble from chunks (all must be present)
-        let mut body = Vec::with_capacity(req.size as usize);
+        // Reject a hostile/absurd declared size before allocating (a client-supplied
+        // u64 must never drive a capacity hint — 2^60 would panic/abort).
+        if req.size > MAX_FILE_BYTES {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "file exceeds size limit"));
+        }
+        // reassemble from chunks (all must be present). Grow from empty — never pre-size
+        // from the untrusted hint; the size/hash check below verifies the real bytes.
+        let mut body = Vec::new();
         for h in &req.chunks {
             let c = self.store.get(h)?
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
@@ -421,5 +449,33 @@ mod tests {
         std::fs::remove_file(&blob).unwrap();
         let v2 = Vault::open(dir.path()).unwrap();
         assert!(v2.is_corrupt(), "dangling chunk reference must mark the vault ERROR");
+    }
+
+    // C1: a MISSING index with materialized data present must open ERROR (require
+    // reindex), never "fresh empty" (which would wipe chunks + trigger client deletes).
+    #[test]
+    fn missing_index_with_existing_data_opens_error_not_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        write_vault_file(dir.path(), "a.md", b"data"); // materialized file, no index
+        let v = Vault::open(dir.path()).unwrap();
+        assert!(v.is_corrupt(), "missing index but data present must be ERROR, not fresh");
+    }
+
+    #[test]
+    fn missing_index_empty_namespace_is_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        assert!(!v.is_corrupt(), "a genuinely empty namespace is a fresh first run");
+    }
+
+    // C4: a hostile declared size is rejected before any allocation.
+    #[test]
+    fn commit_rejects_absurd_declared_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"x"; let h = sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h] });
+        assert!(res.is_err(), "absurd declared size must be rejected before allocation");
     }
 }
