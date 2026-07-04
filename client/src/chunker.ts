@@ -11,8 +11,9 @@ const GEAR = (() => {
 })();
 
 export async function sha256hex(bytes: Uint8Array): Promise<string> {
-  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+  // A Uint8Array is a BufferSource; digest hashes exactly its view (offset+length),
+  // so subarray chunks hash correctly without copying.
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource));
   let s = ""; for (const b of d) s += b.toString(16).padStart(2, "0");
   return s;
 }
