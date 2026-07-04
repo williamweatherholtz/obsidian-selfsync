@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath } from "obsidian";
+import { App, Modal, Notice, Plugin, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport } from "./transport";
 import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
@@ -296,6 +296,12 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     if (this.ribbonEl) {
       this.ribbonEl.style.color = spec.color; // SVG uses currentColor -> tints the icon
+      // Vary the GLYPH too, so state isn't conveyed by color alone (colorblind users).
+      const glyph = phase === "idle" ? "check"
+        : phase === "offline" ? "alert-triangle"
+        : phase === "off" ? "circle-slash"
+        : "refresh-cw"; // connecting / syncing
+      setIcon(this.ribbonEl, glyph);
       this.ribbonEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
     }
   }

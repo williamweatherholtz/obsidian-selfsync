@@ -26,6 +26,22 @@ feature or architecture change, not a bounded fix — deferred with rationale ra
 - **Config changes sync on reconnect, not live** — `.obsidian/` edits fire no vault events; optionally poll
   the config surface on the sync timer (today it's honest: the copy no longer implies live).
 
+## B10 — Second-critique LOW follow-ups (deferred 2026-07-04)
+The second critique's HIGH+MED items were fixed; these LOW ones remain (bounded, low-value):
+- **C2 permanent-strand escape** — after a genuine delete-all (server legitimately empty), the guard
+  keeps this device's files but never re-syncs; needs a user-confirmable "accept remote is empty /
+  this device is authoritative" resolution (UI). Today: safe (no data loss) but stuck until reconnect
+  against a restored server.
+- **Sign-out confirmation** — Sign out is destructive (forgets server+vault+password) with only warning
+  styling; add a confirm modal.
+- **Skipped-too-large files: persistent list** — currently a once-per-session notice + log; surface a
+  standing "Not synced (N files)" list in What-syncs.
+- **`enumerateConfig` N sequential `adapter.stat`** — Promise.all per directory (mobile perf; pre-existing).
+- **Rename data.json migration** — one-time import of an old `new-livesync/data.json` on first load so
+  upgraders don't re-run setup (safe today; just a re-scan).
+- **Test isolation** — `config_defaults_and_env` mutates process-global env (flaky under parallel tests);
+  isolate config parsing from `std::env`. Also drop the dead `known` field in the E2E Client type.
+
 ## B8 — BRAT-installable distribution (release pipeline)  ✅ DONE (2026-07-04)
 **Resolved 2026-07-04:** the plugin now installs via BRAT from `williamweatherholtz/obsidian-selfsync`.
 Set up: a root-level `manifest.json` (canonical; `id` new-livesync, name "SelfSync", version 0.1.0) +
