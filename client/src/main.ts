@@ -53,7 +53,11 @@ class ObsidianVaultIo implements VaultIo {
     for (const f of this.plugin.app.vault.getFiles()) {
       if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size });
     }
-    if (this.plugin.settings.configSync.enabled) await this.enumerateConfig(".obsidian", m);
+    if (this.plugin.settings.configSync.enabled) {
+      await this.enumerateConfig(".obsidian", m);
+      const cfg = [...m.keys()].filter((k) => k.startsWith(".obsidian/")).length;
+      this.plugin.log(`config sync ON — ${cfg} .obsidian file(s) in scope`);
+    }
     return m;
   }
 
@@ -74,7 +78,12 @@ class ObsidianVaultIo implements VaultIo {
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
   }
   async write(path: string, bytes: Uint8Array): Promise<void> {
-    if (!this.passes(path)) return; // excluded path must never overwrite locally
+    if (!this.passes(path)) {
+      // A synced config file this device hasn't opted into — dropped by design. Log it so
+      // "plugins aren't syncing" is diagnosable: enable the matching category on THIS device.
+      if (path.startsWith(".obsidian/")) this.plugin.log(`config write skipped — '${path}' isn't in this device's sync selection (enable the matching category here to receive it)`);
+      return;
+    }
     const p = normalizePath(path);
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
@@ -405,11 +414,23 @@ export default class NewLiveSyncPlugin extends Plugin {
   statusText() { return this.machine.get(); }
 
   // ---- reconcile deps ----
-  // The name used when the Device name field is left blank — derived from the platform.
+  // The name used when the Device name field is left blank. Prefer a friendly label over
+  // navigator.platform (which is "Linux aarch64" on Android → the useless "Linuxaarch64").
   // Shown as muted placeholder text in settings so the user sees what will be used.
   autoDeviceName(): string {
-    const plat = (navigator as unknown as { platform?: string }).platform ?? "device";
-    return plat.replace(/[^A-Za-z0-9]+/g, "").slice(0, 12) || "device";
+    const clean = (s: string) => s.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 24);
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    // Android exposes the device model in the UA (e.g. "Pixel 9"); recent Chrome may freeze
+    // it to "K" for privacy — fall back to "Android" then.
+    const m = ua.match(/Android[^;]*;\s*([^;)]+?)\s*(?:Build\/|\))/i);
+    if (m && m[1]) { const model = clean(m[1]); if (model.length > 2 && model.toUpperCase() !== "K") return model; }
+    if (Platform.isIosApp) return Platform.isPhone ? "iPhone" : "iPad";
+    if (Platform.isAndroidApp) return "Android";
+    if (Platform.isMacOS) return "Mac";
+    if (Platform.isWin) return "Windows";
+    if (Platform.isLinux) return "Linux";
+    const plat = (navigator as unknown as { platform?: string }).platform ?? "";
+    return clean(plat) || "device";
   }
   private deviceLabel(): string {
     return this.settings.deviceName || this.autoDeviceName();
