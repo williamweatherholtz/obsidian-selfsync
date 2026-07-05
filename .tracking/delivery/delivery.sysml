@@ -69,5 +69,7 @@ package ProjectDelivery {
         part m6PackagingR1 : TestResult { :>> id = "ecabfe78-687c-451c-895e-cd0c9cc70311"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
         part goal1ConfigUxR1 : TestResult { :>> id = "d3722ace-eb30-4a03-bb66-8ca91f40ebad"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
         part rel06FixSetR1 : TestResult { :>> id = "338147e1-ba2f-4bc6-bd1d-23ccb8b486d7"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
+        // Phase 1 shipped: ACL + owner-qualified routes + authz + registration/tokens + admin API + web UI.
+        part vaultSharingP1R1 : TestResult { :>> id = "c1c6d04d-3d68-4afc-b086-f83dddc5e730"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "6b39442"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
     }
 }
