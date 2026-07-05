@@ -221,7 +221,7 @@ package ProjectRequirements {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> statement = "An interrupted initial or large sync shall continue on the next reconcile without re-downloading already-written files or re-uploading existing chunks — via idempotent reconciliation, a persisted base, and content-addressed dedup.";
         :>> rationale = "Mobile/flaky-network initial sync must make forward progress across drops (nReliableSync).";
-        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 
     // ---- Vault management + onboarding (Batch 4) ----
@@ -247,7 +247,7 @@ package ProjectRequirements {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> statement = "Each device shall have a name — auto-detected from the platform when the user leaves it blank (shown as muted placeholder) — used to label conflict copies so a divergence is traceable to its origin device.";
         :>> rationale = "Conflict copies and adjudication need to name which device a version came from (nVaultManagement).";
-        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 
     // ---- Config completeness + sharing/admin split (Batch 5) ----

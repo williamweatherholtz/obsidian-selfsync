@@ -80,9 +80,9 @@ package ProjectAcceptance {
         :>> procedureText = "Reconcile + e2e: a >=8MiB download streams to disk (base hash-only) and bypasses the buffered size gate; without an appendWrite io it's skipped; a too-large file fires onSkip once; e2e large binary (~4MB) syncs byte-identical + dedups a copy; mapPool bounds parallel transfer — green.";
     }
     verification acResumableInitialSync : Test {
-        :>> id = "c0f1a5cc-3218-4a10-9b20-a1b2c3d40218"; :>> method = VerificationMethod::inspect;
-        :>> location = "client/src/reconcile.ts";
-        :>> procedureText = "Inspected: reconcile is idempotent (base + chunk cache mean already-written files are in-sync and not re-fetched) and uploads negotiate missing chunks, so an interrupted sync continues on the next reconcile rather than restarting. On-device initial-sync resume under load is confirmed at L4.";
+        :>> id = "c0f1a5cc-3218-4a10-9b20-a1b2c3d40218"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "Reconcile test 'is idempotent — a second reconcile re-downloads nothing': after a first pass pulls the files, a second reconcile performs zero writes (all in-sync via base + chunk cache), so an interrupted sync resumes rather than restarts. Full-scale on-device resume under load stays an L4 check.";
     }
     // ── Batch 4: vault management + onboarding ──
     verification acVaultSwitch : Test {
@@ -96,9 +96,9 @@ package ProjectAcceptance {
         :>> procedureText = "connstr tests: encode/parse round-trips server+user (+optional vault), preserves scheme/port, canonicalizes default ports, and the encoded link contains NO password/secret; invalid links are rejected — green.";
     }
     verification acDeviceIdentity : Test {
-        :>> id = "c0f1a5cc-3221-4a10-9b20-a1b2c3d40221"; :>> method = VerificationMethod::inspect;
-        :>> location = "client/src/main.ts";
-        :>> procedureText = "Inspected: autoDeviceName() derives a name from the platform (Android UA model, else iPhone/iPad/Mac/Windows/Linux), deviceLabel() = configured name || auto, shown as muted placeholder in settings and used in conflictCopyName().";
+        :>> id = "c0f1a5cc-3221-4a10-9b20-a1b2c3d40221"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/devicename.test.ts";
+        :>> procedureText = "devicename.test.ts covers the extracted parsing: a real Android UA yields the model ('Pixel 9'), a frozen 'K' and desktop UAs (Linux/macOS/Windows) yield null (never a bogus 'linuxarch' name — the reported bug), and cleanDeviceName strips/collapses/caps. The Platform.* fallback ordering in autoDeviceName is inspected.";
     }
     // ── Batch 5: config completeness + sharing/admin split ──
     verification acConfigReload : Test {
@@ -144,10 +144,10 @@ package ProjectAcceptance {
     part acDegradedServerGuardR1 : TestResult { :>> id = "c0f1a5cc-4215-4a10-9b20-a1b2c3d40315"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acDurableIndexR1 : TestResult { :>> id = "c0f1a5cc-4216-4a10-9b20-a1b2c3d40316"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acStreamedTransferR1 : TestResult { :>> id = "c0f1a5cc-4217-4a10-9b20-a1b2c3d40317"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acResumableInitialSyncR1 : TestResult { :>> id = "c0f1a5cc-4218-4a10-9b20-a1b2c3d40318"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acResumableInitialSyncR1 : TestResult { :>> id = "c0f1a5cc-4218-4a10-9b20-a1b2c3d40318"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acVaultSwitchR1 : TestResult { :>> id = "c0f1a5cc-4219-4a10-9b20-a1b2c3d40319"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSetupLinkR1 : TestResult { :>> id = "c0f1a5cc-4220-4a10-9b20-a1b2c3d40320"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigReloadR1 : TestResult { :>> id = "c0f1a5cc-4222-4a10-9b20-a1b2c3d40322"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigAdjudicationUIR1 : TestResult { :>> id = "c0f1a5cc-4223-4a10-9b20-a1b2c3d40323"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acReadOnlyGatingR1 : TestResult { :>> id = "c0f1a5cc-4224-4a10-9b20-a1b2c3d40324"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
