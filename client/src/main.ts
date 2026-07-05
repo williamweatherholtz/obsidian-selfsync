@@ -163,6 +163,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private connecting = false;               // H2: only one reconnect() in flight at a time
   private pendingLocal = new Set<string>(); // H1: local edits that arrived mid-sync; drained after
   private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
+  private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
+  private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
   getLastIssue(): string | undefined { return this.lastIssue; }
 
@@ -268,6 +270,20 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in SelfSync settings → Config differences`, true);
     this.settingsRefresh?.(); this.statusListener?.();
   }
+  // C2 guard fired for a path (server manifest empty while we hold it in history — refused to
+  // delete). Log each path, but COALESCE the toast: a bulk empty-manifest read (e.g. a transient
+  // during a vault switch) trips this for many files at once, and 13 alarming toasts read like a
+  // failure when nothing is wrong. One calm summary per burst instead; detail stays in the log.
+  private noteGuard(path: string): void {
+    this.guardBuffer.add(path);
+    this.log(`server manifest empty but '${path}' is in our history — NOT deleting it (possible server data loss)`); // log only
+    if (this.guardTimer !== undefined) window.clearTimeout(this.guardTimer);
+    this.guardTimer = window.setTimeout(() => {
+      const n = this.guardBuffer.size; this.guardBuffer.clear(); this.guardTimer = undefined;
+      if (n > 0) this.log(`kept ${n} local file${n === 1 ? "" : "s"} — the server's copy looked empty, so nothing was deleted (see log)`, true);
+    }, 900);
+  }
+
   // A config path reconciled cleanly — drop any stale pending entry so the count reflects reality
   // (this is what makes the "Config differences" badge self-clear as things resolve).
   private clearConfigConflict(path: string): void {
@@ -531,7 +547,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onBaseChanged: () => { void this.persist(); },
-      onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),
+      onGuard: (p) => this.noteGuard(p),
       onSkip: (p, bytes) => {
         if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
         this.skipNotified.add(p);
