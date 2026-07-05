@@ -14,6 +14,10 @@ import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 // changes fire no vault event and don't advance the server version, so only a periodic full
 // reconcile catches them; this bounds the detection latency without re-listing every poll.
 const CONFIG_SCAN_EVERY_POLLS = 8;
+// Coalesce the burst of "raw" events a single config change emits before reconciling.
+const RAW_DEBOUNCE_MS = 600;
+// Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
+const SELF_WRITE_WINDOW_MS = 4000;
 
 class ObsidianVaultIo implements VaultIo {
   // Desktop-only streamed writer (Electron Node fs); left undefined on mobile so the
@@ -102,6 +106,7 @@ class ObsidianVaultIo implements VaultIo {
   }
   async remove(path: string): Promise<void> {
     if (!this.passes(path)) return;
+    this.plugin.markConfigSelfWrite(path); // suppress the "raw" echo of our own removal
     const p = normalizePath(path);
     if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
   }
@@ -148,6 +153,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   private reconnectTimer?: number;
   private pollTimer?: number;
   private configScanCountdown = 1; // polls until the next forced full config-aware reconcile (see onRemoteChanged)
+  private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
+  private rawDebounce?: number;               // debounce timer for the raw-event burst
+  private recentSelfWrites = new Map<string, number>(); // config path -> when WE wrote it, to ignore the echo
   private backoff = 3000;
   private unloading = false;
   private connecting = false;               // H2: only one reconnect() in flight at a time
@@ -181,6 +189,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("create", (f) => this.onLocalEvent(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => this.onLocalDelete(f.path)));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onLocalRename(file, oldPath)));
+    // Event-driven config sync: the TFile events above never fire for hidden `.obsidian/` files,
+    // but the low-level "raw" event does (desktop file-system watcher). This makes a plugin/theme/
+    // settings add/edit/remove sync the moment it happens, not on the next poll. "raw" is not in
+    // the public typings + is unreliable on mobile, so it's feature-detected and the periodic
+    // config scan (onRemoteChanged) stays as the mobile fallback + safety net.
+    try {
+      const vaultEvents = this.app.vault as unknown as { on(name: string, cb: (path: string) => void): import("obsidian").EventRef };
+      this.registerEvent(vaultEvents.on("raw", (path: string) => this.onRawConfigEvent(path)));
+    } catch { /* "raw" unavailable on this build — periodic scan covers it */ }
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.applyEditorStatus()));
 
     this.log("plugin loaded");
@@ -362,7 +379,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // The IO records each synced .obsidian/ file here; we flush once per reconcile so a
   // plugin is reloaded at most once even if several of its files changed.
   private pendingReload = new Set<string>();
-  onConfigWritten(path: string) { this.pendingReload.add(path); }
+  onConfigWritten(path: string) { this.pendingReload.add(path); this.markConfigSelfWrite(path); } // mark: ignore the raw echo
 
   async flushConfigReload(): Promise<void> {
     if (this.pendingReload.size === 0) return;
@@ -620,6 +637,49 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.scheduleReconnect();
     } finally { this.applying = false; }
     void this.drainPending(); // H1: flush edits queued during this reconcile
+  }
+
+  // A "raw" adapter event for a hidden `.obsidian/` file (desktop). Filter to config paths we
+  // sync, drop the echo of our own writes, then coalesce the burst and reconcile the changed
+  // paths — so a plugin/theme/settings add/edit/remove syncs immediately, not on the next poll.
+  private onRawConfigEvent(path: string) {
+    if (!this.api || this.unloading) return;
+    if (!path.startsWith(".obsidian/")) return;                    // notes are handled by TFile events
+    if (!this.settings.configSync.enabled) return;
+    if (!shouldSync(path, this.settings.configSync, this.selfFolderId())) return; // out of scope / self folder
+    const wrote = this.recentSelfWrites.get(path);
+    if (wrote !== undefined && Date.now() - wrote < SELF_WRITE_WINDOW_MS) return;  // our own write echoing back
+    this.rawBuffer.add(path);
+    if (this.rawDebounce !== undefined) window.clearTimeout(this.rawDebounce);
+    this.rawDebounce = window.setTimeout(() => void this.flushRawConfig(), RAW_DEBOUNCE_MS);
+  }
+
+  private async flushRawConfig() {
+    this.rawDebounce = undefined;
+    const paths = [...this.rawBuffer]; this.rawBuffer.clear();
+    if (!this.api || this.unloading || paths.length === 0) return;
+    // Mid-sync: queue onto the same drain the note events use, so we never reconcile re-entrantly.
+    if (this.applying) { for (const p of paths) this.pendingLocal.add(p); return; }
+    this.applying = true;
+    this.machine.dispatch("syncStart");
+    try {
+      for (const p of paths) await reconcilePath(this.deps(), p, this.localSizeOf(p));
+      await this.flushConfigReload();
+      this.machine.dispatch("syncDone");
+      this.settings.lastSyncedAt = Date.now();
+    } catch (e: any) { this.log(`config change sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); }
+    finally { this.applying = false; }
+    void this.drainPending();
+  }
+
+  // Record that WE just wrote/removed a config path, so its "raw" echo is ignored. Prune the
+  // stale entries opportunistically so the map can't grow without bound.
+  markConfigSelfWrite(path: string) {
+    const now = Date.now();
+    this.recentSelfWrites.set(path, now);
+    if (this.recentSelfWrites.size > 64) {
+      for (const [p, t] of this.recentSelfWrites) if (now - t > SELF_WRITE_WINDOW_MS) this.recentSelfWrites.delete(p);
+    }
   }
 
   private async onLocalEvent(f: TAbstractFile) {
