@@ -2,9 +2,10 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle } from "./sync";
 import { BaseStore } from "./base";
-import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
+import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
+import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
@@ -216,6 +217,34 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (seg) return seg;
     }
     return this.manifest.id;
+  }
+
+  // --- config adjudication (D00xx): divergent/removed `.obsidian/` files are never auto-
+  // resolved; they queue here for the user to decide which side wins. See ConfigConflictModal.
+  getConfigConflicts(): string[] { return this.settings.configConflicts; }
+  openConfigConflicts() { new ConfigConflictModal(this.app, this).open(); }
+  // Which sides currently hold a conflicting config path — so the adjudication UI can say
+  // "removed here / present on the server" rather than a bare choice.
+  async configConflictSides(path: string): Promise<{ local: boolean; remote: boolean }> {
+    let local = false;
+    try { await this.io.read(path); local = true; } catch { local = false; }
+    let remote = false;
+    try { remote = (await this.api?.fileMeta(path)) != null; } catch { remote = false; }
+    return { local, remote };
+  }
+  private recordConfigConflict(path: string, reason: string): void {
+    if (this.settings.configConflicts.includes(path)) return; // already queued
+    this.settings.configConflicts.push(path);
+    void this.saveSettings();
+    this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in SelfSync settings → Config differences`, true);
+    this.statusListener?.();
+  }
+  // Apply the user's adjudication for one path, then drop it from the queue.
+  async resolveConfigConflict(path: string, choice: "local" | "remote"): Promise<void> {
+    await resolveConfigConflict(this.deps(), path, choice);
+    this.settings.configConflicts = this.settings.configConflicts.filter((p) => p !== path);
+    await this.saveSettings();
+    this.statusListener?.();
   }
 
   // Local file size (0 if unknown/absent) — lets reconcilePath apply the size gate on
@@ -440,8 +469,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(), strategy: this.settings.conflictStrategy,
       readOnly: this.settings.vaultReadOnly,
+      // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
+      // reconcile too, so a device that opted out never records a base for it (no phantom delete).
+      accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
+      onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
+      onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),
       onSkip: (p, bytes) => {
@@ -613,6 +647,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Fresh, fully-defaulted configSync object (never share the module constant, and
     // backfill any categories added since this vault last saved).
     this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(data.settings?.configSync ?? {}) };
+    // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
+    this.settings.configConflicts = [...(data.settings?.configConflicts ?? [])];
     this.base = new BaseStore(data.base ?? {});
   }
   async saveSettings() { await this.persist(); }

@@ -20,6 +20,7 @@ export interface NewLiveSyncSettings {
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
+  configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   vaultOwner: undefined,
   vaultReadOnly: false,
   storePassword: true,
+  configConflicts: [],
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
@@ -137,6 +139,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
   private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
     new Setting(c).setName("What syncs").setHeading();
+
+    // Adjudication queue: config that diverged/was-removed across devices, awaiting a choice.
+    // Surfaced prominently (not auto-resolved) so plugins are never silently deleted or resurrected.
+    const conflicts = this.plugin.getConfigConflicts();
+    if (conflicts.length) {
+      new Setting(c).setName(`Config differences (${conflicts.length})`).setClass("mod-warning")
+        .setDesc("Settings or plugins differ across your devices. Nothing was deleted or overwritten — choose which version to keep.")
+        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts()));
+    }
+
     new Setting(c).setName("Notes & attachments").setDesc("Always synced.");
     new Setting(c).setName("Conflict resolution")
       .setDesc("When the same file changed on two devices: merge the changes automatically, or keep both as a conflict file.")

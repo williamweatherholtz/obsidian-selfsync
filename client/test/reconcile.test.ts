@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcilePath, switchTo, ReconcileDeps } from "../src/reconcile";
+import { decide, reconcileAll, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps } from "../src/reconcile";
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -309,6 +309,126 @@ describe("read-only shared vault (never mutates the server)", () => {
     expect(dec(m.get(copies[0])!)).toBe("MY edit");          // local edit kept locally
     expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false); // NOT pushed
     expect(ro).toContain("n.md");
+  });
+});
+
+describe("config sync: additive + adjudicated (never auto-delete, never resurrect)", () => {
+  const CP = ".obsidian/community-plugins.json";
+  const PLG = ".obsidian/plugins/foo/main.js";
+
+  it("accepts=false → a filtered config path is skipped entirely (no write, no base, no delete)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, PLG, "plugin code"); // server has it
+    const io = fakeIo({});                     // local doesn't
+    const base = new BaseStore();
+    const conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, accepts: (p) => !p.startsWith(".obsidian/plugins/"), onConfigConflict: (p) => conflicts.push(p) }));
+    expect((io as any).m.has(PLG)).toBe(false); // not pulled
+    expect(files.has(PLG)).toBe(true);          // not deleted on the server
+    expect(base.get(PLG)).toBeUndefined();      // NO phantom base recorded
+    expect(conflicts).toEqual([]);              // just ignored, not even a conflict
+  });
+
+  it("does NOT manufacture a delete-remote from a filtered path w/ a phantom base (the reported data-loss bug)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, PLG, "plugin code");
+    const io = fakeIo({});
+    const base = new BaseStore();
+    base.set(PLG, { hash: await sha256hex(enc("plugin code")) }); // phantom base from an earlier dropped write
+    await reconcileAll(deps(api, io, { base, accepts: (p) => !p.startsWith(".obsidian/plugins/") }));
+    expect(files.has(PLG)).toBe(true); // server keeps the plugin — no phantom deletion
+  });
+
+  it("additive: an accepted config file present only on the server is pulled (defer to data)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, `["foo"]`);
+    const io = fakeIo({});
+    await reconcileAll(deps(api, io, { accepts: () => true }));
+    expect(dec((io as any).m.get(CP)!)).toBe(`["foo"]`);
+  });
+
+  it("removal (local gone, remote==base) → adjudicate, NOT delete-remote, NOT resurrect", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, CP, `["foo"]`);          // remote still has it
+    const io = fakeIo({});                          // removed locally
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) }); // we HAD it (evidenced)
+    const conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
+    expect(conflicts).toContain(CP);
+    expect(files.has(CP)).toBe(true);              // NOT deleted on the server
+    expect((io as any).m.has(CP)).toBe(false);     // NOT resurrected locally
+  });
+
+  it("removal (remote gone, local==base) → adjudicate, local file kept (not deleted)", async () => {
+    const { api } = fakeServer();                 // remote never had / removed it
+    const io = fakeIo({ [CP]: `["foo"]` });
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) });
+    const conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
+    expect(conflicts).toContain(CP);
+    expect((io as any).m.has(CP)).toBe(true);      // local NOT deleted
+  });
+
+  it("divergence (both differ, no common base) → adjudicate, NO crash, NO garbage conflict copy", async () => {
+    const { api, files } = fakeServer();            // the exact reported log case
+    await serverPut(api, CP, `["foo","server"]`);
+    const io = fakeIo({ [CP]: `["foo","local"]` });
+    const conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
+    expect(conflicts).toContain(CP);
+    const copies = [...(io as any).m.keys()].filter((k: string) => k.includes("(conflict"));
+    expect(copies.length).toBe(0);                              // no garbage conflict-copy file
+    expect(dec((io as any).m.get(CP)!)).toBe(`["foo","local"]`); // local kept as-is
+    expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false); // nothing pushed
+  });
+
+  it("resolveConfigConflict('local') on divergence pushes the local copy canonical", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, `["server"]`);
+    const io = fakeIo({ [CP]: `["local"]` });
+    await resolveConfigConflict(deps(api, io, { accepts: () => true }), CP, "local");
+    const io2 = fakeIo({});
+    await reconcileAll(deps(api, io2, { accepts: () => true }));
+    expect(dec((io2 as any).m.get(CP)!)).toBe(`["local"]`); // server now holds local's version
+  });
+
+  it("resolveConfigConflict('remote') on divergence pulls the server copy", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, `["server"]`);
+    const io = fakeIo({ [CP]: `["local"]` });
+    await resolveConfigConflict(deps(api, io, { accepts: () => true }), CP, "remote");
+    expect(dec((io as any).m.get(CP)!)).toBe(`["server"]`);
+  });
+
+  it("resolveConfigConflict('local') when removed locally propagates the removal to the server", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, CP, `["foo"]`);
+    const io = fakeIo({}); // removed here
+    await resolveConfigConflict(deps(api, io, { accepts: () => true }), CP, "local");
+    expect(files.has(CP)).toBe(false); // user chose the removal → server drops it
+  });
+
+  it("resolveConfigConflict('remote') when removed locally restores it (user-chosen)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, `["foo"]`);
+    const io = fakeIo({});
+    await resolveConfigConflict(deps(api, io, { accepts: () => true }), CP, "remote");
+    expect(dec((io as any).m.get(CP)!)).toBe(`["foo"]`);
+  });
+
+  it("per-file isolation: one file's write error does not abort the whole reconcile", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "good.md", "ok");
+    await serverPut(api, "bad.md", "boom");
+    const io = fakeIo({});
+    const origWrite = (io as any).write.bind(io);
+    (io as any).write = async (p: string, b: Uint8Array) => { if (p === "bad.md") throw new Error("disk full"); return origWrite(p, b); };
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { onFileError: (p) => errs.push(p) }));
+    expect(errs).toContain("bad.md");
+    expect(dec((io as any).m.get("good.md")!)).toBe("ok"); // the other file still synced
   });
 });
 

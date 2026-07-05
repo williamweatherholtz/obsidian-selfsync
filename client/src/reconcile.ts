@@ -45,12 +45,30 @@ export interface ReconcileDeps {
   device: string; strategy: "auto-merge" | "conflict-file";
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
+  // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
+  // (no pull, no base, no delete): a replica that doesn't ACCEPT a path must never record a
+  // base for it, or a dropped/filtered write turns into a phantom deletion of the device that
+  // DOES hold it (the data-resurrection twin). Notes always accept; `.obsidian/` is opt-in.
+  accepts?: (path: string) => boolean;
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
+  // A config file whose reconcile can't be resolved additively — a removal (base present →
+  // gone) or a same-file divergence. NEVER auto-deleted (could lose data a device merely
+  // couldn't hold) and NEVER auto-pulled-back (would resurrect a genuine removal); recorded
+  // for user adjudication instead. `reason` is the decided action, for the UI/log.
+  onConfigConflict?: (path: string, reason: string) => void;
+  // One file failed to reconcile. Logged and skipped — a single file must never abort the
+  // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
+  onFileError?: (path: string, err: unknown) => void;
 }
+
+// The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
+// from the note reconcile's auto-delete/conflict-copy behavior (see reconcileOne).
+const CONFIG_PREFIX = ".obsidian/";
+function isConfig(path: string): boolean { return path.startsWith(CONFIG_PREFIX); }
 
 async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null> {
   try { return await io.read(path); } catch { return null; }
@@ -90,7 +108,10 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   const guardBulkDelete = remote.size === 0 && d.base.paths().length > 0;
   const local = await d.io.list();
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
-  for (const p of paths) await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0);
+  for (const p of paths) {
+    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0); }
+    catch (e) { d.onFileError?.(p, e); } // isolate: one file's failure must never abort the whole sync
+  }
   // Advance our cursor to the server's version so idle polls can check incrementally.
   d.state.version = Math.max(d.state.version, resp.version);
 }
@@ -110,6 +131,11 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
 }
 
 async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0): Promise<void> {
+  // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
+  // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
+  // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
+  // read base-present + local-absent as a deletion and destroy it on the device that holds it.
+  if (d.accepts && !d.accepts(path)) return;
   // Size gate: skip a file too large to hold in RAM — BEFORE reading it — and skip the
   // path ENTIRELY (no push, no pull, no delete), so a skipped huge file is never mistaken
   // for a deletion. A large DOWNLOAD (no local file → resolves to a pull) can be STREAMED
@@ -130,6 +156,16 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     baseEntry ? { hash: baseEntry.hash } : null,
     rmeta ? { hash: rmeta.hash } : null,
   );
+  // Config sync is additive + adjudicated, NOT auto-deleting. Clean additive adds and ordinary
+  // edits (push/pull/in-sync) apply automatically — a never-had device pulls the data (defer to
+  // data). But any REMOVAL (base present → gone) or same-file DIVERGENCE is recorded for user
+  // adjudication and acted on by NOTHING here: auto-deleting could lose data a device merely
+  // couldn't hold, and auto-pulling-back would resurrect a genuine removal (the data-resurrection
+  // anti-pattern). The user chooses which plugins stay. (Filtered paths already returned above.)
+  if (isConfig(path) && action !== "push" && action !== "pull" && action !== "in-sync") {
+    d.onConfigConflict?.(path, action);
+    return;
+  }
   switch (action) {
     case "in-sync":
       if (localBytes && rmeta) setBase(d, path, localBytes, rmeta.hash);
@@ -192,6 +228,25 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       d.onConflict?.(path, copy);
       return;
     }
+  }
+}
+
+// Resolve one adjudicated config conflict by the user's explicit choice. This is the ONLY
+// place a config removal/divergence is acted on destructively or resurrectively — and only
+// because the user chose it. "local" adopts this device's copy (push it canonical; if the
+// local copy is gone, that IS the user choosing the removal → propagate it to the server).
+// "remote" adopts the other device's copy (pull it; if the remote copy is gone, adopt that
+// removal locally). Base is set to the winner so the next sync sees them agreeing.
+export async function resolveConfigConflict(d: ReconcileDeps, path: string, choice: "local" | "remote"): Promise<void> {
+  if (choice === "local") {
+    const bytes = await readOrNull(d.io, path);
+    if (bytes === null) { await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return; }
+    const h = await pushFile(d.api, d.io, d.state, d.cache, path);
+    setBase(d, path, bytes, h);
+  } else {
+    const rmeta = await d.api.fileMeta(path);
+    if (rmeta === null) { await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return; }
+    await applyPull(d, path, rmeta);
   }
 }
 
