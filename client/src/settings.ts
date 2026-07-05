@@ -20,6 +20,7 @@ export interface NewLiveSyncSettings {
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
+  storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   editorStatus: false,
   vaultOwner: undefined,
   vaultReadOnly: false,
+  storePassword: true,
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
@@ -186,6 +188,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     new Setting(adv).setName("Show sync status in the editor")
       .setDesc("Also show a sync-status icon on open notes. Off by default — the status bar (or the ribbon on mobile) is the primary indicator.")
       .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v)));
+    new Setting(adv).setName("Store password on this device")
+      .setDesc("Keep your password for silent reconnect. Turn off for token-only: the password is removed now and you re-enter it when the session expires (~30 days) or is revoked.")
+      .addToggle((tg) => tg.setValue(s.storePassword).onChange(async (v) => {
+        s.storePassword = v;
+        if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
+        await this.plugin.saveSettings();
+      }));
     new Setting(adv).setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto.")
       .addText((t) => t.setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(adv).setName("Detailed logging")

@@ -211,9 +211,16 @@ export default class NewLiveSyncPlugin extends Plugin {
       try { await HttpTransport.listVaults(url, this.settings.authToken); this.log("token OK"); return this.settings.authToken; }
       catch { this.log("cached token rejected — re-logging in"); }
     }
-    if (!this.settings.password) throw new Error("no password stored; re-run setup");
+    // Token-only mode (storePassword off): no password at rest, so a dead token means the
+    // user must re-authenticate — open setup rather than fail silently.
+    if (!this.settings.password) {
+      this.openSetup();
+      throw new Error("session expired — please re-enter your password in setup");
+    }
     const token = await HttpTransport.login(url, this.settings.username, this.settings.password);
-    this.setAuthToken(token);
+    // Drop the plaintext password from disk if the user opted into token-only storage.
+    if (!this.settings.storePassword) this.settings.password = "";
+    this.setAuthToken(token); // persists the token (and the cleared password)
     this.log("login OK");
     return token;
   }
