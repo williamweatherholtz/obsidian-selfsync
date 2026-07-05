@@ -9,6 +9,7 @@ import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
+import { androidModelFromUA, cleanDeviceName } from "./devicename";
 
 // Polls between forced full config-aware reconciles (poll interval is 4s → ~32s). Local config
 // changes fire no vault event and don't advance the server version, so only a periodic full
@@ -473,19 +474,16 @@ export default class NewLiveSyncPlugin extends Plugin {
   // navigator.platform (which is "Linux aarch64" on Android → the useless "Linuxaarch64").
   // Shown as muted placeholder text in settings so the user sees what will be used.
   autoDeviceName(): string {
-    const clean = (s: string) => s.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 24);
     const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
-    // Android exposes the device model in the UA (e.g. "Pixel 9"); recent Chrome may freeze
-    // it to "K" for privacy — fall back to "Android" then.
-    const m = ua.match(/Android[^;]*;\s*([^;)]+?)\s*(?:Build\/|\))/i);
-    if (m && m[1]) { const model = clean(m[1]); if (model.length > 2 && model.toUpperCase() !== "K") return model; }
+    const android = androidModelFromUA(ua); // e.g. "Pixel 9"; null on desktop or a frozen "K"
+    if (android) return android;
     if (Platform.isIosApp) return Platform.isPhone ? "iPhone" : "iPad";
     if (Platform.isAndroidApp) return "Android";
     if (Platform.isMacOS) return "Mac";
     if (Platform.isWin) return "Windows";
     if (Platform.isLinux) return "Linux";
     const plat = (navigator as unknown as { platform?: string }).platform ?? "";
-    return clean(plat) || "device";
+    return cleanDeviceName(plat) || "device";
   }
   private deviceLabel(): string {
     return this.settings.deviceName || this.autoDeviceName();

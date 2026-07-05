@@ -74,6 +74,19 @@ describe("reconcileAll", () => {
     expect(dec((io as any).m.get("remote.md"))).toBe("from server");
   });
 
+  it("is idempotent — a second reconcile re-downloads nothing (the resumable-sync basis)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "A"); await serverPut(api, "b.md", "B");
+    const io = fakeIo({});
+    const d = deps(api, io, { base: new BaseStore() });
+    await reconcileAll(d);                                  // first pass: pulls both files
+    let writes = 0; const orig = (io as any).write.bind(io);
+    (io as any).write = async (p: string, b: Uint8Array) => { writes++; return orig(p, b); };
+    await reconcileAll(d);                                  // second pass: everything already in-sync
+    expect(writes).toBe(0);                                 // nothing re-fetched — an interrupted sync would resume, not restart
+    expect(dec((io as any).m.get("a.md")!)).toBe("A");
+  });
+
   it("pre-existing divergence, no base -> conflict-copy keeps BOTH (never clobbers)", async () => {
     const { api } = fakeServer();
     await serverPut(api, "note.md", "SERVER version");
