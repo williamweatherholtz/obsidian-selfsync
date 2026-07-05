@@ -49,17 +49,17 @@ package ReleaseVersioning {
         :>> id = "d99af5a3-979c-446a-a3b6-c592e4a475c0";
         :>> title = "Commit, tag, and push";
         :>> order = 4;
-        :>> actionText = "Commit the version files with `release: <new-version> — <one-line summary of the set>`; tag `<new-version>` (no `v` prefix — matches release.yml + manifest.json); `git push origin main` then `git push origin <new-version>`. The tag push triggers the release build. (Use --no-verify only while the keel guard binary is out of sync with this engine snapshot; flag it in the commit.)";
+        :>> actionText = "Commit the version files with `release: <new-version> — <one-line summary of the set>`; tag `<new-version>` (no `v` prefix — matches release.yml + manifest.json); `git push origin main` then `git push origin <new-version>`. The tag push triggers the release build. Commit with the keel gate ENABLED (no --no-verify): the guard mismatch was fixed (D0003), so a release commit runs the full guard like any other. The tag push (order 4) is NOT optional — a bump that is committed but never tagged is not released; order 5 asserts this.";
         :>> producedArtifact = "A release commit + an X.Y.Z tag pushed to origin.";
         :>> owner = Owner::ai;
     }
     part rv5Verify : ProcessStep {
         :>> id = "1e7984aa-7391-44d7-9d5d-a51b1fcb0c6a";
-        :>> title = "Verify the published release";
+        :>> title = "Verify the published release (automated assertion)";
         :>> order = 5;
-        :>> triggerCondition = "The version tag has been pushed.";
-        :>> actionText = "Confirm the .github/workflows/release.yml run goes green and the GitHub release for <new-version> carries the assets BRAT installs: main.js, manifest.json, styles.css.";
-        :>> producedArtifact = "A green release workflow + a GitHub release with the three plugin assets.";
+        :>> triggerCondition = "The version tag has been pushed and the release workflow has run.";
+        :>> actionText = "Run `node scripts/check-release.mjs` — it ASSERTS (exit non-zero on failure) that manifest.json's version has a matching git tag AND a published GitHub release carrying the BRAT assets (main.js, manifest.json, styles.css). This turns 'verify the release' from eyeballing GitHub into a checkable gate, so 'bumped + committed' can never be mistaken for 'released' (the 0.10.4 miss). The `.github/workflows/verify-released.yml` CI job runs the same check daily as an unattended net.";
+        :>> producedArtifact = "A green check-release assertion (tag + GitHub release with the three plugin assets).";
         :>> owner = Owner::ai;
     }
 }

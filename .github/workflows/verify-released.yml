@@ -1,0 +1,25 @@
+name: Verify released
+
+# Automated net for the "bumped but never released" failure mode: if manifest.json's version
+# ever lacks a matching tag + published release, this goes red on its own — no one has to
+# remember to look. Runs daily and on demand. (The release itself is published by release.yml
+# on a version-tag push; this checks that a bump actually reached that state.)
+on:
+  schedule:
+    - cron: "0 12 * * *" # daily at 12:00 UTC
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # need all tags
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Assert manifest version is released
+        run: node scripts/check-release.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

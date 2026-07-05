@@ -57,16 +57,19 @@ git tag <new-version>          # no "v" prefix — matches release.yml's tag fil
 git push origin main
 git push origin <new-version>  # the tag push triggers the release build
 ```
-The keel guard binary is currently out of sync with this engine snapshot (several rules
-report "declared rule not found"), so `keel guard` aborts on every commit even though
-`keel validate` + the `process-change` guard pass. Until that's fixed, commit with
-`--no-verify` and **flag it** in the commit message. (This is an infrastructure mismatch, not
-a licence to skip a real guard — restore the full gate once the toolkit and engine agree.)
+Commit with the **keel gate enabled** (no `--no-verify`): the guard mismatch was fixed (D0003),
+so a release commit runs the full guard like any other. **The tag push is not optional** — a
+bump that is committed but never tagged is *not released* (BRAT never sees it). Step 5 asserts it.
 
-## 5. Verify the published release
-- The `.github/workflows/release.yml` run goes green.
-- The GitHub release for `<new-version>` carries the assets BRAT installs: `main.js`,
-  `manifest.json`, `styles.css`.
+## 5. Verify the published release (automated — do not eyeball)
+```
+node scripts/check-release.mjs        # asserts manifest version == tag == published release + assets
+```
+It exits non-zero unless `manifest.json`'s version has a matching git tag **and** a published
+GitHub release carrying the BRAT assets (`main.js`, `manifest.json`, `styles.css`). This is the
+guard against the "bumped + committed but never released" miss — "released" is a checkable
+assertion, not a memory. The `.github/workflows/verify-released.yml` CI job runs the same check
+daily, so drift goes red on its own even if this step is skipped.
 
 ## Notes
 - Tags are `X.Y.Z` (no `v`), matching the workflow's tag filter.
