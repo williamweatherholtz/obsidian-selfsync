@@ -30,6 +30,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/login", post(auth::login))
         .route("/api/register", post(auth::register))
         .route("/api/vaults", get(vaults::list_vaults).post(vaults::create_vault))
+        .route("/api/shared", get(api::shared_with_me)) // vaults shared WITH the caller
         // Own-vault sync routes: /api/v/{vault}/... (owner defaults to the caller).
         .route("/api/v/:vault/changes", get(api::changes))
         .route("/api/v/:vault/meta", get(api::file_meta))

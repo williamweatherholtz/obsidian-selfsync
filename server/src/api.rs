@@ -31,6 +31,21 @@ fn scoped(
     Ok((owner, vault, h))
 }
 
+// Vaults shared WITH the caller (owned-by-others), so the client can offer them in its
+// vault switcher. Own vaults come from /api/vaults; this is the complement.
+#[derive(serde::Serialize)]
+pub struct SharedVault {
+    owner: String,
+    vault: String,
+    perm: crate::shares::Perm,
+}
+pub async fn shared_with_me(
+    AuthToken(user): AuthToken, State(st): State<AppState>,
+) -> Result<Json<Vec<SharedVault>>, AppError> {
+    let grants = crate::error::lock(&st.shares)?.shared_with(&user);
+    Ok(Json(grants.into_iter().map(|g| SharedVault { owner: g.owner, vault: g.vault, perm: g.perm }).collect()))
+}
+
 // 503 if the vault's index is corrupt: sync ops must not read a degraded/empty
 // manifest (our hash-based reconcile could interpret "no files" as deletions).
 // Only /status and /reindex work on a corrupt vault. Caller holds the lock.

@@ -85,6 +85,24 @@ async fn read_grant_allows_read_but_not_write() {
 }
 
 #[tokio::test]
+async fn shared_with_me_lists_grants() {
+    let (base, st) = spawn().await;
+    st.shares.lock().unwrap().grant("alice", "notes", "bob", Perm::Read).unwrap();
+    let tok = login(&base, "bob").await;
+    let r = reqwest::Client::new()
+        .get(format!("{base}/api/shared")).bearer_auth(&tok).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v = r.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(v[0]["owner"], serde_json::json!("alice"));
+    assert_eq!(v[0]["vault"], serde_json::json!("notes"));
+    assert_eq!(v[0]["perm"], serde_json::json!("read"));
+    // carol sees nothing
+    let ctok = login(&base, "carol").await;
+    let cr = reqwest::Client::new().get(format!("{base}/api/shared")).bearer_auth(&ctok).send().await.unwrap();
+    assert_eq!(cr.json::<serde_json::Value>().await.unwrap().as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn readwrite_grant_allows_write_and_revoke_denies() {
     let (base, st) = spawn().await;
     st.shares.lock().unwrap().grant("alice", "notes", "bob", Perm::ReadWrite).unwrap();
