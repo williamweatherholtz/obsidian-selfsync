@@ -22,7 +22,8 @@ export const canRun = !!externalUrl || existsSync(serverBin);
 
 /** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). Chunk API. */
 export class NodeTransport implements SyncApi {
-  constructor(private base: string, private token: string, private vault = "default") {}
+  // owner "" = own vault (/api/v/{vault}); set = a shared vault (/api/u/{owner}/{vault}).
+  constructor(private base: string, private token: string, private vault = "default", private owner = "") {}
   static async login(base: string, u: string, p: string): Promise<string> {
     const r = await fetch(`${base}/api/login`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: u, password: p }),
@@ -41,8 +42,27 @@ export class NodeTransport implements SyncApi {
     if (!r.ok) throw new Error(`listVaults ${r.status}`);
     return ((await r.json()) as { vaults: string[] }).vaults;
   }
+  // Admin helpers (server-admin token) for cross-user sharing tests.
+  static async createUser(base: string, adminToken: string, username: string, password: string): Promise<void> {
+    const r = await fetch(`${base}/api/admin/users`, {
+      method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) throw new Error(`createUser ${r.status}`);
+  }
+  // A vault owner grants a share on their own vault (owner-scoped; any owner may call).
+  static async grant(base: string, ownerToken: string, vault: string, grantee: string, perm: "read" | "readWrite"): Promise<void> {
+    const r = await fetch(`${base}/api/admin/shares`, {
+      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify({ vault, grantee, perm }),
+    });
+    if (!r.ok) throw new Error(`grant ${r.status}`);
+  }
   private h() { return { authorization: `Bearer ${this.token}` }; }
-  private v(suffix: string) { return `${this.base}/api/v/${encodeURIComponent(this.vault)}${suffix}`; }
+  private v(suffix: string) {
+    const scope = this.owner
+      ? `/api/u/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.vault)}`
+      : `/api/v/${encodeURIComponent(this.vault)}`;
+    return `${this.base}${scope}${suffix}`;
+  }
   async changes(since: number): Promise<ChangesResponse> {
     const r = await fetch(this.v(`/changes?since=${since}`), { headers: this.h() });
     if (!r.ok) throw new Error(`changes ${r.status}`);
