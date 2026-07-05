@@ -137,9 +137,17 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
   }
 
+  // A lightweight sub-section divider within a group (see .selfsync-subhead in styles.css).
+  private subhead(c: HTMLElement, name: string): void {
+    new Setting(c).setName(name).setHeading().setClass("selfsync-subhead");
+  }
+
   private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
     new Setting(c).setName("What syncs").setHeading();
+    new Setting(c).setName("Notes & attachments").setDesc("Always synced — the core of your vault.");
 
+    // ── Conflicts: how divergence between devices is handled ──
+    this.subhead(c, "Conflicts");
     // Adjudication queue: config that diverged/was-removed across devices, awaiting a choice.
     // Surfaced prominently (not auto-resolved) so plugins are never silently deleted or resurrected.
     const conflicts = this.plugin.getConfigConflicts();
@@ -148,19 +156,19 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         .setDesc("Settings or plugins differ across your devices. Nothing was deleted or overwritten — choose which version to keep.")
         .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts()));
     }
-
-    new Setting(c).setName("Notes & attachments").setDesc("Always synced.");
-    new Setting(c).setName("Conflict resolution")
-      .setDesc("When the same file changed on two devices: merge the changes automatically, or keep both as a conflict file.")
+    new Setting(c).setName("Concurrent edits to the same file")
+      .setDesc("When a file changed on two devices: merge the changes automatically, or keep both as a conflict file.")
       .addDropdown((dd) => dd
         .addOption("auto-merge", "Automatically merge")
         .addOption("conflict-file", "Create conflict file")
         .setValue(s.conflictStrategy)
         .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); }));
 
+    // ── Obsidian configuration: the opt-in .obsidian surface ──
+    this.subhead(c, "Obsidian configuration");
     const cs = s.configSync;
-    new Setting(c).setName("Obsidian settings")
-      .setDesc("Sync your .obsidian config — settings, hotkeys, themes — between devices. Community-plugin CODE is a separate opt-in below (off by default). SelfSync's own login is never synced.")
+    new Setting(c).setName("Sync settings, themes & plugins")
+      .setDesc("Sync your .obsidian config between devices. Community-plugin code is a separate opt-in below (off by default). SelfSync's own login is never synced.")
       .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
         cs.enabled = v; await this.plugin.saveSettings(); this.display();
       }));

@@ -28,6 +28,23 @@
 }
 .selfsync-section[open] > summary::before { transform: rotate(90deg); }
 
+/* Sub-section divider within a settings group — a light labelled rule so related controls
+   read as a cluster, not a flat wall of full-width rows. Smaller + muted than the group
+   heading so the hierarchy is obvious (group > sub-section > setting). */
+.selfsync-subhead {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 14px;
+  padding-top: 10px;
+}
+.selfsync-subhead .setting-item-name {
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.selfsync-subhead .setting-item-description { display: none; }
+
 /* Compact category toggles (minor settings: core / hotkeys / appearance / snippets /
    community) — tighter than a full setting row so they don't read as major. */
 .selfsync-cats {
