@@ -263,7 +263,7 @@ package ProjectRequirements {
         :>> id = "c0f1a5cc-e013-4a10-9b20-a1b2c3d40213";
         :>> title = "Pending config differences persist and have a resolution UI";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> statement = "Config differences awaiting adjudication shall persist across restarts, surface as a 'Config differences (N)' entry in settings, and resolve through a per-file UI offering keep-this-device's or use-the-other-device's, applying the choice and clearing the entry.";
+        :>> statement = "Config differences awaiting adjudication shall surface as a 'Config differences (N)' entry counting GROUPED items — at most one per plugin (all its files as one), each labelled by purpose (not a raw filename) — resolvable in one click per group (this device / synced version), and the count shall self-clear as items resolve (a pending entry is pruned when its path reconciles cleanly) so it never shows a stale number.";
         :>> rationale = "Divergence adjudication (srConfigAdjudication) needs a durable queue + a way for the user to act on it (nConfigSync).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
     }

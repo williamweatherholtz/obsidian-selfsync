@@ -107,9 +107,9 @@ package ProjectAcceptance {
         :>> procedureText = "Inspected: a config write queues the path via onConfigWritten and flushConfigReload asks Obsidian to reload the affected surface (plugins/appearance/hotkeys/snippets) so a pulled change applies without a manual restart (best-effort). On-device confirmed at L3/L4.";
     }
     verification acConfigAdjudicationUI : Test {
-        :>> id = "c0f1a5cc-3223-4a10-9b20-a1b2c3d40223"; :>> method = VerificationMethod::inspect;
-        :>> location = "client/src/configconflict.ts";
-        :>> procedureText = "Inspected: pending differences persist in settings.configConflicts (survive restart), surface as 'Config differences (N)' in the settings tab, and ConfigConflictModal offers per-file keep-this-device's / use-the-other's, calling resolveConfigConflict + clearing the entry.";
+        :>> id = "c0f1a5cc-3223-4a10-9b20-a1b2c3d40223"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/configgroup.test.ts";
+        :>> procedureText = "groupConfigConflicts collapses a plugin's files into one 'Plugin: <id>' entry, keeps distinct plugins separate, and labels non-plugin files by purpose ('Enabled community plugins', 'Hotkeys', 'Theme: X') — unit-tested. Inspected: the badge counts GROUPS, ConfigConflictModal resolves a whole group in one click (Use this device / Use synced), and the count self-clears — resolveConfigGroup + onConfigResolved prune entries + settingsRefresh re-renders, and the periodic reconcile prunes any stale entry.";
     }
     verification acReadOnlyGating : Test {
         :>> id = "c0f1a5cc-3224-4a10-9b20-a1b2c3d40224"; :>> method = VerificationMethod::test;
@@ -162,7 +162,7 @@ package ProjectAcceptance {
     part acSetupLinkR1 : TestResult { :>> id = "c0f1a5cc-4220-4a10-9b20-a1b2c3d40320"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "a504d0c"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigReloadR1 : TestResult { :>> id = "c0f1a5cc-4222-4a10-9b20-a1b2c3d40322"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acConfigAdjudicationUIR1 : TestResult { :>> id = "c0f1a5cc-4223-4a10-9b20-a1b2c3d40323"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigAdjudicationUIR1 : TestResult { :>> id = "c0f1a5cc-4223-4a10-9b20-a1b2c3d40323"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d7fb9f5"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acReadOnlyGatingR1 : TestResult { :>> id = "c0f1a5cc-4224-4a10-9b20-a1b2c3d40324"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acRegistrationPolicyR1 : TestResult { :>> id = "c0f1a5cc-4225-4a10-9b20-a1b2c3d40325"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acAdminSurfaceR1 : TestResult { :>> id = "c0f1a5cc-4226-4a10-9b20-a1b2c3d40326"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
