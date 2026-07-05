@@ -188,6 +188,24 @@ package ProjectRequirements {
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
 
+    // ---- Data-safety + durability (Batch 2) ----
+    requirement srDegradedServerGuard : SystemRequirement {
+        :>> id = "c0f1a5cc-e005-4a10-9b20-a1b2c3d40205";
+        :>> title = "Refuse to act on a degraded or empty server";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The client shall not reconcile against a server reporting a not-ready/corrupt index, and shall refuse a bulk delete-local when the server manifest is empty while local base history is non-empty (the C2 guard) — surfacing the condition instead of destroying local files.";
+        :>> rationale = "Server data loss or a reindex reset must never cascade into wiping the user's local vault (goal #3, never lose data).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srDurableIndex : SystemRequirement {
+        :>> id = "c0f1a5cc-e006-4a10-9b20-a1b2c3d40206";
+        :>> title = "Crash-safe append-only index journal";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall persist the vault index as an append-only journal (absolute Put/Del records) that replays on reopen, discards a torn trailing record, errors on a malformed complete record, recomputes chunk-refs from files, and compacts past a threshold — never rewriting the whole index per change.";
+        :>> rationale = "Durability + cheap large-vault writes without a database (D0010); protects the index across crashes.";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -243,4 +261,7 @@ package ProjectRequirements {
     satisfy nReliableSync by srInstantPush;
     satisfy nReliableSync by srIncrementalSync;
     satisfy nReliableSync by srSelfHealingReconnect;
+    // Batch 2 — data-safety + durability
+    satisfy n3NeverClobber by srDegradedServerGuard;
+    satisfy n2NoCouchDB by srDurableIndex;
 }

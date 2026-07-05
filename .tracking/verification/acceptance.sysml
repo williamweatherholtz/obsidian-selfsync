@@ -62,6 +62,17 @@ package ProjectAcceptance {
         :>> location = "client/src/main.ts";
         :>> procedureText = "Inspected: reconnect() is single-flight (connecting guard), backs off on failure, restarts polling + WS on success, and ceases after unload; a failed poll hands off to scheduleReconnect.";
     }
+    // ── Batch 2: data-safety + durability ──
+    verification acDegradedServerGuard : Test {
+        :>> id = "c0f1a5cc-3215-4a10-9b20-a1b2c3d40215"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "Reconcile tests: C2 refuses bulk delete-local when the server manifest is empty but base is non-empty (batch + event paths), and still honors a legit delete-local when the server has other files; e2e 'deleting the LAST file leaves the peer's copy intact' — green.";
+    }
+    verification acDurableIndex : Test {
+        :>> id = "c0f1a5cc-3216-4a10-9b20-a1b2c3d40216"; :>> method = VerificationMethod::test;
+        :>> location = "server/src/vault.rs";
+        :>> procedureText = "Server tests: commits/deletes append absolute journal records; replay reconstructs on reopen; a torn trailing record is discarded; a malformed complete record errors; chunk-refs recompute from files; compaction snapshots + truncates — green.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -77,6 +88,8 @@ package ProjectAcceptance {
     part acInstantPushR1 : TestResult { :>> id = "c0f1a5cc-4212-4a10-9b20-a1b2c3d40312"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acIncrementalSyncR1 : TestResult { :>> id = "c0f1a5cc-4213-4a10-9b20-a1b2c3d40313"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSelfHealingReconnectR1 : TestResult { :>> id = "c0f1a5cc-4214-4a10-9b20-a1b2c3d40314"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acDegradedServerGuardR1 : TestResult { :>> id = "c0f1a5cc-4215-4a10-9b20-a1b2c3d40315"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acDurableIndexR1 : TestResult { :>> id = "c0f1a5cc-4216-4a10-9b20-a1b2c3d40316"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -91,6 +104,9 @@ package ProjectAcceptance {
     #Verify dependency from acInstantPush to srInstantPush;
     #Verify dependency from acIncrementalSync to srIncrementalSync;
     #Verify dependency from acSelfHealingReconnect to srSelfHealingReconnect;
+    // Batch 2 — data-safety + durability
+    #Verify dependency from acDegradedServerGuard to srDegradedServerGuard;
+    #Verify dependency from acDurableIndex to srDurableIndex;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;
