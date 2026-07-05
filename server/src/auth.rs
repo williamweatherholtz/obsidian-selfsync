@@ -13,8 +13,7 @@ pub async fn login(
 ) -> Result<Json<LoginResponse>, AppError> {
     let ok = lock(&st.users)?.verify(&req.username, &req.password);
     if ok {
-        let token = uuid::Uuid::new_v4().to_string();
-        lock(&st.tokens)?.insert(token.clone(), req.username.clone());
+        let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
         eprintln!("[login] user='{}' -> OK", req.username);
         Ok(Json(LoginResponse { token }))
     } else {
@@ -64,7 +63,7 @@ impl FromRequestParts<AppState> for AuthToken {
             .and_then(|s| s.strip_prefix("Bearer "))
             .map(|s| s.to_string())
             .ok_or(AppError::Unauthorized)?;
-        let user = lock(&st.tokens)?.get(&token).cloned();
+        let user = lock(&st.tokens)?.resolve(&token);
         user.map(AuthToken).ok_or(AppError::Unauthorized)
     }
 }

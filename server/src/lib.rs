@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod registration;
 pub mod shares;
 pub mod state;
+pub mod tokens;
 pub mod users;
 pub mod vault;
 pub mod vaults;

@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::registration::{Mode, RegistrationStore};
 use crate::shares::ShareStore;
+use crate::tokens::TokenStore;
 use crate::users::{safe_name, UserStore};
 use crate::vault::Vault;
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ pub struct AppState {
     pub users: Arc<Mutex<UserStore>>,
     pub shares: Arc<Mutex<ShareStore>>, // vault access-control list (.shares.json)
     pub registration: Arc<Mutex<RegistrationStore>>, // policy + invite tokens (.registration.json)
-    pub tokens: Arc<Mutex<HashMap<String, String>>>, // token -> username
+    pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
 }
 
@@ -46,12 +47,13 @@ impl AppState {
             let mode = if cfg.registration == "open" { Mode::Open } else { Mode::Closed };
             registration.set_mode(mode)?;
         }
+        let tokens = TokenStore::open(&cfg.data_root.join(".tokens.json"))?;
         let state = AppState {
             cfg: Arc::new(cfg),
             users: Arc::new(Mutex::new(users)),
             shares: Arc::new(Mutex::new(shares)),
             registration: Arc::new(Mutex::new(registration)),
-            tokens: Arc::new(Mutex::new(HashMap::new())),
+            tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
         };
         // Ensure the bootstrap account has a `default` vault to land in.

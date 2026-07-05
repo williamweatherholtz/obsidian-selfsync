@@ -142,9 +142,9 @@ pub async fn users_delete(
     if !removed {
         return Err(AppError::NotFound);
     }
-    // Drop the account's shares (as owner or grantee) and any active sessions.
+    // Drop the account's shares (as owner or grantee) and revoke any active sessions.
     lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
-    lock(&st.tokens)?.retain(|_, u| u != &name);
+    lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(StatusCode::OK)
 }
 

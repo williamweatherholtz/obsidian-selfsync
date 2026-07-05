@@ -14,7 +14,7 @@ pub async fn ws_handler(
     // Resolve token -> user, then subscribe to the requested vault's channel. A
     // poisoned token store returns 503 rather than panicking (matches error::lock).
     let user = match lock(&st.tokens) {
-        Ok(g) => q.get("token").and_then(|t| g.get(t).cloned()),
+        Ok(mut g) => q.get("token").and_then(|t| g.resolve(t)),
         Err(_) => { eprintln!("[ws] connect REJECTED (token store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
     };
     let Some(user) = user else {
