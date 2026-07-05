@@ -24,7 +24,8 @@ package ProjectDelivery {
 
         // ---- outstanding (open frontier) ----
         action b7AuthHardening;     // B7: expiring/revocable tokens, token-only persist, TLS guidance, optional E2EE
-        action b9DurabilityStreaming; // B9: append-only journal + true streaming (durability rewrite)
+        action b9DurabilityStreaming; // B9 Part A: append-only index journal (D0010)
+        action streamingReassembly; // B9 Part B: streamed reassembly — DEFERRED (D0010; design retained)
         action b11ParallelChunk;    // B11: parallelize chunk transfer (large-file perf)
         action l3GuiPass;           // L3: manual Obsidian GUI verification of 0.6.0 (esp. switch + indicators)
         action l4MobileOndevice;    // L4: on-device mobile run (foreground sync, resumable initial sync)
@@ -41,6 +42,7 @@ package ProjectDelivery {
         first goal1ConfigUx then rel06FixSet;
         first rel06FixSet then l3GuiPass;
         first l3GuiPass then l4MobileOndevice;
+        first b9DurabilityStreaming then streamingReassembly;
         first rel06FixSet then vaultSharingP1;
         first vaultSharingP1 then shareClientConsume;
 
@@ -54,7 +56,8 @@ package ProjectDelivery {
         verification goal1ConfigUxDoD : Test { :>> id = "49b1a827-b90d-40f3-bb2a-67c6b22795b9"; :>> method = VerificationMethod::test; :>> procedureText = "wizardsteps + connstr + configsync unit tests + headless wizard E2E: guided setup connects + picks a vault; status-first settings render; config-sync permutation matrix passes — green."; }
         verification rel06FixSetDoD : Test { :>> id = "7ceb01f4-6bf1-4897-9331-0c44acc1c281"; :>> method = VerificationMethod::test; :>> procedureText = "reconcile switchTo download/upload/merge/empty-auto tests; 99 client unit tests + standalone config-permutation matrix green; tsc + build clean; 0.6.0 released."; }
         verification b7AuthHardeningDoD : Test { :>> id = "4d2f71d4-4177-41ca-968f-6207fdc249bf"; :>> method = VerificationMethod::test; :>> procedureText = "durable/expiring/revocable server tokens (hashed, 30-day, revoked on account delete); client token-only persistence option; shipped TLS/public-exposure guidance (deploy/ Caddy example + docs/deployment.md). Optional client-side E2EE carved out to e2eEncryption. Server + client tests green."; }
-        verification b9DurabilityStreamingDoD : Test { :>> id = "3f17347d-5959-4a58-ac42-56146df4c3e2"; :>> method = VerificationMethod::test; :>> procedureText = "append-only journal for the index + true streaming of large transfers (no whole-file in RAM) — durability + memory tests green."; }
+        verification b9DurabilityStreamingDoD : Test { :>> id = "3f17347d-5959-4a58-ac42-56146df4c3e2"; :>> method = VerificationMethod::test; :>> procedureText = "B9 Part A (D0010): append-only .sync-index.log — commits/deletes append absolute records instead of rewriting the index; replay reconstructs on reopen; torn trailing record discarded; malformed complete record -> ERROR; chunk_refs recomputed from files; compaction snapshots + truncates. Server tests green."; }
+        verification streamingReassemblyDoD : Test { :>> id = "1b001637-4710-4ef6-8d6c-bc269e43bcd8"; :>> method = VerificationMethod::test; :>> procedureText = "B9 Part B (DEFERRED, D0010): stream chunk reassembly to disk (no whole-file in RAM) so the client size gate can rise. Design: specs/2026-07-05-durability-streaming-design.md."; }
         verification b11ParallelChunkDoD : Test { :>> id = "18e57bf3-f917-4e18-838a-1c12b3db8d6b"; :>> method = VerificationMethod::test; :>> procedureText = "chunk transfer parallelized via a bounded Promise pool; large-file sync wall-clock materially reduced vs the sequential baseline; E2E large-file timing improved."; }
         verification l3GuiPassDoD : Test { :>> id = "1cdcb701-7762-4540-955b-f99b188ef23c"; :>> method = VerificationMethod::demo; :>> procedureText = "manual pass in a real Obsidian desktop instance: 0.6.0 setup wizard, settings groups, single indicator, and the vault-switch modal (download/upload/merge) behave as specified."; }
         verification l4MobileOndeviceDoD : Test { :>> id = "24eeafa6-25c4-4f41-b1c6-fa47fffa593c"; :>> method = VerificationMethod::demo; :>> procedureText = "on-device mobile run (iOS/Android): foreground sync, resumable initial sync, indicator visible, within the on-device performance budget."; }
@@ -78,5 +81,7 @@ package ProjectDelivery {
         part b11ParallelChunkR1 : TestResult { :>> id = "35068780-a122-4860-bb31-7fb1bae251e2"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "88238fb"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
         // B7 shipped: durable/expiring/revocable tokens + token-only persistence + TLS/exposure docs (E2EE carved to e2eEncryption).
         part b7AuthHardeningR1 : TestResult { :>> id = "e44416e1-5f8d-4621-b140-3b1b7a9f0574"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "198d5f1"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        // B9 Part A shipped: append-only index journal (streaming Part B deferred, D0010).
+        part b9DurabilityStreamingR1 : TestResult { :>> id = "b8b81f32-5c6d-4b35-b0f3-cfd935073917"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "2b42a58"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     }
 }
