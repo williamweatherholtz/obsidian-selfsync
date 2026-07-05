@@ -200,8 +200,18 @@ package ProjectBusiness {
         :>> priority = Priority::should;
     }
 
+    // ---- Needs surfaced by the use-case functional decomposition (2026-07-05) ----
+    requirement nReliableSync : Need {
+        :>> id = "c0f1a5cc-e101-4a10-9b20-a1b2c3d40101";
+        :>> title = "Sync keeps running reliably on its own";
+        :>> source = NeedSource::customer;
+        :>> statement = "Once set up, sync just keeps working — changes propagate promptly, the client recovers from dropped connections without user action, and it stays responsive across desktop and mobile.";
+        :>> priority = Priority::must;
+    }
+
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
+    #DependsOn dependency from nReliableSync to goal2SimpleBackend;
     #DependsOn dependency from goal1ClearConfig to selfsyncBrief;
     #DependsOn dependency from goal2SimpleBackend to selfsyncBrief;
     #DependsOn dependency from goal3ConflictMerge to selfsyncBrief;

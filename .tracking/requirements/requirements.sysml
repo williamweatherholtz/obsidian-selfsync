@@ -154,6 +154,40 @@ package ProjectRequirements {
         :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
 
+    // ---- Continuous-sync reliability (Batch 1, from the use-case functional decomposition) ----
+    requirement srServerApi : SystemRequirement {
+        :>> id = "c0f1a5cc-e001-4a10-9b20-a1b2c3d40201";
+        :>> title = "HTTP sync API surface";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall expose, over HTTP(S), a health/status endpoint, account register + login (returning a session token), vault list + create, and the sync operations changes/commit/get-chunk/put-chunk/delete — the complete contract the client drives.";
+        :>> rationale = "The onboarding + continuous-sync use cases depend on this concrete API contract being stated, not just implemented.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srInstantPush : SystemRequirement {
+        :>> id = "c0f1a5cc-e002-4a10-9b20-a1b2c3d40202";
+        :>> title = "WebSocket instant push";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall push a change notification to connected clients over a WebSocket channel so a remote change is reflected on other devices in near real time, not only on the next poll.";
+        :>> rationale = "Continuous note sync needs low-latency propagation between devices.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srIncrementalSync : SystemRequirement {
+        :>> id = "c0f1a5cc-e003-4a10-9b20-a1b2c3d40203";
+        :>> title = "Incremental version-cursor sync";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The client shall track the server's version and reconcile incrementally — an idle poll does one cheap check and only fully reconciles when the server advances (or a periodic config scan is due) — so steady state is inexpensive.";
+        :>> rationale = "Avoids re-listing the whole vault on every poll; keeps idle cost low (goal #2 responsiveness).";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srSelfHealingReconnect : SystemRequirement {
+        :>> id = "c0f1a5cc-e004-4a10-9b20-a1b2c3d40204";
+        :>> title = "Self-healing reconnect";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "On a dropped connection or transient error the client shall reconnect on its own with backoff, at most one attempt in flight, resuming polling + the WebSocket on success and ceasing on plugin unload.";
+        :>> rationale = "Mobile/flaky-network use requires recovery without user action (nReliableSync).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -204,4 +238,9 @@ package ProjectRequirements {
     satisfy nConfigSync by srConfigAdjudication;
     satisfy nConfigSync by srSyncRobust;
     satisfy nConfigSync by srConfigLiveDetect;
+    // Batch 1 — continuous-sync reliability
+    satisfy nReliableSync by srServerApi;
+    satisfy nReliableSync by srInstantPush;
+    satisfy nReliableSync by srIncrementalSync;
+    satisfy nReliableSync by srSelfHealingReconnect;
 }

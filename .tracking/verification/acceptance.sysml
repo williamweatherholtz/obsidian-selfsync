@@ -41,6 +41,27 @@ package ProjectAcceptance {
         :>> location = "client/test/reconcile.test.ts";
         :>> procedureText = "GIVEN one file throws during reconcile WHEN reconcileAll runs THEN that file's error is reported and skipped and every other file still syncs — the 'per-file isolation' reconcile test is green.";
     }
+    // ── Batch 1: continuous-sync reliability ──
+    verification acServerApi : Test {
+        :>> id = "c0f1a5cc-3211-4a10-9b20-a1b2c3d40211"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/e2e.spec.ts";
+        :>> procedureText = "e2e (real server) exercises the health ping, login, create + list vault, and changes/commit/get across two clients; server cargo tests cover put/delete-chunk + argon2id auth — green.";
+    }
+    verification acInstantPush : Test {
+        :>> id = "c0f1a5cc-3212-4a10-9b20-a1b2c3d40212"; :>> method = VerificationMethod::inspect;
+        :>> location = "server/src/ws.rs";
+        :>> procedureText = "Inspected: the server broadcasts a change notification on commit over the WebSocket channel and the client subscribes and reconciles on notify, so a remote change reflects near-real-time rather than only on the next poll.";
+    }
+    verification acIncrementalSync : Test {
+        :>> id = "c0f1a5cc-3213-4a10-9b20-a1b2c3d40213"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/e2e.spec.ts";
+        :>> procedureText = "e2e sequential edits each propagate in order via the version-cursor incremental path (changes(since=version)); an idle poll with no server advance does the cheap check only — green.";
+    }
+    verification acSelfHealingReconnect : Test {
+        :>> id = "c0f1a5cc-3214-4a10-9b20-a1b2c3d40214"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/main.ts";
+        :>> procedureText = "Inspected: reconnect() is single-flight (connecting guard), backs off on failure, restarts polling + WS on success, and ceases after unload; a failed poll hands off to scheduleReconnect.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -52,6 +73,10 @@ package ProjectAcceptance {
     part acSyncRobustR1 : TestResult { :>> id = "c0f1a5cc-4004-4a10-9b20-a1b2c3d40034"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acFreeMergeR1 : TestResult { :>> id = "c0f1a5cc-4005-4a10-9b20-a1b2c3d40035"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d6c0325"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acServerApiR1 : TestResult { :>> id = "c0f1a5cc-4211-4a10-9b20-a1b2c3d40311"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acInstantPushR1 : TestResult { :>> id = "c0f1a5cc-4212-4a10-9b20-a1b2c3d40312"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acIncrementalSyncR1 : TestResult { :>> id = "c0f1a5cc-4213-4a10-9b20-a1b2c3d40313"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acSelfHealingReconnectR1 : TestResult { :>> id = "c0f1a5cc-4214-4a10-9b20-a1b2c3d40314"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -61,6 +86,11 @@ package ProjectAcceptance {
     #Verify dependency from acSyncRobust to srSyncRobust;
     #Verify dependency from acConfigLiveDetect to srConfigLiveDetect;
     #Verify dependency from acFreeMerge to srFreeMerge;
+    // Batch 1 — continuous-sync reliability
+    #Verify dependency from acServerApi to srServerApi;
+    #Verify dependency from acInstantPush to srInstantPush;
+    #Verify dependency from acIncrementalSync to srIncrementalSync;
+    #Verify dependency from acSelfHealingReconnect to srSelfHealingReconnect;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;
