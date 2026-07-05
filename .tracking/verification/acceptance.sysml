@@ -126,6 +126,19 @@ package ProjectAcceptance {
         :>> location = "server/src/admin.rs";
         :>> procedureText = "Server admin tests: /api/admin/* requires an admin role, manages accounts + shares, and responses never include password hashes or session tokens — green.";
     }
+    // ── Human on-device attestations (wweatherholtz, 2026-07-05, against 0.10.7) ──
+    verification acInstantPushConfirm : Test {
+        :>> id = "c0f1a5cc-3301-4a10-9b20-a1b2c3d40301"; :>> method = VerificationMethod::confirmation;
+        :>> procedureText = "wweatherholtz attests: a change made on one device appears on the other near-instantly (WebSocket push), not only on a poll — observed on his own devices running 0.10.7.";
+    }
+    verification acSelfHealingReconnectConfirm : Test {
+        :>> id = "c0f1a5cc-3302-4a10-9b20-a1b2c3d40302"; :>> method = VerificationMethod::confirmation;
+        :>> procedureText = "wweatherholtz attests: after a dropped connection / server blip the plugin reconnects on its own with no user action — observed on 0.10.7.";
+    }
+    verification acConfigAdjudicationUIConfirm : Test {
+        :>> id = "c0f1a5cc-3303-4a10-9b20-a1b2c3d40303"; :>> method = VerificationMethod::confirmation;
+        :>> procedureText = "wweatherholtz attests: hit a genuine config divergence and resolved it through the 'Config differences' modal, picking a side — observed on 0.10.7.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -153,6 +166,10 @@ package ProjectAcceptance {
     part acReadOnlyGatingR1 : TestResult { :>> id = "c0f1a5cc-4224-4a10-9b20-a1b2c3d40324"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acRegistrationPolicyR1 : TestResult { :>> id = "c0f1a5cc-4225-4a10-9b20-a1b2c3d40325"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acAdminSurfaceR1 : TestResult { :>> id = "c0f1a5cc-4226-4a10-9b20-a1b2c3d40326"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    // human on-device attestations
+    part acInstantPushConfirmR1 : TestResult { :>> id = "c0f1a5cc-4301-4a10-9b20-a1b2c3d40331"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
+    part acSelfHealingReconnectConfirmR1 : TestResult { :>> id = "c0f1a5cc-4302-4a10-9b20-a1b2c3d40332"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
+    part acConfigAdjudicationUIConfirmR1 : TestResult { :>> id = "c0f1a5cc-4303-4a10-9b20-a1b2c3d40333"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -183,6 +200,11 @@ package ProjectAcceptance {
     #Verify dependency from acReadOnlyGating to srReadOnlyGating;
     #Verify dependency from acRegistrationPolicy to srRegistrationPolicy;
     #Verify dependency from acAdminSurface to srAdminSurface;
+    // human on-device attestations (wweatherholtz)
+    #Verify dependency from acInstantPushConfirm to srInstantPush;
+    #Verify dependency from acSelfHealingReconnectConfirm to srSelfHealingReconnect;
+    #Verify dependency from acConfigAdjudicationUIConfirm to srConfigAdjudicationUI;
+    #Verify dependency from l4MobileOndeviceDoD to srMobile;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;

@@ -24,4 +24,21 @@ package ProjectIssues {
     // Triage: resolved by the CR d0011 traceability backfill (roots the feature as a #Capability,
     // adds the #Verify acceptance layer for every SR incl. the two scenarios that catch this class).
     #Resolves dependency from requirementTraceabilityBackfill to issueTraceabilityGap;
+
+    // Owner attestation (2026-07-05): settings functionality is right, but the layout atomizes
+    // every setting into its own container instead of grouping intelligently like comparable
+    // plugins. Cosmetic, not functional; deferred to an end-of-project polish pass to avoid
+    // repeated cosmetic rework. srSettingsOneHome's top-level 4-group structure holds; this is
+    // the finer within-group organization.
+    part issueSettingsGrouping : Issue {
+        :>> id = "c0f1a5cc-8002-4a10-9b20-a1b2c3d40072";
+        :>> title = "Settings are atomized, not intelligently grouped like comparable plugins";
+        :>> createdAt = "2026-07-05";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "Owner review: every setting sits in its own little container rather than being organized into sensible sub-groups the way well-designed Obsidian plugins do. Functionality is present and correct; the grouping is a cosmetic weakness, and the comparable-plugin study that should have informed it was not done properly. Deferred to a single end-of-project cosmetic pass (explicit owner instruction: don't keep reworking cosmetics mid-build).";
+        :>> discoveredInField = true;
+        :>> relatedTask = "settingsGroupingPolish";
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from settingsGroupingPolish to issueSettingsGrouping;
 }

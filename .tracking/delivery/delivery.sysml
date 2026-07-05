@@ -34,6 +34,7 @@ package ProjectDelivery {
         action shareClientConsume;  // vault sharing Phase 2: plugin syncs vaults shared with you
         action configSyncSafety;    // 0.10.4: config sync additive + adjudicated (never delete/resurrect); crash fix
         action requirementTraceabilityBackfill; // CR d0011: backfill the missing SR->Test #Verify traceability (resolves the escape Issue)
+        action settingsGroupingPolish; // deferred cosmetic: group settings intelligently (per comparable plugins), not atomized per-setting containers (issue, D-end)
         // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
@@ -68,6 +69,7 @@ package ProjectDelivery {
         verification shareClientConsumeDoD : Test { :>> id = "440a15ee-7b92-4fc8-ba5e-470cc7a86212"; :>> method = VerificationMethod::test; :>> procedureText = "the plugin's vault switcher lists owned + shared vaults; syncing a vault shared with you works end to end; read-only shares disable local->remote push; transport uses owner-qualified routes."; }
         verification configSyncSafetyDoD : Test { :>> id = "c0f1a5cc-5001-4a10-9b20-a1b2c3d40041"; :>> method = VerificationMethod::test; :>> procedureText = "reconcile: an accepts()-filtered path is skipped entirely (no phantom base -> no manufactured deletion); config removals + same-file divergence are recorded for adjudication (never auto-delete, never auto-resurrect, no note-style conflict copy); resolveConfigConflict applies the user's local/remote choice; one file's error never aborts the whole reconcile. 12 new reconcile tests; full client suite 125 green; 0.10.4 shipped."; }
         verification requirementTraceabilityBackfillDoD : Test { :>> id = "c0f1a5cc-5002-4a10-9b20-a1b2c3d40042"; :>> method = VerificationMethod::inspect; :>> procedureText = "every SystemRequirement now carries a #Verify edge from a Test (tier-satisfaction SR-verified 0/15 -> 19/19); the four new config-sync SRs carry Given/When/Then acceptance scenarios; the config-sync capability is #Capability-rooted to nConfigSync (requirement-rootedness non-vacuous)."; }
+        verification settingsGroupingPolishDoD : Test { :>> id = "c0f1a5cc-5003-4a10-9b20-a1b2c3d40043"; :>> method = VerificationMethod::inspect; :>> procedureText = "settings within each group are organized intelligently after studying comparable Obsidian plugins' settings layouts (not one atomized container per setting); a before/after review confirms the grouping reads sensibly. DEFERRED to the end-of-project cosmetic pass (owner: avoid repeated cosmetic rework)."; }
 
         // ---- appended pass results for DONE milestones (judged at the backfill commit) ----
         part m1ProtocolR1 : TestResult { :>> id = "0a679462-4127-44ec-87b6-495d4ca7e426"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
@@ -93,6 +95,8 @@ package ProjectDelivery {
         // 0.10.4 config-sync safety + the CR d0011 traceability backfill (both shipped at db1b008).
         part configSyncSafetyR1 : TestResult { :>> id = "c0f1a5cc-6001-4a10-9b20-a1b2c3d40051"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
         part requirementTraceabilityBackfillR1 : TestResult { :>> id = "c0f1a5cc-6002-4a10-9b20-a1b2c3d40052"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        // L4 mobile on-device: owner-attested demo (foreground sync + indicator + config sync on his phone, 0.10.7). settingsGroupingPolish is intentionally left with NO result (deferred/open).
+        part l4MobileOndeviceR1 : TestResult { :>> id = "c0f1a5cc-6003-4a10-9b20-a1b2c3d40053"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
