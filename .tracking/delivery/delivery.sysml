@@ -73,5 +73,7 @@ package ProjectDelivery {
         part vaultSharingP1R1 : TestResult { :>> id = "c1c6d04d-3d68-4afc-b086-f83dddc5e730"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "6b39442"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
         // Phase 2 shipped: owner-aware client transport + read-only gating + switcher; cross-user E2E green.
         part shareClientConsumeR1 : TestResult { :>> id = "d8576c06-d950-4bcf-9b7b-ba0415a9331e"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "3438003"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
+        // B11 shipped: mapPool bounds concurrency; fetchFileBytes + pushFile transfer chunks in parallel.
+        part b11ParallelChunkR1 : TestResult { :>> id = "35068780-a122-4860-bb31-7fb1bae251e2"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "88238fb"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     }
 }
