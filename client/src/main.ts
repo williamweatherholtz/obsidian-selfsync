@@ -329,12 +329,17 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // Reuse the cached token when it still works; otherwise re-login with the stored
   // password (tokens are ephemeral server-side until B7). listVaults is a cheap
-  // authenticated probe. Throws if neither path yields a working token.
+  // authenticated probe, but re-probing on EVERY authed call is wasteful + noisy — a vault
+  // switch alone does several (list vaults, list shared, create, reconnect). Cache the
+  // validation for a short window so a burst is one probe + one "token OK", not many. If the
+  // token later goes bad, the real sync op fails and triggers a fresh re-login.
+  private tokenOkAt = 0;
   private async acquireToken(): Promise<string> {
     const url = this.settings.serverUrl;
     if (this.settings.authToken) {
-      try { await HttpTransport.listVaults(url, this.settings.authToken); this.log("token OK"); return this.settings.authToken; }
-      catch { this.log("cached token rejected — re-logging in"); }
+      if (Date.now() - this.tokenOkAt < 30_000) return this.settings.authToken; // validated recently — skip the probe + log
+      try { await HttpTransport.listVaults(url, this.settings.authToken); this.tokenOkAt = Date.now(); this.log("token OK"); return this.settings.authToken; }
+      catch { this.tokenOkAt = 0; this.log("cached token rejected — re-logging in"); }
     }
     // Token-only mode (storePassword off): no password at rest, so a dead token means the
     // user must re-authenticate — open setup rather than fail silently.
@@ -346,6 +351,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Drop the plaintext password from disk if the user opted into token-only storage.
     if (!this.settings.storePassword) this.settings.password = "";
     this.setAuthToken(token); // persists the token (and the cleared password)
+    this.tokenOkAt = Date.now(); // a freshly-issued token is valid — no need to probe it right after
     this.log("login OK");
     return token;
   }
@@ -364,6 +370,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   async signOut() {
     this.settings.authToken = undefined;
     this.settings.password = "";
+    this.tokenOkAt = 0; // invalidate the token-validation cache
     await this.disconnect();
   }
 
