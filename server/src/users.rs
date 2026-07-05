@@ -68,7 +68,7 @@ impl UserStore {
         let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("hash: {e}")))?
+            .map_err(|e| std::io::Error::other(format!("hash: {e}")))?
             .to_string();
         self.file.users.insert(user.to_string(), hash);
         self.save()

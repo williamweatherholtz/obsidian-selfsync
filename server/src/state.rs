@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::shares::ShareStore;
 use crate::users::{safe_name, UserStore};
 use crate::vault::Vault;
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ pub struct VaultHandle {
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub users: Arc<Mutex<UserStore>>,
+    pub shares: Arc<Mutex<ShareStore>>, // vault access-control list (.shares.json)
     pub tokens: Arc<Mutex<HashMap<String, String>>>, // token -> username
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
 }
@@ -32,9 +34,11 @@ impl AppState {
         if users.is_empty() && !cfg.user.is_empty() && safe_name(&cfg.user) {
             users.register(&cfg.user, &cfg.password)?;
         }
+        let shares = ShareStore::open(&cfg.data_root.join(".shares.json"))?;
         let state = AppState {
             cfg: Arc::new(cfg),
             users: Arc::new(Mutex::new(users)),
+            shares: Arc::new(Mutex::new(shares)),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             ns: Arc::new(Mutex::new(HashMap::new())),
         };

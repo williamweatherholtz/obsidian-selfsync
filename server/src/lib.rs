@@ -7,6 +7,7 @@ pub mod config;
 pub mod hash;
 pub mod error;
 pub mod protocol;
+pub mod shares;
 pub mod state;
 pub mod users;
 pub mod vault;

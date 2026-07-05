@@ -131,7 +131,7 @@ fn vault_commit_dedup_delete_gc() {
     assert_eq!(m1.chunks, vec![h1.clone(), h2.clone()]);
     assert_eq!(std::fs::read(dir.path().join("vault/f1.bin")).unwrap(), body1); // reassembled on disk
     // file2 shares c1 (dedup: no new chunk upload needed)
-    assert!(v.missing(&[h1.clone()]).is_empty());
+    assert!(v.missing(std::slice::from_ref(&h1)).is_empty());
     let body2 = c1.clone();
     v.commit(CommitRequest{ path:"f2.bin".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:1, chunks: vec![h1.clone()] }).unwrap();
     // delete f1: c2 now unreferenced -> GC'd; c1 still referenced by f2 -> kept
