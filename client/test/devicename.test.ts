@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cleanDeviceName, androidModelFromUA } from "../src/devicename";
+import { cleanDeviceName, androidModelFromUA, platformDisplayName } from "../src/devicename";
 
 describe("androidModelFromUA", () => {
   it("extracts the model from a real Android UA (the 'Pixel 9' case)", () => {
@@ -23,6 +23,29 @@ describe("androidModelFromUA", () => {
     expect(androidModelFromUA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) obsidian/1.5.0")).toBeNull();
   });
   it("returns null on an empty UA", () => expect(androidModelFromUA("")).toBeNull());
+  it("an Android UA with NO model segment yields null — caller falls back to 'Android', never the arch", () => {
+    // The reported bug: on Android the model came up empty and the name showed "Linux aarch64"
+    // (navigator.platform). androidModelFromUA must yield null here (so autoDeviceName's
+    // Platform.isAndroidApp branch returns "Android" before ever reaching navigator.platform),
+    // and it must never itself capture a "Linux"/arch fragment.
+    const ua = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
+    expect(androidModelFromUA(ua)).toBeNull();
+  });
+});
+
+describe("platformDisplayName (arch never leaks as a device name)", () => {
+  it("strips the architecture from Android's navigator.platform (the 'Linux aarch64' bug)", () => {
+    expect(platformDisplayName("Linux aarch64")).toBe("Linux");
+    expect(platformDisplayName("Linux armv8l")).toBe("Linux");
+  });
+  it("drops a bare architecture entirely (caller then uses a default like 'device')", () => {
+    expect(platformDisplayName("aarch64")).toBe("");
+    expect(platformDisplayName("x86_64")).toBe("");
+  });
+  it("keeps a real platform label", () => {
+    expect(platformDisplayName("MacIntel")).toBe("MacIntel");
+    expect(platformDisplayName("Win32")).toBe("Win32");
+  });
 });
 
 describe("cleanDeviceName", () => {

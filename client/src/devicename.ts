@@ -18,3 +18,14 @@ export function androidModelFromUA(ua: string): string | null {
   if (model.length <= 2 || model.toUpperCase() === "K") return null;
   return model;
 }
+
+// Architecture tokens that must NEVER become a device name. On Android, navigator.platform is
+// "Linux aarch64" — which is how a device once showed as "Linux aarch64" (the reported bug) when
+// model extraction failed and the code fell through to the raw platform string.
+const ARCH_TOKENS = /\b(aarch64|arm\w*|x86[_-]?64|x86|amd64|x64|i[36]86|wow64)\b/gi;
+
+// Turn navigator.platform into a display name, stripping architecture tokens so an arch never
+// leaks through as the device name. Returns "" when nothing usable remains (caller uses a default).
+export function platformDisplayName(platform: string): string {
+  return cleanDeviceName(platform.replace(ARCH_TOKENS, " "));
+}

@@ -9,7 +9,7 @@ import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
-import { androidModelFromUA, cleanDeviceName } from "./devicename";
+import { androidModelFromUA, platformDisplayName } from "./devicename";
 
 // Polls between forced full config-aware reconciles (poll interval is 4s → ~32s). Local config
 // changes fire no vault event and don't advance the server version, so only a periodic full
@@ -483,7 +483,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (Platform.isWin) return "Windows";
     if (Platform.isLinux) return "Linux";
     const plat = (navigator as unknown as { platform?: string }).platform ?? "";
-    return cleanDeviceName(plat) || "device";
+    return platformDisplayName(plat) || "device"; // strip arch tokens — never surface "Linux aarch64"
   }
   private deviceLabel(): string {
     return this.settings.deviceName || this.autoDeviceName();
