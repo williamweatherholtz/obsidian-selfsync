@@ -10,6 +10,7 @@ package ProjectDelivery {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;
+    private import ProjectBusiness::*; // nConfigSync — the Need the config-sync capability derives from
 
     action def SelfSyncDelivery {
         // ---- shipped milestones (DONE) ----
@@ -31,6 +32,8 @@ package ProjectDelivery {
         action l4MobileOndevice;    // L4: on-device mobile run (foreground sync, resumable initial sync)
         action vaultSharingP1;      // vault sharing Phase 1: server ACL + authz + registration policy + web admin
         action shareClientConsume;  // vault sharing Phase 2: plugin syncs vaults shared with you
+        action configSyncSafety;    // 0.10.4: config sync additive + adjudicated (never delete/resurrect); crash fix
+        action requirementTraceabilityBackfill; // CR d0011: backfill the missing SR->Test #Verify traceability (resolves the escape Issue)
         // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
@@ -63,6 +66,8 @@ package ProjectDelivery {
         verification l4MobileOndeviceDoD : Test { :>> id = "24eeafa6-25c4-4f41-b1c6-fa47fffa593c"; :>> method = VerificationMethod::demo; :>> procedureText = "on-device mobile run (iOS/Android): foreground sync, resumable initial sync, indicator visible, within the on-device performance budget."; }
         verification vaultSharingP1DoD : Test { :>> id = "34cea90b-79f1-4f3f-b6f9-ae9d8c6b0da6"; :>> method = VerificationMethod::test; :>> procedureText = "per the vault-sharing spec: .shares.json ACL + owner-qualified vault routes + server-side authorization (read vs read-write; non-grantee denied); registration policy (closed/open + single-use invite tokens); web admin UI over /api/admin/* for account + share management (role-checked, no hash/token leakage) — server + admin-API + UI tests green."; }
         verification shareClientConsumeDoD : Test { :>> id = "440a15ee-7b92-4fc8-ba5e-470cc7a86212"; :>> method = VerificationMethod::test; :>> procedureText = "the plugin's vault switcher lists owned + shared vaults; syncing a vault shared with you works end to end; read-only shares disable local->remote push; transport uses owner-qualified routes."; }
+        verification configSyncSafetyDoD : Test { :>> id = "c0f1a5cc-5001-4a10-9b20-a1b2c3d40041"; :>> method = VerificationMethod::test; :>> procedureText = "reconcile: an accepts()-filtered path is skipped entirely (no phantom base -> no manufactured deletion); config removals + same-file divergence are recorded for adjudication (never auto-delete, never auto-resurrect, no note-style conflict copy); resolveConfigConflict applies the user's local/remote choice; one file's error never aborts the whole reconcile. 12 new reconcile tests; full client suite 125 green; 0.10.4 shipped."; }
+        verification requirementTraceabilityBackfillDoD : Test { :>> id = "c0f1a5cc-5002-4a10-9b20-a1b2c3d40042"; :>> method = VerificationMethod::inspect; :>> procedureText = "every SystemRequirement now carries a #Verify edge from a Test (tier-satisfaction SR-verified 0/15 -> 19/19); the four new config-sync SRs carry Given/When/Then acceptance scenarios; the config-sync capability is #Capability-rooted to nConfigSync (requirement-rootedness non-vacuous)."; }
 
         // ---- appended pass results for DONE milestones (judged at the backfill commit) ----
         part m1ProtocolR1 : TestResult { :>> id = "0a679462-4127-44ec-87b6-495d4ca7e426"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
@@ -85,5 +90,20 @@ package ProjectDelivery {
         part b9DurabilityStreamingR1 : TestResult { :>> id = "b8b81f32-5c6d-4b35-b0f3-cfd935073917"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "2b42a58"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
         // B9 Part B shipped (D0010 deferral lifted per owner request): streamed large-download reassembly.
         part streamingReassemblyR1 : TestResult { :>> id = "09cf210d-4f35-49d4-b9ee-4b4c49ca4c37"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "2c2118c"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        // 0.10.4 config-sync safety + the CR d0011 traceability backfill (both shipped at db1b008).
+        part configSyncSafetyR1 : TestResult { :>> id = "c0f1a5cc-6001-4a10-9b20-a1b2c3d40051"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        part requirementTraceabilityBackfillR1 : TestResult { :>> id = "c0f1a5cc-6002-4a10-9b20-a1b2c3d40052"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     }
+
+    // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
+    // `keel guard requirement-rootedness` actively enforces its traceability (D0099). This is the
+    // first declared capability — the guard was vacuous until now; the escape is why we declare it.
+    #Capability part configSyncCapability : Story {
+        :>> id = "c0f1a5cc-7001-4a10-9b20-a1b2c3d40061";
+        :>> title = "Safe cross-device config/plugin sync";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> kind = WorkKind::code; :>> priority = WorkPriority::p0; :>> owner = "wweatherholtz";
+    }
+    #DerivedFrom dependency from configSyncCapability to nConfigSync; // hard rootedness gate (D0099)
+    #CharteredBy dependency from configSyncCapability to nConfigSync; // charter lineage (rootedness burndown)
 }

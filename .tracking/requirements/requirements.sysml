@@ -112,6 +112,40 @@ package ProjectRequirements {
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
     }
 
+    // ---- Config/customization sync (CR d0011, 2026-07-05 — roots the previously-orphan feature) ----
+    requirement srConfigSelective : SystemRequirement {
+        :>> id = "c0f1a5cc-2001-4a10-9b20-a1b2c3d40011";
+        :>> title = "Selective, per-category config sync";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The plugin shall sync the .obsidian config surface only per an explicit per-category opt-in (core, hotkeys, appearance, snippets, community plugins), shall never sync unrecognized .obsidian files, and shall never sync SelfSync's own plugin folder or credentials.";
+        :>> rationale = "Config sync must be intentional + safe; credentials must never enter the vault.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srConfigAdditiveSafe : SystemRequirement {
+        :>> id = "c0f1a5cc-2002-4a10-9b20-a1b2c3d40012";
+        :>> title = "Config sync is additive — empty defers to data";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When a device lacks or has opted out of a config path, the plugin shall never cause that path's deletion on another device; a device that never held a plugin receives it (defer to data) rather than propagating its absence.";
+        :>> rationale = "A replica without the data must never manufacture its deletion (the data-resurrection twin) — the 0.10.4 loss bug.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srConfigAdjudication : SystemRequirement {
+        :>> id = "c0f1a5cc-2003-4a10-9b20-a1b2c3d40013";
+        :>> title = "Config removals + divergence are user-adjudicated";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When a config file is removed on one device or edited differently on both, the plugin shall neither auto-delete nor auto-resurrect it, and shall not create a note-style conflict copy; both versions are preserved and the difference is surfaced for the user to choose which side wins.";
+        :>> rationale = "Auto-delete loses data a device couldn't hold; auto-pull-back resurrects a real removal. The user decides which plugins stay.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srSyncRobust : SystemRequirement {
+        :>> id = "c0f1a5cc-2004-4a10-9b20-a1b2c3d40014";
+        :>> title = "One file's failure never aborts the whole sync";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The client shall isolate per-file reconcile failures so that one file's error is logged and skipped without aborting reconciliation of the other files.";
+        :>> rationale = "A single filtered conflict-copy push once threw and killed every file's sync (the 0.10.4 crash).";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -156,4 +190,9 @@ package ProjectRequirements {
     satisfy n3Unpaywalled by srFreeMerge;
     satisfy nxMobile by srMobile;
     satisfy nxSecurity by srSecurity;
+    // config/customization sync (CR d0011)
+    satisfy nConfigSync by srConfigSelective;
+    satisfy nConfigSync by srConfigAdditiveSafe;
+    satisfy nConfigSync by srConfigAdjudication;
+    satisfy nConfigSync by srSyncRobust;
 }

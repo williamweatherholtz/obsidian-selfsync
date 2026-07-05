@@ -27,7 +27,7 @@ package ProjectBusiness {
         :>> createdAt = "2026-07-02";
         :>> createdBy = "wweatherholtz";
         :>> description = "A privacy-minded Obsidian user who wants their notes synced across devices on infrastructure they own, without a subscription and without operating a database. Comfortable running a container, not eager to babysit CouchDB.";
-        :>> goals = "Sync notes across my devices on my own server; set it up once, quickly, without decoding cryptic settings; own my data end to end.";
+        :>> goals = "Sync notes across my devices on my own server; set it up once, quickly, without decoding cryptic settings; own my data end to end; and have my plugins, themes, and settings follow me to every device without one device ever wiping another's setup.";
     }
     part mobileUser : Persona {
         :>> id = "0290ffeb-e394-4c63-9f51-37ca76e58030";
@@ -35,7 +35,7 @@ package ProjectBusiness {
         :>> createdAt = "2026-07-02";
         :>> createdBy = "wweatherholtz";
         :>> description = "Uses Obsidian on a phone/tablet as well as desktop. Needs sync that works within mobile constraints (foreground, limited memory) and a UI that reads clearly on a small screen.";
-        :>> goals = "Sync reliably between phone and desktop; see sync state at a glance on mobile.";
+        :>> goals = "Sync reliably between phone and desktop; see sync state at a glance on mobile; and know that a plugin I can't run on mobile will never break sync or vanish from my desktop.";
     }
     part migratingUser : Persona {
         :>> id = "0001823c-fc83-4c4f-93c3-d521c265041e";
@@ -77,6 +77,18 @@ package ProjectBusiness {
         :>> source = NeedSource::customer;
         :>> statement = "The user sees a single, unambiguous indication of sync state, not several redundant indicators.";
         :>> priority = Priority::should;
+    }
+    // Config/customization sync (settings, themes, community plugins) across devices. Added
+    // 2026-07-05 (CR d0011): the feature shipped in code with NO Need/SR behind it — an ORPHAN
+    // capability, which is exactly how the multi-device divergence/removal defects (0.10.4)
+    // escaped. Rooting it makes requirement-rootedness + tier-satisfaction guard it going forward.
+    requirement nConfigSync : Need {
+        :>> id = "c0f1a5cc-1001-4a10-9b20-a1b2c3d40001";
+        :>> title = "My Obsidian setup syncs across devices — safely";
+        :>> source = NeedSource::customer;
+        :>> statement = "A user's Obsidian setup (settings, themes, community plugins) syncs across their devices, and no device ever silently loses or resurrects another device's plugins or settings — divergence and removals are resolved by the user, not guessed.";
+        :>> marketJustification = "LiveSync's hidden-file/customization sync is a frequent source of confusion and data loss; safe, adjudicated config sync is a differentiator.";
+        :>> priority = Priority::must;
     }
 
     // =====================================================================
@@ -180,6 +192,7 @@ package ProjectBusiness {
     #DependsOn dependency from n1GuidedSetup to goal1ClearConfig;
     #DependsOn dependency from n1OneHomePerSetting to goal1ClearConfig;
     #DependsOn dependency from n1SingleIndicator to goal1ClearConfig;
+    #DependsOn dependency from nConfigSync to goal1ClearConfig;
     #DependsOn dependency from n2NoCouchDB to goal2SimpleBackend;
     #DependsOn dependency from n2Dedup to goal2SimpleBackend;
     #DependsOn dependency from n2Performance to goal2SimpleBackend;
