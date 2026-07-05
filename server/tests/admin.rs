@@ -42,6 +42,15 @@ async fn send(base: &str, method: &str, path: &str, token: &str, body: Value) ->
 }
 
 #[tokio::test]
+async fn admin_ui_page_is_served() {
+    let base = spawn().await;
+    let r = reqwest::Client::new().get(format!("{base}/admin")).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let body = r.text().await.unwrap();
+    assert!(body.contains("SelfSync") && body.contains("/api/admin/"), "admin page shell missing");
+}
+
+#[tokio::test]
 async fn me_reports_server_admin() {
     let base = spawn().await;
     let (_s, admin) = get(&base, "/api/admin/me", &login(&base, "admin").await).await;

@@ -1,6 +1,7 @@
 use axum::Router;
 
 pub mod admin;
+pub mod admin_ui;
 pub mod api;
 pub mod auth;
 pub mod chunkstore;
@@ -25,6 +26,7 @@ pub fn app(state: AppState) -> Router {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/admin", get(admin_ui::page)) // web management UI (wraps /api/admin/*)
         .route("/api/login", post(auth::login))
         .route("/api/register", post(auth::register))
         .route("/api/vaults", get(vaults::list_vaults).post(vaults::create_vault))
