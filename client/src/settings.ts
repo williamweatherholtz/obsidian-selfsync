@@ -186,7 +186,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const adv = c.createEl("details"); adv.addClass("selfsync-section");
     adv.createEl("summary", { text: "Advanced" });
     new Setting(adv).setName("Show sync status in the editor")
-      .setDesc("Also show a sync-status icon on open notes. Off by default — the status bar (or the ribbon on mobile) is the primary indicator.")
+      .setDesc("Show a sync-status icon in the open note's header. Off by default. Handy on mobile — there's no status bar and the ribbon icon sits in the sidebar drawer, so this is the way to get a visible indicator there.")
       .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v)));
     new Setting(adv).setName("Store password on this device")
       .setDesc("Keep your password for silent reconnect. Turn off for token-only: the password is removed now and you re-enter it when the session expires (~30 days) or is revoked.")

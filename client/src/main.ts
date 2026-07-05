@@ -381,10 +381,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Opt-in in-editor indicator: a state-tinted action button on the active markdown view.
   // Off by default; added lazily per view and pruned automatically when views close.
   applyEditorStatus() {
-    // Desktop: opt-in (the status bar is the primary indicator). Mobile: ALWAYS on — the
-    // ribbon icon is buried in the left sidebar drawer there, so the in-editor icon (visible
-    // in the note header) is the reliable mobile indicator.
-    if (!this.settings.editorStatus && !Platform.isMobile) return;
+    // Opt-in on both platforms (off by default — screen space is at a premium on mobile).
+    // When on, an icon shows in the open note's header; on mobile that's the way to get a
+    // visible indicator, since the ribbon icon sits in the left sidebar drawer.
+    if (!this.settings.editorStatus) return;
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view || this.editorViews.has(view)) { this.renderLight(this.machine.get()); return; }
     this.editorViews.add(view);
