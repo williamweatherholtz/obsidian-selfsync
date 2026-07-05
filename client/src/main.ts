@@ -272,7 +272,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // A shareable setup link for another device (server + username only, never password).
   addDeviceLink(): string {
-    return encodeSetupLink({ server: this.settings.serverUrl, user: this.settings.username });
+    return encodeSetupLink({ server: this.settings.serverUrl, user: this.settings.username, vault: this.settings.vaultId });
   }
 
   // --- switch vault without re-login: reuse the existing session (token / stored
@@ -381,7 +381,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Opt-in in-editor indicator: a state-tinted action button on the active markdown view.
   // Off by default; added lazily per view and pruned automatically when views close.
   applyEditorStatus() {
-    if (!this.settings.editorStatus) return;
+    // Desktop: opt-in (the status bar is the primary indicator). Mobile: ALWAYS on — the
+    // ribbon icon is buried in the left sidebar drawer there, so the in-editor icon (visible
+    // in the note header) is the reliable mobile indicator.
+    if (!this.settings.editorStatus && !Platform.isMobile) return;
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view || this.editorViews.has(view)) { this.renderLight(this.machine.get()); return; }
     this.editorViews.add(view);
@@ -399,10 +402,14 @@ export default class NewLiveSyncPlugin extends Plugin {
   statusText() { return this.machine.get(); }
 
   // ---- reconcile deps ----
-  private deviceLabel(): string {
-    if (this.settings.deviceName) return this.settings.deviceName;
+  // The name used when the Device name field is left blank — derived from the platform.
+  // Shown as muted placeholder text in settings so the user sees what will be used.
+  autoDeviceName(): string {
     const plat = (navigator as unknown as { platform?: string }).platform ?? "device";
     return plat.replace(/[^A-Za-z0-9]+/g, "").slice(0, 12) || "device";
+  }
+  private deviceLabel(): string {
+    return this.settings.deviceName || this.autoDeviceName();
   }
   private deps(): ReconcileDeps {
     return {

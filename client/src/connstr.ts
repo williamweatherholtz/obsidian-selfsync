@@ -1,6 +1,7 @@
-// A shareable setup link for bootstrapping another device. Carries the server URL
-// and username ONLY — never the password (there is no password field here by design).
-export interface SetupLink { server: string; user: string; }
+// A shareable setup link for bootstrapping another device. Carries the server URL, the
+// username, and (optionally) the vault to sync — never the password (there is no password
+// field here by design; the new device still logs in / redeems its own credential).
+export interface SetupLink { server: string; user: string; vault?: string; }
 
 // Canonical server origin: scheme + host(:port), no path/query/trailing slash.
 export function normalizeServer(server: string): string {
@@ -11,9 +12,10 @@ export function normalizeServer(server: string): string {
   return `${u.protocol}//${u.host}`;
 }
 
-export function encodeSetupLink({ server, user }: SetupLink): string {
+export function encodeSetupLink({ server, user, vault }: SetupLink): string {
   if (!user) throw new Error("username required");
   const p = new URLSearchParams({ server: normalizeServer(server), user });
+  if (vault) p.set("vault", vault);
   return `selfsync://connect?${p.toString()}`;
 }
 
@@ -24,6 +26,7 @@ export function parseSetupLink(str: string): SetupLink {
   const u = new URL(trimmed.replace(/^selfsync:\/\//, "https://"));
   const server = u.searchParams.get("server") ?? "";
   const user = u.searchParams.get("user") ?? "";
+  const vault = u.searchParams.get("vault") ?? undefined;
   if (!server || !user) throw new Error("Setup link is missing server or username");
-  return { server: normalizeServer(server), user };
+  return { server: normalizeServer(server), user, ...(vault ? { vault } : {}) };
 }

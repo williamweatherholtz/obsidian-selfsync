@@ -195,8 +195,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
         await this.plugin.saveSettings();
       }));
-    new Setting(adv).setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto.")
-      .addText((t) => t.setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
+    new Setting(adv).setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto (the greyed name is what's used).")
+      .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(adv).setName("Detailed logging")
       .addToggle((tg) => tg.setValue(s.verbose).onChange(async (v) => { s.verbose = v; await this.plugin.saveSettings(); }));
     new Setting(adv).setName("Diagnostics")

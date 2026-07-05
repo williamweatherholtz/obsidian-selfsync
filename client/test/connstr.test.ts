@@ -12,6 +12,12 @@ describe("connstr round-trip", () => {
     const back = parseSetupLink(encodeSetupLink({ server: "http://192.168.1.9:8789", user: "a" }));
     expect(back.server).toBe("http://192.168.1.9:8789");
   });
+  it("carries the vault when present, and omits it when absent", () => {
+    const withVault = parseSetupLink(encodeSetupLink({ server: "https://s.example.com", user: "will", vault: "notes" }));
+    expect(withVault).toEqual({ server: "https://s.example.com", user: "will", vault: "notes" });
+    const without = parseSetupLink(encodeSetupLink({ server: "https://s.example.com", user: "will" }));
+    expect(without.vault).toBeUndefined();
+  });
   it("canonicalizes away the default port (:443/:80) — equivalent origins", () => {
     expect(normalizeServer("https://sync.example.com:443")).toBe("https://sync.example.com");
     expect(normalizeServer("http://sync.example.com:80")).toBe("http://sync.example.com");

@@ -59,6 +59,7 @@ export class SetupWizardModal extends Modal {
         try {
           const link = parseSetupLink(text);
           this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false; this.serverMsg = "";
+          if (link.vault) this.s.chosenVault = link.vault; // pre-select the shared vault (kept if the account has it)
           // Land on the Server step (not straight to login) so reachability is tested —
           // a link's URL (LAN IP / 127.0.0.1) is exactly what may not resolve on device #2.
           this.goto("server");
@@ -100,7 +101,8 @@ export class SetupWizardModal extends Modal {
       if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password);
       this.token = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
       this.s.vaults = await HttpTransport.listVaults(this.s.server, this.token);
-      this.s.chosenVault = this.s.vaults[0] ?? this.s.chosenVault;
+      // Keep a vault pre-selected from a setup link if the account actually has it; else default to the first.
+      this.s.chosenVault = this.s.vaults.includes(this.s.chosenVault) ? this.s.chosenVault : (this.s.vaults[0] ?? this.s.chosenVault);
       this.s.loggedIn = true;
       this.goto("vault");
     } catch (e: any) {
