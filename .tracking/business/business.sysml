@@ -102,7 +102,7 @@ package ProjectBusiness {
         :>> id = "c0f1a5cc-1001-4a10-9b20-a1b2c3d40001";
         :>> title = "My Obsidian setup syncs across devices — safely";
         :>> source = NeedSource::customer;
-        :>> statement = "A user's Obsidian setup (settings, themes, community plugins) syncs across their devices, and no device ever silently loses or resurrects another device's plugins or settings — divergence and removals are resolved by the user, not guessed.";
+        :>> statement = "A user's Obsidian setup (settings, themes, community plugins) syncs across their devices — changes made while connected are detected without a reconnect, a removal made on a device that held the data propagates (auto-remove), a device that lacks the data never causes a deletion and nothing is silently resurrected, and only a genuine same-file difference is resolved by the user.";
         :>> marketJustification = "LiveSync's hidden-file/customization sync is a frequent source of confusion and data loss; safe, adjudicated config sync is a differentiator.";
         :>> priority = Priority::must;
     }

@@ -24,12 +24,17 @@ package ProjectAcceptance {
     verification acConfigAdditiveSafe : Test {
         :>> id = "c0f1a5cc-3002-4a10-9b20-a1b2c3d40022"; :>> method = VerificationMethod::test;
         :>> location = "client/test/reconcile.test.ts";
-        :>> procedureText = "SCENARIO (would have caught the data loss): GIVEN device A has a plugin and device B never installed it WHEN both sync THEN B receives it and it is never removed from A; AND a filtered/never-held path records no base and can never manufacture a delete-remote. Reconcile tests 'accepts=false skipped entirely', 'no phantom delete', and 'additive pull' are green.";
+        :>> procedureText = "GIVEN device A has a plugin and device B never installed it WHEN both sync THEN B receives it (defer to data) and it is never removed from A; AND a filtered/never-held path records no base and can never manufacture a deletion; AND a genuine removal from a device that HELD the file propagates (auto-remove, D0013) while a removed file is never auto-pulled-back. Reconcile tests 'accepts=false skipped entirely', 'no phantom delete', 'additive pull', and 'removal -> PROPAGATES' (both directions) are green.";
     }
     verification acConfigAdjudication : Test {
         :>> id = "c0f1a5cc-3003-4a10-9b20-a1b2c3d40023"; :>> method = VerificationMethod::test;
         :>> location = "client/test/reconcile.test.ts";
-        :>> procedureText = "SCENARIO (would have caught the crash): GIVEN two devices with different community-plugins.json WHEN they sync THEN neither list is overwritten, NO note-style conflict copy is created, and the difference is queued for user adjudication; AND a removal is neither auto-deleted nor auto-resurrected. Reconcile tests 'divergence -> adjudicate, no crash/no garbage copy', 'removal -> adjudicate not delete/resurrect', and the resolveConfigConflict local/remote cases are green.";
+        :>> procedureText = "SCENARIO (would have caught the crash): GIVEN two devices with different community-plugins.json WHEN they sync THEN neither list is overwritten, NO note-style conflict copy is created, and the SAME-FILE difference is queued for user adjudication. Reconcile tests 'divergence -> adjudicate, no crash/no garbage copy' and the resolveConfigConflict local/remote cases are green. (Removals propagate, not adjudicate — see acConfigAdditiveSafe.)";
+    }
+    verification acConfigLiveDetect : Test {
+        :>> id = "c0f1a5cc-3006-4a10-9b20-a1b2c3d40026"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/main.ts";
+        :>> procedureText = "Inspected: onRemoteChanged forces a full reconcileAll every CONFIG_SCAN_EVERY_POLLS polls when configSync.enabled, so a local config change (which fires no vault event and does not advance the server version) is detected + pushed within a bounded interval rather than only at reconnect. On-device latency confirmed under L4.";
     }
     verification acSyncRobust : Test {
         :>> id = "c0f1a5cc-3004-4a10-9b20-a1b2c3d40024"; :>> method = VerificationMethod::test;
@@ -42,10 +47,11 @@ package ProjectAcceptance {
     }
 
     part acConfigSelectiveR1 : TestResult { :>> id = "c0f1a5cc-4001-4a10-9b20-a1b2c3d40031"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acConfigAdditiveSafeR1 : TestResult { :>> id = "c0f1a5cc-4002-4a10-9b20-a1b2c3d40032"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acConfigAdjudicationR1 : TestResult { :>> id = "c0f1a5cc-4003-4a10-9b20-a1b2c3d40033"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigAdditiveSafeR1 : TestResult { :>> id = "c0f1a5cc-4002-4a10-9b20-a1b2c3d40032"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigAdjudicationR1 : TestResult { :>> id = "c0f1a5cc-4003-4a10-9b20-a1b2c3d40033"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSyncRobustR1 : TestResult { :>> id = "c0f1a5cc-4004-4a10-9b20-a1b2c3d40034"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acFreeMergeR1 : TestResult { :>> id = "c0f1a5cc-4005-4a10-9b20-a1b2c3d40035"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -53,6 +59,7 @@ package ProjectAcceptance {
     #Verify dependency from acConfigAdditiveSafe to srConfigAdditiveSafe;
     #Verify dependency from acConfigAdjudication to srConfigAdjudication;
     #Verify dependency from acSyncRobust to srSyncRobust;
+    #Verify dependency from acConfigLiveDetect to srConfigLiveDetect;
     #Verify dependency from acFreeMerge to srFreeMerge;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;

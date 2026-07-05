@@ -123,19 +123,27 @@ package ProjectRequirements {
     }
     requirement srConfigAdditiveSafe : SystemRequirement {
         :>> id = "c0f1a5cc-2002-4a10-9b20-a1b2c3d40012";
-        :>> title = "Config sync is additive — empty defers to data";
+        :>> title = "Config removals propagate only from a device that held the data";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> statement = "When a device lacks or has opted out of a config path, the plugin shall never cause that path's deletion on another device; a device that never held a plugin receives it (defer to data) rather than propagating its absence.";
-        :>> rationale = "A replica without the data must never manufacture its deletion (the data-resurrection twin) — the 0.10.4 loss bug.";
+        :>> statement = "A config deletion shall propagate to other devices (auto-remove) ONLY when it originates from a device that genuinely held the file (an evidenced removal); a device that never held or has opted out of a path shall never cause its deletion elsewhere, a device that never held a plugin receives it (defer to data), and a removed file is never automatically pulled back (no resurrection).";
+        :>> rationale = "A replica without the data must never manufacture its deletion (the resurrection twin, the 0.10.4 loss bug); the accepts() gate makes a delete an evidenced tombstone, so genuine removals can safely propagate (D0013).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
     requirement srConfigAdjudication : SystemRequirement {
         :>> id = "c0f1a5cc-2003-4a10-9b20-a1b2c3d40013";
-        :>> title = "Config removals + divergence are user-adjudicated";
+        :>> title = "Config divergence is user-adjudicated";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> statement = "When a config file is removed on one device or edited differently on both, the plugin shall neither auto-delete nor auto-resurrect it, and shall not create a note-style conflict copy; both versions are preserved and the difference is surfaced for the user to choose which side wins.";
-        :>> rationale = "Auto-delete loses data a device couldn't hold; auto-pull-back resurrects a real removal. The user decides which plugins stay.";
+        :>> statement = "When the SAME config file is edited differently on two devices (a genuine divergence), the plugin shall not create a note-style conflict copy and shall not silently overwrite either side; the difference is surfaced for the user to choose which side wins. A removal is not a divergence — it propagates (see srConfigAdditiveSafe).";
+        :>> rationale = "A note-style conflict copy of a config file is filtered out and crashed the whole sync (0.10.4); a same-file difference is genuinely ambiguous, so the user decides. Removals are handled by srConfigAdditiveSafe, not here (D0013).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srConfigLiveDetect : SystemRequirement {
+        :>> id = "c0f1a5cc-2005-4a10-9b20-a1b2c3d40015";
+        :>> title = "Local config changes are detected while connected";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The plugin shall detect a local config change (adding, editing, or removing a plugin/theme/setting) and sync it within a bounded interval while connected, without requiring a reconnect — because hidden .obsidian files fire no vault event and a local change does not advance the server version.";
+        :>> rationale = "Config changes were previously synced only at connect time (no hidden-file events; the incremental poll short-circuits on unchanged server version), so a removal appeared to do nothing (D0013).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement srSyncRobust : SystemRequirement {
         :>> id = "c0f1a5cc-2004-4a10-9b20-a1b2c3d40014";
@@ -195,4 +203,5 @@ package ProjectRequirements {
     satisfy nConfigSync by srConfigAdditiveSafe;
     satisfy nConfigSync by srConfigAdjudication;
     satisfy nConfigSync by srSyncRobust;
+    satisfy nConfigSync by srConfigLiveDetect;
 }
