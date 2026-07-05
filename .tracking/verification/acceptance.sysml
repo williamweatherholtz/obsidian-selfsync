@@ -84,6 +84,22 @@ package ProjectAcceptance {
         :>> location = "client/src/reconcile.ts";
         :>> procedureText = "Inspected: reconcile is idempotent (base + chunk cache mean already-written files are in-sync and not re-fetched) and uploads negotiate missing chunks, so an interrupted sync continues on the next reconcile rather than restarting. On-device initial-sync resume under load is confirmed at L4.";
     }
+    // ── Batch 4: vault management + onboarding ──
+    verification acVaultSwitch : Test {
+        :>> id = "c0f1a5cc-3219-4a10-9b20-a1b2c3d40219"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "switchTo tests: download (target wins, drops local-only, resets stale base), upload (local wins, drops target-only), merge (union, conflict-copies divergence, nothing lost), and download-into-empty (auto). Config exclusion holds (io.list is filtered) — green.";
+    }
+    verification acSetupLink : Test {
+        :>> id = "c0f1a5cc-3220-4a10-9b20-a1b2c3d40220"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/connstr.test.ts";
+        :>> procedureText = "connstr tests: encode/parse round-trips server+user (+optional vault), preserves scheme/port, canonicalizes default ports, and the encoded link contains NO password/secret; invalid links are rejected — green.";
+    }
+    verification acDeviceIdentity : Test {
+        :>> id = "c0f1a5cc-3221-4a10-9b20-a1b2c3d40221"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/main.ts";
+        :>> procedureText = "Inspected: autoDeviceName() derives a name from the platform (Android UA model, else iPhone/iPad/Mac/Windows/Linux), deviceLabel() = configured name || auto, shown as muted placeholder in settings and used in conflictCopyName().";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -103,6 +119,9 @@ package ProjectAcceptance {
     part acDurableIndexR1 : TestResult { :>> id = "c0f1a5cc-4216-4a10-9b20-a1b2c3d40316"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acStreamedTransferR1 : TestResult { :>> id = "c0f1a5cc-4217-4a10-9b20-a1b2c3d40317"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acResumableInitialSyncR1 : TestResult { :>> id = "c0f1a5cc-4218-4a10-9b20-a1b2c3d40318"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acVaultSwitchR1 : TestResult { :>> id = "c0f1a5cc-4219-4a10-9b20-a1b2c3d40319"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acSetupLinkR1 : TestResult { :>> id = "c0f1a5cc-4220-4a10-9b20-a1b2c3d40320"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -123,6 +142,10 @@ package ProjectAcceptance {
     // Batch 3 — large-file performance
     #Verify dependency from acStreamedTransfer to srStreamedTransfer;
     #Verify dependency from acResumableInitialSync to srResumableInitialSync;
+    // Batch 4 — vault management + onboarding
+    #Verify dependency from acVaultSwitch to srVaultSwitch;
+    #Verify dependency from acSetupLink to srSetupLink;
+    #Verify dependency from acDeviceIdentity to srDeviceIdentity;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;

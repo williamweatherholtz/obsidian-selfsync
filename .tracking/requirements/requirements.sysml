@@ -224,6 +224,32 @@ package ProjectRequirements {
         :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
     }
 
+    // ---- Vault management + onboarding (Batch 4) ----
+    requirement srVaultSwitch : SystemRequirement {
+        :>> id = "c0f1a5cc-e009-4a10-9b20-a1b2c3d40209";
+        :>> title = "Switch which remote vault a local vault syncs to";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The client shall let a user re-point a local vault at a different remote vault reusing the saved session: an empty local vault auto-downloads; a non-empty one prompts a one-time download / upload / merge, resetting the stale base; the switch shall never touch SelfSync's own config.";
+        :>> rationale = "Users move a vault between servers/vaults and must not lose local content or re-enter credentials (nVaultManagement).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srSetupLink : SystemRequirement {
+        :>> id = "c0f1a5cc-e010-4a10-9b20-a1b2c3d40210";
+        :>> title = "Device-onboarding link carries no secret";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The plugin shall generate and parse a setup link that carries the server, username, and optional vault ONLY — never a password or token — and parsing shall prefill setup and land on the reachability test (a link's LAN URL may not resolve on another device).";
+        :>> rationale = "Fast second-device onboarding without ever transmitting a credential (nVaultManagement + nxSecurity).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srDeviceIdentity : SystemRequirement {
+        :>> id = "c0f1a5cc-e011-4a10-9b20-a1b2c3d40211";
+        :>> title = "Per-device name for conflict labelling";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "Each device shall have a name — auto-detected from the platform when the user leaves it blank (shown as muted placeholder) — used to label conflict copies so a divergence is traceable to its origin device.";
+        :>> rationale = "Conflict copies and adjudication need to name which device a version came from (nVaultManagement).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -285,4 +311,8 @@ package ProjectRequirements {
     // Batch 3 — large-file performance
     satisfy n2Performance by srStreamedTransfer;
     satisfy nReliableSync by srResumableInitialSync;
+    // Batch 4 — vault management + onboarding
+    satisfy nVaultManagement by srVaultSwitch;
+    satisfy nVaultManagement by srSetupLink;
+    satisfy nVaultManagement by srDeviceIdentity;
 }

@@ -209,9 +209,18 @@ package ProjectBusiness {
         :>> priority = Priority::must;
     }
 
+    requirement nVaultManagement : Need {
+        :>> id = "c0f1a5cc-e102-4a10-9b20-a1b2c3d40102";
+        :>> title = "Onboard devices and manage which vault syncs";
+        :>> source = NeedSource::customer;
+        :>> statement = "A user can bring a new device onto a vault and can choose or change which remote vault a local vault syncs to — without re-entering credentials and without losing data.";
+        :>> priority = Priority::should;
+    }
+
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
     #DependsOn dependency from nReliableSync to goal2SimpleBackend;
+    #DependsOn dependency from nVaultManagement to goal1ClearConfig;
     #DependsOn dependency from goal1ClearConfig to selfsyncBrief;
     #DependsOn dependency from goal2SimpleBackend to selfsyncBrief;
     #DependsOn dependency from goal3ConflictMerge to selfsyncBrief;
