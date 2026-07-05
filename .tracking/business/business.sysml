@@ -26,7 +26,7 @@ package ProjectBusiness {
         :>> title = "Self-hosting Obsidian user";
         :>> createdAt = "2026-07-02";
         :>> createdBy = "wweatherholtz";
-        :>> description = "A privacy-minded Obsidian user who wants their notes synced across devices on infrastructure they own, without a subscription and without operating a database. Comfortable running a container, not eager to babysit CouchDB.";
+        :>> description = "A privacy-minded Obsidian user who wants their notes synced across devices on infrastructure they own, without a subscription and without operating a database. Comfortable running a Docker container; not eager to babysit CouchDB or decode dozens of cryptic toggles. Keeps a desktop plus at least one other machine, and has customized Obsidian (a theme, CSS snippets, a handful of community plugins) that they expect to travel with them intact.";
         :>> goals = "Sync notes across my devices on my own server; set it up once, quickly, without decoding cryptic settings; own my data end to end; and have my plugins, themes, and settings follow me to every device without one device ever wiping another's setup.";
     }
     part mobileUser : Persona {
@@ -34,7 +34,7 @@ package ProjectBusiness {
         :>> title = "Mobile Obsidian user";
         :>> createdAt = "2026-07-02";
         :>> createdBy = "wweatherholtz";
-        :>> description = "Uses Obsidian on a phone/tablet as well as desktop. Needs sync that works within mobile constraints (foreground, limited memory) and a UI that reads clearly on a small screen.";
+        :>> description = "Uses Obsidian on a phone/tablet as well as desktop, often on the go and on flaky networks. Works within mobile constraints (foreground execution, limited memory, no status bar) and needs a UI that reads clearly on a small screen. Can't run every desktop plugin on mobile and expects that to be harmless — never a broken sync or a plugin that vanishes from the desktop.";
         :>> goals = "Sync reliably between phone and desktop; see sync state at a glance on mobile; and know that a plugin I can't run on mobile will never break sync or vanish from my desktop.";
     }
     part migratingUser : Persona {
@@ -42,8 +42,24 @@ package ProjectBusiness {
         :>> title = "Migrating LiveSync user";
         :>> createdAt = "2026-07-02";
         :>> createdBy = "wweatherholtz";
-        :>> description = "Currently on obsidian-livesync and frustrated by its setup friction, CouchDB operations, or paywalled merge. Wants a simpler alternative without losing conflict-safety.";
-        :>> goals = "Escape CouchDB and confusing settings; keep strong, free conflict resolution.";
+        :>> description = "Currently on obsidian-livesync and frustrated by its setup friction, CouchDB operations, or paywalled merge. Has an existing vault plus a customization set (themes, plugins) and wants to move without losing conflict-safety or re-learning a maze of settings.";
+        :>> goals = "Escape CouchDB and confusing settings; keep strong, free conflict resolution; migrate my existing vault and customizations without data loss; understand each setting's purpose at a glance.";
+    }
+    part collaborator : Persona {
+        :>> id = "c0f1a5cc-a001-4a10-9b20-a1b2c3d40091";
+        :>> title = "Vault collaborator";
+        :>> createdAt = "2026-07-05";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "Shares one or more vaults with family, teammates, or collaborators on the same self-hosted server. Needs to grant access at the right permission level and trust that sharing never exposes their other vaults or their credentials.";
+        :>> goals = "Share a specific vault read-only or read-write with named people; revoke access cleanly; never leak my other vaults or my login by sharing; collaborate on a shared vault with the same conflict-safety as my own.";
+    }
+    part selfHostOperator : Persona {
+        :>> id = "c0f1a5cc-a002-4a10-9b20-a1b2c3d40092";
+        :>> title = "Self-host operator";
+        :>> createdAt = "2026-07-05";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "Runs and administers the SelfSync server for themselves and others — provisions the single binary/container, manages accounts and shares, and controls who can register. Wants operation to stay a single-binary affair with no database to babysit.";
+        :>> goals = "Stand up the server as one container with its own storage; manage accounts and vault shares through an admin interface; control registration (closed, or open with single-use invites); keep the server durable and self-healing without a DBMS.";
     }
 
     // =====================================================================

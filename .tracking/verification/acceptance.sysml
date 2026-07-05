@@ -13,6 +13,7 @@ package ProjectAcceptance {
     private import EngineVerification::*;
     private import ProjectRequirements::*;
     private import ProjectDelivery::*;
+    private import ProjectUseCases::*;
 
     // ---- new config-sync acceptance scenarios (BDD) ----
     verification acConfigSelective : Test {
@@ -68,4 +69,8 @@ package ProjectAcceptance {
     #Verify dependency from m5MobileDoD to srMobile;
     #Verify dependency from b7AuthHardeningDoD to srSecurity;
     #Verify dependency from vaultSharingP1DoD to srVaultSharing;
+    // validation (D0006): the escape-reproducing scenarios validate their use cases too
+    #Verify dependency from acConfigAdjudication to ucResolveConfigDifference;
+    #Verify dependency from acConfigAdditiveSafe to ucRemoveOrKeepPlugin;
+    #Verify dependency from acConfigAdditiveSafe to ucSyncSetupAcrossDevices;
 }

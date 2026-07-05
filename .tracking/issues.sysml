@@ -17,6 +17,7 @@ package ProjectIssues {
         :>> createdBy = "wweatherholtz";
         :>> description = "The multi-device config divergence/removal defects (0.10.4: a crash on a divergent community-plugins.json + a phantom-base deletion of a peer's plugin) escaped a 125-test suite. Two-layer cause: (1) the config/customization-sync feature was implemented in code with NO Need or SystemRequirement behind it (an orphan capability), so there were no behavioral acceptance criteria and no use case enumerating the 'two already-configured devices' scenario; (2) tier-satisfaction showed SR-verified-by-Test at 0/15 — every automated test was divorced from the requirements model, so nothing enforced that a requirement carried a behavioral test. Tests were written bottom-up from the code (filter combos, single-file one-way config sync) and never exercised config conflict-copy or removal.";
         :>> discoveredInField = true;
+        :>> relatedTask = "requirementTraceabilityBackfill";
         :>> severity = Severity::High;
     }
 
