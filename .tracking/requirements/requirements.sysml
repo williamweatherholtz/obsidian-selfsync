@@ -206,6 +206,24 @@ package ProjectRequirements {
         :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 
+    // ---- Large-file performance (Batch 3) ----
+    requirement srStreamedTransfer : SystemRequirement {
+        :>> id = "c0f1a5cc-e007-4a10-9b20-a1b2c3d40207";
+        :>> title = "Streamed + parallel large-file transfer";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "Large downloads shall stream to disk on desktop (holding ~one chunk in memory) and buffer on mobile; chunk transfer shall be parallelized within a bounded pool; a file over the size cap shall be skipped with a one-time notice rather than failing the sync.";
+        :>> rationale = "Large vaults/attachments must sync without exhausting memory or blocking, especially on mobile (goal #2 performance).";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srResumableInitialSync : SystemRequirement {
+        :>> id = "c0f1a5cc-e008-4a10-9b20-a1b2c3d40208";
+        :>> title = "Interrupted sync resumes, not restarts";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "An interrupted initial or large sync shall continue on the next reconcile without re-downloading already-written files or re-uploading existing chunks — via idempotent reconciliation, a persisted base, and content-addressed dedup.";
+        :>> rationale = "Mobile/flaky-network initial sync must make forward progress across drops (nReliableSync).";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -264,4 +282,7 @@ package ProjectRequirements {
     // Batch 2 — data-safety + durability
     satisfy n3NeverClobber by srDegradedServerGuard;
     satisfy n2NoCouchDB by srDurableIndex;
+    // Batch 3 — large-file performance
+    satisfy n2Performance by srStreamedTransfer;
+    satisfy nReliableSync by srResumableInitialSync;
 }

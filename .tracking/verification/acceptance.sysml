@@ -73,6 +73,17 @@ package ProjectAcceptance {
         :>> location = "server/src/vault.rs";
         :>> procedureText = "Server tests: commits/deletes append absolute journal records; replay reconstructs on reopen; a torn trailing record is discarded; a malformed complete record errors; chunk-refs recompute from files; compaction snapshots + truncates — green.";
     }
+    // ── Batch 3: large-file performance ──
+    verification acStreamedTransfer : Test {
+        :>> id = "c0f1a5cc-3217-4a10-9b20-a1b2c3d40217"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "Reconcile + e2e: a >=8MiB download streams to disk (base hash-only) and bypasses the buffered size gate; without an appendWrite io it's skipped; a too-large file fires onSkip once; e2e large binary (~4MB) syncs byte-identical + dedups a copy; mapPool bounds parallel transfer — green.";
+    }
+    verification acResumableInitialSync : Test {
+        :>> id = "c0f1a5cc-3218-4a10-9b20-a1b2c3d40218"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/reconcile.ts";
+        :>> procedureText = "Inspected: reconcile is idempotent (base + chunk cache mean already-written files are in-sync and not re-fetched) and uploads negotiate missing chunks, so an interrupted sync continues on the next reconcile rather than restarting. On-device initial-sync resume under load is confirmed at L4.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -90,6 +101,8 @@ package ProjectAcceptance {
     part acSelfHealingReconnectR1 : TestResult { :>> id = "c0f1a5cc-4214-4a10-9b20-a1b2c3d40314"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acDegradedServerGuardR1 : TestResult { :>> id = "c0f1a5cc-4215-4a10-9b20-a1b2c3d40315"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acDurableIndexR1 : TestResult { :>> id = "c0f1a5cc-4216-4a10-9b20-a1b2c3d40316"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acStreamedTransferR1 : TestResult { :>> id = "c0f1a5cc-4217-4a10-9b20-a1b2c3d40317"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acResumableInitialSyncR1 : TestResult { :>> id = "c0f1a5cc-4218-4a10-9b20-a1b2c3d40318"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -107,6 +120,9 @@ package ProjectAcceptance {
     // Batch 2 — data-safety + durability
     #Verify dependency from acDegradedServerGuard to srDegradedServerGuard;
     #Verify dependency from acDurableIndex to srDurableIndex;
+    // Batch 3 — large-file performance
+    #Verify dependency from acStreamedTransfer to srStreamedTransfer;
+    #Verify dependency from acResumableInitialSync to srResumableInitialSync;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;
