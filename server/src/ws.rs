@@ -22,11 +22,22 @@ pub async fn ws_handler(
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
     let vault = q.get("vault").cloned().unwrap_or_default();
-    let handle = match st.vault(&user, &vault) {
-        Ok(h) => h,
-        Err(_) => { eprintln!("[ws] connect REJECTED (bad vault '{vault}')"); return axum::http::StatusCode::NOT_FOUND.into_response(); }
+    // owner defaults to the caller (own vault); a shared vault names its owner. Subscribing
+    // to change notifications is a read — gate it by the ACL, same as the read routes.
+    let owner = q.get("owner").cloned().unwrap_or_else(|| user.clone());
+    let allowed = match lock(&st.shares) {
+        Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
+        Err(_) => { eprintln!("[ws] connect REJECTED (shares store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
     };
-    eprintln!("[ws] {user}/{vault} connected");
+    if !allowed {
+        eprintln!("[ws] connect REJECTED (forbidden {user} -> {owner}/{vault})");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    let handle = match st.vault(&owner, &vault) {
+        Ok(h) => h,
+        Err(_) => { eprintln!("[ws] connect REJECTED (bad vault '{owner}/{vault}')"); return axum::http::StatusCode::NOT_FOUND.into_response(); }
+    };
+    eprintln!("[ws] {owner}/{vault} connected (by {user})");
     let mut rx = handle.tx.subscribe();
     ws.on_upgrade(move |mut socket: WebSocket| async move {
         loop {

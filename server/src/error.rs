@@ -9,6 +9,7 @@ pub enum AppError {
     NotFound,
     BadRequest(String),
     Unauthorized,
+    Forbidden, // 403 — authenticated but not authorized for this owner/vault
     Conflict(String),
     Unavailable(String), // 503 — vault not writable / lock poisoned (propagate, don't resume)
     Internal(String),
@@ -20,6 +21,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
+            AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
