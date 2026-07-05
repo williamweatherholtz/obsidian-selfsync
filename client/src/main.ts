@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
-import { HttpTransport } from "./transport";
+import { HttpTransport, SharedVaultRef } from "./transport";
 import { SyncState, VaultIo, ChunkCache } from "./sync";
 import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
@@ -254,11 +254,18 @@ export default class NewLiveSyncPlugin extends Plugin {
   // a persistent setting: the caller (the switch modal) picks the resolution and it is
   // applied ONCE on the next reconnect, then forgotten. `merge` is the safe default union.
   private pendingSwitchMode?: SwitchMode;
-  async switchToVault(name: string, mode: SwitchMode = "merge"): Promise<void> {
+  async switchToVault(name: string, mode: SwitchMode = "merge", owner = "", readOnly = false): Promise<void> {
     this.settings.vaultId = name;
+    this.settings.vaultOwner = owner || undefined; // empty = own vault
+    this.settings.vaultReadOnly = readOnly;
     await this.saveSettings();
     this.pendingSwitchMode = mode;
     await this.reconnect();
+  }
+  // Vaults shared WITH this account (owned by others) — offered in the switch modal.
+  async listSharedVaults(): Promise<SharedVaultRef[]> {
+    const token = await this.acquireToken();
+    return HttpTransport.listShared(this.settings.serverUrl, token);
   }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
@@ -366,6 +373,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(), strategy: this.settings.conflictStrategy,
+      readOnly: this.settings.vaultReadOnly,
+      onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),
@@ -387,7 +396,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     try {
       this.ws?.close();
       const token = await this.acquireToken();
-      this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default");
+      this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
 
       // Never reconcile against a degraded server: a corrupt index makes the server
       // 503 all sync ops, and acting on the resulting empty manifest could delete

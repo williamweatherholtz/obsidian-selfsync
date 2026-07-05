@@ -219,3 +219,50 @@ describe("switchTo (one-time vault switch resolution)", () => {
     expect(dec(m.get("n2.md")!)).toBe("two");
   });
 });
+
+describe("read-only shared vault (never mutates the server)", () => {
+  it("does not upload a local-only file (skips the push)", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({ "local.md": "mine" });
+    const ro: string[] = [];
+    await reconcileAll(deps(api, io, { readOnly: true, onReadOnly: (p) => ro.push(p) }));
+    expect(files.has("local.md")).toBe(false); // not uploaded to the owner's vault
+    expect(ro).toContain("local.md");
+  });
+
+  it("still pulls the owner's files", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "shared.md", "from owner");
+    const io = fakeIo({});
+    await reconcileAll(deps(api, io, { readOnly: true }));
+    expect(dec((io as any).m.get("shared.md")!)).toBe("from owner");
+  });
+
+  it("does not delete on the owner's vault (skips delete-remote)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "keep.md", "owner file"); // exists on server + base, not locally
+    const io = fakeIo({});
+    const base = new BaseStore();
+    base.set("keep.md", { hash: await sha256hex(enc("owner file")) });
+    // locally absent + base present + remote present-unchanged => decide = delete-remote; read-only must skip it
+    await reconcileAll(deps(api, io, { base, readOnly: true }));
+    expect(files.has("keep.md")).toBe(true); // NOT deleted on the server
+  });
+
+  it("on divergence: owner's version is canonical, local kept as a LOCAL copy, nothing pushed", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "n.md", "OWNER edit");
+    const io = fakeIo({ "n.md": "MY edit" });
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("v1")), text: "v1" }); // both sides changed from base
+    const ro: string[] = [];
+    await reconcileAll(deps(api, io, { base, readOnly: true, onReadOnly: (p) => ro.push(p) }));
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect(dec(m.get("n.md")!)).toBe("OWNER edit");         // owner canonical at the path
+    const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);
+    expect(dec(m.get(copies[0])!)).toBe("MY edit");          // local edit kept locally
+    expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false); // NOT pushed
+    expect(ro).toContain("n.md");
+  });
+});

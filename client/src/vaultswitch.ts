@@ -1,17 +1,21 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
+import type { SharedVaultRef } from "./transport";
 
 // Switch which remote vault this Obsidian vault syncs to — WITHOUT re-asking for the
 // server or account. We're already signed in, so this reuses the existing session
 // (cached token, or a silent re-login with the stored password) to list vaults.
 export class SwitchVaultModal extends Modal {
   private vaults: string[] = [];
+  private shared: SharedVaultRef[] = [];
   private chosen = "";
   private newName = "";
   private loading = true;
   private error = "";
   private target = "";
+  private targetOwner = "";      // set when switching to a vault shared BY someone else
+  private targetReadOnly = false; // that share is read-only
 
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
@@ -22,6 +26,7 @@ export class SwitchVaultModal extends Modal {
     try {
       this.vaults = await this.plugin.currentVaults();
       this.chosen = this.plugin.settings.vaultId || this.vaults[0] || "";
+      try { this.shared = await this.plugin.listSharedVaults(); } catch { this.shared = []; }
     } catch {
       this.error = "Couldn't reach the server with your saved login. Open full setup to re-connect.";
     }
@@ -55,6 +60,17 @@ export class SwitchVaultModal extends Modal {
     new Setting(c).setName("Or create a new vault")
       .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { this.newName = v.trim(); }));
     new Setting(c).addButton((b) => b.setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
+
+    // Vaults other people have shared with this account.
+    if (this.shared.length) {
+      new Setting(c).setName("Shared with you").setHeading();
+      for (const ref of this.shared) {
+        new Setting(c)
+          .setName(`${ref.vault}`)
+          .setDesc(`owned by ${ref.owner} · ${ref.perm === "read" ? "read-only" : "read-write"}`)
+          .addButton((b) => b.setButtonText("Use").onClick(() => void this.selectShared(ref)));
+      }
+    }
   }
 
   private async doSwitch() {
@@ -62,10 +78,22 @@ export class SwitchVaultModal extends Modal {
       let vault = this.chosen;
       if (this.newName) { await this.plugin.createRemoteVault(this.newName); vault = this.newName; }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
-      this.target = vault;
+      this.target = vault; this.targetOwner = ""; this.targetReadOnly = false; // own vault
       // No local content to lose → adopt the target automatically (fetch), no prompt.
       if (!(await this.plugin.hasLocalData())) { await this.applySwitch("download"); return; }
       // Local content exists → the user adjudicates how to combine it with the target.
+      this.renderResolve();
+    } catch (e: any) {
+      new Notice(`SelfSync: ${e?.message ?? e}`);
+    }
+  }
+
+  // Switch to a vault shared BY someone else. Read-only shares can only be downloaded
+  // (we can't push); read-write shares use the same resolution prompt as an own vault.
+  private async selectShared(ref: SharedVaultRef) {
+    this.target = ref.vault; this.targetOwner = ref.owner; this.targetReadOnly = ref.perm === "read";
+    try {
+      if (this.targetReadOnly || !(await this.plugin.hasLocalData())) { await this.applySwitch("download"); return; }
       this.renderResolve();
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`);
@@ -100,10 +128,11 @@ export class SwitchVaultModal extends Modal {
   private async applySwitch(mode: SwitchMode) {
     this.close();
     const verb = mode === "download" ? "fetching" : mode === "upload" ? "uploading to" : "merging with";
-    new Notice(`SelfSync: switching to '${this.target}' (${verb})…`);
+    const label = this.targetOwner ? `${this.targetOwner}/${this.target}` : this.target;
+    new Notice(`SelfSync: switching to '${label}' (${verb})…`);
     try {
-      await this.plugin.switchToVault(this.target, mode);
-      new Notice(`SelfSync: now syncing '${this.target}'`);
+      await this.plugin.switchToVault(this.target, mode, this.targetOwner, this.targetReadOnly);
+      new Notice(`SelfSync: now syncing '${label}'${this.targetReadOnly ? " (read-only)" : ""}`);
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`);
     }

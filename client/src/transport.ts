@@ -2,10 +2,15 @@ import { requestUrl } from "obsidian";
 import { ChangesResponse, CommitRequest, FileMeta, StatusResponse } from "./protocol";
 import { SyncApi } from "./sync";
 
+// A vault shared WITH the current account (owned by someone else on the server).
+export type SharedVaultRef = { owner: string; vault: string; perm: "read" | "readWrite" };
+
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
-// Sync ops are vault-scoped (/api/v/{vault}/…); account ops are static.
+// Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
+// someone else → /api/u/{owner}/{vault}/… (owner given). Account ops are static.
 export class HttpTransport implements SyncApi {
-  constructor(private baseUrl: string, private token: string, private vault: string) {}
+  // `owner` empty ⇒ your own vault (legacy /api/v route); set ⇒ a shared vault.
+  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "") {}
 
   // Lightweight reachability probe for the setup wizard's "Test connection" button.
   // Hits the unauthenticated /health endpoint; true iff the server answers 200 "ok".
@@ -49,8 +54,20 @@ export class HttpTransport implements SyncApi {
     if (r.status !== 200) throw new Error(`create vault: HTTP ${r.status}`);
   }
 
+  // Vaults shared WITH this account (owned by others) — the complement of listVaults.
+  static async listShared(baseUrl: string, token: string): Promise<SharedVaultRef[]> {
+    const r = await requestUrl({ url: `${baseUrl}/api/shared`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+    if (r.status !== 200) throw new Error(`shared: HTTP ${r.status}`);
+    return r.json as SharedVaultRef[];
+  }
+
   private auth() { return { authorization: `Bearer ${this.token}` }; }
-  private v(suffix: string): string { return `${this.baseUrl}/api/v/${encodeURIComponent(this.vault)}${suffix}`; }
+  private v(suffix: string): string {
+    const scope = this.owner
+      ? `/api/u/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.vault)}`
+      : `/api/v/${encodeURIComponent(this.vault)}`;
+    return `${this.baseUrl}${scope}${suffix}`;
+  }
   private toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   }
@@ -107,7 +124,8 @@ export class HttpTransport implements SyncApi {
 
   connectWs(onChanged: () => void): WebSocket | null {
     try {
-      const ws = new WebSocket(this.baseUrl.replace(/^http/, "ws") + `/api/ws?token=${this.token}&vault=${encodeURIComponent(this.vault)}`);
+      const ownerParam = this.owner ? `&owner=${encodeURIComponent(this.owner)}` : "";
+      const ws = new WebSocket(this.baseUrl.replace(/^http/, "ws") + `/api/ws?token=${this.token}&vault=${encodeURIComponent(this.vault)}${ownerParam}`);
       ws.onmessage = (ev) => { try { if (JSON.parse(ev.data).type === "changed") onChanged(); } catch {} };
       return ws;
     } catch {

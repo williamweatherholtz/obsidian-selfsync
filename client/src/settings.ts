@@ -18,6 +18,8 @@ export interface NewLiveSyncSettings {
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
+  vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
+  vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
@@ -31,6 +33,8 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   authToken: undefined,
   lastSyncedAt: undefined,
   editorStatus: false,
+  vaultOwner: undefined,
+  vaultReadOnly: false,
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
@@ -124,7 +128,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     new Setting(c).setName("Server").setDesc(s.serverUrl);
     new Setting(c).setName("Account").setDesc(`Signed in as ${s.username}. Sign out also forgets this device's password (you'll re-enter it next time).`)
       .addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); }));
-    new Setting(c).setName("Remote vault").setDesc(s.vaultId);
+    new Setting(c).setName("Remote vault")
+      .setDesc(s.vaultOwner ? `${s.vaultOwner}/${s.vaultId} · shared with you${s.vaultReadOnly ? " (read-only)" : ""}` : s.vaultId);
     new Setting(c).setName("Last synced").setDesc(this.lastSyncedAgo(s));
     new Setting(c).setName("Disconnect").setDesc("Stop syncing this vault (you stay signed in; local files are kept).")
       .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));

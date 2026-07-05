@@ -39,10 +39,12 @@ export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
   device: string; strategy: "auto-merge" | "conflict-file";
   maxSyncBytes?: number;
+  readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
+  onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
 }
 
 async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null> {
@@ -109,6 +111,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       if (localBytes && rmeta) setBase(d, path, localBytes, rmeta.hash);
       return;
     case "push": {
+      if (d.readOnly) { d.onReadOnly?.(path); return; } // can't upload to a read-only share
       const h = await pushFile(d.api, d.io, d.state, d.cache, path);
       setBase(d, path, localBytes!, h);
       return;
@@ -123,8 +126,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "delete-remote":
+      if (d.readOnly) { d.onReadOnly?.(path); return; } // can't delete on a read-only share
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "edit-wins-keep-local": {
+      if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push
       const h = await pushFile(d.api, d.io, d.state, d.cache, path); // re-create remotely
       setBase(d, path, localBytes!, h);
       return;
@@ -137,6 +142,16 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     case "merge":
     case "conflict-copy": {
       const remoteBytes = await fetchFileBytes(d.api, d.cache, rmeta!.chunks);
+      if (d.readOnly) {
+        // Read-only share: the owner's version is canonical and we push nothing. Keep the
+        // reader's local edit as a LOCAL-only conflict copy so it isn't silently lost.
+        const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
+        await d.io.write(copy, localBytes!);
+        await d.io.write(path, remoteBytes);
+        setBase(d, path, remoteBytes, rmeta!.hash);
+        d.onReadOnly?.(path); d.onConflict?.(path, copy);
+        return;
+      }
       const canMerge = action === "merge" && d.strategy === "auto-merge"
         && isMergeable(path, localBytes!) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
       if (canMerge) {
