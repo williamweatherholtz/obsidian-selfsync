@@ -27,7 +27,10 @@ export function transition(s: Phase, e: SyncEvent): Phase {
     case "syncing":
       return e === "syncDone" ? "idle" : e === "error" ? "offline" : "syncing";
     case "offline":
-      return e === "connected" ? "idle" : "offline";
+      // Recover on a full reconnect OR a successful sync: a syncDone means a reconcile round-trip
+      // just succeeded, which proves we're online again. Without this, a transient per-file error
+      // pins the light red forever even though polling keeps succeeding (it never emits "connected").
+      return e === "connected" || e === "syncDone" ? "idle" : "offline";
   }
 }
 

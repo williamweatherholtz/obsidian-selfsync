@@ -10,6 +10,11 @@ describe("sync FSM transitions", () => {
   it("connecting → offline on error", () => {
     expect(transition("connecting", "error")).toBe("offline");
   });
+  it("CO-2: offline recovers to idle on a successful sync, not only on reconnect", () => {
+    expect(transition("offline", "syncDone")).toBe("idle");   // a successful poll proves we're online
+    expect(transition("offline", "connected")).toBe("idle");  // a full reconnect still recovers
+    expect(transition("offline", "error")).toBe("offline");   // a genuine failure stays offline
+  });
   it("idle → syncing → idle around a reconcile", () => {
     expect(transition("idle", "syncStart")).toBe("syncing");
     expect(transition("syncing", "syncDone")).toBe("idle");

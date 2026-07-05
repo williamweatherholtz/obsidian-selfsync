@@ -446,6 +446,70 @@ describe("config sync: additive + adjudicated (never auto-delete, never resurrec
   });
 });
 
+describe("critique fixes — data integrity + correctness", () => {
+  const CP = ".obsidian/community-plugins.json";
+
+  it("CO-1: both-absent clears the stale base, so recreating with identical content is pushed, not deleted", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({});                                   // file absent locally
+    const base = new BaseStore();
+    base.set("x.md", { hash: await sha256hex(enc("v1")) });  // base has it; neither side does
+    const d = deps(api, io, { base });
+    await reconcileAll(d);                                    // both absent + base present → in-sync + CLEAR base
+    expect(base.get("x.md")).toBeUndefined();                // stale base cleared
+    (io as any).m.set("x.md", enc("v1"));                    // recreate locally with the SAME bytes base held
+    await reconcileAll(d);                                    // local present, base absent, remote absent → push
+    expect(files.has("x.md")).toBe(true);                    // pushed, NOT deleted
+    expect((io as any).m.has("x.md")).toBe(true);
+  });
+
+  it("DI-1: refuses bulk delete-local when the server manifest lost >= half of base (partial shrink)", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {}; for (let i = 0; i < 8; i++) seed[`n${i}.md`] = `c${i}`;
+    const io = fakeIo(seed);
+    const base = new BaseStore(); for (let i = 0; i < 8; i++) base.set(`n${i}.md`, { hash: await sha256hex(enc(`c${i}`)) });
+    for (let i = 0; i < 3; i++) await serverPut(api, `n${i}.md`, `c${i}`); // only 3 of 8 advertised (5 lost)
+    const guarded: string[] = [];
+    await reconcileAll(deps(api, io, { base, onGuard: (p) => guarded.push(p) }));
+    for (let i = 3; i < 8; i++) expect((io as any).m.has(`n${i}.md`)).toBe(true); // the 5 missing NOT deleted
+    expect(guarded.length).toBeGreaterThan(0);
+  });
+
+  it("DI-1: still deletes when only a small fraction is missing (below the bulk threshold)", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {}; for (let i = 0; i < 8; i++) seed[`n${i}.md`] = `c${i}`;
+    const io = fakeIo(seed);
+    const base = new BaseStore(); for (let i = 0; i < 8; i++) base.set(`n${i}.md`, { hash: await sha256hex(enc(`c${i}`)) });
+    for (let i = 0; i < 6; i++) await serverPut(api, `n${i}.md`, `c${i}`); // 6 of 8 (only 2 missing = 25%)
+    await reconcileAll(deps(api, io, { base }));
+    expect((io as any).m.has("n6.md")).toBe(false); // genuine small delete still applies
+    expect((io as any).m.has("n7.md")).toBe(false);
+  });
+
+  it("DI-2: rejects a downloaded file whose reassembled bytes don't match the claimed hash", async () => {
+    const { api, chunks, files } = fakeServer();
+    await serverPut(api, "n.md", "good content");
+    for (const h of files.get("n.md")!.chunks) chunks.set(h, enc("CORRUPTED")); // rot the stored blob
+    const io = fakeIo({});
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { onFileError: (p) => errs.push(p) }));
+    expect((io as any).m.has("n.md")).toBe(false); // corrupt bytes NOT written
+    expect(errs).toContain("n.md");                 // surfaced as a per-file error
+  });
+
+  it("CO-3: config edit-vs-delete is adjudicated, not silently resurrected", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, `["edited-remotely"]`);          // remote EDITED
+    const io = fakeIo({});                                    // locally REMOVED
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc(`["original"]`)) }); // both diverged from this base
+    const conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
+    expect(conflicts).toContain(CP);               // edit-wins-pull on config → adjudicate
+    expect((io as any).m.has(CP)).toBe(false);     // NOT resurrected locally
+  });
+});
+
 describe("settings drive behavior: conflict strategy + device name", () => {
   it("conflictStrategy 'auto-merge' merges cleanly-mergeable concurrent edits", async () => {
     const { api } = fakeServer();

@@ -35,6 +35,14 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
 // OOM a mobile device (Obsidian's adapter/requestUrl don't stream). Overridable per deps.
 export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
 
+// Bulk-delete guard (C2, widened): refuse to propagate deletions when the server manifest has
+// LOST a suspicious fraction of our synced history — not just when it's exactly empty. A partial
+// index (a restored-from-backup or reindexed-over-an-incomplete-dir manifest) advertises some
+// files and silently drops others; treating those drops as deletions would wipe them on every
+// device. Recoverable (re-delete to force); silent mass-loss is not, so we bias to guard.
+export const BULK_DELETE_MIN = 6;      // don't second-guess tiny vaults
+export const BULK_DELETE_RATIO = 0.5;  // >= half of base missing from a non-empty manifest = suspicious
+
 // At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
 // supports it — which also lets it bypass the buffered size gate. Uploads still buffer
 // (chunking reads the whole local file), so they stay gated.
@@ -96,6 +104,15 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta): Promi
     return;
   }
   const bytes = await fetchFileBytes(d.api, d.cache, rmeta.chunks);
+  // Integrity: verify the reassembled bytes actually hash to what the server claimed before we
+  // write them over the user's file and record base = that hash. Otherwise a corrupted chunk blob
+  // (bit rot / bad restore) would be written and then laundered into "known-good" state, and served
+  // to every device. On mismatch we throw — the per-file guard in reconcileAll logs it and skips
+  // this file, leaving the good local copy untouched, while the rest of the sync proceeds.
+  const got = await sha256hex(bytes);
+  if (got !== rmeta.hash) {
+    throw new Error(`integrity check failed for '${path}': got ${got.slice(0, 12)}, expected ${rmeta.hash.slice(0, 12)} — not writing (corrupt download?)`);
+  }
   await d.io.write(path, bytes);
   setBase(d, path, bytes, rmeta.hash);
 }
@@ -104,12 +121,16 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
   for (const f of resp.upserts) remote.set(f.path, f);
-  // C2: an empty server manifest while we hold synced history (a non-empty base) is
-  // the signature of server-side index loss, not a genuine "delete everything". Refuse
-  // to propagate the resulting bulk delete-local (push/pull still proceed, so real local
-  // files re-populate the server); a genuine delete-all is recoverable by re-deleting.
-  const guardBulkDelete = remote.size === 0 && d.base.paths().length > 0;
   const local = await d.io.list();
+  // Bulk-delete guard (C2, widened): a server manifest that has LOST a suspicious fraction of our
+  // synced history — not only one that is exactly empty — is the signature of index loss (partial
+  // restore / reindex over an incomplete dir), not a genuine mass delete. Count the base paths this
+  // pass would actually delete (missing from the manifest, still local, and accepted by this device)
+  // and refuse the batch if that's the whole manifest (empty) or >= BULK_DELETE_RATIO of base.
+  const basePaths = d.base.paths();
+  const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p) && (!d.accepts || d.accepts(p))).length;
+  const guardBulkDelete = basePaths.length > 0 && (remote.size === 0
+    || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
   for (const p of paths) {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0); }
@@ -167,12 +188,22 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   // edited differently on both sides (merge / conflict-copy) — because a note-style conflict-copy
   // of a config file is filtered out and crashed the whole sync; the user picks which side wins.
   if (isConfig(path)) {
-    if (action === "merge" || action === "conflict-copy") { d.onConfigConflict?.(path, action); return; }
+    // Adjudicate genuine divergence (same file edited both sides) AND edit-vs-delete (one side
+    // removed, the other edited) — the latter would otherwise silently RESURRECT a removal
+    // (edit-wins-pull pulls a locally-deleted config back) or REVERT one (edit-wins-keep-local
+    // re-pushes a remotely-deleted config), contradicting the "never auto-resurrect" invariant.
+    // Clean adds/edits/removals still propagate.
+    if (action === "merge" || action === "conflict-copy" || action === "edit-wins-pull" || action === "edit-wins-keep-local") {
+      d.onConfigConflict?.(path, action); return;
+    }
     d.onConfigResolved?.(path); // clean (add/edit/remove/in-sync) — drop any stale pending entry, then apply below
   }
   switch (action) {
     case "in-sync":
       if (localBytes && rmeta) setBase(d, path, localBytes, rmeta.hash);
+      // Both sides absent but base still present: clear the stale base. Otherwise recreating the
+      // file with content equal to the old base hash would read as delete-local and wipe it.
+      else if (!localBytes && !rmeta && baseEntry) { d.base.delete(path); d.onBaseChanged?.(); }
       return;
     case "push": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't upload to a read-only share
