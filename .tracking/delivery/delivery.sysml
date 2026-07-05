@@ -30,7 +30,7 @@ package ProjectDelivery {
         action l4MobileOndevice;    // L4: on-device mobile run (foreground sync, resumable initial sync)
         action vaultSharingP1;      // vault sharing Phase 1: server ACL + authz + registration policy + web admin
         action shareClientConsume;  // vault sharing Phase 2: plugin syncs vaults shared with you
-        action e2eEncryption;       // optional client-side E2EE (design: specs/2026-07-05-e2ee-design.md; decision-gated)
+        // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
         first m2ChunkingBinary then m3ConflictMerge;
@@ -43,7 +43,6 @@ package ProjectDelivery {
         first l3GuiPass then l4MobileOndevice;
         first rel06FixSet then vaultSharingP1;
         first vaultSharingP1 then shareClientConsume;
-        first shareClientConsume then e2eEncryption;
 
         // ---- DoD criteria (one line each; naming contract <task>DoD) ----
         verification m1ProtocolDoD : Test { :>> id = "7b1e4c4e-6590-40f0-a3dd-1e93c18fc890"; :>> method = VerificationMethod::test; :>> procedureText = "server cargo tests + headless two-client E2E: login, changes/commit/get/delete, WS push, and create/edit/delete propagation between two real clients all green."; }
@@ -55,7 +54,6 @@ package ProjectDelivery {
         verification goal1ConfigUxDoD : Test { :>> id = "49b1a827-b90d-40f3-bb2a-67c6b22795b9"; :>> method = VerificationMethod::test; :>> procedureText = "wizardsteps + connstr + configsync unit tests + headless wizard E2E: guided setup connects + picks a vault; status-first settings render; config-sync permutation matrix passes — green."; }
         verification rel06FixSetDoD : Test { :>> id = "7ceb01f4-6bf1-4897-9331-0c44acc1c281"; :>> method = VerificationMethod::test; :>> procedureText = "reconcile switchTo download/upload/merge/empty-auto tests; 99 client unit tests + standalone config-permutation matrix green; tsc + build clean; 0.6.0 released."; }
         verification b7AuthHardeningDoD : Test { :>> id = "4d2f71d4-4177-41ca-968f-6207fdc249bf"; :>> method = VerificationMethod::test; :>> procedureText = "durable/expiring/revocable server tokens (hashed, 30-day, revoked on account delete); client token-only persistence option; shipped TLS/public-exposure guidance (deploy/ Caddy example + docs/deployment.md). Optional client-side E2EE carved out to e2eEncryption. Server + client tests green."; }
-        verification e2eEncryptionDoD : Test { :>> id = "2fefe098-a235-48a7-ad2e-3b4421fd2a84"; :>> method = VerificationMethod::test; :>> procedureText = "optional client-side end-to-end encryption per specs/2026-07-05-e2ee-design.md (opt-in per vault, content encrypted client-side, key from a separate encryption password) — implemented + tested. DECISION-GATED: needs the design's open decisions resolved first."; }
         verification b9DurabilityStreamingDoD : Test { :>> id = "3f17347d-5959-4a58-ac42-56146df4c3e2"; :>> method = VerificationMethod::test; :>> procedureText = "append-only journal for the index + true streaming of large transfers (no whole-file in RAM) — durability + memory tests green."; }
         verification b11ParallelChunkDoD : Test { :>> id = "18e57bf3-f917-4e18-838a-1c12b3db8d6b"; :>> method = VerificationMethod::test; :>> procedureText = "chunk transfer parallelized via a bounded Promise pool; large-file sync wall-clock materially reduced vs the sequential baseline; E2E large-file timing improved."; }
         verification l3GuiPassDoD : Test { :>> id = "1cdcb701-7762-4540-955b-f99b188ef23c"; :>> method = VerificationMethod::demo; :>> procedureText = "manual pass in a real Obsidian desktop instance: 0.6.0 setup wizard, settings groups, single indicator, and the vault-switch modal (download/upload/merge) behave as specified."; }
