@@ -130,7 +130,18 @@ package ProjectRequirements {
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
 
+    // ---- Vault sharing (design pending; see docs/design/specs/2026-07-04-vault-sharing-design.md) ----
+    requirement srVaultSharing : SystemRequirement {
+        :>> id = "4d901a5a-1b47-4ba3-b9b1-31f71b9b2fa1";
+        :>> title = "Server-enforced vault sharing + web admin";
+        :>> createdAt = "2026-07-04"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall maintain a per-vault access-control list (owner-plus-grantees with read/read-write), enforce it server-side on owner-qualified vault routes, support an admin-controlled registration policy (closed/open + single-use invite tokens), and serve a web admin UI (over a /api/admin JSON authority) for account and share management.";
+        :>> rationale = "Lets owners collaborate/share without breaking isolation for non-grantees; management needs a real admin surface.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- satisfy edges: SR satisfies the Need it serves ----
+    satisfy nVaultSharing by srVaultSharing;
     satisfy goal1ClearConfig by srClearConfig;
     satisfy n1GuidedSetup by srGuidedWizard;
     satisfy n1OneHomePerSetting by srSettingsOneHome;

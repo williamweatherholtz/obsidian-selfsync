@@ -28,6 +28,8 @@ package ProjectDelivery {
         action b11ParallelChunk;    // B11: parallelize chunk transfer (large-file perf)
         action l3GuiPass;           // L3: manual Obsidian GUI verification of 0.6.0 (esp. switch + indicators)
         action l4MobileOndevice;    // L4: on-device mobile run (foreground sync, resumable initial sync)
+        action vaultSharingP1;      // vault sharing Phase 1: server ACL + authz + registration policy + web admin
+        action shareClientConsume;  // vault sharing Phase 2: plugin syncs vaults shared with you
 
         first m1Protocol then m2ChunkingBinary;
         first m2ChunkingBinary then m3ConflictMerge;
@@ -38,6 +40,8 @@ package ProjectDelivery {
         first goal1ConfigUx then rel06FixSet;
         first rel06FixSet then l3GuiPass;
         first l3GuiPass then l4MobileOndevice;
+        first rel06FixSet then vaultSharingP1;
+        first vaultSharingP1 then shareClientConsume;
 
         // ---- DoD criteria (one line each; naming contract <task>DoD) ----
         verification m1ProtocolDoD : Test { :>> id = "7b1e4c4e-6590-40f0-a3dd-1e93c18fc890"; :>> method = VerificationMethod::test; :>> procedureText = "server cargo tests + headless two-client E2E: login, changes/commit/get/delete, WS push, and create/edit/delete propagation between two real clients all green."; }
@@ -53,6 +57,8 @@ package ProjectDelivery {
         verification b11ParallelChunkDoD : Test { :>> id = "18e57bf3-f917-4e18-838a-1c12b3db8d6b"; :>> method = VerificationMethod::test; :>> procedureText = "chunk transfer parallelized via a bounded Promise pool; large-file sync wall-clock materially reduced vs the sequential baseline; E2E large-file timing improved."; }
         verification l3GuiPassDoD : Test { :>> id = "1cdcb701-7762-4540-955b-f99b188ef23c"; :>> method = VerificationMethod::demo; :>> procedureText = "manual pass in a real Obsidian desktop instance: 0.6.0 setup wizard, settings groups, single indicator, and the vault-switch modal (download/upload/merge) behave as specified."; }
         verification l4MobileOndeviceDoD : Test { :>> id = "24eeafa6-25c4-4f41-b1c6-fa47fffa593c"; :>> method = VerificationMethod::demo; :>> procedureText = "on-device mobile run (iOS/Android): foreground sync, resumable initial sync, indicator visible, within the on-device performance budget."; }
+        verification vaultSharingP1DoD : Test { :>> id = "34cea90b-79f1-4f3f-b6f9-ae9d8c6b0da6"; :>> method = VerificationMethod::test; :>> procedureText = "per the vault-sharing spec: .shares.json ACL + owner-qualified vault routes + server-side authorization (read vs read-write; non-grantee denied); registration policy (closed/open + single-use invite tokens); web admin UI over /api/admin/* for account + share management (role-checked, no hash/token leakage) — server + admin-API + UI tests green."; }
+        verification shareClientConsumeDoD : Test { :>> id = "440a15ee-7b92-4fc8-ba5e-470cc7a86212"; :>> method = VerificationMethod::test; :>> procedureText = "the plugin's vault switcher lists owned + shared vaults; syncing a vault shared with you works end to end; read-only shares disable local->remote push; transport uses owner-qualified routes."; }
 
         // ---- appended pass results for DONE milestones (judged at the backfill commit) ----
         part m1ProtocolR1 : TestResult { :>> id = "0a679462-4127-44ec-87b6-495d4ca7e426"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }

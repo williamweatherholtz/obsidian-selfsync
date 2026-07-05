@@ -163,7 +163,17 @@ package ProjectBusiness {
         :>> priority = Priority::must;
     }
 
+    // ---- Post-launch capability: multi-user vault sharing (2026-07-04) ----
+    requirement nVaultSharing : Need {
+        :>> id = "393acf9e-8282-4b0b-8d70-80d6c5e1f936";
+        :>> title = "Share a vault with other users on the server";
+        :>> source = NeedSource::customer;
+        :>> statement = "A vault owner can grant other accounts on the same server read-only or read-write access to a vault, and administer accounts + shares through a management interface.";
+        :>> priority = Priority::should;
+    }
+
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
+    #DependsOn dependency from nVaultSharing to selfsyncBrief;
     #DependsOn dependency from goal1ClearConfig to selfsyncBrief;
     #DependsOn dependency from goal2SimpleBackend to selfsyncBrief;
     #DependsOn dependency from goal3ConflictMerge to selfsyncBrief;
