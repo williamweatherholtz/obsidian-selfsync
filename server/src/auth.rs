@@ -27,21 +27,21 @@ pub async fn register(
     State(st): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<StatusCode, AppError> {
-    match st.cfg.registration.as_str() {
-        "open" => {}
-        "invite" => {
-            if st.cfg.invite_code.is_empty() || req.invite != st.cfg.invite_code {
-                eprintln!("[register] user='{}' -> 403 (bad invite)", req.username);
-                return Err(AppError::Unauthorized);
-            }
-        }
-        _ => {
-            eprintln!("[register] user='{}' -> 403 (registration closed)", req.username);
-            return Err(AppError::Unauthorized);
-        }
-    }
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
+    }
+    // Avoid consuming an invite token on an obvious duplicate.
+    if lock(&st.users)?.exists(&req.username) {
+        return Err(AppError::Conflict("user exists".into()));
+    }
+    // Open: anyone may register. Closed: a valid single-use invite token is required
+    // (carried in the `invite` field) and is consumed here.
+    // `&&` short-circuits: redeem (which consumes the token) only runs in Closed mode.
+    if lock(&st.registration)?.mode() == crate::registration::Mode::Closed
+        && (req.invite.is_empty() || !lock(&st.registration)?.redeem(&req.invite))
+    {
+        eprintln!("[register] user='{}' -> 403 (registration closed; missing/invalid invite)", req.username);
+        return Err(AppError::Forbidden);
     }
     match lock(&st.users)?.register(&req.username, &req.password) {
         Ok(()) => { eprintln!("[register] user='{}' -> OK", req.username); Ok(StatusCode::OK) }

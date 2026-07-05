@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::registration::{Mode, RegistrationStore};
 use crate::shares::ShareStore;
 use crate::users::{safe_name, UserStore};
 use crate::vault::Vault;
@@ -21,6 +22,7 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub users: Arc<Mutex<UserStore>>,
     pub shares: Arc<Mutex<ShareStore>>, // vault access-control list (.shares.json)
+    pub registration: Arc<Mutex<RegistrationStore>>, // policy + invite tokens (.registration.json)
     pub tokens: Arc<Mutex<HashMap<String, String>>>, // token -> username
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
 }
@@ -35,10 +37,20 @@ impl AppState {
             users.register(&cfg.user, &cfg.password)?;
         }
         let shares = ShareStore::open(&cfg.data_root.join(".shares.json"))?;
+        // Seed the registration policy from the env config on FIRST run only; after that
+        // it's runtime-managed via the admin API (persisted in .registration.json).
+        let reg_path = cfg.data_root.join(".registration.json");
+        let fresh_reg = !reg_path.exists();
+        let mut registration = RegistrationStore::open(&reg_path)?;
+        if fresh_reg {
+            let mode = if cfg.registration == "open" { Mode::Open } else { Mode::Closed };
+            registration.set_mode(mode)?;
+        }
         let state = AppState {
             cfg: Arc::new(cfg),
             users: Arc::new(Mutex::new(users)),
             shares: Arc::new(Mutex::new(shares)),
+            registration: Arc::new(Mutex::new(registration)),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             ns: Arc::new(Mutex::new(HashMap::new())),
         };
