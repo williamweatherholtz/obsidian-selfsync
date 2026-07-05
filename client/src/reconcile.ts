@@ -60,6 +60,9 @@ export interface ReconcileDeps {
   // couldn't hold) and NEVER auto-pulled-back (would resurrect a genuine removal); recorded
   // for user adjudication instead. `reason` is the decided action, for the UI/log.
   onConfigConflict?: (path: string, reason: string) => void;
+  // A config path that reconciled CLEANLY (added/edited/removed/in-sync, not a divergence) —
+  // so any stale "config difference" recorded for it can be pruned. Keeps the pending set current.
+  onConfigResolved?: (path: string) => void;
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
@@ -163,9 +166,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   // nothing resurrects. The ONE case still adjudicated is genuine DIVERGENCE — the same file
   // edited differently on both sides (merge / conflict-copy) — because a note-style conflict-copy
   // of a config file is filtered out and crashed the whole sync; the user picks which side wins.
-  if (isConfig(path) && (action === "merge" || action === "conflict-copy")) {
-    d.onConfigConflict?.(path, action);
-    return;
+  if (isConfig(path)) {
+    if (action === "merge" || action === "conflict-copy") { d.onConfigConflict?.(path, action); return; }
+    d.onConfigResolved?.(path); // clean (add/edit/remove/in-sync) — drop any stale pending entry, then apply below
   }
   switch (action) {
     case "in-sync":

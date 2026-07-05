@@ -43,6 +43,44 @@ const CONFIG_PREFIX = ".obsidian/";
 // current plugin wouldn't otherwise recognize it as "self". Keep this list forever.
 const LEGACY_SELF_IDS = ["new-livesync"];
 
+// A group of divergent config paths the user resolves as one unit — at most one per plugin,
+// one per other config file — with a human label describing WHAT it is (not a raw filename).
+export interface ConflictGroup { key: string; label: string; paths: string[] }
+
+// Human label for a config file, by purpose rather than filename.
+export function configFileLabel(path: string): string {
+  const rel = path.replace(/^\.obsidian\//, "");
+  const known: Record<string, string> = {
+    "community-plugins.json": "Enabled community plugins",
+    "core-plugins.json": "Enabled core plugins",
+    "app.json": "App settings",
+    "appearance.json": "Appearance & theme",
+    "hotkeys.json": "Hotkeys",
+    "graph.json": "Graph settings",
+    "canvas.json": "Canvas settings",
+  };
+  if (known[rel]) return known[rel];
+  if (rel.startsWith("themes/")) return `Theme: ${rel.slice("themes/".length).split("/")[0]}`;
+  if (rel.startsWith("snippets/")) return `CSS snippet: ${rel.slice("snippets/".length)}`;
+  return rel;
+}
+
+// Collapse divergent config paths into at most one entry per plugin (all of a plugin's files —
+// main.js, data.json, styles.css — become one "Plugin: <id>" the user resolves in one click) and
+// one entry per other config file (labelled by purpose). Sorted by label for a stable UI.
+export function groupConfigConflicts(paths: string[]): ConflictGroup[] {
+  const groups = new Map<string, ConflictGroup>();
+  for (const p of paths) {
+    const id = pluginIdOf(p);
+    const key = id ? `plugin:${id}` : `file:${p}`;
+    const label = id ? `Plugin: ${id}` : configFileLabel(p);
+    const g = groups.get(key) ?? { key, label, paths: [] };
+    g.paths.push(p);
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
 // The plugin id of a given community-plugin path under `.obsidian/plugins/`, or null.
 export function pluginIdOf(path: string): string | null {
   if (!path.startsWith(CONFIG_PREFIX)) return null;

@@ -147,6 +147,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private statusEl?: HTMLElement;
   private ribbonEl?: HTMLElement; // state-colored ribbon icon (the sync indicator on mobile)
   statusListener?: () => void;    // settings tab registers this to live-refresh its status card
+  settingsRefresh?: () => void;   // settings tab registers this to re-render (e.g. when the conflict count changes)
   private editorActionEls = new Set<HTMLElement>(); // optional in-editor indicators (opt-in)
   private editorViews = new WeakSet<MarkdownView>();
   private logs: string[] = [];
@@ -265,14 +266,25 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings.configConflicts.push(path);
     void this.saveSettings();
     this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in SelfSync settings → Config differences`, true);
-    this.statusListener?.();
+    this.settingsRefresh?.(); this.statusListener?.();
   }
-  // Apply the user's adjudication for one path, then drop it from the queue.
-  async resolveConfigConflict(path: string, choice: "local" | "remote"): Promise<void> {
-    await resolveConfigConflict(this.deps(), path, choice);
+  // A config path reconciled cleanly — drop any stale pending entry so the count reflects reality
+  // (this is what makes the "Config differences" badge self-clear as things resolve).
+  private clearConfigConflict(path: string): void {
+    if (!this.settings.configConflicts.includes(path)) return;
     this.settings.configConflicts = this.settings.configConflicts.filter((p) => p !== path);
+    void this.saveSettings();
+    this.settingsRefresh?.(); this.statusListener?.();
+  }
+  // Apply the user's adjudication for a whole GROUP of paths (a plugin = all its files) in one go,
+  // then drop them from the queue and refresh the settings badge so it can't show a stale count.
+  async resolveConfigGroup(paths: string[], choice: "local" | "remote"): Promise<void> {
+    const d = this.deps();
+    for (const p of paths) await resolveConfigConflict(d, p, choice);
+    const done = new Set(paths);
+    this.settings.configConflicts = this.settings.configConflicts.filter((p) => !done.has(p));
     await this.saveSettings();
-    this.statusListener?.();
+    this.settingsRefresh?.(); this.statusListener?.();
   }
 
   // Local file size (0 if unknown/absent) — lets reconcilePath apply the size gate on
@@ -516,6 +528,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
+      onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.log(`server manifest empty but '${p}' is in our history — NOT deleting it (possible server data loss)`, true),

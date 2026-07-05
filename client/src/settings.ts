@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
-import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC } from "./configsync";
+import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts } from "./configsync";
 import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
@@ -53,6 +53,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.statusCardEl = containerEl.createEl("div");
     this.refreshStatusCard();
     this.plugin.statusListener = () => this.refreshStatusCard();
+    this.plugin.settingsRefresh = () => this.display(); // re-render when the conflict count changes
     if (!configured) return; // unconfigured: only the status card + Set up button
 
     // Four groups, one home for each concern: transitions you perform, the standing
@@ -63,7 +64,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.renderAdvanced(containerEl, s);
   }
 
-  hide(): void { this.plugin.statusListener = undefined; } // stop live-refreshing once closed
+  hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; } // stop live-refreshing once closed
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—". The
   // "Last synced" label is the row/name; this is the value.
@@ -150,9 +151,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.subhead(c, "Conflicts");
     // Adjudication queue: config that diverged/was-removed across devices, awaiting a choice.
     // Surfaced prominently (not auto-resolved) so plugins are never silently deleted or resurrected.
-    const conflicts = this.plugin.getConfigConflicts();
-    if (conflicts.length) {
-      new Setting(c).setName(`Config differences (${conflicts.length})`).setClass("mod-warning")
+    const conflictGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
+    if (conflictGroups.length) {
+      new Setting(c).setName(`Config differences (${conflictGroups.length})`).setClass("mod-warning")
         .setDesc("Settings or plugins differ across your devices. Nothing was deleted or overwritten — choose which version to keep.")
         .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts()));
     }
