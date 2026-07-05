@@ -1,5 +1,6 @@
 use axum::Router;
 
+pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod chunkstore;
@@ -47,6 +48,16 @@ pub fn app(state: AppState) -> Router {
         .route("/api/u/:owner/:vault/status", get(api::status))
         .route("/api/u/:owner/:vault/file", axum::routing::delete(api::delete_file))
         .route("/api/ws", get(ws::ws_handler))
+        // Management API (authority behind the web admin UI). Owner-scoped share management
+        // for any account; account/registration/invite management for the server-admin.
+        .route("/api/admin/me", get(admin::me))
+        .route("/api/admin/vaults", get(admin::my_vaults))
+        .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
+        .route("/api/admin/users", get(admin::users_list).post(admin::users_create))
+        .route("/api/admin/users/:name", axum::routing::delete(admin::users_delete))
+        .route("/api/admin/registration", get(admin::registration_get).put(admin::registration_set))
+        .route("/api/admin/invites", get(admin::invites_list).post(admin::invite_create))
+        .route("/api/admin/invites/:id", axum::routing::delete(admin::invite_delete))
         .with_state(state)
         .layer(cors)
         // Requests are small: one CDC chunk (~64 KiB) or a JSON metadata body. Cap the

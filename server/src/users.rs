@@ -58,6 +58,24 @@ impl UserStore {
     pub fn is_empty(&self) -> bool { self.file.users.is_empty() }
     pub fn exists(&self, user: &str) -> bool { self.file.users.contains_key(user) }
 
+    // Sorted usernames (for the admin user list). Never exposes password hashes.
+    pub fn usernames(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.file.users.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    // Remove an account. Returns whether it existed. (Callers purge the user's shares
+    // and sessions separately.)
+    pub fn remove(&mut self, user: &str) -> std::io::Result<bool> {
+        if self.file.users.remove(user).is_some() {
+            self.save()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn register(&mut self, user: &str, password: &str) -> std::io::Result<()> {
         if !safe_name(user) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid username"));
