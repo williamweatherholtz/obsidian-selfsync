@@ -100,6 +100,32 @@ package ProjectAcceptance {
         :>> location = "client/src/main.ts";
         :>> procedureText = "Inspected: autoDeviceName() derives a name from the platform (Android UA model, else iPhone/iPad/Mac/Windows/Linux), deviceLabel() = configured name || auto, shown as muted placeholder in settings and used in conflictCopyName().";
     }
+    // ── Batch 5: config completeness + sharing/admin split ──
+    verification acConfigReload : Test {
+        :>> id = "c0f1a5cc-3222-4a10-9b20-a1b2c3d40222"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/main.ts";
+        :>> procedureText = "Inspected: a config write queues the path via onConfigWritten and flushConfigReload asks Obsidian to reload the affected surface (plugins/appearance/hotkeys/snippets) so a pulled change applies without a manual restart (best-effort). On-device confirmed at L3/L4.";
+    }
+    verification acConfigAdjudicationUI : Test {
+        :>> id = "c0f1a5cc-3223-4a10-9b20-a1b2c3d40223"; :>> method = VerificationMethod::inspect;
+        :>> location = "client/src/configconflict.ts";
+        :>> procedureText = "Inspected: pending differences persist in settings.configConflicts (survive restart), surface as 'Config differences (N)' in the settings tab, and ConfigConflictModal offers per-file keep-this-device's / use-the-other's, calling resolveConfigConflict + clearing the entry.";
+    }
+    verification acReadOnlyGating : Test {
+        :>> id = "c0f1a5cc-3224-4a10-9b20-a1b2c3d40224"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "Read-only reconcile tests: no upload of a local-only file, still pulls the owner's files, no delete-remote, and on divergence the owner's version is canonical while the local edit is kept as a LOCAL-only copy (nothing pushed); sharing-e2e confirms read-only pulls but never pushes — green.";
+    }
+    verification acRegistrationPolicy : Test {
+        :>> id = "c0f1a5cc-3225-4a10-9b20-a1b2c3d40225"; :>> method = VerificationMethod::test;
+        :>> location = "server/src/registration.rs";
+        :>> procedureText = "Server tests: closed registration rejects open sign-up; open allows it; a single-use invite token (hashed) is accepted exactly once and rejected on reuse — green.";
+    }
+    verification acAdminSurface : Test {
+        :>> id = "c0f1a5cc-3226-4a10-9b20-a1b2c3d40226"; :>> method = VerificationMethod::test;
+        :>> location = "server/src/admin.rs";
+        :>> procedureText = "Server admin tests: /api/admin/* requires an admin role, manages accounts + shares, and responses never include password hashes or session tokens — green.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -122,6 +148,11 @@ package ProjectAcceptance {
     part acVaultSwitchR1 : TestResult { :>> id = "c0f1a5cc-4219-4a10-9b20-a1b2c3d40319"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSetupLinkR1 : TestResult { :>> id = "c0f1a5cc-4220-4a10-9b20-a1b2c3d40320"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigReloadR1 : TestResult { :>> id = "c0f1a5cc-4222-4a10-9b20-a1b2c3d40322"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigAdjudicationUIR1 : TestResult { :>> id = "c0f1a5cc-4223-4a10-9b20-a1b2c3d40323"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acReadOnlyGatingR1 : TestResult { :>> id = "c0f1a5cc-4224-4a10-9b20-a1b2c3d40324"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acRegistrationPolicyR1 : TestResult { :>> id = "c0f1a5cc-4225-4a10-9b20-a1b2c3d40325"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acAdminSurfaceR1 : TestResult { :>> id = "c0f1a5cc-4226-4a10-9b20-a1b2c3d40326"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
@@ -146,6 +177,12 @@ package ProjectAcceptance {
     #Verify dependency from acVaultSwitch to srVaultSwitch;
     #Verify dependency from acSetupLink to srSetupLink;
     #Verify dependency from acDeviceIdentity to srDeviceIdentity;
+    // Batch 5 — config completeness + sharing/admin split
+    #Verify dependency from acConfigReload to srConfigReload;
+    #Verify dependency from acConfigAdjudicationUI to srConfigAdjudicationUI;
+    #Verify dependency from acReadOnlyGating to srReadOnlyGating;
+    #Verify dependency from acRegistrationPolicy to srRegistrationPolicy;
+    #Verify dependency from acAdminSurface to srAdminSurface;
     // existing SRs verified by their existing delivery DoD Tests
     #Verify dependency from goal1ConfigUxDoD to srClearConfig;
     #Verify dependency from goal1ConfigUxDoD to srGuidedWizard;

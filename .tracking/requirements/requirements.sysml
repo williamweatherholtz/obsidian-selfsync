@@ -250,6 +250,48 @@ package ProjectRequirements {
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
     }
 
+    // ---- Config completeness + sharing/admin split (Batch 5) ----
+    requirement srConfigReload : SystemRequirement {
+        :>> id = "c0f1a5cc-e012-4a10-9b20-a1b2c3d40212";
+        :>> title = "Applied config takes effect without restart";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "After writing a synced config file, the plugin shall reload the affected surface (community plugins, appearance, hotkeys, snippets) so a synced change takes effect without the user restarting Obsidian, best-effort.";
+        :>> rationale = "Config sync is only useful if a pulled setting/plugin actually applies (nConfigSync).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+    }
+    requirement srConfigAdjudicationUI : SystemRequirement {
+        :>> id = "c0f1a5cc-e013-4a10-9b20-a1b2c3d40213";
+        :>> title = "Pending config differences persist and have a resolution UI";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "Config differences awaiting adjudication shall persist across restarts, surface as a 'Config differences (N)' entry in settings, and resolve through a per-file UI offering keep-this-device's or use-the-other-device's, applying the choice and clearing the entry.";
+        :>> rationale = "Divergence adjudication (srConfigAdjudication) needs a durable queue + a way for the user to act on it (nConfigSync).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::inspect;
+    }
+    requirement srReadOnlyGating : SystemRequirement {
+        :>> id = "c0f1a5cc-e014-4a10-9b20-a1b2c3d40214";
+        :>> title = "Read-only share never pushes from the client";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When the current vault is a read-only share, the client shall never push or delete on the server; a local edit shall be kept as a LOCAL-only conflict copy so it is not lost, and the owner's version stays canonical.";
+        :>> rationale = "Client-side enforcement complements the server ACL so a reader can't even attempt a write (nVaultSharing).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srRegistrationPolicy : SystemRequirement {
+        :>> id = "c0f1a5cc-e015-4a10-9b20-a1b2c3d40215";
+        :>> title = "Admin-controlled registration policy";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall support a registration policy of closed (admin-created accounts only) or open, and single-use invite tokens (hashed, consumed exactly once) for discrete sign-ups when closed.";
+        :>> rationale = "Operators need to control who can create accounts without opening the server to the world (nVaultSharing).";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srAdminSurface : SystemRequirement {
+        :>> id = "c0f1a5cc-e016-4a10-9b20-a1b2c3d40216";
+        :>> title = "Role-checked admin API + web UI, no secret leakage";
+        :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall expose a role-checked /api/admin/* JSON API and a web admin UI for account and share management, and shall never return password hashes or session tokens in any response.";
+        :>> rationale = "Managing accounts/shares needs a real admin surface that can't itself leak credentials (nVaultSharing).";
+        :>> kind = RequirementKind::security; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- Cross-cutting ----
     requirement srMobile : SystemRequirement {
         :>> id = "67fec7e1-dec2-4c81-80be-86ba20c5c1ca";
@@ -315,4 +357,10 @@ package ProjectRequirements {
     satisfy nVaultManagement by srVaultSwitch;
     satisfy nVaultManagement by srSetupLink;
     satisfy nVaultManagement by srDeviceIdentity;
+    // Batch 5 — config completeness + sharing/admin split
+    satisfy nConfigSync by srConfigReload;
+    satisfy nConfigSync by srConfigAdjudicationUI;
+    satisfy nVaultSharing by srReadOnlyGating;
+    satisfy nVaultSharing by srRegistrationPolicy;
+    satisfy nVaultSharing by srAdminSurface;
 }
