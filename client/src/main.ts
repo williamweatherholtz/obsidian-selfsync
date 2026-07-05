@@ -10,11 +10,17 @@ import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 
+// Polls between forced full config-aware reconciles (poll interval is 4s → ~32s). Local config
+// changes fire no vault event and don't advance the server version, so only a periodic full
+// reconcile catches them; this bounds the detection latency without re-listing every poll.
+const CONFIG_SCAN_EVERY_POLLS = 8;
+
 class ObsidianVaultIo implements VaultIo {
   // Desktop-only streamed writer (Electron Node fs); left undefined on mobile so the
   // reconciler falls back to buffered writes there (Obsidian's adapter has no incremental
   // binary write). Assigned only when Node's require is actually available.
   appendWrite?: (path: string) => Promise<AppendHandle>;
+  private lastCfgCount = -1; // last-logged config-scope size; log only on change (list() runs every reconcile)
   constructor(private plugin: NewLiveSyncPlugin) {
     if (Platform.isDesktop && (window as unknown as { require?: unknown }).require) {
       this.appendWrite = (path: string) => this.openAppend(path);
@@ -57,7 +63,9 @@ class ObsidianVaultIo implements VaultIo {
     if (this.plugin.settings.configSync.enabled) {
       await this.enumerateConfig(".obsidian", m);
       const cfg = [...m.keys()].filter((k) => k.startsWith(".obsidian/")).length;
-      this.plugin.log(`config sync ON — ${cfg} .obsidian file(s) in scope`);
+      // Log the scope only when it CHANGES — list() runs on every reconcile (incl. the periodic
+      // config scan), so logging every time would spam. A changed count is the useful signal.
+      if (cfg !== this.lastCfgCount) { this.plugin.log(`config sync ON — ${cfg} .obsidian file(s) in scope`); this.lastCfgCount = cfg; }
     }
     return m;
   }
@@ -139,6 +147,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private machine = new SyncMachine((phase) => this.renderLight(phase));
   private reconnectTimer?: number;
   private pollTimer?: number;
+  private configScanCountdown = 1; // polls until the next forced full config-aware reconcile (see onRemoteChanged)
   private backoff = 3000;
   private unloading = false;
   private connecting = false;               // H2: only one reconnect() in flight at a time
@@ -576,13 +585,21 @@ export default class NewLiveSyncPlugin extends Plugin {
     try {
       // Cheap incremental check first: only reconcile if the server advanced past
       // our version. Idle polls do one tiny request and stay silent (no log spam,
-      // no full re-list). Local edits are handled separately by vault events.
+      // no full re-list). Local NOTE edits are handled separately by vault events.
+      //
+      // But local CONFIG changes (.obsidian: adding/removing a plugin, editing settings)
+      // fire NO vault event (config files aren't TFiles) and don't advance the server
+      // version — so the incremental check would never notice them, and they'd sync only
+      // at reconnect. When config sync is on, force a full reconcile every N polls so a
+      // local config change is picked up (and pushed) within ~N*pollInterval, not never.
+      const forceConfigScan = this.settings.configSync.enabled && --this.configScanCountdown <= 0;
+      if (forceConfigScan) this.configScanCountdown = CONFIG_SCAN_EVERY_POLLS;
       const delta = await this.api.changes(this.state.version);
-      // Short-circuit only when nothing changed AND the server version matches ours.
-      // A version MISMATCH with no upserts/deletes means the server manifest was
-      // rebuilt/rewound (e.g. reindex reset the version, or a delete burst was
+      // Short-circuit only when nothing changed AND the server version matches ours (and no
+      // config scan is due). A version MISMATCH with no upserts/deletes means the server
+      // manifest was rebuilt/rewound (e.g. reindex reset the version, or a delete burst was
       // compacted out of the tombstone window) — fall through to a full reconcile.
-      if (delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
+      if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
         this.machine.dispatch("syncDone"); // reachable + up to date
         return;
       }

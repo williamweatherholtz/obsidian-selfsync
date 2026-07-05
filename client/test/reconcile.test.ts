@@ -347,28 +347,29 @@ describe("config sync: additive + adjudicated (never auto-delete, never resurrec
     expect(dec((io as any).m.get(CP)!)).toBe(`["foo"]`);
   });
 
-  it("removal (local gone, remote==base) → adjudicate, NOT delete-remote, NOT resurrect", async () => {
+  it("removal (local gone, remote==base) → PROPAGATES: server file deleted (auto-remove, D0013)", async () => {
     const { api, files } = fakeServer();
     await serverPut(api, CP, `["foo"]`);          // remote still has it
-    const io = fakeIo({});                          // removed locally
+    const io = fakeIo({});                          // genuinely removed locally
     const base = new BaseStore();
-    base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) }); // we HAD it (evidenced)
+    base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) }); // we HELD it (evidenced removal)
     const conflicts: string[] = [];
     await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
-    expect(conflicts).toContain(CP);
-    expect(files.has(CP)).toBe(true);              // NOT deleted on the server
-    expect((io as any).m.has(CP)).toBe(false);     // NOT resurrected locally
+    expect(conflicts).toEqual([]);                 // a genuine removal is NOT adjudicated — it propagates
+    expect(files.has(CP)).toBe(false);             // server file removed (auto-remove everywhere)
   });
 
-  it("removal (remote gone, local==base) → adjudicate, local file kept (not deleted)", async () => {
-    const { api } = fakeServer();                 // remote never had / removed it
-    const io = fakeIo({ [CP]: `["foo"]` });
+  it("removal (remote gone, local==base) → PROPAGATES: local file deleted (auto-remove, D0013)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "other.md", "keeps the manifest non-empty (no C2)"); // avoid the empty-server guard
+    const io = fakeIo({ [CP]: `["foo"]`, "other.md": "keeps the manifest non-empty (no C2)" });
     const base = new BaseStore();
     base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) });
+    base.set("other.md", { hash: await sha256hex(enc("keeps the manifest non-empty (no C2)")) });
     const conflicts: string[] = [];
     await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
-    expect(conflicts).toContain(CP);
-    expect((io as any).m.has(CP)).toBe(true);      // local NOT deleted
+    expect(conflicts).toEqual([]);                 // genuine removal propagates, not adjudicated
+    expect((io as any).m.has(CP)).toBe(false);     // local file removed (the server's removal applied)
   });
 
   it("divergence (both differ, no common base) → adjudicate, NO crash, NO garbage conflict copy", async () => {

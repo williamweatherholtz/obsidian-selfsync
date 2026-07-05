@@ -156,13 +156,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     baseEntry ? { hash: baseEntry.hash } : null,
     rmeta ? { hash: rmeta.hash } : null,
   );
-  // Config sync is additive + adjudicated, NOT auto-deleting. Clean additive adds and ordinary
-  // edits (push/pull/in-sync) apply automatically — a never-had device pulls the data (defer to
-  // data). But any REMOVAL (base present → gone) or same-file DIVERGENCE is recorded for user
-  // adjudication and acted on by NOTHING here: auto-deleting could lose data a device merely
-  // couldn't hold, and auto-pulling-back would resurrect a genuine removal (the data-resurrection
-  // anti-pattern). The user chooses which plugins stay. (Filtered paths already returned above.)
-  if (isConfig(path) && action !== "push" && action !== "pull" && action !== "in-sync") {
+  // Config sync: adds, edits, and REMOVALS propagate like ordinary sync (auto-remove everywhere,
+  // D0013). This is safe because the accepts() gate above guarantees only a device that genuinely
+  // holds a path reaches here, so a delete is an EVIDENCED removal (a real tombstone), never a
+  // phantom from a filtered/never-had replica — and we never auto-pull a removed file back, so
+  // nothing resurrects. The ONE case still adjudicated is genuine DIVERGENCE — the same file
+  // edited differently on both sides (merge / conflict-copy) — because a note-style conflict-copy
+  // of a config file is filtered out and crashed the whole sync; the user picks which side wins.
+  if (isConfig(path) && (action === "merge" || action === "conflict-copy")) {
     d.onConfigConflict?.(path, action);
     return;
   }
