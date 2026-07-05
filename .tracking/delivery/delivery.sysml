@@ -71,5 +71,7 @@ package ProjectDelivery {
         part rel06FixSetR1 : TestResult { :>> id = "338147e1-ba2f-4bc6-bd1d-23ccb8b486d7"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
         // Phase 1 shipped: ACL + owner-qualified routes + authz + registration/tokens + admin API + web UI.
         part vaultSharingP1R1 : TestResult { :>> id = "c1c6d04d-3d68-4afc-b086-f83dddc5e730"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "6b39442"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
+        // Phase 2 shipped: owner-aware client transport + read-only gating + switcher; cross-user E2E green.
+        part shareClientConsumeR1 : TestResult { :>> id = "d8576c06-d950-4bcf-9b7b-ba0415a9331e"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "3438003"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
     }
 }
