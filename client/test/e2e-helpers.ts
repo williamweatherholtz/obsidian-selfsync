@@ -7,7 +7,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SyncApi, VaultIo, SyncState, ChunkCache } from "../src/sync";
+import { SyncApi, VaultIo, SyncState, ChunkCache, AppendHandle } from "../src/sync";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 import { BaseStore } from "../src/base";
 import { reconcileAll, ReconcileDeps } from "../src/reconcile";
@@ -122,6 +122,18 @@ export class FsVaultIo implements VaultIo {
   async read(p: string): Promise<Uint8Array> { return new Uint8Array(await fs.readFile(this.abs(p))); }
   async write(p: string, bytes: Uint8Array): Promise<void> { await fs.mkdir(path.dirname(this.abs(p)), { recursive: true }); await fs.writeFile(this.abs(p), bytes); }
   async remove(p: string): Promise<void> { await fs.rm(this.abs(p), { force: true }); }
+  // Streamed write (mirrors ObsidianVaultIo's desktop Node-fs path): append to a temp file, then rename.
+  async appendWrite(p: string): Promise<AppendHandle> {
+    const abs = this.abs(p);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    const tmp = abs + ".part";
+    const fh = await fs.open(tmp, "w");
+    return {
+      append: async (bytes: Uint8Array) => { await fh.write(bytes); },
+      close: async () => { await fh.sync(); await fh.close(); await fs.rename(tmp, abs); },
+      abort: async () => { await fh.close().catch(() => {}); await fs.rm(tmp, { force: true }).catch(() => {}); },
+    };
+  }
 }
 
 /** FsVaultIo + the selective-sync filter, mirroring how ObsidianVaultIo gates list/write. */

@@ -1,11 +1,22 @@
 import { ChangesResponse, CommitRequest, FileMeta } from "./protocol";
 import { chunk, sha256hex } from "./chunker";
 
+// A streamed, sequential-append write to one file — lets a large file be reassembled to
+// disk without ever holding it whole in memory. Close finalizes (atomic rename); abort
+// discards the partial.
+export interface AppendHandle {
+  append(bytes: Uint8Array): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+}
 export interface VaultIo {
   list(): Promise<Map<string, { mtime: number; size: number }>>;
   read(path: string): Promise<Uint8Array>;
   write(path: string, bytes: Uint8Array): Promise<void>;
   remove(path: string): Promise<void>;
+  // Optional streamed writer for large-file reassembly. Undefined ⇒ not supported on this
+  // platform (caller buffers the whole file instead). Present on desktop; absent on mobile.
+  appendWrite?(path: string): Promise<AppendHandle>;
 }
 export interface SyncApi {
   changes(since: number): Promise<ChangesResponse>;
@@ -67,6 +78,27 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
     return b;
   });
   return concat(parts);
+}
+
+// Stream a file's chunks straight to disk (sequential append, ~one chunk in RAM at a time)
+// instead of buffering + concatenating the whole file. Returns false if the io can't stream
+// (mobile) so the caller falls back to the buffered path. Chunks are appended in list order,
+// so reassembly is correct. A mid-stream failure aborts (discards the partial) and rethrows.
+export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[]): Promise<boolean> {
+  if (!io.appendWrite) return false;
+  const h = await io.appendWrite(path);
+  try {
+    for (const hash of chunks) {
+      let b = cache.get(hash);
+      if (!b) { b = await api.getChunk(hash); cachePut(cache, hash, b); }
+      await h.append(b);
+    }
+    await h.close();
+    return true;
+  } catch (e) {
+    await h.abort().catch(() => {});
+    throw e;
+  }
 }
 
 // Write explicit bytes to a path then push it (used for merged/conflict results).

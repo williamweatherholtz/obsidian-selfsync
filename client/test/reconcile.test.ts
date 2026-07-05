@@ -45,6 +45,15 @@ function fakeIo(seed: Record<string, string> = {}) {
     async read(p) { const b = m.get(p); if (!b) throw new Error("ENOENT"); return b; },
     async write(p, b) { m.set(p, b); },
     async remove(p) { m.delete(p); },
+    // Streamed writer: accumulate appended chunks, commit to the map on close.
+    async appendWrite(p) {
+      let buf = new Uint8Array(0);
+      return {
+        append: async (b: Uint8Array) => { const n = new Uint8Array(buf.length + b.length); n.set(buf); n.set(b, buf.length); buf = n; },
+        close: async () => { m.set(p, buf); },
+        abort: async () => {},
+      };
+    },
   };
   return io;
 }
@@ -217,6 +226,42 @@ describe("switchTo (one-time vault switch resolution)", () => {
     const m = (io as any).m as Map<string, Uint8Array>;
     expect(dec(m.get("n1.md")!)).toBe("one");
     expect(dec(m.get("n2.md")!)).toBe("two");
+  });
+});
+
+describe("streamed reassembly of large downloads (B9 Part B)", () => {
+  const big = "x".repeat(9 * 1024 * 1024); // >= STREAM_MIN_BYTES (8 MiB)
+
+  it("streams a large remote file to disk on pull", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "big.bin", big);
+    const io = fakeIo({});
+    await reconcileAll(deps(api, io));
+    expect(dec((io as any).m.get("big.bin")!)).toBe(big);
+  });
+
+  it("a large download bypasses the size gate when streaming; without streaming it's skipped", async () => {
+    // WITH streaming (appendWrite present) + a low gate → streamed, not skipped
+    {
+      const { api } = fakeServer();
+      await serverPut(api, "big.bin", big);
+      const io = fakeIo({});
+      const skipped: string[] = [];
+      await reconcileAll(deps(api, io, { maxSyncBytes: 1024 * 1024, onSkip: (p) => skipped.push(p) }));
+      expect(skipped).not.toContain("big.bin");
+      expect(dec((io as any).m.get("big.bin")!)).toBe(big);
+    }
+    // WITHOUT streaming (no appendWrite) → skipped (buffered path stays gated)
+    {
+      const { api } = fakeServer();
+      await serverPut(api, "big.bin", big);
+      const io = fakeIo({});
+      delete (io as any).appendWrite;
+      const skipped: string[] = [];
+      await reconcileAll(deps(api, io, { maxSyncBytes: 1024 * 1024, onSkip: (p) => skipped.push(p) }));
+      expect(skipped).toContain("big.bin");
+      expect((io as any).m.has("big.bin")).toBe(false);
+    }
   });
 });
 

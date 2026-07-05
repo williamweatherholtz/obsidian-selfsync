@@ -1,4 +1,4 @@
-import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes } from "./sync";
+import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk } from "./sync";
 import { sha256hex } from "./chunker";
 import { BaseStore, conflictCopyName } from "./base";
 import { isMergeable, merge3 } from "./merge";
@@ -35,6 +35,11 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
 // OOM a mobile device (Obsidian's adapter/requestUrl don't stream). Overridable per deps.
 export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
 
+// At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
+// supports it — which also lets it bypass the buffered size gate. Uploads still buffer
+// (chunking reads the whole local file), so they stay gated.
+export const STREAM_MIN_BYTES = 8 * 1024 * 1024; // 8 MiB
+
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
   device: string; strategy: "auto-merge" | "conflict-file";
@@ -57,6 +62,21 @@ function nowUtc(): Date { return new Date(); }
 function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string): void {
   d.base.set(path, isMergeable(path, bytes) ? { hash, text: new TextDecoder().decode(bytes) } : { hash });
   d.onBaseChanged?.();
+}
+
+// Bring a remote file down. Large files stream straight to disk (never held whole in RAM)
+// when the io supports it; otherwise fetch + write buffered. Base is set to the remote hash;
+// the mergeable base TEXT is kept only on the buffered path (streamed files are large and
+// non-mergeable, so their base is hash-only).
+async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta): Promise<void> {
+  if (rmeta.size >= STREAM_MIN_BYTES && await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
+    d.base.set(path, { hash: rmeta.hash });
+    d.onBaseChanged?.();
+    return;
+  }
+  const bytes = await fetchFileBytes(d.api, d.cache, rmeta.chunks);
+  await d.io.write(path, bytes);
+  setBase(d, path, bytes, rmeta.hash);
 }
 
 export async function reconcileAll(d: ReconcileDeps): Promise<void> {
@@ -91,11 +111,15 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
 
 async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0): Promise<void> {
   // Size gate: skip a file too large to hold in RAM — BEFORE reading it — and skip the
-  // path ENTIRELY (no push, no pull, no delete), so a skipped huge file is never
-  // mistaken for a deletion. Gates both a large local file and a large remote one.
+  // path ENTIRELY (no push, no pull, no delete), so a skipped huge file is never mistaken
+  // for a deletion. A large DOWNLOAD (no local file → resolves to a pull) can be STREAMED
+  // to disk when the io supports it, so it bypasses the ceiling; large uploads/edits still
+  // buffer (chunking reads the whole local file), so they stay gated.
   const max = d.maxSyncBytes ?? DEFAULT_MAX_SYNC_BYTES;
-  if (localSize > max || (rmeta?.size ?? 0) > max) {
-    d.onSkip?.(path, Math.max(localSize, rmeta?.size ?? 0));
+  const remoteSize = rmeta?.size ?? 0;
+  const streamableDownload = remoteSize >= STREAM_MIN_BYTES && localSize === 0 && !!d.io.appendWrite;
+  if (localSize > max || (remoteSize > max && !streamableDownload)) {
+    d.onSkip?.(path, Math.max(localSize, remoteSize));
     return;
   }
   const localBytes = await readOrNull(d.io, path);
@@ -116,12 +140,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       setBase(d, path, localBytes!, h);
       return;
     }
-    case "pull": {
-      const bytes = await fetchFileBytes(d.api, d.cache, rmeta!.chunks);
-      await d.io.write(path, bytes);
-      setBase(d, path, bytes, rmeta!.hash);
+    case "pull":
+      await applyPull(d, path, rmeta!);
       return;
-    }
     case "delete-local":
       if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
@@ -134,11 +155,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       setBase(d, path, localBytes!, h);
       return;
     }
-    case "edit-wins-pull": {
-      const bytes = await fetchFileBytes(d.api, d.cache, rmeta!.chunks);
-      await d.io.write(path, bytes); setBase(d, path, bytes, rmeta!.hash);
+    case "edit-wins-pull":
+      await applyPull(d, path, rmeta!);
       return;
-    }
     case "merge":
     case "conflict-copy": {
       const remoteBytes = await fetchFileBytes(d.api, d.cache, rmeta!.chunks);

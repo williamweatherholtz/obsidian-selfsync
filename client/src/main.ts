@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef } from "./transport";
-import { SyncState, VaultIo, ChunkCache } from "./sync";
+import { SyncState, VaultIo, ChunkCache, AppendHandle } from "./sync";
 import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
@@ -10,7 +10,35 @@ import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 
 class ObsidianVaultIo implements VaultIo {
-  constructor(private plugin: NewLiveSyncPlugin) {}
+  // Desktop-only streamed writer (Electron Node fs); left undefined on mobile so the
+  // reconciler falls back to buffered writes there (Obsidian's adapter has no incremental
+  // binary write). Assigned only when Node's require is actually available.
+  appendWrite?: (path: string) => Promise<AppendHandle>;
+  constructor(private plugin: NewLiveSyncPlugin) {
+    if (Platform.isDesktop && (window as unknown as { require?: unknown }).require) {
+      this.appendWrite = (path: string) => this.openAppend(path);
+    }
+  }
+
+  // Stream a file to disk via Node fs: append to a temp file, fsync, then atomically rename.
+  private async openAppend(path: string): Promise<AppendHandle> {
+    const noop: AppendHandle = { append: async () => {}, close: async () => {}, abort: async () => {} };
+    if (!this.passes(path)) return noop; // excluded paths are never written locally
+    const req = (window as unknown as { require: (m: string) => any }).require;
+    const fs = req("fs");
+    const nodePath = req("path");
+    const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
+    const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
+    const abs = nodePath.join(base, normalizePath(path));
+    await fs.promises.mkdir(nodePath.dirname(abs), { recursive: true });
+    const tmp = abs + ".selfsync-part";
+    const fh = await fs.promises.open(tmp, "w");
+    return {
+      append: async (bytes: Uint8Array) => { await fh.write(bytes); },
+      close: async () => { await fh.sync(); await fh.close(); await fs.promises.rename(tmp, abs); this.plugin.onConfigWritten(path); },
+      abort: async () => { try { await fh.close(); } catch { /* already closed */ } try { await fs.promises.rm(tmp, { force: true }); } catch { /* gone */ } },
+    };
+  }
 
   // The single selective-sync gate: notes always pass; `.obsidian/` paths pass only
   // per the config selection, and SelfSync's own folder never passes (see configsync).

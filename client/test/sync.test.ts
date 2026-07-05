@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pushFile, fetchFileBytes, mapPool, SyncApi, VaultIo, ChunkCache } from "../src/sync";
+import { pushFile, fetchFileBytes, mapPool, streamFileToDisk, SyncApi, VaultIo, ChunkCache } from "../src/sync";
 import { chunk, sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 
@@ -91,6 +91,32 @@ describe("chunk sync engine", () => {
     expect(out).toEqual(items.map((n) => n * 2)); // order preserved
     expect(peak).toBeLessThanOrEqual(6);           // never exceeds the limit
     expect(peak).toBeGreaterThan(1);               // genuinely concurrent
+  });
+
+  it("streamFileToDisk appends chunks in order and returns true (B9 streaming)", async () => {
+    const store: Record<string, Uint8Array> = { a: enc("111"), b: enc("22"), c: enc("3333") };
+    const api = { async getChunk(h: string) { return store[h]; } } as unknown as SyncApi;
+    let written = new Uint8Array(0); let closed = false;
+    const io = {
+      async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
+      async appendWrite() {
+        return {
+          append: async (b: Uint8Array) => { const n = new Uint8Array(written.length + b.length); n.set(written); n.set(b, written.length); written = n; },
+          close: async () => { closed = true; },
+          abort: async () => {},
+        };
+      },
+    } as unknown as VaultIo;
+    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", ["a", "b", "c"]);
+    expect(ok).toBe(true);
+    expect(closed).toBe(true);
+    expect(dec(written)).toBe("111223333");
+  });
+
+  it("streamFileToDisk returns false when the io can't stream (mobile fallback)", async () => {
+    const api = { async getChunk() { return enc("x"); } } as unknown as SyncApi;
+    const io = { async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {} } as unknown as VaultIo;
+    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"])).toBe(false);
   });
 
   it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {
