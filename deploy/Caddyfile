@@ -1,0 +1,6 @@
+# Caddy config for SelfSync. Caddy obtains + renews a Let's Encrypt certificate for the
+# domain automatically and reverse-proxies to the sync server. WebSocket upgrades (the
+# /api/ws real-time channel) are proxied transparently — no extra config needed.
+{$SELFSYNC_DOMAIN} {
+	reverse_proxy selfsync:8080
+}

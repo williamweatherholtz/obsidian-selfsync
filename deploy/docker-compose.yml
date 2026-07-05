@@ -1,0 +1,48 @@
+# SelfSync — production example: the sync server behind Caddy (automatic HTTPS).
+#
+#   1. Point your domain's DNS A/AAAA record at this host.
+#   2. Create a .env next to this file:
+#        SELFSYNC_DOMAIN=sync.example.com
+#        SYNC_USER=admin
+#        SYNC_PASSWORD=<a long random password>   # NEVER leave the default
+#   3. docker compose up -d
+#
+# Caddy provisions a Let's Encrypt certificate for SELFSYNC_DOMAIN and terminates TLS,
+# proxying plain HTTP/WS to the server on the internal network. The server port is
+# deliberately NOT published to the host — the ONLY way in is Caddy on 443 (TLS).
+services:
+  selfsync:
+    build: ../server
+    restart: unless-stopped
+    environment:
+      DATA_ROOT: /data
+      BIND_ADDR: 0.0.0.0:8080          # plain HTTP/WS — private, behind Caddy
+      SYNC_USER: ${SYNC_USER:?set SYNC_USER in .env}
+      SYNC_PASSWORD: ${SYNC_PASSWORD:?set a STRONG SYNC_PASSWORD in .env}
+      REGISTRATION: closed             # invite-only by default; open it from /admin if you must
+    volumes:
+      - selfsync-data:/data            # accounts, ACL, chunks, and each vault's real files
+    expose:
+      - "8080"                         # inter-container ONLY — not published to the host
+    # NOTE: no `ports:` here on purpose. Publishing :8080 would expose plain HTTP to the
+    # internet, bypassing TLS. Reach the server only through Caddy (below).
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"                        # HTTP -> auto-redirects to HTTPS + ACME challenge
+      - "443:443"                      # HTTPS (and WSS) — the only public entry point
+    environment:
+      SELFSYNC_DOMAIN: ${SELFSYNC_DOMAIN:?set SELFSYNC_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data               # persists issued certificates across restarts
+      - caddy-config:/config
+    depends_on:
+      - selfsync
+
+volumes:
+  selfsync-data:
+  caddy-data:
+  caddy-config:
