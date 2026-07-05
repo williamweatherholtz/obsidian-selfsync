@@ -311,3 +311,44 @@ describe("read-only shared vault (never mutates the server)", () => {
     expect(ro).toContain("n.md");
   });
 });
+
+describe("settings drive behavior: conflict strategy + device name", () => {
+  it("conflictStrategy 'auto-merge' merges cleanly-mergeable concurrent edits", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "l1\nl2\nl3\n");
+    const io = fakeIo({ "n.md": "l1\nl2\nl3\n" });
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("l1\nl2\nl3\n")), text: "l1\nl2\nl3\n" });
+    (io as any).m.set("n.md", enc("L1\nl2\nl3\n"));   // local edits line 1
+    await serverPut(api, "n.md", "l1\nl2\nL3\n");       // remote edits line 3 (non-overlapping)
+    await reconcileAll(deps(api, io, { base, strategy: "auto-merge" }));
+    const merged = dec((io as any).m.get("n.md")!);
+    expect(merged).toContain("L1"); expect(merged).toContain("L3"); // both edits merged
+    expect([...(io as any).m.keys()].some((k: string) => k.includes("(conflict"))).toBe(false); // no copy
+  });
+
+  it("conflictStrategy 'conflict-file' NEVER auto-merges — keeps both as a conflict copy", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "l1\nl2\nl3\n");
+    const io = fakeIo({ "n.md": "l1\nl2\nl3\n" });
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("l1\nl2\nl3\n")), text: "l1\nl2\nl3\n" });
+    (io as any).m.set("n.md", enc("L1\nl2\nl3\n"));   // same cleanly-mergeable edit as above
+    await serverPut(api, "n.md", "l1\nl2\nL3\n");
+    await reconcileAll(deps(api, io, { base, strategy: "conflict-file" }));
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect(dec(m.get("n.md")!)).toBe("l1\nl2\nL3\n"); // remote canonical — NOT merged
+    const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);
+    expect(dec(m.get(copies[0])!)).toBe("L1\nl2\nl3\n"); // local kept as a copy
+  });
+
+  it("the device name flows into the conflict-copy filename", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "note.md", "SERVER");
+    const io = fakeIo({ "note.md": "LOCAL" }); // no base -> conflict-copy
+    await reconcileAll(deps(api, io, { device: "MyLaptop" }));
+    const copy = [...(io as any).m.keys()].find((k: string) => k.includes("(conflict"));
+    expect(copy).toContain("MyLaptop");
+  });
+});

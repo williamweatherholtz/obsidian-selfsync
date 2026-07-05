@@ -187,7 +187,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.logs.push(line);
     if (this.logs.length > 500) this.logs.shift();
     console.debug(`[selfsync] ${line}`);
-    if (notice || this.settings.verbose) new Notice(`SelfSync: ${msg}`);
+    // Popups are reserved for rare, action-worthy events (conflicts, data-safety, save
+    // failures) via notice=true. Sync/connection state is shown by the status icon + this
+    // log — never by a toast, so a flaky connection can't spam notices.
+    if (notice) new Notice(`SelfSync: ${msg}`);
   }
   getLogText() { return this.logs.join("\n"); }
   clearLogs() { this.logs = []; this.log("log cleared"); }
@@ -260,7 +263,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws?.close();
     if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
     this.machine.dispatch("unload");
-    this.log("disconnected (local files kept)", true);
+    this.log("disconnected (local files kept)"); // the settings UI reflects it — no toast needed
   }
 
   // Sign out: forget credentials + token, drop to Not-set-up.
@@ -447,7 +450,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (health.status !== "ready") {
         this.machine.dispatch("error");
         this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
-        this.log(this.lastIssue, true);
+        this.log(this.lastIssue); // red status icon + the settings status card show it — no toast (would repeat every retry)
         this.scheduleReconnect();
         return;
       }
