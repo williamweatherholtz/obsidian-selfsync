@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pushFile, fetchFileBytes, SyncApi, VaultIo, ChunkCache } from "../src/sync";
+import { pushFile, fetchFileBytes, mapPool, SyncApi, VaultIo, ChunkCache } from "../src/sync";
 import { chunk, sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 
@@ -77,5 +77,33 @@ describe("chunk sync engine", () => {
     await pushFile(api, ioA, { version: 0 }, new Map(), "img.bin");
     const meta = (await api.changes(0)).upserts.find((f) => f.path === "img.bin")!;
     expect(await fetchFileBytes(api, new Map(), meta.chunks)).toEqual(bin);
+  });
+
+  it("mapPool preserves order and bounds concurrency (B11)", async () => {
+    let inFlight = 0, peak = 0;
+    const items = Array.from({ length: 25 }, (_, i) => i);
+    const out = await mapPool(items, 6, async (n) => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return n * 2;
+    });
+    expect(out).toEqual(items.map((n) => n * 2)); // order preserved
+    expect(peak).toBeLessThanOrEqual(6);           // never exceeds the limit
+    expect(peak).toBeGreaterThan(1);               // genuinely concurrent
+  });
+
+  it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {
+    const order = ["a", "b", "c", "d", "e"];
+    // later chunks resolve FASTER, so completion order is reversed — output must still be in list order
+    const api = {
+      async getChunk(h: string) {
+        const i = order.indexOf(h);
+        await new Promise((r) => setTimeout(r, (order.length - i) * 2));
+        return enc(h);
+      },
+    } as unknown as SyncApi;
+    const bytes = await fetchFileBytes(api, new Map() as ChunkCache, order);
+    expect(dec(bytes)).toBe("abcde");
   });
 });

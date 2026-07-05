@@ -40,14 +40,32 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-// Fetch + reassemble a single file's bytes from its chunk list (cache-first).
+// How many chunk transfers run at once. Bounds memory + connection use (mobile-safe)
+// while overlapping request latency, so a large file no longer transfers one chunk at a time.
+export const TRANSFER_CONCURRENCY = 6;
+
+// Run `fn` over `items` with at most `limit` in flight; results keep input order. A pool
+// of workers pulls the next index until the list is exhausted (no unbounded fan-out).
+export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Fetch + reassemble a single file's bytes from its chunk list (cache-first). Chunks are
+// fetched with bounded concurrency but reassembled in order (mapPool preserves it).
 export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[]): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  for (const h of chunks) {
+  const parts = await mapPool(chunks, TRANSFER_CONCURRENCY, async (h) => {
     let b = cache.get(h);
     if (!b) { b = await api.getChunk(h); cachePut(cache, h, b); }
-    parts.push(b);
-  }
+    return b;
+  });
   return concat(parts);
 }
 
@@ -65,7 +83,8 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   for (const c of chunks) cachePut(cache, c.hash, c.bytes);
   const hashes = chunks.map((c) => c.hash);
   const missing = new Set(await api.missing(hashes));
-  for (const c of chunks) if (missing.has(c.hash)) await api.putChunk(c.hash, c.bytes);
+  const toPush = chunks.filter((c) => missing.has(c.hash));
+  await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => api.putChunk(c.hash, c.bytes));
   const fileHash = await sha256hex(bytes);
   const meta = await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes });
   state.version = Math.max(state.version, meta.version);
