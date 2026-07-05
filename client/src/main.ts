@@ -9,7 +9,7 @@ import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
 import { SyncMachine, Phase, light } from "./syncstate";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
-import { androidModelFromUA, platformDisplayName } from "./devicename";
+import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
 // Polls between forced full config-aware reconciles (poll interval is 4s → ~32s). Local config
 // changes fire no vault event and don't advance the server version, so only a periodic full
@@ -167,6 +167,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+    void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
     // ONE state indicator per platform — two would be redundant (the anti-pattern we're
@@ -473,9 +474,25 @@ export default class NewLiveSyncPlugin extends Plugin {
   // The name used when the Device name field is left blank. Prefer a friendly label over
   // navigator.platform (which is "Linux aarch64" on Android → the useless "Linuxaarch64").
   // Shown as muted placeholder text in settings so the user sees what will be used.
+  private uaChModel: string | null = null; // device model from UA Client Hints (Android), resolved async at startup
+
+  // Resolve the Android device model via UA Client Hints — the canonical way that survives UA
+  // reduction (returns "Pixel 9" even when the UA string is frozen to "K"). Chromium/WebView only;
+  // unsupported on iOS/WebKit (feature-detected). Cached; refreshes the settings placeholder on land.
+  private async resolveUaChModel(): Promise<void> {
+    try {
+      const uaData = (navigator as unknown as { userAgentData?: { getHighEntropyValues?: (h: string[]) => Promise<{ model?: string }> } }).userAgentData;
+      if (!uaData?.getHighEntropyValues) return;
+      const hi = await uaData.getHighEntropyValues(["model"]);
+      const m = usableModel(hi?.model);
+      if (m) { this.uaChModel = m; this.statusListener?.(); } // refresh so the muted device-name placeholder updates
+    } catch { /* not supported / rejected — the UA-string + platform fallbacks cover it */ }
+  }
+
   autoDeviceName(): string {
+    if (this.uaChModel) return this.uaChModel; // UA Client Hints model — best on Android, survives UA reduction
     const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
-    const android = androidModelFromUA(ua); // e.g. "Pixel 9"; null on desktop or a frozen "K"
+    const android = androidModelFromUA(ua); // e.g. "Pixel 9" from the UA string (WebView isn't UA-reduced); null on desktop or a frozen "K"
     if (android) return android;
     if (Platform.isIosApp) return Platform.isPhone ? "iPhone" : "iPad";
     if (Platform.isAndroidApp) return "Android";

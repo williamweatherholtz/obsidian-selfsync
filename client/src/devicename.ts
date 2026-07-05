@@ -11,12 +11,19 @@ export function cleanDeviceName(s: string): string {
 // or the model is unusable. Android exposes the model (e.g. "Pixel 9"); recent Chrome may FREEZE
 // it to "K" for privacy → treated as unusable so the caller falls back to a platform label. A
 // desktop UA (no "Android" token) returns null, so it never yields a bogus name like "linuxarch".
-export function androidModelFromUA(ua: string): string | null {
-  const m = ua.match(/Android[^;]*;\s*([^;)]+?)\s*(?:Build\/|\))/i);
-  if (!m || !m[1]) return null;
-  const model = cleanDeviceName(m[1]);
+// Accept a raw model string (from UA Client Hints or a UA-string capture) as a device name, or
+// null when it's empty, too short, or the privacy-frozen "K" placeholder. Shared by both the
+// UA-Client-Hints path (navigator.userAgentData.getHighEntropyValues(['model'])) and the UA regex.
+export function usableModel(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const model = cleanDeviceName(raw);
   if (model.length <= 2 || model.toUpperCase() === "K") return null;
   return model;
+}
+
+export function androidModelFromUA(ua: string): string | null {
+  const m = ua.match(/Android[^;]*;\s*([^;)]+?)\s*(?:Build\/|\))/i);
+  return m ? usableModel(m[1]) : null;
 }
 
 // Architecture tokens that must NEVER become a device name. On Android, navigator.platform is

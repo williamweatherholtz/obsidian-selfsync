@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cleanDeviceName, androidModelFromUA, platformDisplayName } from "../src/devicename";
+import { cleanDeviceName, androidModelFromUA, platformDisplayName, usableModel } from "../src/devicename";
 
 describe("androidModelFromUA", () => {
   it("extracts the model from a real Android UA (the 'Pixel 9' case)", () => {
@@ -31,6 +31,20 @@ describe("androidModelFromUA", () => {
     const ua = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
     expect(androidModelFromUA(ua)).toBeNull();
   });
+});
+
+describe("usableModel (UA-Client-Hints model gate)", () => {
+  it("accepts a real model from getHighEntropyValues(['model'])", () => {
+    expect(usableModel("Pixel 9")).toBe("Pixel 9");
+    expect(usableModel("Pixel 2 XL")).toBe("Pixel 2 XL");
+  });
+  it("rejects empty / missing (Chromium returns '' when unknown or not mobile)", () => {
+    expect(usableModel("")).toBeNull();
+    expect(usableModel(undefined)).toBeNull();
+    expect(usableModel(null)).toBeNull();
+  });
+  it("rejects the privacy-frozen 'K' placeholder", () => expect(usableModel("K")).toBeNull());
+  it("cleans a raw model id", () => expect(usableModel("SM-G991B")).toBe("SM G991B"));
 });
 
 describe("platformDisplayName (arch never leaks as a device name)", () => {
