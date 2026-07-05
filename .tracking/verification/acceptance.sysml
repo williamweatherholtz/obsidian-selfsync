@@ -34,7 +34,7 @@ package ProjectAcceptance {
     verification acConfigLiveDetect : Test {
         :>> id = "c0f1a5cc-3006-4a10-9b20-a1b2c3d40026"; :>> method = VerificationMethod::inspect;
         :>> location = "client/src/main.ts";
-        :>> procedureText = "Inspected: onRemoteChanged forces a full reconcileAll every CONFIG_SCAN_EVERY_POLLS polls when configSync.enabled, so a local config change (which fires no vault event and does not advance the server version) is detected + pushed within a bounded interval rather than only at reconnect. On-device latency confirmed under L4.";
+        :>> procedureText = "Inspected: the plugin registers vault.on('raw', ...) (feature-detected) and, for in-scope .obsidian/ paths, debounces the event burst (600ms), suppresses the echo of its own writes/removes (markConfigSelfWrite, 4s window), and reconciles the changed paths via reconcilePath — so a config change syncs promptly (event-driven) on desktop. onRemoteChanged's periodic full reconcile remains the mobile fallback + safety net (Obsidian mobile does not fire 'raw' reliably for hidden files). On-device latency confirmed under L4.";
     }
     verification acSyncRobust : Test {
         :>> id = "c0f1a5cc-3004-4a10-9b20-a1b2c3d40024"; :>> method = VerificationMethod::test;
@@ -51,7 +51,7 @@ package ProjectAcceptance {
     part acConfigAdjudicationR1 : TestResult { :>> id = "c0f1a5cc-4003-4a10-9b20-a1b2c3d40033"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSyncRobustR1 : TestResult { :>> id = "c0f1a5cc-4004-4a10-9b20-a1b2c3d40034"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acFreeMergeR1 : TestResult { :>> id = "c0f1a5cc-4005-4a10-9b20-a1b2c3d40035"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d6c0325"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
 
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs

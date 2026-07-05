@@ -141,8 +141,8 @@ package ProjectRequirements {
         :>> id = "c0f1a5cc-2005-4a10-9b20-a1b2c3d40015";
         :>> title = "Local config changes are detected while connected";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> statement = "The plugin shall detect a local config change (adding, editing, or removing a plugin/theme/setting) and sync it within a bounded interval while connected, without requiring a reconnect — because hidden .obsidian files fire no vault event and a local change does not advance the server version.";
-        :>> rationale = "Config changes were previously synced only at connect time (no hidden-file events; the incremental poll short-circuits on unchanged server version), so a removal appeared to do nothing (D0013).";
+        :>> statement = "The plugin shall detect a local config change (adding, editing, or removing a plugin/theme/setting) and sync it PROMPTLY while connected, without requiring a reconnect: event-driven via the low-level raw adapter event where the platform fires it (desktop), with a periodic reconcile as the fallback (mobile) — because hidden .obsidian files fire no standard vault event and a local change does not advance the server version.";
+        :>> rationale = "Config changes were previously synced only at connect time (no standard hidden-file events; the incremental poll short-circuits on unchanged server version), so a removal appeared to do nothing; the raw event makes it event-driven on desktop, the poll covers mobile where raw is unreliable (D0013).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement srSyncRobust : SystemRequirement {
