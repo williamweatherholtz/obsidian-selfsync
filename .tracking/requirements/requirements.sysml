@@ -245,8 +245,8 @@ package ProjectRequirements {
         :>> id = "c0f1a5cc-e011-4a10-9b20-a1b2c3d40211";
         :>> title = "Per-device name for conflict labelling";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> statement = "Each device shall have a name — auto-detected from the platform when the user leaves it blank (shown as muted placeholder) — used to label conflict copies so a divergence is traceable to its origin device.";
-        :>> rationale = "Conflict copies and adjudication need to name which device a version came from (nVaultManagement).";
+        :>> statement = "Each device shall have a name used to label conflict copies. When the user leaves it blank it is auto-detected best-effort — on Android via UA Client Hints (getHighEntropyValues['model'], which survives UA reduction) then the UA string, on iOS as 'iPhone'/'iPad' (no web API exposes the model), else a platform label with architecture tokens stripped — and a user-set name always overrides (shown as a muted placeholder).";
+        :>> rationale = "Conflict copies + adjudication need to name the origin device; the canonical web way to get the real Android model is UA Client Hints, while iOS/WebKit exposes nothing beyond iPhone/iPad, so the field is the authoritative override (D0015).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 

@@ -98,7 +98,7 @@ package ProjectAcceptance {
     verification acDeviceIdentity : Test {
         :>> id = "c0f1a5cc-3221-4a10-9b20-a1b2c3d40221"; :>> method = VerificationMethod::test;
         :>> location = "client/test/devicename.test.ts";
-        :>> procedureText = "devicename.test.ts covers the extracted parsing: a real Android UA yields the model ('Pixel 9'); a frozen 'K', a model-less Android UA, and desktop UAs yield null; and platformDisplayName strips architecture tokens so navigator.platform's 'Linux aarch64' can never surface as the device name (the ACTUAL reported Android bug — it showed the arch). The Platform.* fallback ordering in autoDeviceName is inspected.";
+        :>> procedureText = "devicename.test.ts covers the extracted parsing: usableModel gates the UA-Client-Hints model (accepts 'Pixel 9', rejects ''/undefined/'K'); a real Android UA yields the model; a frozen 'K', a model-less Android UA, and desktop UAs yield null; platformDisplayName strips architecture tokens so 'Linux aarch64' can never surface (the actual Android bug). The async UA-CH resolution (getHighEntropyValues), its cache, and the Platform.* fallback ordering in autoDeviceName + the iOS iPhone/iPad ceiling are inspected (D0015).";
     }
     // ── Batch 5: config completeness + sharing/admin split ──
     verification acConfigReload : Test {
@@ -160,7 +160,7 @@ package ProjectAcceptance {
     part acResumableInitialSyncR1 : TestResult { :>> id = "c0f1a5cc-4218-4a10-9b20-a1b2c3d40318"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acVaultSwitchR1 : TestResult { :>> id = "c0f1a5cc-4219-4a10-9b20-a1b2c3d40319"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSetupLinkR1 : TestResult { :>> id = "c0f1a5cc-4220-4a10-9b20-a1b2c3d40320"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
-    part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d8f2047"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acDeviceIdentityR1 : TestResult { :>> id = "c0f1a5cc-4221-4a10-9b20-a1b2c3d40321"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "a504d0c"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigReloadR1 : TestResult { :>> id = "c0f1a5cc-4222-4a10-9b20-a1b2c3d40322"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigAdjudicationUIR1 : TestResult { :>> id = "c0f1a5cc-4223-4a10-9b20-a1b2c3d40323"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acReadOnlyGatingR1 : TestResult { :>> id = "c0f1a5cc-4224-4a10-9b20-a1b2c3d40324"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
