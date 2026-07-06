@@ -87,7 +87,17 @@ package ProjectUseCases {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> description = "A user re-points a local vault at a different remote vault without re-entering server/account.";
         :>> mainSuccess = "Using the saved session, the user picks a different vault; if the local vault is empty it auto-downloads; otherwise a one-time prompt offers download / upload / merge.";
-        :>> extensions = "Merge keeps everything (three-way merge or conflict copy on divergence, nothing lost). | A read-only shared target can only be downloaded. | Switching never touches SelfSync's own config.";
+        :>> extensions = "Merge keeps everything (three-way merge or conflict copy on divergence, nothing lost). | A read-only shared target can only be downloaded. | Switching never touches SelfSync's own config. | DATA-SAFETY: switching/pointing at a WRONG, FRESH, or RESTORED server (a populated local vault against an empty/unfamiliar remote) NEVER deletes local files — a file absent from the remote WITHOUT a deletion tombstone is restored to the server, not destroyed; only a file the server actually TOMBSTONED is removed. The guard is DURABLE — repeated reconciles (even after the client's own pushes make the remote non-empty) never delete the kept files. This is the scenario the 0.10.25 data-loss escape missed.";
+    }
+    // The data-safety invariant as its OWN use case with adversarial scenarios — the class of case
+    // the switch/continuous use cases only touched happy-path. Deletion is TOMBSTONE-authoritative:
+    // absence is never proof of deletion. This is the executable meaning of 'never lose a note'.
+    use case ucNeverLoseLocalData : UseCase {
+        :>> id = "c0f1a5cc-b012-4a10-9b20-a1b2c3d400b2"; :>> title = "Never lose local data to a wrong/empty/restored server";
+        :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
+        :>> description = "A local file is only ever deleted by sync when the server carries a REAL deletion tombstone for it — never on mere absence. Covers the wrong-server, fresh-server, restored-index, and stale-base permutations that silently deleted files before 0.10.25.";
+        :>> mainSuccess = "The client reconciles against the server; a file the server has genuinely deleted (tombstone present) is removed locally; a file merely absent (no tombstone) is kept and restored to the server. Local content is never destroyed on absence alone.";
+        :>> extensions = "Point a populated vault at an EMPTY/FRESH server -> every local file is restored, none deleted. | Point at a RESTORED/reindexed server missing many files (no tombstones) -> all missing files restored, none deleted (partial-shrink is not a mass delete). | Two reconciles in a row against such a server -> still no deletion on the second pass (durable, not a one-shot guard). | A genuine deletion on device A (tombstone) DOES propagate to device B. | A read-only shared target that lacks a file we hold -> kept locally, not pushed, not deleted.";
     }
 
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
@@ -114,4 +124,6 @@ package ProjectUseCases {
     #DependsOn dependency from ucAdministerServer to nVaultSharing;
     #DependsOn dependency from ucSwitchVault to selfHoster;
     #DependsOn dependency from ucSwitchVault to nConfigSync;
+    #DependsOn dependency from ucNeverLoseLocalData to selfHoster;
+    #DependsOn dependency from ucNeverLoseLocalData to n3NeverClobber;
 }

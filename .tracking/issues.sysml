@@ -228,4 +228,35 @@ package ProjectIssues {
     #Resolves dependency from round5CompletenessFollowups to issueCommitCas;
     #Resolves dependency from round5CompletenessFollowups to issueDataMigration;
     #Resolves dependency from round5CompletenessFollowups to issueConflictCopyCosmetic;
+
+    // =====================================================================
+    // FIELD DATA-LOSS ESCAPE (2026-07-06): the owner switched a populated vault onto a new build /
+    // wrong server; the client reported "kept 2 local files" but then DELETED every local file.
+    // Root cause + the test-coverage gap that let it ship, recorded per D0047 (a recurrable
+    // correction MUST become a tracked Issue + a permanent guard — here the guard is the realistic
+    // tombstone-modeling harness + a regression test that reproduces the exact sequence).
+    // Both resolved by deleteLocalTombstoneGate (0.10.25).
+    // =====================================================================
+    part issueDeleteOnAbsence : Issue {
+        :>> id = "c0f1a5cc-9801-4a10-9b20-a1b2c3d49801";
+        :>> title = "delete-local fired on a file's ABSENCE from the remote, not a real tombstone — wrong/empty server silently wiped the vault";
+        :>> createdAt = "2026-07-06";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "CRITICAL field data-loss: reconcile.decide() returned delete-local whenever a file present locally with an unchanged base was ABSENT from the remote (L!=null, R==null, L==B). Pointing a populated vault at a WRONG / FRESH / RESTORED server (a server that legitimately lacks our files but has issued NO deletion tombstones for them) therefore read every local file as a remote deletion and removed it. The one-shot C2 empty-server guard did not survive across reconcile passes — the client's own pushes made the remote non-empty on the second pass, disarming it — so even the '(server said it kept 2 local files)' log was immediately undone by the next reconcile (v1->v13). Fix: deletion is now TOMBSTONE-AUTHORITATIVE — reconcileOne takes a hasTombstone(path) predicate (reconcileAll from resp.deletes, reconcilePath from manifest.deletes); on absence WITHOUT a tombstone the file is RESTORED (pushed back), and it is removed ONLY when the server genuinely tombstoned it. Absence is never proof of deletion.";
+        :>> discoveredInField = true;
+        :>> relatedTask = "deleteLocalTombstoneGate";
+        :>> severity = Severity::High;
+    }
+    part issueDeleteTestGap : Issue {
+        :>> id = "c0f1a5cc-9802-4a10-9b20-a1b2c3d49802";
+        :>> title = "The reconcile test suite CODIFIED the absence-delete bug and never covered a vault switch onto a wrong/empty server";
+        :>> createdAt = "2026-07-06";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "The 181-test suite missed the data-loss because the fake server modeled deletion as mere ABSENCE (files.delete with no tombstone), so tests could not distinguish a real deletion from a file the server never had — and TWO tests actively asserted the buggy delete-on-absence as correct behavior. Coverage was happy-path (deletion propagation) + a single-pass empty-server guard; nothing exercised the two-pass 'switch to a wrong/empty/restored server' sequence that reproduces in the field. Fix (the permanent guard, D0047): the fake server now models tombstones (deletions[] with versions; changes() returns them), the two mis-asserting tests were rewritten to correct tombstone semantics, and a DATA-LOSS REGRESSION test reproduces the exact field sequence (Welcome.md + 'test file.md' survive two reconciles against a wrong/empty server). Also hardened the orchestration seam: main.ts injection seams + an obsidian stub let plugin-wiring.test.ts cover the wiring, and the e2e harness was repaired (ALLOW_WEAK_ADMIN + createVault for protocol-6).";
+        :>> discoveredInField = true;
+        :>> relatedTask = "deleteLocalTombstoneGate";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from deleteLocalTombstoneGate to issueDeleteOnAbsence;
+    #Resolves dependency from deleteLocalTombstoneGate to issueDeleteTestGap;
 }

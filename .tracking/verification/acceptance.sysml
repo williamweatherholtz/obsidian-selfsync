@@ -139,6 +139,12 @@ package ProjectAcceptance {
         :>> id = "c0f1a5cc-3303-4a10-9b20-a1b2c3d40303"; :>> method = VerificationMethod::confirmation;
         :>> procedureText = "wweatherholtz attests: hit a genuine config divergence and resolved it through the 'Config differences' modal, picking a side — observed on 0.10.7.";
     }
+    // ── Data-safety: tombstone-authoritative deletion (the 0.10.25 field-escape regression) ──
+    verification acTombstoneAuthoritativeDelete : Test {
+        :>> id = "c0f1a5cc-3401-4a10-9b20-a1b2c3d40341"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "SCENARIO (would have caught the field data-loss): GIVEN a populated local vault with a saved base WHEN it reconciles against a WRONG / FRESH / RESTORED server that lacks those files but has issued NO deletion tombstones THEN every local file is RESTORED (pushed back), none deleted; AND a SECOND reconcile against that now-non-empty server still deletes nothing (durable, not a one-shot guard); AND a file the server GENUINELY tombstoned IS removed locally; AND a partial-shrink server (many files missing, no tombstones) restores rather than mass-deletes. The fake server models tombstones (deletions[] with versions), and the 'DATA-LOSS REGRESSION: two reconciles against a wrong/empty server never delete local files' + 'RESTORES...no tombstone' + 'delete-local PROPAGATES a real server tombstone' + 'DI-1 partial-shrink' reconcile tests are green.";
+    }
     verification acFreeMerge : Test {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
@@ -149,6 +155,7 @@ package ProjectAcceptance {
     part acConfigAdjudicationR1 : TestResult { :>> id = "c0f1a5cc-4003-4a10-9b20-a1b2c3d40033"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acSyncRobustR1 : TestResult { :>> id = "c0f1a5cc-4004-4a10-9b20-a1b2c3d40034"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acFreeMergeR1 : TestResult { :>> id = "c0f1a5cc-4005-4a10-9b20-a1b2c3d40035"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+    part acTombstoneAuthoritativeDeleteR1 : TestResult { :>> id = "c0f1a5cc-4401-4a10-9b20-a1b2c3d40341"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "a9f2ee7"; :>> judgedAt = "2026-07-06"; :>> judgedBy = "ai"; }
     part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d6c0325"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acServerApiR1 : TestResult { :>> id = "c0f1a5cc-4211-4a10-9b20-a1b2c3d40311"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acInstantPushR1 : TestResult { :>> id = "c0f1a5cc-4212-4a10-9b20-a1b2c3d40312"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
@@ -220,8 +227,13 @@ package ProjectAcceptance {
     #Verify dependency from m5MobileDoD to srMobile;
     #Verify dependency from b7AuthHardeningDoD to srSecurity;
     #Verify dependency from vaultSharingP1DoD to srVaultSharing;
+    // tombstone-authoritative deletion strengthens the never-clobber + degraded-server guards
+    #Verify dependency from acTombstoneAuthoritativeDelete to srNeverClobber;
+    #Verify dependency from acTombstoneAuthoritativeDelete to srDegradedServerGuard;
     // validation (D0006): the escape-reproducing scenarios validate their use cases too
     #Verify dependency from acConfigAdjudication to ucResolveConfigDifference;
     #Verify dependency from acConfigAdditiveSafe to ucRemoveOrKeepPlugin;
     #Verify dependency from acConfigAdditiveSafe to ucSyncSetupAcrossDevices;
+    #Verify dependency from acTombstoneAuthoritativeDelete to ucNeverLoseLocalData;
+    #Verify dependency from acTombstoneAuthoritativeDelete to ucSwitchVault;
 }
