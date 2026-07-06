@@ -48,7 +48,7 @@ package ProjectDelivery {
         action fsmRefactor;               // DONE (0.10.24): one authoritative operational FSM (SyncEngine: serial event queue) replaces the scattered flags + parallel recovery — the CONC-R* race class is now structurally impossible
         action deleteLocalTombstoneGate;  // DONE (0.10.25): CRITICAL data-loss fix — delete-local requires a real deletion tombstone, never mere absence; + plugin-wiring integration tests + e2e harness repair
         action preReleaseHardening;       // DONE (0.10.26): shippable round-5 completeness items + the 2 timing crutches — protocol version handshake, admin vault reindex, commit optimistic-concurrency (CAS); token-TTL crutch → optimistic+reactive-401; config-scan poll-count → wall-clock
-        action stpaSafetyAnalysis;        // OPEN (D0016): end-of-project STPA safety pass — control structure → UCAs → loss scenarios → verify-linked safety requirements (deferred until the design settles)
+        action stpaSafetyAnalysis;        // OPEN (D0016): end-of-project STPA safety pass. Step-1 inputs (Losses L-1..L-4 + boundary/environment) + the Step-2 CONTROL STRUCTURE are captured (.tracking/safety/); STILL PENDING — hazards + safety constraints, UCAs (Step 3), loss scenarios (Step 4), and verify-linked safety requirements
         // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
