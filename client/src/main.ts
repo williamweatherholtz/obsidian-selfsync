@@ -7,7 +7,8 @@ import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
-import { SyncMachine, Phase, light } from "./syncstate";
+import { Phase, light } from "./syncstate";
+import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
@@ -141,9 +142,15 @@ export default class NewLiveSyncPlugin extends Plugin {
   private state: SyncState = { version: 0 };
   private base = new BaseStore();
   private cache: ChunkCache = new Map();
-  private applying = false; // guard: suppress reconcile re-entrancy from our own writes
 
-  // --- observability + connection lifecycle (explicit FSM, see syncstate.ts) ---
+  // --- observability + connection lifecycle ---
+  // The OPERATIONAL state now lives in one authoritative machine (syncengine.ts): a serial event
+  // queue with run-to-completion semantics. It replaces the old scattered flags (applying/
+  // connecting/remoteDirty/pendingLocal) + the six duplicated try/finally/drain blocks — those
+  // races are structurally impossible when there's one queue, one drain site, one recovery path.
+  // Vault/WS/poll events are just PRODUCERS that enqueue; the reconcile/connect logic is injected
+  // as EFFECTS; the status light is a pure PROJECTION of the engine's phase (renderLight).
+  private engine!: SyncEngine; // created in onload (its effects close over `this`)
   private statusEl?: HTMLElement;
   private ribbonEl?: HTMLElement; // state-colored ribbon icon (the sync indicator on mobile)
   statusListener?: () => void;    // settings tab registers this to live-refresh its status card
@@ -151,17 +158,14 @@ export default class NewLiveSyncPlugin extends Plugin {
   private editorActionEls = new Set<HTMLElement>(); // optional in-editor indicators (opt-in)
   private editorViews = new WeakSet<MarkdownView>();
   private logs: string[] = [];
-  private machine = new SyncMachine((phase) => this.renderLight(phase));
   private reconnectTimer?: number;
   private pollTimer?: number;
-  private configScanCountdown = 1; // polls until the next forced full config-aware reconcile (see onRemoteChanged)
+  private configScanCountdown = 1; // polls until the next forced full config-aware reconcile (see doReconcileAll)
   private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
   private rawDebounce?: number;               // debounce timer for the raw-event burst
   private recentSelfWrites = new Map<string, number>(); // config path -> when WE wrote it, to ignore the echo
   private backoff = 3000;
   private unloading = false;
-  private connecting = false;               // H2: only one reconnect() in flight at a time
-  private pendingLocal = new Set<string>(); // H1: local edits that arrived mid-sync; drained after
   private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
   private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
   private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
@@ -171,6 +175,18 @@ export default class NewLiveSyncPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
+    // The one operational state machine. Effects are the (previously inline) connect/reconcile/
+    // teardown bodies; the engine owns state, serialization, coalescing, and recovery.
+    this.engine = new SyncEngine({
+      connect: () => this.doConnect(),
+      reconcileAll: () => this.doReconcileAll(),
+      reconcilePath: (p, size) => this.doReconcilePath(p, size),
+      rews: () => this.doRews(),
+      teardown: () => this.doTeardown(),
+      onPhase: (p) => this.renderLight(p),
+      onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
+      scheduleReconnect: () => this.scheduleReconnect(),
+    });
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
     // ONE state indicator per platform — two would be redundant (the anti-pattern we're
@@ -183,7 +199,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.statusEl.addClass("mod-clickable");
       this.statusEl.onClickEvent(() => this.showLog());
     }
-    this.renderLight(this.machine.get()); // initial: off
+    this.renderLight(this.engine.phase()); // initial: off
 
     this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => this.openSetup() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
@@ -215,11 +231,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   onunload() {
     this.unloading = true;
-    this.machine.dispatch("unload");
-    if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
-    if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
-    if (this.wsRedialTimer !== undefined) window.clearTimeout(this.wsRedialTimer);
-    this.ws?.close();
+    this.engine.enqueue({ kind: "unload" }); // → teardown (stops timers, closes ws), projects off
     this.log("plugin unloaded");
   }
 
@@ -311,34 +323,6 @@ export default class NewLiveSyncPlugin extends Plugin {
     return f instanceof TFile ? f.stat.size : 0;
   }
 
-  // H1: drain local edits that were queued because they fired while a sync was running.
-  // Each reconcilePath re-guards `applying`; loop until the queue empties (new edits may
-  // arrive during draining and are picked up).
-  private async drainPending() {
-    while (!this.applying && this.api && !this.unloading && this.pendingLocal.size > 0) {
-      const path = this.pendingLocal.values().next().value as string;
-      this.pendingLocal.delete(path);
-      this.applying = true;
-      let failed = false;
-      // CONC-2: dispatch INSIDE the try — the status callback it fires runs arbitrary UI code;
-      // if that throws before the try, `applying` would leak true forever and wedge all sync.
-      try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), path, this.localSizeOf(path)); this.machine.dispatch("syncDone"); }
-      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(path); failed = true; }
-      finally { this.applying = false; }
-      // CONC-6: on failure re-queue the path and STOP draining (a later poll/reconnect or full
-      // reconcile retries it) rather than dropping it or hot-spinning on a persistent error.
-      if (failed) break;
-    }
-    // CONC-R4#1: honor a remote poke that arrived while the lock was held (by THIS drain or the
-    // reconcile whose finally called us) — re-run now instead of waiting for the 4s poll. Every
-    // applying-releasing path calls drainPending in its finally, so centralizing the re-run here
-    // gives all of them the WS's instant property, not just the onRemoteChanged exit path.
-    if (this.remoteDirty && !this.applying && this.api && !this.unloading) {
-      this.remoteDirty = false;
-      void this.onRemoteChanged();
-    }
-  }
-
   setAuthToken(token: string) { this.settings.authToken = token; void this.saveSettings(); }
 
   // Reuse the cached token when it still works; otherwise re-login with the stored
@@ -374,9 +358,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   async disconnect() {
     this.settings.vaultId = "";
     await this.saveSettings();
-    this.ws?.close();
-    if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
-    this.machine.dispatch("unload");
+    this.engine.enqueue({ kind: "disconnect" }); // → teardown (stops timers + closes ws), state off
     this.log("disconnected (local files kept)"); // the settings UI reflects it — no toast needed
   }
 
@@ -511,10 +493,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     // visible indicator, since the ribbon icon sits in the left sidebar drawer.
     if (!this.settings.editorStatus) return;
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view || this.editorViews.has(view)) { this.renderLight(this.machine.get()); return; }
+    if (!view || this.editorViews.has(view)) { this.renderLight(this.engine.phase()); return; }
     this.editorViews.add(view);
     this.editorActionEls.add(view.addAction("refresh-cw", "SelfSync sync status", () => this.showLog()));
-    this.renderLight(this.machine.get());
+    this.renderLight(this.engine.phase());
   }
   setEditorStatus(on: boolean) {
     this.settings.editorStatus = on;
@@ -524,7 +506,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.editorActionEls.clear();
     this.editorViews = new WeakSet();
   }
-  statusText() { return this.machine.get(); }
+  statusText() { return this.engine.phase(); }
 
   // ---- reconcile deps ----
   // The name used when the Device name field is left blank. Prefer a friendly label over
@@ -584,187 +566,129 @@ export default class NewLiveSyncPlugin extends Plugin {
     };
   }
 
-  // ---- connection lifecycle (self-healing) ----
-  async reconnect() {
-    if (this.connecting || this.unloading) return; // H2: one at a time; never after unload
-    if (this.applying) { this.scheduleReconnect(false); return; } // defer for the reconcile lock; don't inflate backoff (CONC-R2#5)
-    this.connecting = true;
-    // Hold the reconcile lock for the WHOLE connect (not just reconcileAll): otherwise a local
-    // vault event during acquireToken()/status() would start a reconcilePath with applying=false,
-    // then reconcileAll runs interleaved — both mutating base/version/cache (CONC-3).
-    this.applying = true;
+  // ---- connection lifecycle: public entry + engine effects ----
+  // Public entry (commands / settings / switch-vault): just enqueue a connect. The engine
+  // serializes it against any in-flight reconcile and dedups concurrent requests — no `connecting`
+  // flag needed (that state now lives in the machine).
+  async reconnect() { this.engine.enqueue({ kind: "connect" }); }
+
+  // EFFECT: (re)establish the connection — acquire token, health-check, initial reconcile (or a
+  // pending switch), then spin up the WS + poll. THROWS on any failure; the engine catches it,
+  // goes offline, and arms the backoff reconnect. No re-entrancy flags here: the engine guarantees
+  // exactly one effect runs at a time, so the old CONC-3 interleave is impossible by construction.
+  private async doConnect(): Promise<void> {
+    this.lastIssue = undefined;
+    // A connect is happening now — cancel any pending backoff timer so it can't later fire a
+    // redundant {connect} after this one succeeds.
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
-    // CONC-R2#4: cancel any pending WS re-dial — reconnect rebuilds the socket itself, and a stale
-    // redial (armed by the old socket's close during our awaits) must not race it, especially if
-    // this connect then fails and leaves this.ws pointing at the old socket.
-    if (this.wsRedialTimer !== undefined) { window.clearTimeout(this.wsRedialTimer); this.wsRedialTimer = undefined; }
     try {
-      // CONC-2: dispatch (which fires the status callback → arbitrary UI code) is INSIDE the
-      // try, so a throw from it can't leak `applying`/`connecting` true and permanently wedge
-      // the connection lifecycle (the finally always releases them).
-      this.machine.dispatch("connect");
       this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
       this.ws?.close();
       const token = await this.acquireToken();
       this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
-
-      // Never reconcile against a degraded server: a corrupt index makes the server
-      // 503 all sync ops, and acting on the resulting empty manifest could delete
-      // local files. Surface the operator action clearly instead of a bare 503.
+      // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
+      // on the resulting empty manifest could delete local files. Surface the operator action.
       const health = await this.api.status();
       if (health.status !== "ready") {
-        this.machine.dispatch("error");
         this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
-        this.log(this.lastIssue); // red status icon + the settings status card show it — no toast (would repeat every retry)
-        this.scheduleReconnect();
-        return;
+        this.log(this.lastIssue);
+        throw new Error("server vault not ready (reindex needed)");
       }
-
-      // A pending vault switch applies its chosen resolution ONCE, then reverts to normal
-      // reconcile; captured-and-cleared up front so a failed switch never silently
-      // re-applies an authoritative overwrite on a later reconnect.
+      // A pending vault switch applies its chosen resolution ONCE, then reverts to normal reconcile.
       const switchMode = this.pendingSwitchMode; this.pendingSwitchMode = undefined;
       if (switchMode) await switchTo(this.deps(), switchMode);
       else await reconcileAll(this.deps());
       await this.flushConfigReload();
-      this.log(`reconciled → v${this.state.version}`);
-
-      if (this.unloading) return; // H2: torn down while awaiting — don't spin up WS/poll
       this.spinUpWs();
       this.startPolling();
-
       this.backoff = 3000;
       this.lastIssue = undefined;
-      this.machine.dispatch("connected");
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
-      this.machine.dispatch("error");
-      this.lastIssue = /no password stored/.test(String(e?.message))
+      // Keep the specific reason if one was already set (the health case); else a friendly generic.
+      this.lastIssue = /no password stored|session expired/.test(String(e?.message))
         ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
-        : `Can't reach the server (${e?.message ?? e}). Retrying…`;
-      this.log(`connect FAILED: ${e?.message ?? e}`); // goes red in the status bar; no toast on each retry
-      this.scheduleReconnect();
-    } finally {
-      this.applying = false; // always release the reconcile lock (covers the health-not-ready early return + catch)
-      this.connecting = false;
+        : (this.lastIssue ?? `Can't reach the server (${e?.message ?? e}). Retrying…`);
+      throw e; // → engine: onError logs it, state goes offline, backoff reconnect is scheduled
     }
-    void this.drainPending(); // flush any edits queued during the initial reconcile
   }
 
-  // Connect the change-notification WebSocket and attach handlers. CONC-3: on a WS-only drop
-  // (proxy/idle timeout, or the server's own idle disconnect) while HTTP polling stays healthy,
-  // nothing else re-establishes the socket — reconnect() only runs on a POLL failure — so the
-  // client would silently degrade to ≤4s polling for the rest of the session. Re-dial on close,
-  // on a short delay, independent of poll health. Guarded so it never stacks or fights teardown.
-  private wsRedialTimer?: number;
-  private spinUpWs() {
-    if (this.unloading || !this.api) return;
-    const ws = this.api.connectWs(() => this.onRemoteChanged());
+  // EFFECT (teardown): stop timers + close the socket. Called on disconnect/unload by the engine.
+  private doTeardown(): void {
+    if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+    if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
+    this.ws?.close(); this.ws = undefined;
+  }
+
+  // Open the change-notification WebSocket and route its lifecycle through the ONE engine queue:
+  // a server poke → {remote}; a close → {rews} (re-dial) if it had opened, else {connect} (a
+  // never-opened socket means a bad/expired token). Because both recovery paths are just events on
+  // the serial queue, the old parallel redial-vs-reconnect timer race (CONC-R2#4/#6, CONC-R3#1 —
+  // three separate patches) is impossible by construction — no wsRedialTimer, no cross-cancellation.
+  private spinUpWs(): WebSocket | null {
+    if (this.unloading || !this.api) return null;
+    this.ws?.close();
+    const ws = this.api.connectWs(() => this.engine.enqueue({ kind: "remote" }));
     this.ws = ws ?? undefined;
-    if (!ws) { this.log("ws not available — polling fallback active"); return; }
+    if (!ws) { this.log("ws not available — polling fallback active"); return null; }
     let opened = false;
     ws.addEventListener("open", () => { opened = true; this.log("ws channel open (instant sync)"); });
     ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
     ws.addEventListener("close", () => {
-      if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down — don't re-dial
-      // CONC-R2#6: if the socket NEVER opened (rejected upgrade — e.g. an expired token), a bare
-      // re-dial with the same dead token just loops every 3s. Escalate to a full reconnect (which
-      // re-acquires the token). Only a socket that HAD opened gets the cheap in-place re-dial.
-      if (!opened) { this.log("ws upgrade rejected — reconnecting"); this.scheduleReconnect(); return; }
-      this.log("ws closed — re-dialing (polling continues meanwhile)");
-      if (this.wsRedialTimer === undefined) {
-        this.wsRedialTimer = window.setTimeout(() => {
-          this.wsRedialTimer = undefined;
-          if (!this.unloading && this.api && this.ws === ws) this.spinUpWs();
-        }, 3000);
-      }
+      if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
+      this.engine.enqueue(opened ? { kind: "rews" } : { kind: "connect" });
     });
+    return ws;
   }
 
-  // `bumpBackoff` doubles the backoff (a genuine connect failure). Pass false when merely deferring
-  // for the reconcile lock, so repeatedly deferring doesn't ratchet the delay to the 30s cap even
-  // though the server is reachable. (CONC-R2#5)
-  private scheduleReconnect(bumpBackoff = true) {
+  // EFFECT: re-establish ONLY the WS socket (no token re-acquire, no reconcile). Rejects if it
+  // can't open, so the engine escalates to a full {connect}.
+  private async doRews(): Promise<void> {
+    if (!this.spinUpWs()) throw new Error("ws could not be opened");
+  }
+
+  // Arm the backoff reconnect: after a jittered delay, enqueue {connect}. Stops the poll while
+  // offline (the connect restarts it) so the two don't retry in parallel. Full jitter avoids a
+  // thundering-herd reconnect after a server restart / LAN blip (CONC-10).
+  private scheduleReconnect(): void {
     if (this.reconnectTimer !== undefined || this.unloading) return;
-    // CONC-R3#1: a scheduled full reconnect supersedes any pending WS re-dial (the redial could
-    // have been armed by the OLD socket's close during a failed reconnect's awaits — the entry
-    // clear in reconnect() can't catch one armed later in that same call). Cancel it here so the
-    // two recovery paths don't race with a stale token.
-    if (this.wsRedialTimer !== undefined) { window.clearTimeout(this.wsRedialTimer); this.wsRedialTimer = undefined; }
-    // Full jitter on the exponential backoff: pick a random delay in [base/2, base]. Without
-    // it, many devices knocked offline together (server restart, LAN blip) would all retry on
-    // the same doubling schedule and stampede the server in lockstep. (CONC-10)
+    if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
     const base = this.backoff;
     const delay = Math.round(base / 2 + Math.random() * (base / 2));
     this.log(`retrying in ${Math.round(delay / 1000)}s`);
-    this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = undefined; this.reconnect(); }, delay);
-    if (bumpBackoff) this.backoff = Math.min(base * 2, 30000);
+    this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = undefined; this.engine.enqueue({ kind: "connect" }); }, delay);
+    this.backoff = Math.min(base * 2, 30000);
   }
 
-  private startPolling() {
+  // The 4s safety-net poll is now just an event SOURCE: it enqueues {remote}; the engine serializes
+  // it and doReconcileAll does the cheap incremental check, so an idle poll stays one tiny request.
+  private startPolling(): void {
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
-    this.pollTimer = window.setInterval(() => this.poll(), 4000);
-  }
-  private async poll() {
-    if (!this.api || this.applying) return;
-    await this.onRemoteChanged();
+    this.pollTimer = window.setInterval(() => this.engine.enqueue({ kind: "remote" }), 4000);
   }
 
-  private remoteDirty = false;
-  private async onRemoteChanged() {
-    if (!this.api) return;
-    // CONC-R3#3: a WS poke / poll that arrives mid-reconcile was dropped, so a remote change
-    // landing during an active reconcile waited up to the 4s poll to sync (losing the WS's
-    // instant property). Note it and re-run once the current reconcile finishes.
-    if (this.applying) { this.remoteDirty = true; return; }
-    this.applying = true;
-    this.remoteDirty = false;
-    try {
-      // Cheap incremental check first: only reconcile if the server advanced past
-      // our version. Idle polls do one tiny request and stay silent (no log spam,
-      // no full re-list). Local NOTE edits are handled separately by vault events.
-      //
-      // But local CONFIG changes (.obsidian: adding/removing a plugin, editing settings)
-      // fire NO vault event (config files aren't TFiles) and don't advance the server
-      // version — so the incremental check would never notice them, and they'd sync only
-      // at reconnect. When config sync is on, force a full reconcile every N polls so a
-      // local config change is picked up (and pushed) within ~N*pollInterval, not never.
-      const forceConfigScan = this.settings.configSync.enabled && --this.configScanCountdown <= 0;
-      if (forceConfigScan) this.configScanCountdown = CONFIG_SCAN_EVERY_POLLS;
-      const delta = await this.api.changes(this.state.version);
-      // Short-circuit only when nothing changed AND the server version matches ours (and no
-      // config scan is due). A version MISMATCH with no upserts/deletes means the server
-      // manifest was rebuilt/rewound (e.g. reindex reset the version, or a delete burst was
-      // compacted out of the tombstone window) — fall through to a full reconcile.
-      if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
-        this.machine.dispatch("syncDone"); // reachable + up to date
-        return;
-      }
-      this.machine.dispatch("syncStart");
-      const before = this.state.version;
-      await reconcileAll(this.deps());
-      await this.flushConfigReload();
-      if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
-      this.machine.dispatch("syncDone");
-      this.settings.lastSyncedAt = Date.now();
-    } catch (e: any) {
-      // Any failure (server down, 401, network) means we're NOT up to date: go red
-      // and hand recovery to the backoff reconnect (which restarts polling + WS on
-      // success). Stop the redundant poll so the two don't retry in parallel.
-      this.log(`reconcile FAILED: ${e?.message ?? e}`);
-      this.machine.dispatch("error");
-      if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
-      this.scheduleReconnect();
-    } finally {
-      this.applying = false;
-      // CONC-R2#1: drain queued local edits on EVERY path (incl. the idle short-circuit `return`
-      // above, which previously skipped this line and stranded a re-queued edit until the next
-      // full reconcile — under a misleading green light).
-      // drainPending also re-runs onRemoteChanged if a remote poke arrived mid-reconcile
-      // (CONC-R3#3 / CONC-R4#1) — centralized there so every applying-releasing path benefits.
-      void this.drainPending();
-    }
+  // EFFECT: reconcile against the server (a remote poke or a poll tick). Cheap incremental check
+  // first — an idle poll does one tiny changes() request and returns; a full reconcile runs only
+  // when the version advanced or a periodic config scan is due. THROWS on failure → the engine goes
+  // offline and schedules the backoff reconnect. (No applying/remoteDirty here: a poke arriving
+  // mid-reconcile is just another queued {remote} the engine runs next — CONC-R3#3/R4#1 for free.)
+  private async doReconcileAll(): Promise<void> {
+    if (!this.api) throw new Error("not connected");
+    // Local CONFIG edits fire no TFile event and don't bump the server version, and mobile has no
+    // `raw` watcher — so force a full (config-aware) reconcile every N polls as the mobile fallback
+    // + safety net. Desktop also gets the live `raw` path.
+    const forceConfigScan = this.settings.configSync.enabled && --this.configScanCountdown <= 0;
+    if (forceConfigScan) this.configScanCountdown = CONFIG_SCAN_EVERY_POLLS;
+    const delta = await this.api.changes(this.state.version);
+    // Short-circuit when nothing changed AND the version matches (no config scan due). A version
+    // MISMATCH with no upserts/deletes means the manifest was rebuilt/rewound → do a full reconcile.
+    if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) return;
+    const before = this.state.version;
+    await reconcileAll(this.deps());
+    await this.flushConfigReload();
+    if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
+    this.settings.lastSyncedAt = Date.now();
   }
 
   // A "raw" adapter event for a hidden `.obsidian/` file (desktop). Filter to config paths we
@@ -788,22 +712,22 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.rawDebounce = window.setTimeout(() => void this.flushRawConfig(), RAW_DEBOUNCE_MS);
   }
 
-  private async flushRawConfig() {
+  // EFFECT: reconcile one path, then apply any live config reload it triggered. flushConfigReload
+  // early-returns unless a `.obsidian/` file was actually written (pendingReload), so for a plain
+  // note this is just the reconcile. THROWS on failure → engine offline + reconnect.
+  private async doReconcilePath(path: string, size: number): Promise<void> {
+    await reconcilePath(this.deps(), path, size);
+    await this.flushConfigReload();
+  }
+
+  // Coalesced burst of raw config events → enqueue each changed path onto the ONE serial queue.
+  // The engine drains + coalesces them (and drops them if not connected — the next connect's full
+  // reconcile catches config too), and doReconcilePath applies the live reload.
+  private flushRawConfig(): void {
     this.rawDebounce = undefined;
     const paths = [...this.rawBuffer]; this.rawBuffer.clear();
-    if (!this.api || this.unloading || paths.length === 0) return;
-    // Mid-sync: queue onto the same drain the note events use, so we never reconcile re-entrantly.
-    if (this.applying) { for (const p of paths) this.pendingLocal.add(p); return; }
-    this.applying = true;
-    try {
-      this.machine.dispatch("syncStart");
-      for (const p of paths) await reconcilePath(this.deps(), p, this.localSizeOf(p));
-      await this.flushConfigReload();
-      this.machine.dispatch("syncDone");
-      this.settings.lastSyncedAt = Date.now();
-    } catch (e: any) { this.log(`config change sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); }
-    finally { this.applying = false; }
-    void this.drainPending();
+    if (this.unloading) return;
+    for (const p of paths) this.engine.enqueue({ kind: "path", path: p, size: this.localSizeOf(p) });
   }
 
   // Record that WE just wrote/removed a config path, so its "raw" echo is ignored. Prune the
@@ -816,38 +740,19 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
   }
 
-  private async onLocalEvent(f: TAbstractFile) {
-    if (!this.api || !(f instanceof TFile)) return;
-    if (this.applying) { this.pendingLocal.add(f.path); return; } // H1: queue, don't drop
-    this.applying = true;
-    try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), f.path, f.stat.size); this.machine.dispatch("syncDone"); }
-    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(f.path); } // CONC-R2#2: re-queue so the drain retries
-    finally { this.applying = false; }
-    void this.drainPending();
+  // Local vault events are just PRODUCERS now: enqueue a {path} and let the engine serialize,
+  // coalesce, run, and recover. (The engine drops path events until connected — the next connect's
+  // full reconcile catches anything edited while offline via base comparison.)
+  private onLocalEvent(f: TAbstractFile) {
+    if (f instanceof TFile) this.engine.enqueue({ kind: "path", path: f.path, size: f.stat.size });
   }
-
-  private async onLocalDelete(path: string) {
-    if (!this.api) return;
-    if (this.applying) { this.pendingLocal.add(path); return; }
-    this.applying = true;
-    try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), path); this.machine.dispatch("syncDone"); }
-    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(path); } // CONC-R2#2
-    finally { this.applying = false; }
-    void this.drainPending();
+  private onLocalDelete(path: string) {
+    this.engine.enqueue({ kind: "path", path, size: 0 });
   }
-
-  private async onLocalRename(file: TAbstractFile, oldPath: string) {
-    if (!this.api || !(file instanceof TFile)) return;
-    if (this.applying) { this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); return; }
-    this.applying = true;
-    try {
-      this.machine.dispatch("syncStart");
-      await reconcilePath(this.deps(), oldPath);                    // old path removed
-      await reconcilePath(this.deps(), file.path, file.stat.size); // new path created
-      this.machine.dispatch("syncDone");
-    } catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); } // CONC-R2#2
-    finally { this.applying = false; }
-    void this.drainPending();
+  private onLocalRename(file: TAbstractFile, oldPath: string) {
+    if (!(file instanceof TFile)) return;
+    this.engine.enqueue({ kind: "path", path: oldPath, size: 0 });     // old path removed
+    this.engine.enqueue({ kind: "path", path: file.path, size: file.stat.size }); // new path created
   }
 
   async loadSettings() {
