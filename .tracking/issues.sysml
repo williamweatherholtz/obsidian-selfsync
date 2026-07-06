@@ -185,4 +185,18 @@ package ProjectIssues {
     #Resolves dependency from round3CriticFixes to issuePurgeOrdering;
     #Resolves dependency from round1DeferredHardening to issueStreamWholeHash;
     #Resolves dependency from round1DeferredHardening to issueReindexSingleChunk;
+
+    // =====================================================================
+    // ROUND 4 — a FIFTH fresh 3-lens critique vs the 0.10.19 code, 2026-07-05. Convergence:
+    // 18 → 16 → 8 → 2 NEW findings. SECURITY LENS CONVERGED (0 findings — every attack surface
+    // traced, all prior fixes confirmed present+correct). 2 fixed + shipped 0.10.20
+    // (#Resolves round4CriticFixes); 1 sub-LOW cosmetic accepted (#Resolves round1DeferredHardening).
+    // =====================================================================
+    part issueNoncanonicalPath : Issue { :>> id = "c0f1a5cc-9601-4a10-9b20-a1b2c3d49601"; :>> title = "Non-canonical path (notes//a.md, trailing slash) desyncs the raw index key from the on-disk name"; :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz"; :>> description = "DI-R4#1 (MED): commit used the RAW req.path as the index key but derived the on-disk mirror from a Path-normalized value that collapses redundant/trailing slashes, so a non-conforming/hostile client could commit two keys (notes/a.md + notes//a.md) aliasing ONE disk file (silent overwrite + double manifest entry → client phantom-delete ping-pong), or desync key-vs-disk (reindex brick). Same integrity boundary as the case-collision/junk/trailing-dot guards. Fixed: safe_rel_path rejects any path that isn't its own canonical forward-slash form. +test."; :>> discoveredInField = false; :>> relatedTask = "round4CriticFixes"; :>> severity = Severity::Medium; }
+    part issueRemoteDirtyCoverage : Issue { :>> id = "c0f1a5cc-9602-4a10-9b20-a1b2c3d49602"; :>> title = "remoteDirty instant re-run honored only on the onRemoteChanged exit path (poke dropped to poll latency elsewhere)"; :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz"; :>> description = "CONC-R4#1 (LOW): the CONC-R3#3 remoteDirty re-run fired only in onRemoteChanged's finally (and even there drainPending could grab the lock first), so a remote poke arriving during other local activity (drain/reconnect/config-flush/delete/rename) waited for the 4s poll — losing the WS instant property (not data loss; poll backstops). Fixed: centralized the remoteDirty re-run into drainPending's exit, which every applying-releasing path already calls."; :>> discoveredInField = false; :>> relatedTask = "round4CriticFixes"; :>> severity = Severity::Low; }
+    part issueTransientGreenLight : Issue { :>> id = "c0f1a5cc-9603-4a10-9b20-a1b2c3d49603"; :>> title = "Transient 'fully synced' green light while polling is briefly stopped after a blip"; :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz"; :>> description = "CONC-R4 cosmetic (sub-LOW, ACCEPT): after a transient reconcile error stops the poll timer + schedules reconnect, a queued edit succeeding in the same finally dispatches syncDone → FSM offline+syncDone→idle (green) while the poll interval is momentarily stopped, until the reconnect timer restarts it. Self-correcting within the backoff window, no data impact — a sub-second wrong indicator not worth a code change on its own. Accepted."; :>> discoveredInField = false; :>> relatedTask = "round1DeferredHardening"; :>> severity = Severity::Low; }
+
+    #Resolves dependency from round4CriticFixes to issueNoncanonicalPath;
+    #Resolves dependency from round4CriticFixes to issueRemoteDirtyCoverage;
+    #Resolves dependency from round1DeferredHardening to issueTransientGreenLight;
 }
