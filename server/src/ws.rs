@@ -1,10 +1,26 @@
 use crate::error::lock;
-use crate::state::AppState;
+use crate::state::{AppState, MAX_WS_CONNECTIONS};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::Receiver;
+
+// Interval between server->client keepalive pings. A client that misses two consecutive pings
+// (no Pong within ~2 intervals) is treated as dead and its socket is dropped, so a half-open
+// TCP connection can't pin a task forever. (concurrency: WS idle timeout)
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+// Decrements the live-connection counter when a socket task ends (normal close, error, or
+// idle timeout), so the MAX_WS_CONNECTIONS budget is released on every exit path.
+struct ConnGuard(Arc<AtomicUsize>);
+impl Drop for ConnGuard {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::Relaxed); }
+}
 
 pub async fn ws_handler(
     State(st): State<AppState>,
@@ -33,15 +49,39 @@ pub async fn ws_handler(
         eprintln!("[ws] connect REJECTED (forbidden {user} -> {owner}/{vault})");
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
+    // Sync routes gate on vault existence (protocol-6); the WS is a read subscription, so it
+    // opens the handle only if the vault already exists rather than lazily provisioning it.
+    if !st.vault_exists(&owner, &vault) {
+        eprintln!("[ws] connect REJECTED (no such vault '{owner}/{vault}')");
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
     let handle = match st.vault(&owner, &vault) {
         Ok(h) => h,
         Err(_) => { eprintln!("[ws] connect REJECTED (bad vault '{owner}/{vault}')"); return axum::http::StatusCode::NOT_FOUND.into_response(); }
     };
-    eprintln!("[ws] {owner}/{vault} connected (by {user})");
-    let mut rx = handle.tx.subscribe();
-    ws.on_upgrade(move |mut socket: WebSocket| async move {
-        loop {
-            match rx.recv().await {
+    // Enforce the global connection budget BEFORE upgrading. fetch_add + rollback keeps the
+    // check-and-reserve atomic so concurrent connects can't overshoot the cap.
+    let live = st.ws_conns.fetch_add(1, Ordering::Relaxed) + 1;
+    if live > MAX_WS_CONNECTIONS {
+        st.ws_conns.fetch_sub(1, Ordering::Relaxed);
+        eprintln!("[ws] connect REJECTED (at capacity: {MAX_WS_CONNECTIONS})");
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
+    eprintln!("[ws] {owner}/{vault} connected (by {user}) [{live}/{MAX_WS_CONNECTIONS}]");
+    let rx = handle.tx.subscribe();
+    ws.on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard).await })
+}
+
+// The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
+// drop the socket if the peer misses two consecutive pings (dead/half-open connection).
+async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard) {
+    let mut ping = tokio::time::interval(WS_PING_INTERVAL);
+    ping.tick().await; // consume the immediate first tick
+    let mut awaiting_pong = false;
+    loop {
+        tokio::select! {
+            r = rx.recv() => match r {
                 Ok(version) => {
                     let msg = format!("{{\"type\":\"changed\",\"version\":{version}}}");
                     if socket.send(Message::Text(msg)).await.is_err() { break; }
@@ -52,7 +92,18 @@ pub async fn ws_handler(
                     if socket.send(Message::Text("{\"type\":\"changed\"}".into())).await.is_err() { break; }
                 }
                 Err(RecvError::Closed) => break,
+            },
+            _ = ping.tick() => {
+                if awaiting_pong { break; } // no Pong since the last ping -> peer is gone
+                if socket.send(Message::Ping(Vec::new())).await.is_err() { break; }
+                awaiting_pong = true;
             }
+            msg = socket.recv() => match msg {
+                Some(Ok(Message::Pong(_))) => awaiting_pong = false,
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}       // ignore any other client frame
+                Some(Err(_)) => break,  // transport error -> drop
+            },
         }
-    })
+    }
 }

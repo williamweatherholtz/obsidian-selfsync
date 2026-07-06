@@ -23,8 +23,11 @@ pub use state::AppState;
 pub fn app(state: AppState) -> Router {
     use axum::extract::DefaultBodyLimit;
     use axum::routing::{get, post, put};
-    use tower_http::cors::{Any, CorsLayer};
-    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
+    // No CORS layer: the plugin talks to the server over a NATIVE HTTP client
+    // (Obsidian requestUrl / mobile), which is not subject to the browser
+    // same-origin policy, and the only browser consumer is the same-origin
+    // /admin page. Emitting `Access-Control-Allow-Origin: *` would needlessly
+    // let any web page script the API on a logged-in user's behalf. (SEC-LOW-2)
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/admin", get(admin_ui::page)) // web management UI (wraps /api/admin/*)
@@ -63,7 +66,6 @@ pub fn app(state: AppState) -> Router {
         .route("/api/admin/invites", get(admin::invites_list).post(admin::invite_create))
         .route("/api/admin/invites/:id", axum::routing::delete(admin::invite_delete))
         .with_state(state)
-        .layer(cors)
         // Requests are small: one CDC chunk (~64 KiB) or a JSON metadata body. Cap the
         // buffered body at 16 MiB so a client can't force the server to buffer a huge
         // body in RAM (was 1 GiB — far larger than any legitimate request).

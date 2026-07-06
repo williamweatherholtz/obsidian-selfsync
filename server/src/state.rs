@@ -6,8 +6,14 @@ use crate::users::{safe_name, UserStore};
 use crate::vault::Vault;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
+
+// Hard ceiling on concurrently-open change-notification WebSockets across all vaults, so a
+// client (or a runaway reconnect loop) can't pin unbounded tasks/sockets. Generous for a
+// self-hosted deployment's device count. (concurrency: WS connection cap)
+pub const MAX_WS_CONNECTIONS: usize = 512;
 
 // A lazily-opened per-(user,vault) namespace: the Vault plus its own change
 // broadcast channel (so a client only wakes for its own vault). The Vault is behind
@@ -26,6 +32,7 @@ pub struct AppState {
     pub registration: Arc<Mutex<RegistrationStore>>, // policy + invite tokens (.registration.json)
     pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
+    pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
 }
 
 impl AppState {
@@ -55,6 +62,7 @@ impl AppState {
             registration: Arc::new(Mutex::new(registration)),
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
+            ws_conns: Arc::new(AtomicUsize::new(0)),
         };
         // Ensure the bootstrap account has a `default` vault to land in.
         if safe_name(&state.cfg.user) {
@@ -83,6 +91,14 @@ impl AppState {
         let mut map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
         // Another thread may have opened it meanwhile — keep the first.
         Ok(map.entry(key).or_insert(handle).clone())
+    }
+
+    // Does this (user, vault) already exist on disk? Sync routes require an EXISTING vault —
+    // provisioning goes through POST /api/vaults (create_vault). Without this, any GET to a
+    // sync route would lazily create+persist an arbitrary vault dir in the caller's namespace
+    // (a self-namespaced junk-dir amplification). (protocol-6 auto-provision)
+    pub fn vault_exists(&self, user: &str, vault: &str) -> bool {
+        safe_name(user) && safe_name(vault) && self.ns_dir(user, vault).is_dir()
     }
 
     // Vaults that exist on disk for a user (directories under DATA_ROOT/<user>).
@@ -123,6 +139,10 @@ impl AppState {
             registration: "open".into(),
             invite_code: String::new(),
         };
-        AppState::new(cfg).unwrap()
+        let st = AppState::new(cfg).unwrap();
+        // Tests exercise the sync routes against a `vault` namespace; provision it here (the
+        // bootstrap only makes `default`) so vault_exists() gating in scoped() lets them through.
+        let _ = st.vault("admin", "vault");
+        st
     }
 }

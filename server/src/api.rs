@@ -27,6 +27,12 @@ fn scoped(
     if !lock(&st.shares)?.authorized(&owner, &vault, user, access) {
         return Err(AppError::Forbidden);
     }
+    // Sync routes act on an EXISTING vault only — never lazily provision one. Provisioning is
+    // POST /api/vaults (create_vault); a sync request to an unknown vault is a 404, not a
+    // silent create in the caller's namespace. (protocol-6)
+    if !st.vault_exists(&owner, &vault) {
+        return Err(AppError::NotFound);
+    }
     let h = st.vault(&owner, &vault).map_err(|_| AppError::NotFound)?;
     Ok((owner, vault, h))
 }
