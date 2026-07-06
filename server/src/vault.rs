@@ -42,6 +42,7 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\\') || path.starts_with('/') { return None; }
     let p = PathBuf::from(path);
     if p.is_absolute() { return None; }
+    let mut segs: Vec<&str> = Vec::new();
     for c in p.components() {
         match c {
             Component::Normal(seg) => {
@@ -56,10 +57,16 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
                 // it on disk → the DI-4 "indexed file missing" check aborts every repair, bricking
                 // the vault permanently (a readWrite grantee could inflict this on the owner).
                 if is_reserved_win_name(s) || is_junk(s) { return None; }
+                segs.push(s);
             }
             _ => return None,
         }
     }
+    // DI-R4#1: the index key is the RAW request path but the on-disk mirror comes from this
+    // Path-normalized value, which collapses "notes//a.md" and "notes/a.md/" → "notes/a.md".
+    // Reject any input that isn't already its own canonical forward-slash form, so the index key
+    // can never alias a different on-disk file (silent overwrite) or desync from it (reindex brick).
+    if segs.join("/") != path { return None; }
     Some(p)
 }
 
@@ -572,6 +579,15 @@ mod tests {
         // A leading dot or an interior dot/space is fine.
         for ok in [".gitignore", "my note.md", "a.b.c.md", "notes/deep file.md"] {
             assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
+        }
+    }
+
+    #[test]
+    fn safe_rel_path_rejects_noncanonical_paths() {
+        // DI-R4#1: a path that isn't its own canonical forward-slash form would desync the raw
+        // index key from the Path-normalized on-disk name (alias/overwrite + reindex brick).
+        for bad in ["notes//a.md", "notes/a.md/", "a//b//c.md", "/a.md", "a/./b.md"] {
+            assert!(safe_rel_path(bad).is_none(), "expected reject: {bad}");
         }
     }
 

@@ -329,6 +329,14 @@ export default class NewLiveSyncPlugin extends Plugin {
       // reconcile retries it) rather than dropping it or hot-spinning on a persistent error.
       if (failed) break;
     }
+    // CONC-R4#1: honor a remote poke that arrived while the lock was held (by THIS drain or the
+    // reconcile whose finally called us) — re-run now instead of waiting for the 4s poll. Every
+    // applying-releasing path calls drainPending in its finally, so centralizing the re-run here
+    // gives all of them the WS's instant property, not just the onRemoteChanged exit path.
+    if (this.remoteDirty && !this.applying && this.api && !this.unloading) {
+      this.remoteDirty = false;
+      void this.onRemoteChanged();
+    }
   }
 
   setAuthToken(token: string) { this.settings.authToken = token; void this.saveSettings(); }
@@ -753,10 +761,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       // CONC-R2#1: drain queued local edits on EVERY path (incl. the idle short-circuit `return`
       // above, which previously skipped this line and stranded a re-queued edit until the next
       // full reconcile — under a misleading green light).
+      // drainPending also re-runs onRemoteChanged if a remote poke arrived mid-reconcile
+      // (CONC-R3#3 / CONC-R4#1) — centralized there so every applying-releasing path benefits.
       void this.drainPending();
-      // CONC-R3#3: if a remote notification arrived while we were reconciling, re-run now (once)
-      // instead of waiting for the next poll. Best-effort: re-enters the applying guard cleanly.
-      if (this.remoteDirty && !this.applying) { this.remoteDirty = false; void this.onRemoteChanged(); }
     }
   }
 
