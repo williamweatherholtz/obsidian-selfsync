@@ -276,23 +276,26 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     case "merge":
     case "conflict-copy": {
       const remoteBytes = await fetchVerified(d, rmeta!); // verify before merge/write (a corrupt blob must not be merged in)
+      // DI-R3#1: re-read the CURRENT on-disk local content AFTER the (multi-chunk, possibly slow)
+      // remote fetch and use it for the whole merge/conflict decision. A save that raced the fetch
+      // must feed BOTH the auto-merge (so the latest edit is merged, not a stale snapshot) AND the
+      // conflict copy (so it's preserved) — the DI-R2#5 fix covered the copies but the clean-merge
+      // branch still used the stale pre-fetch localBytes, silently dropping the racing edit.
+      const liveLocal = (await readOrNull(d.io, path)) ?? localBytes!;
       if (d.readOnly) {
         // Read-only share: the owner's version is canonical and we push nothing. Keep the
-        // reader's local edit as a LOCAL-only conflict copy so it isn't silently lost.
-        // DI-R2#5: preserve the CURRENT on-disk content (a save may have raced the remote fetch),
-        // not the stale localBytes read before the fetch.
-        const curRo = (await readOrNull(d.io, path)) ?? localBytes!;
+        // reader's (current) local edit as a LOCAL-only conflict copy so it isn't silently lost.
         const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
-        await d.io.write(copy, curRo);
+        await d.io.write(copy, liveLocal);
         await d.io.write(path, remoteBytes);
         setBase(d, path, remoteBytes, rmeta!.hash);
         d.onReadOnly?.(path); d.onConflict?.(path, copy);
         return;
       }
       const canMerge = action === "merge" && d.strategy === "auto-merge"
-        && isMergeable(path, localBytes!) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
+        && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
       if (canMerge) {
-        const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(localBytes!), new TextDecoder().decode(remoteBytes));
+        const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes));
         if (clean) {
           const mergedBytes = new TextEncoder().encode(merged);
           // DI-R2#3: record base from the COMMITTED bytes pushBytes returns, not the pre-write
@@ -302,11 +305,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
           return;
         }
       }
-      // Fallback / conflict-copy: remote becomes canonical; local kept as a copy.
-      // DI-R2#5: copy the CURRENT on-disk content (a save may have raced the remote fetch).
-      const curLocal = (await readOrNull(d.io, path)) ?? localBytes!;
+      // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
       const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
-      await d.io.write(copy, curLocal);
+      await d.io.write(copy, liveLocal);
       await d.io.write(path, remoteBytes);
       const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
       d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });

@@ -679,6 +679,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // though the server is reachable. (CONC-R2#5)
   private scheduleReconnect(bumpBackoff = true) {
     if (this.reconnectTimer !== undefined || this.unloading) return;
+    // CONC-R3#1: a scheduled full reconnect supersedes any pending WS re-dial (the redial could
+    // have been armed by the OLD socket's close during a failed reconnect's awaits — the entry
+    // clear in reconnect() can't catch one armed later in that same call). Cancel it here so the
+    // two recovery paths don't race with a stale token.
+    if (this.wsRedialTimer !== undefined) { window.clearTimeout(this.wsRedialTimer); this.wsRedialTimer = undefined; }
     // Full jitter on the exponential backoff: pick a random delay in [base/2, base]. Without
     // it, many devices knocked offline together (server restart, LAN blip) would all retry on
     // the same doubling schedule and stampede the server in lockstep. (CONC-10)
@@ -698,9 +703,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.onRemoteChanged();
   }
 
+  private remoteDirty = false;
   private async onRemoteChanged() {
-    if (!this.api || this.applying) return;
+    if (!this.api) return;
+    // CONC-R3#3: a WS poke / poll that arrives mid-reconcile was dropped, so a remote change
+    // landing during an active reconcile waited up to the 4s poll to sync (losing the WS's
+    // instant property). Note it and re-run once the current reconcile finishes.
+    if (this.applying) { this.remoteDirty = true; return; }
     this.applying = true;
+    this.remoteDirty = false;
     try {
       // Cheap incremental check first: only reconcile if the server advanced past
       // our version. Idle polls do one tiny request and stay silent (no log spam,
@@ -743,6 +754,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       // above, which previously skipped this line and stranded a re-queued edit until the next
       // full reconcile — under a misleading green light).
       void this.drainPending();
+      // CONC-R3#3: if a remote notification arrived while we were reconciling, re-run now (once)
+      // instead of waiting for the next poll. Best-effort: re-enters the applying guard cleanly.
+      if (this.remoteDirty && !this.applying) { this.remoteDirty = false; void this.onRemoteChanged(); }
     }
   }
 

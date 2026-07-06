@@ -117,8 +117,15 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
                     if socket.send(Message::Text(msg)).await.is_err() { break; }
                 }
                 // Client fell behind the 256-deep channel: don't drop the socket — nudge
-                // a full incremental catch-up (the client re-polls changes(since)).
+                // a full incremental catch-up (the client re-polls changes(since)). CONC-R3#2:
+                // re-check the ACL here too (same as the Ok arm) so a revoked-but-lagging grantee
+                // stops getting activity nudges instead of leaking until its next non-lagged recv.
                 Err(RecvError::Lagged(_)) => {
+                    let still_ok = match lock(&st.shares) {
+                        Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
+                        Err(_) => false,
+                    };
+                    if !still_ok { break; }
                     if socket.send(Message::Text("{\"type\":\"changed\"}".into())).await.is_err() { break; }
                 }
                 Err(RecvError::Closed) => break,

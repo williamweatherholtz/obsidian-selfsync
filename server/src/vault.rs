@@ -46,6 +46,11 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
         match c {
             Component::Normal(seg) => {
                 let s = seg.to_str()?; // reject non-UTF-8 segments
+                // SEC-R3#1: reject a name Windows silently strips a trailing '.' or space from (or
+                // that is all dots) — the index key ("evil.md.") would then differ from the on-disk
+                // name ("evil.md"), re-opening the reindex-brick (DI-4) AND evading the reserved
+                // check ("aux " → device AUX). On Linux these are literal, so this is a safe superset.
+                if s.ends_with('.') || s.ends_with(' ') || s.bytes().all(|b| b == b'.') { return None; }
                 // SEC-R2#2: reject a name reindex's collect_files would SKIP as junk (.DS_Store,
                 // .git, …). Otherwise commit could put it in the index, but reindex wouldn't find
                 // it on disk → the DI-4 "indexed file missing" check aborts every repair, bricking
@@ -556,6 +561,18 @@ mod tests {
             assert!(safe_rel_path(bad).is_none(), "expected reject: {bad}");
         }
         assert!(safe_rel_path("notes/.gitignore").is_some()); // .gitignore is a real file, not junk
+    }
+
+    #[test]
+    fn safe_rel_path_rejects_trailing_dot_space_and_reserved_variants() {
+        // SEC-R3#1: names Windows strips a trailing '.'/space from would desync index key vs disk.
+        for bad in ["evil.md.", "evil.md ", "note ", "note.", "aux ", "CON.", "...", "sub/x.md.", "a/b.txt "] {
+            assert!(safe_rel_path(bad).is_none(), "expected reject: {bad}");
+        }
+        // A leading dot or an interior dot/space is fine.
+        for ok in [".gitignore", "my note.md", "a.b.c.md", "notes/deep file.md"] {
+            assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
+        }
     }
 
     #[test]
