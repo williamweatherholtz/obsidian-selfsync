@@ -39,6 +39,7 @@ package ProjectDelivery {
         action critiqueServerHardening; // DONE (0.10.16, code): SEC-1/2/MED-1/MED-2/MED-3(semaphore)/DI-3/DI-4/SEC-3 + the Low backlog — cargo-green, needs operator redeploy
         action round1CriticFixes;       // DONE (0.10.17): 15 of 18 fresh Round-1 3-lens critic findings fixed (6 SEC, 4 DI, 5 CONC); 3 dispositioned accept-risk/defer
         action round1DeferredHardening;  // OPEN: the 3 deferred Round-1 findings — SEC#4 per-vault orphan-chunk quota, DI#4 reindex-vs-chunkstore preference, CONC#5 keep pendingSwitch until success
+        action round2CriticFixes;        // DONE (0.10.18): 15 of 16 fresh Round-2 3-lens critic findings fixed (4 DI, 6 CONC, 4 SEC + 1 note); 1 accepted (residual pull TOCTOU, inherent)
         // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
@@ -80,6 +81,7 @@ package ProjectDelivery {
         // request-rate throttling is a further hardening left to the reverse proxy (documented).
         verification round1CriticFixesDoD : Test { :>> id = "c0f1a5cc-5006-4a10-9b20-a1b2c3d40046"; :>> method = VerificationMethod::test; :>> procedureText = "Round-1 fresh 3-lens critic findings (18) triaged; 15 fixed + tested + shipped 0.10.17: DI#1 switchTo honors accepts() gate, DI#2 streamed downloads verify per-chunk, DI#3 pull-race conflict-copy, DI#5 event-path bulk-delete ratio guard; CONC#1 single-flight persist, CONC#2 exception-safe applying flag, CONC#3 self-healing WS re-dial, CONC#4 WS MissedTickBehavior::Delay, CONC#6 drain requeue; SEC#1 lowercase-canonical names (case-collision breach), SEC#2 argon2 offload+cap+semaphore, SEC#3 vault cap, SEC#5 512MiB ceiling, SEC#6 generic 5xx, SEC#7 reserved-name reject. 3 dispositioned accept-risk/defer (SEC#4, DI#4, CONC#5). Full client suite 162 green; server cargo 70 green; server needs redeploy."; }
         // OPEN — the 3 deferred Round-1 items (no result yet, so orient shows them outstanding).
+        verification round2CriticFixesDoD : Test { :>> id = "c0f1a5cc-5008-4a10-9b20-a1b2c3d40048"; :>> method = VerificationMethod::test; :>> procedureText = "Round-2 fresh 3-lens critic findings (16) on the 0.10.17 code triaged; 15 fixed + tested + shipped 0.10.18. DI: cached chunks verified before use (closed the DI-2 hole), streamed+racing-create pull guards, pushBytes returns committed bytes for merge base, conflict copies preserve current disk bytes, accepted-only bulk-delete denominator. CONC: drainPending runs on every path (no stranded edit under a green light), direct-op failure re-queues, version cursor ASSIGN not max (rewind converges), WS-redial races (stale-timer cancel, no-backoff-inflate on lock-defer, escalate never-opened socket). SEC: case-insensitive self-folder exclusion (cred-hijack), junk-name reject (reindex-brick), WS ACL re-check on revoke, admin users_create argon2 cap. 1 accepted (residual large-file pull TOCTOU, inherent). Full client suite 163 green; server cargo 71 green; server needs redeploy."; }
         verification round1DeferredHardeningDoD : Test { :>> id = "c0f1a5cc-5007-4a10-9b20-a1b2c3d40047"; :>> method = VerificationMethod::test; :>> procedureText = "SEC#4: a per-vault stored-bytes quota and/or runtime orphan-chunk GC so a ReadWrite grantee can't fill the owner's disk with uncommitted chunks (today reclaimed only at startup). DI#4: during reindex, when an on-disk file's hash disagrees with a still-healthy index entry, prefer/surface the chunk-store content rather than silently adopting the bind-mount bytes. CONC#5: keep pendingSwitchMode set until switchTo fully succeeds so a mid-switch failure doesn't downgrade an authoritative overwrite to a merge. Each landed with tests."; }
 
         // ---- appended pass results for DONE milestones (judged at the backfill commit) ----
@@ -114,6 +116,8 @@ package ProjectDelivery {
         // (0.10.17). Server-side fixes are cargo-green and CODE-complete; they take effect on redeploy.
         part critiqueServerHardeningR1 : TestResult { :>> id = "c0f1a5cc-6005-4a10-9b20-a1b2c3d40055"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "f7cedca"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
         part round1CriticFixesR1 : TestResult { :>> id = "c0f1a5cc-6006-4a10-9b20-a1b2c3d40056"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "f7cedca"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        // Round-2 critic fixes landed by a3e69e1 (0.10.18); server-side takes effect on redeploy.
+        part round2CriticFixesR1 : TestResult { :>> id = "c0f1a5cc-6007-4a10-9b20-a1b2c3d40057"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "a3e69e1"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
