@@ -100,6 +100,19 @@ impl AppState {
         out
     }
 
+    // Remove ALL of a user's vault data on account delete — the cached in-RAM handles AND the
+    // on-disk directory — so a recreated username can never inherit the prior owner's notes/chunks
+    // (SEC-MED-2 data remanence). Best-effort on the dir (a locked file shouldn't wedge the delete).
+    pub fn purge_user_data(&self, user: &str) -> std::io::Result<()> {
+        if !safe_name(user) { return Ok(()); } // the admin route already validated; defensive
+        if let Ok(mut map) = self.ns.lock() {
+            map.retain(|(u, _), _| u != user); // drop cached handles so a reopen can't serve a stale index
+        }
+        let dir = self.cfg.data_root.join(user);
+        if dir.exists() { std::fs::remove_dir_all(&dir)?; }
+        Ok(())
+    }
+
     pub fn for_test(data_root: &Path) -> Self {
         let cfg = Config {
             data_root: data_root.to_path_buf(),

@@ -145,6 +145,11 @@ pub async fn users_delete(
     // Drop the account's shares (as owner or grantee) and revoke any active sessions.
     lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    // Remove the account's vault data (dirs + cached handles) so a reused username can't inherit it
+    // (SEC-MED-2). Best-effort: a locked file must not leave the account half-deleted.
+    if let Err(e) = st.purge_user_data(&name) {
+        eprintln!("[users_delete] WARN: could not purge data for '{name}': {e}");
+    }
     Ok(StatusCode::OK)
 }
 

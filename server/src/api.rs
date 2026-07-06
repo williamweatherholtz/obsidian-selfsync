@@ -90,6 +90,13 @@ pub async fn chunks_missing(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<MissingRequest>,
 ) -> Result<Json<MissingResponse>, AppError> {
+    // Cap the batch: an unbounded hash list drives one `exists()` stat syscall per hash under the
+    // read lock — a 16 MiB body is ~230k stats, a cheap amplified DoS. A real file chunks into far
+    // fewer than this. (concurrency-7)
+    const MAX_MISSING_HASHES: usize = 10_000;
+    if req.hashes.len() > MAX_MISSING_HASHES {
+        return Err(AppError::BadRequest("too many hashes in one request".into()));
+    }
     let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
     let v = rlock(&h.vault)?;
     ensure_ready(&v)?;

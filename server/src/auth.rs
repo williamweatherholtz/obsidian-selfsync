@@ -29,18 +29,19 @@ pub async fn register(
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
-    // Avoid consuming an invite token on an obvious duplicate.
-    if lock(&st.users)?.exists(&req.username) {
-        return Err(AppError::Conflict("user exists".into()));
-    }
-    // Open: anyone may register. Closed: a valid single-use invite token is required
-    // (carried in the `invite` field) and is consumed here.
-    // `&&` short-circuits: redeem (which consumes the token) only runs in Closed mode.
+    // Registration/invite gate FIRST — before any existence check — so a closed server returns a
+    // UNIFORM 403 whether or not the account exists. (Previously the exists() 409 fired before this
+    // gate, giving an unauthenticated caller a 409-vs-403 username-enumeration oracle. SEC-MED-1.)
+    // `&&` short-circuits: redeem (which consumes the token) only runs in Closed mode; on a rare
+    // duplicate-with-valid-invite this consumes the invite, an acceptable cost for no oracle.
     if lock(&st.registration)?.mode() == crate::registration::Mode::Closed
         && (req.invite.is_empty() || !lock(&st.registration)?.redeem(&req.invite))
     {
         eprintln!("[register] user='{}' -> 403 (registration closed; missing/invalid invite)", req.username);
         return Err(AppError::Forbidden);
+    }
+    if lock(&st.users)?.exists(&req.username) {
+        return Err(AppError::Conflict("user exists".into()));
     }
     match lock(&st.users)?.register(&req.username, &req.password) {
         Ok(()) => { eprintln!("[register] user='{}' -> OK", req.username); Ok(StatusCode::OK) }
