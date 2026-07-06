@@ -92,6 +92,17 @@ pub async fn file_meta(
     v.file_meta(&path).map(Json).ok_or(AppError::NotFound)
 }
 
+// Run a blocking closure (filesystem IO / hashing) on the blocking thread pool so it never
+// stalls an async runtime worker. The closure owns a cloned VaultHandle and takes the lock
+// itself, so no std lock guard is ever held across an .await. (concurrency: offload blocking IO)
+async fn blocking<T, F>(f: F) -> Result<T, AppError>
+where
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.map_err(|e| AppError::Internal(format!("task join failed: {e}")))?
+}
+
 pub async fn chunks_missing(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<MissingRequest>,
@@ -104,9 +115,11 @@ pub async fn chunks_missing(
         return Err(AppError::BadRequest("too many hashes in one request".into()));
     }
     let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
-    let v = rlock(&h.vault)?;
-    ensure_ready(&v)?;
-    let missing = v.missing(&req.hashes);
+    let missing = blocking(move || {
+        let v = rlock(&h.vault)?;
+        ensure_ready(&v)?;
+        Ok(v.missing(&req.hashes))
+    }).await?;
     Ok(Json(MissingResponse { missing }))
 }
 
@@ -123,7 +136,10 @@ pub async fn put_chunk(
     }
     // Shared read lock: chunk uploads run concurrently (content-addressed, unique
     // temp names) and don't block other reads. Commit takes the write lock later.
-    rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // The disk write runs on the blocking pool so it can't stall an async worker.
+    blocking(move || {
+        rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))
+    }).await?;
     Ok(StatusCode::OK)
 }
 
@@ -133,7 +149,9 @@ pub async fn get_chunk(
 ) -> Result<Response, AppError> {
     let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
     let hash = pp.get("hash").cloned().ok_or_else(|| AppError::BadRequest("missing hash".into()))?;
-    let result = rlock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))?;
+    let result = blocking(move || {
+        rlock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))
+    }).await?;
     match result {
         Some(b) => Ok((StatusCode::OK, b).into_response()),
         None => Err(AppError::NotFound),
@@ -145,17 +163,19 @@ pub async fn commit(
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,
 ) -> Result<Json<FileMeta>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
-    let path = req.path.clone();
-    let meta = {
+    let tx = h.tx.clone();
+    let (o, vlt, u, p) = (owner.clone(), vault.clone(), user.clone(), req.path.clone());
+    // commit does journal + mirror IO under the write lock — run it on the blocking pool.
+    let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
         v.commit(req).map_err(|e| {
-            eprintln!("[{owner}/{vault} commit by {user}] {} -> error ({e})", path);
+            eprintln!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
             if e.kind() == std::io::ErrorKind::NotFound { AppError::NotFound } else { AppError::BadRequest(e.to_string()) }
-        })?
-    };
+        })
+    }).await?;
     eprintln!("[{owner}/{vault} commit by {user}] {} ({} chunks) -> v{}", meta.path, meta.chunks.len(), meta.version);
-    let _ = h.tx.send(meta.version);
+    let _ = tx.send(meta.version);
     Ok(Json(meta))
 }
 
@@ -165,13 +185,15 @@ pub async fn delete_file(
 ) -> Result<Json<Deletion>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
-    let d = {
+    let tx = h.tx.clone();
+    let p = path.clone();
+    let d = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.delete(&path).map_err(|e| AppError::BadRequest(e.to_string()))?
-    };
+        v.delete(&p).map_err(|e| AppError::BadRequest(e.to_string()))
+    }).await?;
     match d {
-        Some(d) => { eprintln!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = h.tx.send(d.version); Ok(Json(d)) }
+        Some(d) => { eprintln!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = tx.send(d.version); Ok(Json(d)) }
         None => Err(AppError::NotFound),
     }
 }
@@ -197,12 +219,14 @@ pub async fn reindex(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
-    let version = {
+    let tx = h.tx.clone();
+    // reindex walks the whole vault dir + rehashes — always on the blocking pool.
+    let version = blocking(move || {
         let mut v = wlock(&h.vault)?;
         v.reindex().map_err(|e| AppError::Internal(e.to_string()))?;
-        v.version()
-    };
+        Ok(v.version())
+    }).await?;
     eprintln!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
-    let _ = h.tx.send(version);
+    let _ = tx.send(version);
     Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version }))
 }
