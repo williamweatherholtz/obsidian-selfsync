@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { ChangesResponse, CommitRequest, FileMeta, StatusResponse } from "./protocol";
+import { ChangesResponse, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta } from "./protocol";
 import { SyncApi } from "./sync";
 
 // A vault shared WITH the current account (owned by someone else on the server).
@@ -84,13 +84,13 @@ export class HttpTransport implements SyncApi {
   async changes(since: number): Promise<ChangesResponse> {
     const r = await requestUrl({ url: this.v(`/changes?since=${since}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`changes: HTTP ${r.status}`);
-    return r.json as ChangesResponse;
+    return validateChanges(r.json);
   }
   async fileMeta(path: string): Promise<FileMeta | null> {
     const r = await requestUrl({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status === 404) return null;
     if (r.status !== 200) throw new Error(`meta: HTTP ${r.status}`);
-    return r.json as FileMeta;
+    return validateFileMeta(r.json);
   }
   async missing(hashes: string[]): Promise<string[]> {
     const r = await requestUrl({
@@ -98,7 +98,9 @@ export class HttpTransport implements SyncApi {
       headers: this.auth(), body: JSON.stringify({ hashes }), throw: false,
     });
     if (r.status !== 200) throw new Error(`missing: HTTP ${r.status}`);
-    return (r.json as { missing: string[] }).missing;
+    const m = (r.json as { missing?: unknown }).missing;
+    if (!Array.isArray(m) || m.some((h) => typeof h !== "string")) throw new Error("missing: malformed response");
+    return m as string[];
   }
   async getChunk(hash: string): Promise<Uint8Array> {
     const r = await requestUrl({ url: this.v(`/chunk/${hash}`), method: "GET", headers: this.auth(), throw: false });
@@ -115,7 +117,7 @@ export class HttpTransport implements SyncApi {
       headers: this.auth(), body: JSON.stringify(req), throw: false,
     });
     if (r.status !== 200) throw new Error(`commit: HTTP ${r.status}`);
-    return r.json as FileMeta;
+    return validateFileMeta(r.json);
   }
   async deleteFile(path: string): Promise<void> {
     const r = await requestUrl({ url: this.v(`/file?path=${encodeURIComponent(path)}`), method: "DELETE", headers: this.auth(), throw: false });

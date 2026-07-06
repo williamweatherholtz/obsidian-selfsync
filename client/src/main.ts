@@ -435,13 +435,20 @@ export default class NewLiveSyncPlugin extends Plugin {
     // tolerate a plugin whose code isn't installed yet — reload must not throw).
     const pluginIds = new Set<string>();
     for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.selfFolderId()) pluginIds.add(id); }
-    for (const id of pluginIds) {
-      try {
-        if (app.plugins?.enabledPlugins?.has?.(id) && app.plugins?.plugins?.[id]) {
-          await app.plugins.disablePlugin(id);
-          await app.plugins.enablePlugin(id);
-        }
-      } catch { needsRestart = true; }
+    // SEC-3: NEVER auto-(re)enable community-plugin CODE that arrived from a vault this account
+    // does not own. A shared vault's owner could push a malicious plugin main.js; silently
+    // enabling it would execute their code on this device. Surface it and let the user decide.
+    if (this.settings.vaultOwner && pluginIds.size > 0) {
+      new Notice("SelfSync: plugins changed in a shared vault are NOT auto-enabled. Enable them manually only if you trust the source.");
+    } else {
+      for (const id of pluginIds) {
+        try {
+          if (app.plugins?.enabledPlugins?.has?.(id) && app.plugins?.plugins?.[id]) {
+            await app.plugins.disablePlugin(id);
+            await app.plugins.enablePlugin(id);
+          }
+        } catch { needsRestart = true; }
+      }
     }
 
     // Core settings / hotkeys / the plugin-enable list can't be fully re-applied live.
@@ -634,10 +641,14 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   private scheduleReconnect() {
     if (this.reconnectTimer !== undefined || this.unloading) return;
-    const delay = this.backoff;
+    // Full jitter on the exponential backoff: pick a random delay in [base/2, base]. Without
+    // it, many devices knocked offline together (server restart, LAN blip) would all retry on
+    // the same doubling schedule and stampede the server in lockstep. (CONC-10)
+    const base = this.backoff;
+    const delay = Math.round(base / 2 + Math.random() * (base / 2));
     this.log(`retrying in ${Math.round(delay / 1000)}s`);
     this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = undefined; this.reconnect(); }, delay);
-    this.backoff = Math.min(this.backoff * 2, 30000);
+    this.backoff = Math.min(base * 2, 30000);
   }
 
   private startPolling() {
@@ -700,8 +711,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!path.startsWith(".obsidian/")) return;                    // notes are handled by TFile events
     if (!this.settings.configSync.enabled) return;
     if (!shouldSync(path, this.settings.configSync, this.selfFolderId())) return; // out of scope / self folder
+    // Drop the echo of OUR OWN write — but one-shot: consume the marker as soon as it's seen so
+    // a genuine external edit to the same path RIGHT AFTER ours isn't masked for the whole window
+    // (reconciling a stray echo is a safe no-op; silently dropping a real change is not). (CO-6)
     const wrote = this.recentSelfWrites.get(path);
-    if (wrote !== undefined && Date.now() - wrote < SELF_WRITE_WINDOW_MS) return;  // our own write echoing back
+    if (wrote !== undefined) {
+      this.recentSelfWrites.delete(path);
+      if (Date.now() - wrote < SELF_WRITE_WINDOW_MS) return; // within the window: this is our echo
+    }
     this.rawBuffer.add(path);
     if (this.rawDebounce !== undefined) window.clearTimeout(this.rawDebounce);
     this.rawDebounce = window.setTimeout(() => void this.flushRawConfig(), RAW_DEBOUNCE_MS);
