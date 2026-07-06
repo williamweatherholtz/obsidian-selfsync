@@ -164,9 +164,11 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
   const guardBulkDelete = basePaths.length > 0 && (remote.size === 0
     || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
+  // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
+  const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
   for (const p of paths) {
-    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0); }
+    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp)); }
     catch (e) { d.onFileError?.(p, e); } // isolate: one file's failure must never abort the whole sync
   }
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
@@ -183,6 +185,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // confirm the server isn't wholesale-empty (server data loss) — only then does the
   // extra manifest fetch happen, so the common case stays a single /meta call.
   let guardDelete = false;
+  let hasTombstone: (p: string) => boolean = () => false;
   if (rmeta === null && d.base.get(path)) {
     // DI-5: apply the SAME widened bulk-delete guard reconcileAll uses — not just the
     // empty-manifest case. A PARTIAL server index loss (restore-from-backup / reindex over an
@@ -190,15 +193,17 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     // to catch, and deletions frequently route through this per-event path under live editing.
     const manifest = await d.api.changes(0);
     const remoteSet = new Set(manifest.upserts.map((f) => f.path));
+    const tombstoned = new Set(manifest.deletes.map((x) => x.path));
+    hasTombstone = (p) => tombstoned.has(p); // delete-local requires a real deletion tombstone
     const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p)); // accepted-only denominator (DI-R2 note)
     const wouldDelete = basePaths.filter((p) => !remoteSet.has(p)).length;
     guardDelete = basePaths.length > 0 && (remoteSet.size === 0
       || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   }
-  await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize);
+  await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone);
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0): Promise<void> {
+async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false): Promise<void> {
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -259,7 +264,21 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       await applyPull(d, path, rmeta!, localHash, true); // guard a local edit/create racing the fetch (DI-3)
       return;
     case "delete-local":
-      if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
+      // DATA-SAFETY (durable delete guard): only delete a local file when the server has a real
+      // deletion TOMBSTONE for it. Mere absence (local==base, remote-absent) is NOT proof of
+      // deletion — it also happens when this device is pointed at a WRONG / FRESH / RESTORED server
+      // that never had the file. Deleting on absence is what silently wiped local files after a
+      // vault switch: the C2 ratio guard fired only on the FIRST (empty) reconcile; once our own
+      // pushes made the remote non-empty, the ratio no longer tripped and the "kept" files were
+      // deleted on the next pass. Requiring a tombstone is durable across passes. Without one, the
+      // safe action is to RESTORE the file to the server, never to destroy local data.
+      if (!hasTombstone(path)) {
+        if (d.readOnly) { d.onReadOnly?.(path); return; } // read-only share: can't restore; just keep local
+        const { hash: rh, bytes: rb } = await pushFile(d.api, d.io, d.state, d.cache, path);
+        setBase(d, path, rb, rh);
+        return;
+      }
+      if (guardDelete) { d.onGuard?.(path); return; } // real tombstone(s) but a suspicious MASS delete — still guard
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "delete-remote":
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't delete on a read-only share

@@ -26,16 +26,20 @@ describe("decide", () => {
 
 function fakeServer() {
   const chunks = new Map<string, Uint8Array>(); const files = new Map<string, FileMeta>(); let version = 1;
+  // Deletion TOMBSTONES, like the real server: deleteFile records one, and changes() returns those
+  // past `since`. This is what makes a delete PROPAGATE — a file merely absent from `files` with no
+  // tombstone is "this server never had it" (wrong/fresh/restored server), NOT a deletion.
+  const deletions: { path: string; version: number }[] = [];
   const api: SyncApi = {
-    async changes(since) { return { version, upserts: [...files.values()].filter((f) => f.version > since), deletes: [] } as ChangesResponse; },
+    async changes(since) { return { version, upserts: [...files.values()].filter((f) => f.version > since), deletes: deletions.filter((d) => d.version > since) } as ChangesResponse; },
     async fileMeta(p) { return files.get(p) ?? null; },
     async missing(hs) { return hs.filter((h) => !chunks.has(h)); },
     async getChunk(h) { return chunks.get(h)!; },
     async putChunk(h, b) { chunks.set(h, b); },
     async commit(r: CommitRequest) { const m: FileMeta = { ...r, version: ++version }; files.set(r.path, m); return m; },
-    async deleteFile(p) { files.delete(p); },
+    async deleteFile(p) { if (files.delete(p)) deletions.push({ path: p, version: ++version }); },
   };
-  return { api, chunks, files };
+  return { api, chunks, files, deletions };
 }
 function fakeIo(seed: Record<string, string> = {}) {
   const m = new Map<string, Uint8Array>(Object.entries(seed).map(([k, v]) => [k, enc(v)]));
@@ -127,16 +131,18 @@ describe("reconcileAll", () => {
     expect(files.has("d.md")).toBe(true);
   });
 
-  it("C2: refuses bulk delete-local when the server manifest is empty but base is non-empty", async () => {
-    const { api } = fakeServer(); // empty server (e.g. lost index)
+  it("RESTORES (never deletes) a local file the empty server has no tombstone for", async () => {
+    // Empty/fresh/restored server (or the WRONG server after a vault switch): the file is absent
+    // but there's NO deletion tombstone, so it is NOT a real delete. The safe action is to restore
+    // it to the server, never to destroy local data. (Durable fix for the vault-switch data loss.)
+    const { api, files } = fakeServer(); // empty server, no tombstones
     const io = fakeIo({ "keep.md": "important" });
     const base = new BaseStore();
     base.set("keep.md", { hash: await sha256hex(enc("important")) });
-    const guarded: string[] = [];
-    await reconcileAll(deps(api, io, { base, onGuard: (p) => guarded.push(p) }));
+    await reconcileAll(deps(api, io, { base }));
     expect((io as any).m.has("keep.md")).toBe(true);   // NOT deleted
-    expect(guarded).toContain("keep.md");               // guard fired
-    expect(base.get("keep.md")).toBeDefined();          // base preserved
+    expect(files.has("keep.md")).toBe(true);           // RESTORED to the server
+    expect(base.get("keep.md")).toBeDefined();
   });
 
   it("skips a file larger than the sync limit (no push, path untouched)", async () => {
@@ -158,26 +164,47 @@ describe("reconcileAll", () => {
     expect(files.has("big.md")).toBe(false);
   });
 
-  it("reconcilePath (event path) applies the C2 guard — no delete-local vs a wholesale-empty server", async () => {
-    const { api } = fakeServer(); // empty (lost index → /meta 404 for everything)
+  it("reconcilePath (event path): RESTORES a file the empty server has no tombstone for", async () => {
+    const { api, files } = fakeServer(); // empty (lost index → /meta 404 for everything)
     const io = fakeIo({ "keep.md": "data" });
     const base = new BaseStore();
     base.set("keep.md", { hash: await sha256hex(enc("data")) });
-    const guarded: string[] = [];
-    await reconcilePath(deps(api, io, { base, onGuard: (p) => guarded.push(p) }), "keep.md", 4);
+    await reconcilePath(deps(api, io, { base }), "keep.md", 4);
     expect((io as any).m.has("keep.md")).toBe(true); // NOT deleted by a stray event
-    expect(guarded).toContain("keep.md");
+    expect(files.has("keep.md")).toBe(true);          // restored to the server
   });
 
-  it("still honors delete-local when the server has other files (not a suspicious empty)", async () => {
+  it("delete-local PROPAGATES a real server tombstone (deleted on the peer)", async () => {
+    // The correct trigger for delete-local: a genuine deletion the server TOMBSTONED — not mere
+    // absence. Distinguishing the two is the whole point (absence = wrong/fresh server → restore).
     const { api } = fakeServer();
-    await serverPut(api, "other.md", "still here"); // server non-empty
+    await serverPut(api, "gone.md", "x");
+    await serverPut(api, "other.md", "still here");
     const io = fakeIo({ "gone.md": "x", "other.md": "still here" });
     const base = new BaseStore();
     base.set("gone.md", { hash: await sha256hex(enc("x")) });
     base.set("other.md", { hash: await sha256hex(enc("still here")) });
+    await api.deleteFile("gone.md"); // a REAL deletion → records a tombstone
     await reconcileAll(deps(api, io, { base }));
-    expect((io as any).m.has("gone.md")).toBe(false);  // legit delete still happens
+    expect((io as any).m.has("gone.md")).toBe(false);  // tombstoned deletion propagates
+    expect((io as any).m.has("other.md")).toBe(true);  // untouched
+  });
+
+  it("DATA-LOSS REGRESSION: two reconciles against a wrong/empty server never delete local files", async () => {
+    // The exact vault-switch failure: a client with a populated base points at a DIFFERENT/empty
+    // server. Pass 1 kept the files (empty-remote guard) but our own pushes made the remote
+    // non-empty, so pass 2's ratio guard no longer fired and silently deleted them. With tombstone-
+    // gated delete-local, NEITHER pass deletes — both restore. Guards absence across passes.
+    const { api } = fakeServer(); // fresh server, no tombstones for our files
+    const io = fakeIo({ "Welcome.md": "hi", "test file.md": "notes" });
+    const base = new BaseStore();
+    base.set("Welcome.md", { hash: await sha256hex(enc("hi")) });
+    base.set("test file.md", { hash: await sha256hex(enc("notes")) });
+    const d = deps(api, io, { base });
+    await reconcileAll(d); // pass 1
+    await reconcileAll(d); // pass 2 — the pass that used to delete
+    expect((io as any).m.has("Welcome.md")).toBe(true);
+    expect((io as any).m.has("test file.md")).toBe(true);
   });
 });
 
@@ -372,16 +399,18 @@ describe("config sync: additive + adjudicated (never auto-delete, never resurrec
     expect(files.has(CP)).toBe(false);             // server file removed (auto-remove everywhere)
   });
 
-  it("removal (remote gone, local==base) → PROPAGATES: local file deleted (auto-remove, D0013)", async () => {
+  it("removal (server TOMBSTONED it, local==base) → PROPAGATES: local file deleted (auto-remove, D0013)", async () => {
     const { api } = fakeServer();
-    await serverPut(api, "other.md", "keeps the manifest non-empty (no C2)"); // avoid the empty-server guard
-    const io = fakeIo({ [CP]: `["foo"]`, "other.md": "keeps the manifest non-empty (no C2)" });
+    await serverPut(api, CP, `["foo"]`);
+    await serverPut(api, "other.md", "keeps the manifest non-empty");
+    const io = fakeIo({ [CP]: `["foo"]`, "other.md": "keeps the manifest non-empty" });
     const base = new BaseStore();
     base.set(CP, { hash: await sha256hex(enc(`["foo"]`)) });
-    base.set("other.md", { hash: await sha256hex(enc("keeps the manifest non-empty (no C2)")) });
+    base.set("other.md", { hash: await sha256hex(enc("keeps the manifest non-empty")) });
+    await api.deleteFile(CP); // a REAL config removal on another device → server records a tombstone
     const conflicts: string[] = [];
     await reconcileAll(deps(api, io, { base, accepts: () => true, onConfigConflict: (p) => conflicts.push(p) }));
-    expect(conflicts).toEqual([]);                 // genuine removal propagates, not adjudicated
+    expect(conflicts).toEqual([]);                 // a genuine (tombstoned) removal propagates, not adjudicated
     expect((io as any).m.has(CP)).toBe(false);     // local file removed (the server's removal applied)
   });
 
@@ -463,27 +492,32 @@ describe("critique fixes — data integrity + correctness", () => {
     expect((io as any).m.has("x.md")).toBe(true);
   });
 
-  it("DI-1: refuses bulk delete-local when the server manifest lost >= half of base (partial shrink)", async () => {
-    const { api } = fakeServer();
+  it("DI-1: a partial-shrink server that dropped files WITHOUT tombstones — restore, never delete", async () => {
+    // Restore-from-backup / reindex-over-incomplete-dir advertises some files, silently drops others,
+    // and has NO tombstones for the dropped ones. Every dropped file is restored, not deleted.
+    const { api, files } = fakeServer();
     const seed: Record<string, string> = {}; for (let i = 0; i < 8; i++) seed[`n${i}.md`] = `c${i}`;
     const io = fakeIo(seed);
     const base = new BaseStore(); for (let i = 0; i < 8; i++) base.set(`n${i}.md`, { hash: await sha256hex(enc(`c${i}`)) });
-    for (let i = 0; i < 3; i++) await serverPut(api, `n${i}.md`, `c${i}`); // only 3 of 8 advertised (5 lost)
-    const guarded: string[] = [];
-    await reconcileAll(deps(api, io, { base, onGuard: (p) => guarded.push(p) }));
-    for (let i = 3; i < 8; i++) expect((io as any).m.has(`n${i}.md`)).toBe(true); // the 5 missing NOT deleted
-    expect(guarded.length).toBeGreaterThan(0);
+    for (let i = 0; i < 3; i++) await serverPut(api, `n${i}.md`, `c${i}`); // only 3 of 8 advertised (5 dropped, no tombstones)
+    await reconcileAll(deps(api, io, { base }));
+    for (let i = 3; i < 8; i++) {
+      expect((io as any).m.has(`n${i}.md`)).toBe(true); // the 5 dropped NOT deleted
+      expect(files.has(`n${i}.md`)).toBe(true);          // restored to the server
+    }
   });
 
-  it("DI-1: still deletes when only a small fraction is missing (below the bulk threshold)", async () => {
+  it("deletes exactly the files the server TOMBSTONED (a real small delete propagates)", async () => {
     const { api } = fakeServer();
     const seed: Record<string, string> = {}; for (let i = 0; i < 8; i++) seed[`n${i}.md`] = `c${i}`;
     const io = fakeIo(seed);
     const base = new BaseStore(); for (let i = 0; i < 8; i++) base.set(`n${i}.md`, { hash: await sha256hex(enc(`c${i}`)) });
-    for (let i = 0; i < 6; i++) await serverPut(api, `n${i}.md`, `c${i}`); // 6 of 8 (only 2 missing = 25%)
+    for (let i = 0; i < 8; i++) await serverPut(api, `n${i}.md`, `c${i}`); // all 8 synced
+    await api.deleteFile("n6.md"); await api.deleteFile("n7.md");           // 2 REAL deletions → tombstones
     await reconcileAll(deps(api, io, { base }));
-    expect((io as any).m.has("n6.md")).toBe(false); // genuine small delete still applies
+    expect((io as any).m.has("n6.md")).toBe(false); // tombstoned delete propagates
     expect((io as any).m.has("n7.md")).toBe(false);
+    for (let i = 0; i < 6; i++) expect((io as any).m.has(`n${i}.md`)).toBe(true); // the rest untouched
   });
 
   it("DI-2: rejects a downloaded file whose reassembled bytes don't match the claimed hash", async () => {

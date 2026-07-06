@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef } from "./transport";
-import { SyncState, VaultIo, ChunkCache, AppendHandle } from "./sync";
+import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore } from "./base";
 import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
@@ -134,11 +134,19 @@ class LogModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 
+// The sync-server client the plugin talks to: the reconcile SyncApi plus the two transport extras
+// main.ts uses directly. Narrowed to an interface (not the concrete HttpTransport) so tests can
+// inject a fake via buildApi() — the seam that makes the orchestration wiring testable.
+export type ApiClient = SyncApi & {
+  connectWs(onChanged: () => void): WebSocket | null;
+  status(): Promise<{ status: string; detail: string; version: number }>;
+};
+
 export default class NewLiveSyncPlugin extends Plugin {
   settings!: NewLiveSyncSettings;
-  private api?: HttpTransport;
+  private api?: ApiClient;
   private ws?: WebSocket;
-  private io = new ObsidianVaultIo(this);
+  private io!: VaultIo; // set in onload via buildIo() (injectable for tests)
   private state: SyncState = { version: 0 };
   private base = new BaseStore();
   private cache: ChunkCache = new Map();
@@ -172,8 +180,23 @@ export default class NewLiveSyncPlugin extends Plugin {
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
   getLastIssue(): string | undefined { return this.lastIssue; }
 
+  // Injection seams (overridable in tests): the real Obsidian-backed io + HTTP transport, and the
+  // two static auth calls. A test subclass returns in-memory fakes so the whole producer→engine→
+  // effect→reconcile wiring runs without Obsidian or a server.
+  protected buildIo(): VaultIo { return new ObsidianVaultIo(this); }
+  protected buildApi(token: string): ApiClient {
+    return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
+  }
+  protected loginRemote(): Promise<string> {
+    return HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password);
+  }
+  protected validateToken(token: string): Promise<unknown> {
+    return HttpTransport.listVaults(this.settings.serverUrl, token);
+  }
+
   async onload() {
     await this.loadSettings();
+    this.io = this.buildIo();
     void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
     // The one operational state machine. Effects are the (previously inline) connect/reconcile/
     // teardown bodies; the engine owns state, serialization, coalescing, and recovery.
@@ -333,10 +356,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   // token later goes bad, the real sync op fails and triggers a fresh re-login.
   private tokenOkAt = 0;
   private async acquireToken(): Promise<string> {
-    const url = this.settings.serverUrl;
     if (this.settings.authToken) {
       if (Date.now() - this.tokenOkAt < 30_000) return this.settings.authToken; // validated recently — skip the probe + log
-      try { await HttpTransport.listVaults(url, this.settings.authToken); this.tokenOkAt = Date.now(); this.log("token OK"); return this.settings.authToken; }
+      try { await this.validateToken(this.settings.authToken); this.tokenOkAt = Date.now(); this.log("token OK"); return this.settings.authToken; }
       catch { this.tokenOkAt = 0; this.log("cached token rejected — re-logging in"); }
     }
     // Token-only mode (storePassword off): no password at rest, so a dead token means the
@@ -345,7 +367,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.openSetup();
       throw new Error("session expired — please re-enter your password in setup");
     }
-    const token = await HttpTransport.login(url, this.settings.username, this.settings.password);
+    const token = await this.loginRemote();
     // Drop the plaintext password from disk if the user opted into token-only storage.
     if (!this.settings.storePassword) this.settings.password = "";
     this.setAuthToken(token); // persists the token (and the cleared password)
@@ -585,7 +607,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
       this.ws?.close();
       const token = await this.acquireToken();
-      this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
+      this.api = this.buildApi(token);
       // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
       // on the resulting empty manifest could delete local files. Surface the operator action.
       const health = await this.api.status();

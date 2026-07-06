@@ -153,6 +153,7 @@ export function dep(c: Client): ReconcileDeps {
 export async function connect(base: string, root: string, device = "Dev", vault = "default"): Promise<Client> {
   await fs.mkdir(root, { recursive: true });
   const token = await NodeTransport.login(base, "admin", "admin");
+  await NodeTransport.createVault(base, token, vault).catch(() => {}); // protocol-6: sync needs an existing vault (idempotent; 409 if it already exists)
   const api = new NodeTransport(base, token, vault);
   const c: Client = { io: new FsVaultIo(root), api, state: { version: 0 }, known: new Set(), cache: new Map(), base: new BaseStore(), device, root };
   await reconcileAll(dep(c));
@@ -170,7 +171,9 @@ export async function startServer(): Promise<RunningServer> {
   if (externalUrl) return { base: externalUrl, dataDir: "", stop: () => {} };
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
   const srv = spawn(serverBin, [], {
-    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin" },
+    // ALLOW_WEAK_ADMIN=1: the throwaway test server deliberately uses admin/admin, so it must
+    // opt past the SEC-2 default-credential boot guard (which refuses admin/admin otherwise).
+    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = await new Promise<string>((resolve, reject) => {

@@ -127,6 +127,7 @@ function dep(c: Client): ReconcileDeps {
 async function connect(base: string, root: string, device = "Dev", vault = "default"): Promise<Client> {
   await fs.mkdir(root, { recursive: true });
   const token = await NodeTransport.login(base, "admin", "admin");
+  await NodeTransport.createVault(base, token, vault).catch(() => {}); // protocol-6: sync needs an existing vault (idempotent)
   const api = new NodeTransport(base, token, vault);
   const c: Client = { io: new FsVaultIo(root), api, state: { version: 0 }, known: new Set(), cache: new Map(), base: new BaseStore(), device, root };
   await reconcileAll(dep(c));
@@ -145,7 +146,8 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     if (externalUrl) { base = externalUrl; return; }
     dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
     srv = spawn(serverBin, [], {
-      env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin" },
+      // ALLOW_WEAK_ADMIN=1: throwaway test server uses admin/admin → opt past the SEC-2 boot guard.
+      env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     base = await new Promise<string>((resolve, reject) => {
@@ -353,6 +355,7 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
   async function filteredPair(tag: string, sel: ConfigSyncSelection, selfId: string): Promise<[Client, Client]> {
     const v = uniqVault(tag);
     const token = await NodeTransport.login(base, "admin", "admin");
+    await NodeTransport.createVault(base, token, v).catch(() => {}); // protocol-6: sync needs an existing vault
     const mk = async (dev: string): Promise<Client> => {
       const root = mkdtempSync(path.join(os.tmpdir(), `nls-${tag}${dev}-`));
       const c: Client = { io: new FilteredFsVaultIo(root, sel, selfId), api: new NodeTransport(base, token, v), state: { version: 0 }, known: new Set(), cache: new Map(), base: new BaseStore(), device: dev, root };
