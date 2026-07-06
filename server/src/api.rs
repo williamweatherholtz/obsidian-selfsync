@@ -171,7 +171,13 @@ pub async fn commit(
         ensure_ready(&v)?;
         v.commit(req).map_err(|e| {
             eprintln!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
-            if e.kind() == std::io::ErrorKind::NotFound { AppError::NotFound } else { AppError::BadRequest(e.to_string()) }
+            match e.kind() {
+                std::io::ErrorKind::NotFound => AppError::NotFound,
+                // CAS mismatch (optimistic concurrency): the client based this write on a stale
+                // version. 409 tells it to re-reconcile + merge rather than treat it as a hard error.
+                std::io::ErrorKind::AlreadyExists => AppError::Conflict(e.to_string()),
+                _ => AppError::BadRequest(e.to_string()),
+            }
         })
     }).await?;
     eprintln!("[{owner}/{vault} commit by {user}] {} ({} chunks) -> v{}", meta.path, meta.chunks.len(), meta.version);
@@ -210,7 +216,7 @@ pub async fn status(
     } else {
         ("ready".to_string(), String::new())
     };
-    Ok(Json(StatusResponse { status, detail, version: v.version() }))
+    Ok(Json(StatusResponse { status, detail, version: v.version(), api_version: crate::protocol::API_VERSION }))
 }
 
 // reindex — operator repair (rebuild the manifest from materialized files). Registered
@@ -228,5 +234,5 @@ pub async fn reindex(
     }).await?;
     eprintln!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
     let _ = tx.send(version);
-    Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version }))
+    Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION }))
 }

@@ -108,10 +108,11 @@ async function dashboard() {
     html += `<h2>Accounts</h2><div class="panel" id="users"><div class="empty">Loading…</div></div>`;
     html += `<h2>Registration</h2><div class="panel" id="reg"><div class="empty">Loading…</div></div>`;
     html += `<h2>Invite tokens</h2><div class="panel" id="invites"><div class="empty">Loading…</div></div>`;
+    html += `<h2>Vault repair</h2><div class="panel" id="repair"></div>`;
   }
   $("app").innerHTML = html;
   await renderVaults();
-  if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); }
+  if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); renderRepair(); }
 }
 
 async function renderVaults() {
@@ -207,6 +208,23 @@ async function renderInvites() {
     try { await api("DELETE", "/api/admin/invites/" + encodeURIComponent(b.dataset.inv)); await renderInvites(); setMsg("Invite revoked.", "ok"); }
     catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
   });
+}
+
+function renderRepair() {
+  $("repair").innerHTML = `
+    <div class="muted" style="font-size:13px;margin-bottom:8px">Rebuild a vault's index from its files. Use this when a vault reports an <strong>error</strong> state (corrupt index) — including a shared vault you don't own.</div>
+    <div class="row">
+      <input id="ro" placeholder="owner username" style="flex:1;min-width:130px" />
+      <input id="rv" placeholder="vault name" style="flex:1;min-width:130px" />
+      <button id="rgo">Reindex</button>
+    </div>`;
+  $("rgo").onclick = async () => {
+    const owner = $("ro").value.trim(), vault = $("rv").value.trim();
+    if (!owner || !vault) { setMsg("Enter both the owner and the vault name.", "err"); return; }
+    if (!confirm(`Rebuild the index for "${owner}/${vault}" from its files on disk?`)) return;
+    try { const r = await api("POST", "/api/admin/reindex", { owner, vault }); setMsg(`Reindexed ${owner}/${vault} — now at v${r.version}.`, "ok"); }
+    catch (e) { setMsg("Reindex failed: " + e.message, "err"); }
+  };
 }
 
 async function boot() {

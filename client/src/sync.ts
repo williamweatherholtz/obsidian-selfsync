@@ -116,9 +116,9 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
 // Returns the PushResult (committed bytes + hash), NOT just the hash: a caller recording a base
 // must use the COMMITTED bytes, since a racing local save between io.write and pushFile's re-read
 // would otherwise leave base.text and base.hash describing different content. (DI-5 / DI-R2#3)
-export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array): Promise<PushResult> {
+export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
   await io.write(path, bytes);
-  return pushFile(api, io, state, cache, path);
+  return pushFile(api, io, state, cache, path, expectedVersion);
 }
 
 // The result of a push: the committed file's SHA-256 AND the exact bytes that were hashed +
@@ -128,7 +128,10 @@ export interface PushResult { hash: string; bytes: Uint8Array; }
 
 // Chunk a local file, upload only the chunks the server lacks, then commit its manifest.
 // Returns the committed bytes + their SHA-256. Populates the cache with its chunks.
-export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string): Promise<PushResult> {
+// `expectedVersion` (optional) is the CAS precondition: the server version this write is based
+// on, so the server rejects (409 → CommitConflictError) if it advanced meanwhile. Omitted for
+// authoritative overwrites (switch/adjudication) where adopting-over-remote IS the intent.
+export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, expectedVersion?: number): Promise<PushResult> {
   const bytes = await io.read(path);
   const chunks = await chunk(bytes);
   for (const c of chunks) cachePut(cache, c.hash, c.bytes);
@@ -137,7 +140,7 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   const toPush = chunks.filter((c) => missing.has(c.hash));
   await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => api.putChunk(c.hash, c.bytes));
   const fileHash = await sha256hex(bytes);
-  await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes });
+  await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes, expectedVersion });
   // NB: do NOT advance state.version here. The commit's returned version can be higher than
   // remote commits we haven't pulled yet; advancing the poll cursor to it would skip them
   // (changes(since) is exclusive), silently missing a concurrent remote change until some

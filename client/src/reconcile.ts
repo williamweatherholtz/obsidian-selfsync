@@ -256,7 +256,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     case "push": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't upload to a read-only share
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path);
+      // CAS: base this write on the remote version we saw (0 if this is a local-only create). If a
+      // concurrent commit advanced the server past it, the commit 409s → CommitConflictError →
+      // per-file skip → the next reconcile decides merge instead of a silent lost-update overwrite.
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path, rmeta?.version ?? 0);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
       return;
     }
@@ -285,7 +288,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "edit-wins-keep-local": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path); // re-create remotely
+      // Remote is absent (someone deleted it) but we edited — re-create it. CAS base = 0 (absent):
+      // if a peer re-created it first, this 409s and the next reconcile merges the two versions.
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path, rmeta?.version ?? 0);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
       return;
     }
@@ -319,7 +324,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
           const mergedBytes = new TextEncoder().encode(merged);
           // DI-R2#3: record base from the COMMITTED bytes pushBytes returns, not the pre-write
           // merged bytes — a racing save between write and re-read would otherwise desync base.
-          const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes);
+          // CAS base = the remote version we merged against; if the server advanced again between
+          // our fetch and this push, the commit 409s and the next reconcile re-merges the newer remote.
+          const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta!.version);
           setBase(d, path, committed, h);
           return;
         }

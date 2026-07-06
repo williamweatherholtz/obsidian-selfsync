@@ -24,11 +24,22 @@ function spyApi() {
   const rec = (name: string, args: any[]) => { (calls[name] ??= []).push(args); };
   let failChanges = false;
   let wsOnChanged: (() => void) | null = null;
-  const api: ApiClient & { __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void } = {
+  let statusApiVersion: number | undefined;   // undefined = omit apiVersion (legacy server)
+  let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
+  const api: ApiClient & {
+    __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
+    __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
+  } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
     __failChanges: (v) => { failChanges = v; },
-    async status() { rec("status", []); return { status: "ready", detail: "", version: 0 }; },
+    __setApiVersion: (v) => { statusApiVersion = v; },
+    __failStatusAuth: (n) => { failStatusAuthTimes = n; },
+    async status() {
+      rec("status", []);
+      if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
+      return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
+    },
     async changes(since) { rec("changes", [since]); if (failChanges) throw new Error("server down"); return { version: 0, upserts: [], deletes: [] }; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
@@ -45,10 +56,10 @@ function spyApi() {
 class TestPlugin extends NewLiveSyncPlugin {
   api_ = spyApi();
   io_ = memIo();
+  loginCount = 0;
   protected buildIo() { return this.io_; }
   protected buildApi() { return this.api_; }
-  protected loginRemote() { return Promise.resolve("test-token"); }
-  protected validateToken() { return Promise.resolve(undefined); }
+  protected loginRemote() { this.loginCount++; return Promise.resolve("test-token"); }
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -73,11 +84,12 @@ function makeApp() {
   return { app, fire };
 }
 
-async function bootPlugin(configured = true) {
+async function bootPlugin(configured = true, opts: { preOnload?: (p: TestPlugin) => void; settings?: Record<string, unknown> } = {}) {
   const { app, fire } = makeApp();
   const p = new TestPlugin(app, { id: "obsidian-selfsync", dir: ".obsidian/plugins/obsidian-selfsync" } as any);
   // Pre-seed configured settings via loadData so onLayoutReady connects instead of opening setup.
-  (p as any)._data = configured ? { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "default" } } : {};
+  (p as any)._data = configured ? { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "default", ...(opts.settings ?? {}) } } : {};
+  opts.preOnload?.(p); // configure the spy api before onload triggers the connect
   await p.onload();
   await flush(); // let the connect effect settle
   return { p, fire, api: p.api_ };
@@ -136,5 +148,28 @@ describe("plugin wiring — producers → engine → effects", () => {
     const { p } = await bootPlugin();
     p.onunload();
     expect(p.statusText()).toBe("off");
+  });
+
+  it("REFUSES to sync on a protocol-version mismatch (offline, clear reason, never reconciles)", async () => {
+    // Server advertises a different apiVersion than the client speaks → doConnect must throw
+    // BEFORE reconciling (no changes() call), go offline, and record an actionable reason.
+    const { p, api } = await bootPlugin(true, { preOnload: (tp) => tp.api_.__setApiVersion(999) });
+    expect(p.statusText()).toBe("offline");
+    expect(api.__calls.changes?.length ?? 0).toBe(0); // never touched the vault data
+    expect(p.getLastIssue()).toMatch(/version/i);
+    p.onunload();
+  });
+
+  it("a stored token rejected with 401 on connect → re-logs in ONCE and connects", async () => {
+    // Seed a stored token so acquireToken uses it optimistically (no probe); the first status()
+    // 401s, so doConnect clears it, re-logins, and the retried status() succeeds → idle.
+    const { p, api } = await bootPlugin(true, {
+      settings: { authToken: "stale" },
+      preOnload: (tp) => tp.api_.__failStatusAuth(1),
+    });
+    expect(p.loginCount).toBe(1);              // reactively re-logged in exactly once
+    expect(api.__calls.status?.length).toBe(2); // failed once, retried once
+    expect(p.statusText()).toBe("idle");
+    p.onunload();
   });
 });

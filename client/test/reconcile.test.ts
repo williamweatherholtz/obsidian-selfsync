@@ -3,7 +3,7 @@ import { decide, reconcileAll, reconcilePath, switchTo, resolveConfigConflict, R
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
-import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
+import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta } from "../src/protocol";
 
 const H = (h: string) => ({ hash: h });
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -603,5 +603,34 @@ describe("settings drive behavior: conflict strategy + device name", () => {
     await reconcileAll(deps(api, io, { device: "MyLaptop" }));
     const copy = [...(io as any).m.keys()].find((k: string) => k.includes("(conflict"));
     expect(copy).toContain("MyLaptop");
+  });
+});
+
+describe("commit CAS (optimistic concurrency)", () => {
+  it("a reconcile push sends the current remote version as the CAS expected_version", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "n.md", "v1");
+    const rmeta = files.get("n.md")!;
+    const hv1 = await sha256hex(enc("v1"));
+    const base = new BaseStore(); base.set("n.md", { hash: hv1 }); // last-synced == remote (B===R)
+    const io = fakeIo({ "n.md": "v2" });                           // locally edited → decide 'push'
+    let sent: CommitRequest | undefined;
+    const spy: SyncApi = { ...api, async commit(r) { sent = r; return api.commit(r); } };
+    await reconcileAll(deps(spy, io, { base }));
+    expect(sent?.expectedVersion).toBe(rmeta.version); // CAS base = the remote version we saw
+  });
+
+  it("a 409 CommitConflictError on push is isolated — local kept, base NOT advanced (next reconcile merges)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "v1");
+    const hv1 = await sha256hex(enc("v1"));
+    const base = new BaseStore(); base.set("n.md", { hash: hv1 });
+    const io = fakeIo({ "n.md": "v2" });
+    const conflicting: SyncApi = { ...api, async commit() { throw new CommitConflictError("server advanced"); } };
+    const errors: string[] = [];
+    await reconcileAll(deps(conflicting, io, { base, onFileError: (p) => errors.push(p) }));
+    expect(errors).toContain("n.md");                  // conflict isolated per-file, never fatal
+    expect(dec((io as any).m.get("n.md"))).toBe("v2");  // local edit preserved, not clobbered
+    expect(base.get("n.md")?.hash).toBe(hv1);           // base unchanged → next pass sees divergence → merge
   });
 });

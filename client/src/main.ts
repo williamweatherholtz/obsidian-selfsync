@@ -8,14 +8,17 @@ import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { encodeSetupLink } from "./connstr";
 import { Phase, light } from "./syncstate";
+import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
-// Polls between forced full config-aware reconciles (poll interval is 4s → ~32s). Local config
-// changes fire no vault event and don't advance the server version, so only a periodic full
-// reconcile catches them; this bounds the detection latency without re-listing every poll.
-const CONFIG_SCAN_EVERY_POLLS = 8;
+// Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
+// event and don't advance the server version, so only a periodic full reconcile catches them (the
+// mobile fallback + safety net; desktop also has the live `raw` path). A wall-clock interval —
+// rather than a poll COUNT — keeps detection latency stable regardless of how the poll cadence
+// changes, and reads as an actual latency bound instead of an arbitrary tick count.
+const CONFIG_SCAN_INTERVAL_MS = 32_000;
 // Coalesce the burst of "raw" events a single config change emits before reconciling.
 const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
@@ -139,7 +142,7 @@ class LogModal extends Modal {
 // inject a fake via buildApi() — the seam that makes the orchestration wiring testable.
 export type ApiClient = SyncApi & {
   connectWs(onChanged: () => void): WebSocket | null;
-  status(): Promise<{ status: string; detail: string; version: number }>;
+  status(): Promise<{ status: string; detail: string; version: number; apiVersion?: number }>;
 };
 
 export default class NewLiveSyncPlugin extends Plugin {
@@ -168,7 +171,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private logs: string[] = [];
   private reconnectTimer?: number;
   private pollTimer?: number;
-  private configScanCountdown = 1; // polls until the next forced full config-aware reconcile (see doReconcileAll)
+  private lastConfigScanAt = 0; // wall-clock ms of the last forced full config-aware reconcile (see doReconcileAll)
   private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
   private rawDebounce?: number;               // debounce timer for the raw-event burst
   private recentSelfWrites = new Map<string, number>(); // config path -> when WE wrote it, to ignore the echo
@@ -189,9 +192,6 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   protected loginRemote(): Promise<string> {
     return HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password);
-  }
-  protected validateToken(token: string): Promise<unknown> {
-    return HttpTransport.listVaults(this.settings.serverUrl, token);
   }
 
   async onload() {
@@ -348,32 +348,49 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   setAuthToken(token: string) { this.settings.authToken = token; void this.saveSettings(); }
 
-  // Reuse the cached token when it still works; otherwise re-login with the stored
-  // password (tokens are ephemeral server-side until B7). listVaults is a cheap
-  // authenticated probe, but re-probing on EVERY authed call is wasteful + noisy — a vault
-  // switch alone does several (list vaults, list shared, create, reconnect). Cache the
-  // validation for a short window so a burst is one probe + one "token OK", not many. If the
-  // token later goes bad, the real sync op fails and triggers a fresh re-login.
-  private tokenOkAt = 0;
+  // Use the stored token OPTIMISTICALLY — no proactive validation probe, no arbitrary
+  // "recently-validated" TTL. The old design probed listVaults on a wall-clock cache window
+  // (a timing crutch): a fabricated freshness guess that still 401s the moment the token
+  // actually expires. Instead we just use the token and react to a real 401 (withAuth /
+  // doConnect re-login once), so token validity is driven by the server's answer, not a guess.
   private async acquireToken(): Promise<string> {
-    if (this.settings.authToken) {
-      if (Date.now() - this.tokenOkAt < 30_000) return this.settings.authToken; // validated recently — skip the probe + log
-      try { await this.validateToken(this.settings.authToken); this.tokenOkAt = Date.now(); this.log("token OK"); return this.settings.authToken; }
-      catch { this.tokenOkAt = 0; this.log("cached token rejected — re-logging in"); }
-    }
-    // Token-only mode (storePassword off): no password at rest, so a dead token means the
-    // user must re-authenticate — open setup rather than fail silently.
+    if (this.settings.authToken) return this.settings.authToken;
+    return this.freshLogin();
+  }
+
+  // Exchange the stored password for a new token (and drop the plaintext password if the user
+  // opted into token-only storage). No password at rest ⇒ the session can't self-renew, so
+  // open setup for the user to re-authenticate rather than fail silently.
+  private async freshLogin(): Promise<string> {
     if (!this.settings.password) {
       this.openSetup();
       throw new Error("session expired — please re-enter your password in setup");
     }
     const token = await this.loginRemote();
-    // Drop the plaintext password from disk if the user opted into token-only storage.
     if (!this.settings.storePassword) this.settings.password = "";
     this.setAuthToken(token); // persists the token (and the cleared password)
-    this.tokenOkAt = Date.now(); // a freshly-issued token is valid — no need to probe it right after
     this.log("login OK");
     return token;
+  }
+
+  // A server auth rejection (401) — the reactive signal that replaces the proactive probe.
+  private isAuthError(e: unknown): boolean {
+    return /HTTP 401/.test(e instanceof Error ? e.message : String(e));
+  }
+
+  // Run an authenticated call with the current token; on a 401 (token expired/revoked), clear it,
+  // re-login ONCE, and retry. This is the reactive replacement for the validation-TTL cache: the
+  // token is trusted until the server says otherwise, and a stale token self-heals on first use.
+  private async withAuth<T>(fn: (token: string) => Promise<T>): Promise<T> {
+    const token = await this.acquireToken();
+    try { return await fn(token); }
+    catch (e) {
+      if (!this.isAuthError(e)) throw e;
+      this.log("token rejected — re-logging in");
+      this.settings.authToken = undefined;
+      const fresh = await this.freshLogin();
+      return fn(fresh);
+    }
   }
 
   // Unbind this vault (keep local files); return to the unconfigured state.
@@ -388,7 +405,6 @@ export default class NewLiveSyncPlugin extends Plugin {
   async signOut() {
     this.settings.authToken = undefined;
     this.settings.password = "";
-    this.tokenOkAt = 0; // invalidate the token-validation cache
     await this.disconnect();
   }
 
@@ -400,12 +416,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // --- switch vault without re-login: reuse the existing session (token / stored
   // password), so the "Switch vault" flow never re-asks for server or account. ---
   async currentVaults(): Promise<string[]> {
-    const token = await this.acquireToken();
-    return HttpTransport.listVaults(this.settings.serverUrl, token);
+    return this.withAuth((t) => HttpTransport.listVaults(this.settings.serverUrl, t));
   }
   async createRemoteVault(name: string): Promise<void> {
-    const token = await this.acquireToken();
-    await HttpTransport.createVault(this.settings.serverUrl, token, name);
+    await this.withAuth((t) => HttpTransport.createVault(this.settings.serverUrl, t, name));
   }
   // Switching which remote vault this local vault syncs to is a one-time transition, not
   // a persistent setting: the caller (the switch modal) picks the resolution and it is
@@ -421,8 +435,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   // Vaults shared WITH this account (owned by others) — offered in the switch modal.
   async listSharedVaults(): Promise<SharedVaultRef[]> {
-    const token = await this.acquireToken();
-    return HttpTransport.listShared(this.settings.serverUrl, token);
+    return this.withAuth((t) => HttpTransport.listShared(this.settings.serverUrl, t));
   }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
@@ -610,7 +623,28 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.api = this.buildApi(token);
       // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
       // on the resulting empty manifest could delete local files. Surface the operator action.
-      const health = await this.api.status();
+      // status() is the first authed call; if the stored token was rejected (401), re-login ONCE
+      // and rebuild the transport (reactive auth — no proactive validation probe). A still-failing
+      // auth then throws → the engine backs off and retries.
+      let health;
+      try { health = await this.api.status(); }
+      catch (e) {
+        if (!this.isAuthError(e)) throw e;
+        this.log("token rejected — re-logging in");
+        this.settings.authToken = undefined;
+        const fresh = await this.freshLogin();
+        this.api = this.buildApi(fresh);
+        health = await this.api.status();
+      }
+      // Version handshake: refuse to sync against a server on a different protocol/schema version
+      // (a self-hoster auto-updates the plugin independently of the server). A clear, actionable
+      // message beats an undiagnosable malformed-response retry loop — and the vault is untouched.
+      // (Older servers omit apiVersion → undefined → skip the check, staying backward-compatible.)
+      if (health.apiVersion !== undefined && health.apiVersion !== CLIENT_API_VERSION) {
+        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (v${health.apiVersion}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
+        this.log(this.lastIssue, true);
+        throw new Error(`incompatible protocol: client v${CLIENT_API_VERSION} vs server v${health.apiVersion}`);
+      }
       if (health.status !== "ready") {
         this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
         this.log(this.lastIssue);
@@ -621,6 +655,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (switchMode) await switchTo(this.deps(), switchMode);
       else await reconcileAll(this.deps());
       await this.flushConfigReload();
+      this.lastConfigScanAt = Date.now(); // this reconcile was config-aware — start the scan window now
       this.spinUpWs();
       this.startPolling();
       this.backoff = 3000;
@@ -698,10 +733,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   private async doReconcileAll(): Promise<void> {
     if (!this.api) throw new Error("not connected");
     // Local CONFIG edits fire no TFile event and don't bump the server version, and mobile has no
-    // `raw` watcher — so force a full (config-aware) reconcile every N polls as the mobile fallback
-    // + safety net. Desktop also gets the live `raw` path.
-    const forceConfigScan = this.settings.configSync.enabled && --this.configScanCountdown <= 0;
-    if (forceConfigScan) this.configScanCountdown = CONFIG_SCAN_EVERY_POLLS;
+    // `raw` watcher — so force a full (config-aware) reconcile at most every CONFIG_SCAN_INTERVAL_MS
+    // (wall-clock) as the mobile fallback + safety net. Desktop also gets the live `raw` path.
+    const forceConfigScan = this.settings.configSync.enabled
+      && Date.now() - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
+    if (forceConfigScan) this.lastConfigScanAt = Date.now();
     const delta = await this.api.changes(this.state.version);
     // Short-circuit when nothing changed AND the version matches (no config scan due). A version
     // MISMATCH with no upserts/deletes means the manifest was rebuilt/rewound → do a full reconcile.

@@ -103,6 +103,41 @@ pub async fn share_delete(
     Ok(StatusCode::OK)
 }
 
+#[derive(Deserialize)]
+pub struct ReindexReq {
+    owner: String,
+    vault: String,
+}
+// Server-admin repair of ANY (owner, vault)'s index — the admin surface for a corrupt shared
+// vault that today only its owner could fix via curl. Rebuilds the manifest from the materialized
+// files (same operation as the owner's own /reindex), clears the ERROR state, and broadcasts the
+// new version so connected clients re-sync. Admin-only; the owner path (api::reindex) is unchanged.
+pub async fn reindex(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<ReindexReq>,
+) -> Result<Json<crate::protocol::StatusResponse>, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&req.owner) || !safe_name(&req.vault) {
+        return Err(AppError::BadRequest("invalid owner or vault".into()));
+    }
+    if !st.vault_exists(&req.owner, &req.vault) {
+        return Err(AppError::NotFound);
+    }
+    let h = st.vault(&req.owner, &req.vault).map_err(|_| AppError::NotFound)?;
+    let tx = h.tx.clone();
+    let (owner, vault) = (req.owner.clone(), req.vault.clone());
+    let version = tokio::task::spawn_blocking(move || -> Result<u64, AppError> {
+        let mut v = crate::error::wlock(&h.vault)?;
+        v.reindex().map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(v.version())
+    }).await.map_err(|e| AppError::Internal(format!("reindex join failed: {e}")))??;
+    eprintln!("[{owner}/{vault} reindex by admin {user}] rebuilt manifest -> v{version}");
+    let _ = tx.send(version);
+    Ok(Json(crate::protocol::StatusResponse {
+        status: "ready".to_string(), detail: String::new(), version,
+        api_version: crate::protocol::API_VERSION,
+    }))
+}
+
 // ---- server-admin only: accounts, registration policy, invite tokens ----
 
 pub async fn users_list(

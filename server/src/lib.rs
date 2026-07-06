@@ -29,7 +29,13 @@ pub fn app(state: AppState) -> Router {
     // /admin page. Emitting `Access-Control-Allow-Origin: *` would needlessly
     // let any web page script the API on a logged-in user's behalf. (SEC-LOW-2)
     Router::new()
-        .route("/health", get(|| async { "ok" }))
+        // Unauthenticated liveness + version handshake. Returns the protocol/index-schema version
+        // (API_VERSION) so the client can detect an incompatible server before syncing and say
+        // "upgrade one of them" instead of looping on a malformed response. `apiVersion` is
+        // camelCase for the JS client; the field is stable wire contract.
+        .route("/health", get(|| async {
+            axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION }))
+        }))
         .route("/admin", get(admin_ui::page)) // web management UI (wraps /api/admin/*)
         .route("/api/login", post(auth::login))
         .route("/api/register", post(auth::register))
@@ -60,6 +66,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/admin/me", get(admin::me))
         .route("/api/admin/vaults", get(admin::my_vaults))
         .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
+        // Operator repair of ANY vault's corrupt index (owner-scoped reindex is own-vault only;
+        // this lets the server-admin fix a shared/non-owned vault without shelling in via curl).
+        .route("/api/admin/reindex", post(admin::reindex))
         .route("/api/admin/users", get(admin::users_list).post(admin::users_create))
         .route("/api/admin/users/:name", axum::routing::delete(admin::users_delete))
         .route("/api/admin/registration", get(admin::registration_get).put(admin::registration_set))

@@ -15,8 +15,10 @@ async fn health_ok() {
     let base = spawn().await;
     let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert_eq!(body, "ok");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    // The version handshake: /health advertises the protocol version the client checks on connect.
+    assert_eq!(body["apiVersion"], new_livesync_server::protocol::API_VERSION);
 }
 
 #[test]
@@ -108,7 +110,7 @@ fn chunkstore_rejects_malicious_hash() {
 #[test]
 fn commit_request_roundtrips() {
     use new_livesync_server::protocol::CommitRequest;
-    let c = CommitRequest { path:"a.md".into(), hash:"h".into(), size:3, mtime:1, chunks:vec!["c1".into(),"c2".into()] };
+    let c = CommitRequest { path:"a.md".into(), hash:"h".into(), size:3, mtime:1, chunks:vec!["c1".into(),"c2".into()], expected_version: None };
     let s = serde_json::to_string(&c).unwrap();
     assert_eq!(serde_json::from_str::<CommitRequest>(&s).unwrap(), c);
 }
@@ -127,13 +129,13 @@ fn vault_commit_dedup_delete_gc() {
     v.put_chunk(&h2, &c2).unwrap();
     // file1 = c1+c2
     let body1 = [c1.clone(), c2.clone()].concat();
-    let m1 = v.commit(CommitRequest{ path:"f1.bin".into(), hash: sha256_hex(&body1), size: body1.len() as u64, mtime:1, chunks: vec![h1.clone(), h2.clone()] }).unwrap();
+    let m1 = v.commit(CommitRequest{ path:"f1.bin".into(), hash: sha256_hex(&body1), size: body1.len() as u64, mtime:1, chunks: vec![h1.clone(), h2.clone()], expected_version: None }).unwrap();
     assert_eq!(m1.chunks, vec![h1.clone(), h2.clone()]);
     assert_eq!(std::fs::read(dir.path().join("vault/f1.bin")).unwrap(), body1); // reassembled on disk
     // file2 shares c1 (dedup: no new chunk upload needed)
     assert!(v.missing(std::slice::from_ref(&h1)).is_empty());
     let body2 = c1.clone();
-    v.commit(CommitRequest{ path:"f2.bin".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:1, chunks: vec![h1.clone()] }).unwrap();
+    v.commit(CommitRequest{ path:"f2.bin".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
     // delete f1: c2 now unreferenced -> GC'd; c1 still referenced by f2 -> kept
     v.delete("f1.bin").unwrap();
     assert!(!v.has_chunk(&h2), "c2 should be GC'd");
@@ -147,7 +149,7 @@ fn vault_commit_rejects_missing_chunk() {
     use new_livesync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let mut v = Vault::open(dir.path()).unwrap();
-    let r = v.commit(CommitRequest{ path:"x.md".into(), hash:"h".into(), size:1, mtime:0, chunks: vec!["missinghash".into()] });
+    let r = v.commit(CommitRequest{ path:"x.md".into(), hash:"h".into(), size:1, mtime:0, chunks: vec!["missinghash".into()], expected_version: None });
     assert!(r.is_err());
 }
 
@@ -161,7 +163,7 @@ fn vault_index_persists_across_reopen() {
     { let mut v = Vault::open(dir.path()).unwrap();
       body = b"hello".to_vec(); h = sha256_hex(&body);
       v.put_chunk(&h, &body).unwrap();
-      v.commit(CommitRequest{ path:"n.md".into(), hash:h.clone(), size:5, mtime:1, chunks: vec![h.clone()] }).unwrap();
+      v.commit(CommitRequest{ path:"n.md".into(), hash:h.clone(), size:5, mtime:1, chunks: vec![h.clone()], expected_version: None }).unwrap();
     }
     // reopen: chunk list must survive (server can't re-chunk)
     let v2 = Vault::open(dir.path()).unwrap();
@@ -183,15 +185,15 @@ fn vault_recommit_same_path_keeps_shared_chunks() {
     v.put_chunk(&h2, &c2).unwrap();
     // v1 of p.md = [h1, h2]
     let body1 = [c1.clone(), c2.clone()].concat();
-    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body1), size: body1.len() as u64, mtime:1, chunks: vec![h1.clone(), h2.clone()] }).unwrap();
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body1), size: body1.len() as u64, mtime:1, chunks: vec![h1.clone(), h2.clone()], expected_version: None }).unwrap();
     // re-commit SAME path with a list that still uses h1 but drops h2: [h1]
     let body2 = c1.clone();
-    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:2, chunks: vec![h1.clone()] }).unwrap();
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:2, chunks: vec![h1.clone()], expected_version: None }).unwrap();
     // h1 is still referenced by the new version -> MUST survive; h2 no longer referenced -> GC'd
     assert!(v.has_chunk(&h1), "shared chunk h1 must survive the re-commit");
     assert!(!v.has_chunk(&h2), "dropped chunk h2 should be GC'd");
     // and re-committing the identical content again keeps h1 alive (incr-before-decr on full overlap)
-    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:3, chunks: vec![h1.clone()] }).unwrap();
+    v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:3, chunks: vec![h1.clone()], expected_version: None }).unwrap();
     assert!(v.has_chunk(&h1), "h1 must survive an identical-content re-commit (incr-before-decr)");
 }
 

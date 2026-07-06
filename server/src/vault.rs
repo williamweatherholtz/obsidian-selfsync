@@ -404,7 +404,9 @@ impl Vault {
         // the collision check must match the FS's folding strength.
         let req_folded = req.path.to_lowercase();
         if self.idx.files.keys().any(|k| k != &req.path && k.to_lowercase() == req_folded) {
-            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "a path differing only in case already exists"));
+            // InvalidInput (→ 400): a permanent, client-side-fixable bad request. Kept distinct from
+            // the CAS AlreadyExists below, which maps to 409 so the client re-reconciles (not skips).
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a path differing only in case already exists"));
         }
         // Reject a hostile/absurd declared size before allocating (a client-supplied
         // u64 must never drive a capacity hint — 2^60 would panic/abort).
@@ -434,6 +436,21 @@ impl Vault {
         if let Some(existing) = self.idx.files.get(&req.path) {
             if existing.hash == req.hash && existing.chunks == req.chunks {
                 return Ok(existing.clone());
+            }
+        }
+        // Optimistic concurrency (CAS): if the client declared the version it based this write on,
+        // reject when the server has since advanced past it. Two clients both at base v3 that edit
+        // and commit concurrently would otherwise both push: the write lock serializes them, the
+        // second silently overwrites the first, and the first committer later pulls it (a lost
+        // update). With CAS the second commit sees current != expected and 409s; the client then
+        // re-reconciles and MERGES the intervening change. Runs AFTER the idempotent short-circuit
+        // (a same-content retry is a no-op, never a conflict) and only when the client opted in
+        // (an authoritative switch/adjudication omits it). AlreadyExists → 409 in the API layer.
+        if let Some(expected) = req.expected_version {
+            let current = self.idx.files.get(&req.path).map(|m| m.version).unwrap_or(0);
+            if expected != current {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+                    format!("version conflict on '{}': client based on v{expected}, server at v{current}", req.path)));
             }
         }
         // --- mutate the index in memory, journal it durably, THEN mirror to the bind-mount file ---
@@ -605,16 +622,46 @@ mod tests {
         let body = b"x";
         let h = crate::hash::sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        v.commit(CommitRequest { path: "CAFÉ.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()] }).unwrap();
+        v.commit(CommitRequest { path: "CAFÉ.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
         // DI-R5#1: committing the Unicode-case variant 'café.md' (lowercase é) is rejected.
-        let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()] }).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // (InvalidInput → 400: a permanent bad request, distinct from the CAS AlreadyExists → 409.)
+        let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted).
         v.idx.files.insert("legacy.md.".into(), FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.idx.version, chunks: vec![h.clone()] });
         assert!(safe_rel_path("legacy.md.").is_none());
         let d = v.delete("legacy.md.").unwrap();
         assert!(d.is_some(), "legacy invalid-name key must be deletable");
         assert!(!v.idx.files.contains_key("legacy.md."));
+    }
+
+    // Optimistic concurrency (CAS): a commit that declares the wrong base version is rejected
+    // (AlreadyExists → 409), an idempotent re-commit is a no-op regardless, and a correct/absent
+    // expected_version commits normally. This is the double-first-commit lost-update guard.
+    #[test]
+    fn commit_cas_rejects_stale_expected_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let b1 = b"one"; let h1 = sha256_hex(b1);
+        v.put_chunk(&h1, b1).unwrap();
+        // Create the file with expected_version = 0 (absent) — succeeds.
+        let m1 = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: Some(0) }).unwrap();
+        // A second writer based on the SAME old base (0) tries to overwrite with different content:
+        // the server is now at m1.version, so the CAS mismatch rejects it (409-mapped).
+        let b2 = b"two"; let h2 = sha256_hex(b2);
+        v.put_chunk(&h2, b2).unwrap();
+        let err = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 2, chunks: vec![h2.clone()], expected_version: Some(0) }).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "stale expected_version must conflict");
+        // Basing on the CURRENT version succeeds.
+        v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 3, chunks: vec![h2.clone()], expected_version: Some(m1.version) }).unwrap();
+        // An idempotent re-commit (same content) with a stale expected_version is still a no-op,
+        // not a conflict — the short-circuit runs before the CAS check.
+        let again = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 9, chunks: vec![h2.clone()], expected_version: Some(0) }).unwrap();
+        assert_eq!(again.hash, h2);
+        // expected_version: None bypasses CAS entirely (authoritative overwrite).
+        let b3 = b"three"; let h3 = sha256_hex(b3);
+        v.put_chunk(&h3, b3).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h3.clone(), size: 5, mtime: 4, chunks: vec![h3.clone()], expected_version: None }).unwrap();
     }
 
     #[test]
@@ -686,7 +733,7 @@ mod tests {
         v.put_chunk(&hash, body).unwrap();
         let meta = v.commit(CommitRequest {
             path: "keep.md".into(), hash: hash.clone(), size: body.len() as u64,
-            mtime: 1, chunks: vec![hash.clone()],
+            mtime: 1, chunks: vec![hash.clone()], expected_version: None,
         }).unwrap();
         let original_version = meta.version;
 
@@ -717,7 +764,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let b1 = b"version one"; let h1 = sha256_hex(b1);
         v.put_chunk(&h1, b1).unwrap();
-        v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()] }).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
         let good_version = v.version();
 
         // Sabotage the journal append: a DIRECTORY where the log file belongs makes the
@@ -726,7 +773,7 @@ mod tests {
         std::fs::create_dir(dir.path().join(".sync-index.log")).unwrap();
         let b2 = b"version two"; let h2 = sha256_hex(b2);
         v.put_chunk(&h2, b2).unwrap();
-        let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()] });
+        let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()], expected_version: None });
         assert!(res.is_err(), "commit must fail when the journal append fails");
 
         // rolled back: version unchanged, file still points at v1, v1's blob intact
@@ -737,7 +784,7 @@ mod tests {
 
         // and the vault is still usable once the fault clears
         std::fs::remove_dir(dir.path().join(".sync-index.log")).unwrap();
-        v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 3, chunks: vec![h2] }).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 3, chunks: vec![h2], expected_version: None }).unwrap();
         assert!(v.version() > good_version);
     }
 
@@ -749,7 +796,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
             // below the compaction threshold: only the journal exists, no snapshot yet
             assert!(!dir.path().join(".sync-index.json").exists());
             assert!(dir.path().join(".sync-index.log").exists());
@@ -766,7 +813,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
             v.delete("d.md").unwrap();
         }
         let v = Vault::open(dir.path()).unwrap();
@@ -781,7 +828,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "g.md".into(), hash: h.clone(), size: 4, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "g.md".into(), hash: h.clone(), size: 4, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
         // crash mid-append: a partial record with NO trailing newline
         let mut f = std::fs::OpenOptions::new().append(true).open(dir.path().join(".sync-index.log")).unwrap();
@@ -800,7 +847,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "c.md".into(), hash: h.clone(), size: 2, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "c.md".into(), hash: h.clone(), size: 2, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
         // a COMPLETE but malformed record (has a trailing newline) is genuine corruption
         let mut f = std::fs::OpenOptions::new().append(true).open(dir.path().join(".sync-index.log")).unwrap();
@@ -818,8 +865,8 @@ mod tests {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
             // two files reference the same chunk
-            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()] }).unwrap();
-            v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 2, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 2, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
         // reopen → replay + recompute chunk_refs + startup GC: the shared chunk has 2 refs,
         // so it must NOT be reclaimed as an orphan.
@@ -852,7 +899,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, body).unwrap();
-            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()] }).unwrap();
+            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
         // Simulate a lost blob: delete it straight off disk (sharded by first 2 chars).
         let blob = dir.path().join(".chunks").join(&h[0..2]).join(&h);
@@ -898,7 +945,7 @@ mod tests {
         let body = b"0123456789"; let h = sha256_hex(body); // 10 bytes
         v.put_chunk(&h, body).unwrap();
         // declare size 10 but reference the chunk 5× (would reassemble to 50)
-        let res = v.commit(CommitRequest { path: "x.md".into(), hash: h.clone(), size: 10, mtime: 1, chunks: vec![h; 5] });
+        let res = v.commit(CommitRequest { path: "x.md".into(), hash: h.clone(), size: 10, mtime: 1, chunks: vec![h; 5], expected_version: None });
         assert!(res.is_err(), "reassembly beyond declared size must abort");
     }
 
@@ -909,7 +956,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"x"; let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h] });
+        let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h], expected_version: None });
         assert!(res.is_err(), "absurd declared size must be rejected before allocation");
     }
 }

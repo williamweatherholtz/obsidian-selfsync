@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { ChangesResponse, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta } from "./protocol";
+import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta } from "./protocol";
 import { SyncApi } from "./sync";
 
 // A vault shared WITH the current account (owned by someone else on the server).
@@ -78,7 +78,9 @@ export class HttpTransport implements SyncApi {
   async status(): Promise<StatusResponse> {
     const r = await requestUrl({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`status: HTTP ${r.status}`);
-    return r.json as StatusResponse;
+    const j = r.json as { status: string; detail: string; version: number; api_version?: number };
+    // Server serializes snake_case `api_version`; expose it as camelCase apiVersion.
+    return { status: j.status, detail: j.detail, version: j.version, apiVersion: j.api_version };
   }
 
   async changes(since: number): Promise<ChangesResponse> {
@@ -112,10 +114,19 @@ export class HttpTransport implements SyncApi {
     if (r.status !== 200) throw new Error(`putChunk: HTTP ${r.status}`);
   }
   async commit(req: CommitRequest): Promise<FileMeta> {
+    // Wire the optional CAS base version as snake_case `expected_version` (omitted when unset,
+    // so an authoritative overwrite carries no precondition and older servers ignore it).
+    const body: Record<string, unknown> = {
+      path: req.path, hash: req.hash, size: req.size, mtime: req.mtime, chunks: req.chunks,
+    };
+    if (req.expectedVersion !== undefined) body.expected_version = req.expectedVersion;
     const r = await requestUrl({
       url: this.v("/commit"), method: "POST", contentType: "application/json",
-      headers: this.auth(), body: JSON.stringify(req), throw: false,
+      headers: this.auth(), body: JSON.stringify(body), throw: false,
     });
+    // 409 = optimistic-concurrency conflict: the server advanced past our base. Signal it
+    // distinctly so reconcile converges via merge on the next pass instead of clobbering.
+    if (r.status === 409) throw new CommitConflictError(`commit conflict on '${req.path}' (server version advanced)`);
     if (r.status !== 200) throw new Error(`commit: HTTP ${r.status}`);
     return validateFileMeta(r.json);
   }

@@ -1,8 +1,26 @@
+// The wire-protocol / index-schema version this client speaks. It refuses to sync against a
+// server advertising a DIFFERENT apiVersion (see main.ts doConnect), surfacing a clear "upgrade
+// one of them" message rather than an undiagnosable malformed-response retry loop — the most
+// likely real-world breakage for a self-hoster who auto-updates the plugin (BRAT) independently
+// of the server. Bump in lockstep with the server's API_VERSION on any breaking wire/schema change.
+export const CLIENT_API_VERSION = 1;
+
 export interface FileMeta { path: string; hash: string; size: number; mtime: number; version: number; chunks: string[]; }
 export interface Deletion { path: string; version: number; }
 export interface ChangesResponse { version: number; upserts: FileMeta[]; deletes: Deletion[]; }
-export interface CommitRequest { path: string; hash: string; size: number; mtime: number; chunks: string[]; }
-export interface StatusResponse { status: string; detail: string; version: number; }
+// `expectedVersion` (optional): the server file version this write was based on. Sent on
+// reconcile-driven overwrites so the server can reject (409) a commit that would clobber an
+// intervening change (optimistic concurrency). Omitted for authoritative overwrites (vault
+// switch / user adjudication). Serialized as snake_case `expected_version` by the transport.
+export interface CommitRequest { path: string; hash: string; size: number; mtime: number; chunks: string[]; expectedVersion?: number; }
+export interface StatusResponse { status: string; detail: string; version: number; apiVersion?: number; }
+
+// Thrown by the transport when a commit is rejected for a version conflict (HTTP 409). The
+// reconcile layer lets it propagate to the per-file error handler and converges on the next
+// pass (the remote advanced → a subsequent reconcile decides merge, never a silent clobber).
+export class CommitConflictError extends Error {
+  constructor(message = "commit conflict: server version advanced") { super(message); this.name = "CommitConflictError"; }
+}
 
 // PROTO-3: validate the SHAPE of every server response the client acts on before trusting it.
 // A malformed/hostile response (chunks not string[], deletes not an array, version missing)
