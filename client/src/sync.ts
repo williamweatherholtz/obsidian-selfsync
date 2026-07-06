@@ -90,7 +90,17 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
   try {
     for (const hash of chunks) {
       let b = cache.get(hash);
-      if (!b) { b = await api.getChunk(hash); cachePut(cache, hash, b); }
+      if (!b) {
+        b = await api.getChunk(hash);
+        // DI-2: VERIFY each freshly-fetched chunk against its content address before writing it.
+        // The buffered path re-hashes the whole file (fetchVerified); the streamed path never
+        // buffered the whole file, so we verify per chunk instead — since every chunk is
+        // content-addressed, all-chunks-authentic ⇒ the reassembled file is authentic. This
+        // stops on-disk server bit-rot (get_chunk doesn't re-verify) from being laundered into
+        // a "known-good" base and then pushed back as canonical corruption.
+        if ((await sha256hex(b)) !== hash) throw new Error(`chunk ${hash.slice(0, 8)} failed content verification`);
+        cachePut(cache, hash, b);
+      }
       await h.append(b);
     }
     await h.close();

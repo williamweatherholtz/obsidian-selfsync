@@ -94,7 +94,9 @@ describe("chunk sync engine", () => {
   });
 
   it("streamFileToDisk appends chunks in order and returns true (B9 streaming)", async () => {
-    const store: Record<string, Uint8Array> = { a: enc("111"), b: enc("22"), c: enc("3333") };
+    const parts = [enc("111"), enc("22"), enc("3333")];
+    const hs = await Promise.all(parts.map((p) => sha256hex(p))); // content-addressed, like the real server
+    const store: Record<string, Uint8Array> = {}; hs.forEach((h, i) => (store[h] = parts[i]));
     const api = { async getChunk(h: string) { return store[h]; } } as unknown as SyncApi;
     let written = new Uint8Array(0); let closed = false;
     const io = {
@@ -107,10 +109,26 @@ describe("chunk sync engine", () => {
         };
       },
     } as unknown as VaultIo;
-    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", ["a", "b", "c"]);
+    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs);
     expect(ok).toBe(true);
     expect(closed).toBe(true);
     expect(dec(written)).toBe("111223333");
+  });
+
+  it("streamFileToDisk REJECTS a chunk whose content doesn't match its hash (DI-2)", async () => {
+    // The server returns bytes that don't hash to the requested (content-addressed) hash —
+    // e.g. on-disk bit rot. The streamed path must abort, never laundering it onto disk.
+    const good = enc("payload"); const goodHash = await sha256hex(good);
+    const api = { async getChunk() { return enc("CORRUPTED"); } } as unknown as SyncApi; // wrong bytes
+    let aborted = false;
+    const io = {
+      async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
+      async appendWrite() {
+        return { append: async () => {}, close: async () => {}, abort: async () => { aborted = true; } };
+      },
+    } as unknown as VaultIo;
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash])).rejects.toThrow(/content verification/);
+    expect(aborted).toBe(true);
   });
 
   it("streamFileToDisk returns false when the io can't stream (mobile fallback)", async () => {

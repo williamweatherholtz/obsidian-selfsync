@@ -97,13 +97,29 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // when the io supports it; otherwise fetch + write buffered. Base is set to the remote hash;
 // the mergeable base TEXT is kept only on the buffered path (streamed files are large and
 // non-mergeable, so their base is hash-only).
-async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta): Promise<void> {
+// `expectLocalHash` is the local content hash the reconcile decision was based on (null when
+// the caller is an explicit overwrite — a switch or user adjudication — where a racing edit has
+// no meaning). When given, applyPull re-checks disk just before writing and, if the content
+// changed mid-fetch, preserves that racing edit as a conflict copy instead of clobbering it. (DI-3)
+async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expectLocalHash: string | null = null): Promise<void> {
   if (rmeta.size >= STREAM_MIN_BYTES && await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
     d.base.set(path, { hash: rmeta.hash });
     d.onBaseChanged?.();
     return;
   }
   const bytes = await fetchVerified(d, rmeta);
+  // DI-3: a local save may have landed on disk DURING the multi-chunk fetch above. If the
+  // current on-disk content no longer matches what we decided on, don't silently overwrite —
+  // keep the racing edit as a conflict copy first, then adopt remote.
+  if (expectLocalHash !== null) {
+    const cur = await readOrNull(d.io, path);
+    const curHash = cur ? await sha256hex(cur) : null;
+    if (curHash !== expectLocalHash && cur) {
+      const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
+      await d.io.write(copy, cur);
+      d.onConflict?.(path, copy);
+    }
+  }
   await d.io.write(path, bytes);
   setBase(d, path, bytes, rmeta.hash);
 }
@@ -153,8 +169,16 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // extra manifest fetch happen, so the common case stays a single /meta call.
   let guardDelete = false;
   if (rmeta === null && d.base.get(path)) {
+    // DI-5: apply the SAME widened bulk-delete guard reconcileAll uses — not just the
+    // empty-manifest case. A PARTIAL server index loss (restore-from-backup / reindex over an
+    // incomplete dir) that drops many-but-not-all files is exactly what the ratio guard exists
+    // to catch, and deletions frequently route through this per-event path under live editing.
     const manifest = await d.api.changes(0);
-    guardDelete = manifest.upserts.length === 0 && d.base.paths().length > 0;
+    const remoteSet = new Set(manifest.upserts.map((f) => f.path));
+    const basePaths = d.base.paths();
+    const wouldDelete = basePaths.filter((p) => !remoteSet.has(p) && (!d.accepts || d.accepts(p))).length;
+    guardDelete = basePaths.length > 0 && (remoteSet.size === 0
+      || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   }
   await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize);
 }
@@ -217,7 +241,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     }
     case "pull":
-      await applyPull(d, path, rmeta!);
+      await applyPull(d, path, rmeta!, localHash); // guard a local edit racing the fetch (DI-3)
       return;
     case "delete-local":
       if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
@@ -232,7 +256,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     }
     case "edit-wins-pull":
-      await applyPull(d, path, rmeta!);
+      await applyPull(d, path, rmeta!, localHash); // guard a local edit racing the fetch (DI-3)
       return;
     case "merge":
     case "conflict-copy": {
@@ -309,9 +333,16 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   if (mode === "merge") { await reconcileAll(d); return; }
 
   const max = d.maxSyncBytes ?? DEFAULT_MAX_SYNC_BYTES;
+  // DI-1: gate the RAW server manifest through the SAME selective-sync filter reconcileOne uses.
+  // Without this, a device that filters out (or has disabled) a `.obsidian/` category would, on
+  // an "upload" switch, DELETE every such file on the server (it isn't in the filtered io.list()),
+  // wiping another device's plugins/themes/settings; and on a "download" switch it would record a
+  // base for a filtered path it never wrote, later reading base-present + local-absent as a
+  // delete-remote. A path this device doesn't accept must be untouched by a switch.
+  const accepted = (p: string) => !d.accepts || d.accepts(p);
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
-  for (const f of resp.upserts) remote.set(f.path, f);
+  for (const f of resp.upserts) if (accepted(f.path)) remote.set(f.path, f);
   const local = await d.io.list();
 
   if (mode === "download") {
@@ -324,18 +355,19 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       await applyPull(d, p, meta);
     }
     for (const [p, info] of local) {            // drop local files the target lacks
-      if (remote.has(p)) continue;
+      if (!accepted(p) || remote.has(p)) continue;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
       await d.io.remove(p);
     }
   } else { // upload
     for (const [p, info] of local) {
+      if (!accepted(p)) continue;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
       const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
       setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
     }
     for (const p of remote.keys()) {            // drop remote files this vault lacks
-      if (!local.has(p)) await d.api.deleteFile(p);
+      if (!local.has(p)) await d.api.deleteFile(p); // remote is already accepts-filtered above
     }
   }
   d.state.version = Math.max(d.state.version, resp.version);
