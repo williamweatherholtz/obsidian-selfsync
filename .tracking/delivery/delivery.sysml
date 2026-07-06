@@ -36,7 +36,9 @@ package ProjectDelivery {
         action requirementTraceabilityBackfill; // CR d0011: backfill the missing SR->Test #Verify traceability (resolves the escape Issue)
         action settingsGroupingPolish; // deferred cosmetic: group settings intelligently (per comparable plugins), not atomized per-setting containers (issue, D-end)
         action critiqueClientWave;      // DONE (0.10.14): the 5 client data-integrity/correctness fixes from the adversarial critique
-        action critiqueServerHardening; // OPEN: server security/integrity fixes (SEC-2 coded, needs redeploy; SEC-1/MEDs pending) + client SEC-3 + the Low backlog
+        action critiqueServerHardening; // DONE (0.10.16, code): SEC-1/2/MED-1/MED-2/MED-3(semaphore)/DI-3/DI-4/SEC-3 + the Low backlog — cargo-green, needs operator redeploy
+        action round1CriticFixes;       // DONE (0.10.17): 15 of 18 fresh Round-1 3-lens critic findings fixed (6 SEC, 4 DI, 5 CONC); 3 dispositioned accept-risk/defer
+        action round1DeferredHardening;  // OPEN: the 3 deferred Round-1 findings — SEC#4 per-vault orphan-chunk quota, DI#4 reindex-vs-chunkstore preference, CONC#5 keep pendingSwitch until success
         // e2eEncryption: DECLINED — D0009 (keep trusted-server model); design spec retained as history.
 
         first m1Protocol then m2ChunkingBinary;
@@ -74,6 +76,11 @@ package ProjectDelivery {
         verification settingsGroupingPolishDoD : Test { :>> id = "c0f1a5cc-5003-4a10-9b20-a1b2c3d40043"; :>> method = VerificationMethod::inspect; :>> procedureText = "settings within each group are organized intelligently after studying comparable Obsidian plugins' settings layouts (not one atomized container per setting); a before/after review confirms the grouping reads sensibly. DEFERRED to the end-of-project cosmetic pass (owner: avoid repeated cosmetic rework)."; }
         verification critiqueClientWaveDoD : Test { :>> id = "c0f1a5cc-5004-4a10-9b20-a1b2c3d40044"; :>> method = VerificationMethod::test; :>> procedureText = "5 confirmed client data-integrity/correctness defects from the 3-lens adversarial critique fixed, each with a BDD test: DI-1 partial-shrink bulk-delete ratio guard, DI-2 download hash verification, CO-1 stale-base clear on both-absent, CO-2 offline->idle recovery on syncDone, CO-3 config edit-vs-delete adjudication. Full client suite 153 green; shipped 0.10.14."; }
         verification critiqueServerHardeningDoD : Test { :>> id = "c0f1a5cc-5005-4a10-9b20-a1b2c3d40045"; :>> method = VerificationMethod::test; :>> procedureText = "server + coordinated fixes land, are tested (cargo), and are redeployed: SEC-2 default-admin-credential refusal (coded + cargo-green, awaiting operator redeploy), SEC-1 WS token out of the URL query string, SEC-MED-1 register-enumeration parity, SEC-MED-2 account-delete data remanence, SEC-MED-3 login rate-limiting, DI-3 commit-before-journal ordering, DI-4 reindex-refuses-incomplete-dir, client SEC-3 no auto-enable of plugin code received over a shared vault. Server cargo tests + the coordinated client release green."; }
+        // SEC-MED-3 is realized as an 8-permit argon2 CONCURRENCY cap (bounds the CPU/RAM DoS); per-IP
+        // request-rate throttling is a further hardening left to the reverse proxy (documented).
+        verification round1CriticFixesDoD : Test { :>> id = "c0f1a5cc-5006-4a10-9b20-a1b2c3d40046"; :>> method = VerificationMethod::test; :>> procedureText = "Round-1 fresh 3-lens critic findings (18) triaged; 15 fixed + tested + shipped 0.10.17: DI#1 switchTo honors accepts() gate, DI#2 streamed downloads verify per-chunk, DI#3 pull-race conflict-copy, DI#5 event-path bulk-delete ratio guard; CONC#1 single-flight persist, CONC#2 exception-safe applying flag, CONC#3 self-healing WS re-dial, CONC#4 WS MissedTickBehavior::Delay, CONC#6 drain requeue; SEC#1 lowercase-canonical names (case-collision breach), SEC#2 argon2 offload+cap+semaphore, SEC#3 vault cap, SEC#5 512MiB ceiling, SEC#6 generic 5xx, SEC#7 reserved-name reject. 3 dispositioned accept-risk/defer (SEC#4, DI#4, CONC#5). Full client suite 162 green; server cargo 70 green; server needs redeploy."; }
+        // OPEN — the 3 deferred Round-1 items (no result yet, so orient shows them outstanding).
+        verification round1DeferredHardeningDoD : Test { :>> id = "c0f1a5cc-5007-4a10-9b20-a1b2c3d40047"; :>> method = VerificationMethod::test; :>> procedureText = "SEC#4: a per-vault stored-bytes quota and/or runtime orphan-chunk GC so a ReadWrite grantee can't fill the owner's disk with uncommitted chunks (today reclaimed only at startup). DI#4: during reindex, when an on-disk file's hash disagrees with a still-healthy index entry, prefer/surface the chunk-store content rather than silently adopting the bind-mount bytes. CONC#5: keep pendingSwitchMode set until switchTo fully succeeds so a mid-switch failure doesn't downgrade an authoritative overwrite to a merge. Each landed with tests."; }
 
         // ---- appended pass results for DONE milestones (judged at the backfill commit) ----
         part m1ProtocolR1 : TestResult { :>> id = "0a679462-4127-44ec-87b6-495d4ca7e426"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "0e02bc0"; :>> judgedAt = "2026-07-04"; :>> judgedBy = "ai"; }
@@ -101,9 +108,12 @@ package ProjectDelivery {
         part requirementTraceabilityBackfillR1 : TestResult { :>> id = "c0f1a5cc-6002-4a10-9b20-a1b2c3d40052"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
         // L4 mobile on-device: owner-attested demo (foreground sync + indicator + config sync on his phone, 0.10.7). settingsGroupingPolish is intentionally left with NO result (deferred/open).
         part l4MobileOndeviceR1 : TestResult { :>> id = "c0f1a5cc-6003-4a10-9b20-a1b2c3d40053"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
-        // The client critique wave shipped at 0.10.14 (c0576c9). critiqueServerHardening is intentionally
-        // left with NO result — it's OPEN until the server fixes land + are redeployed.
+        // The client critique wave shipped at 0.10.14 (c0576c9).
         part critiqueClientWaveR1 : TestResult { :>> id = "c0f1a5cc-6004-4a10-9b20-a1b2c3d40054"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "c0576c9"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        // Server hardening (pre-round-1 backlog) + the Round-1 fresh-critic fixes both landed by f7cedca
+        // (0.10.17). Server-side fixes are cargo-green and CODE-complete; they take effect on redeploy.
+        part critiqueServerHardeningR1 : TestResult { :>> id = "c0f1a5cc-6005-4a10-9b20-a1b2c3d40055"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "f7cedca"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
+        part round1CriticFixesR1 : TestResult { :>> id = "c0f1a5cc-6006-4a10-9b20-a1b2c3d40056"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "f7cedca"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
