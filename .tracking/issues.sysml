@@ -222,10 +222,14 @@ package ProjectIssues {
     #Resolves dependency from round5CriticFixes to issueUnicodeCaseCollision;
     #Resolves dependency from round5CriticFixes to issueLegacyKeyUndeletable;
     #Resolves dependency from round5CriticFixes to issueDeleteRevokeRace;
-    #Resolves dependency from round5CompletenessFollowups to issueVersionHandshake;
+    // Three of the round-5 completeness items SHIPPED in 0.10.26 → re-pointed to preReleaseHardening
+    // (DONE). The remaining three (orchestration-untested — materially reduced by the FSM refactor +
+    // the version/auth wiring tests but not fully covered; data-migration; conflict-copy-cosmetic)
+    // stay open under round5CompletenessFollowups.
+    #Resolves dependency from preReleaseHardening to issueVersionHandshake;
     #Resolves dependency from round5CompletenessFollowups to issueOrchestrationUntested;
-    #Resolves dependency from round5CompletenessFollowups to issueAdminReindex;
-    #Resolves dependency from round5CompletenessFollowups to issueCommitCas;
+    #Resolves dependency from preReleaseHardening to issueAdminReindex;
+    #Resolves dependency from preReleaseHardening to issueCommitCas;
     #Resolves dependency from round5CompletenessFollowups to issueDataMigration;
     #Resolves dependency from round5CompletenessFollowups to issueConflictCopyCosmetic;
 
@@ -259,4 +263,33 @@ package ProjectIssues {
     }
     #Resolves dependency from deleteLocalTombstoneGate to issueDeleteOnAbsence;
     #Resolves dependency from deleteLocalTombstoneGate to issueDeleteTestGap;
+
+    // =====================================================================
+    // TIMING CRUTCHES (the AI-baked-in arbitrary-timing anti-pattern the owner flagged, 2026-07-06):
+    // two places where behavior was gated on a fabricated time/count guess rather than on the actual
+    // condition. Removed in 0.10.26 (preReleaseHardening) — recorded so the anti-pattern is tracked,
+    // not just quietly fixed.
+    // =====================================================================
+    part issueTokenTtlCrutch : Issue {
+        :>> id = "c0f1a5cc-9803-4a10-9b20-a1b2c3d49803";
+        :>> title = "Token validity was guessed via a 30s 'recently-validated' TTL + a proactive probe, not driven by the server";
+        :>> createdAt = "2026-07-06";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "acquireToken probed listVaults to 'validate' the stored token and cached that result for a fabricated 30-second window, skipping re-probes within it. The TTL is a guess: a token can be revoked/expire the instant after a probe, so the cache neither guarantees validity nor is needed — it's the AI-timing anti-pattern (bake in a number to paper over not modeling the real condition). Fixed: the token is used OPTIMISTICALLY and validity is the server's actual answer — a real 401 triggers a single reactive re-login (withAuth wraps the account calls; doConnect retries status() once). No probe, no TTL.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "preReleaseHardening";
+        :>> severity = Severity::Low;
+    }
+    part issueConfigScanPollCrutch : Issue {
+        :>> id = "c0f1a5cc-9804-4a10-9b20-a1b2c3d49804";
+        :>> title = "The periodic config-aware reconcile fired every Nth POLL (a tick count), not on a wall-clock bound";
+        :>> createdAt = "2026-07-06";
+        :>> createdBy = "wweatherholtz";
+        :>> description = "The config-scan safety-net reconcile was gated on CONFIG_SCAN_EVERY_POLLS=8 — a decrement-per-poll counter. Coupling a real latency requirement ('detect a config change within ~N seconds') to an arbitrary poll count is the timing anti-pattern: change the poll cadence and the actual detection latency silently changes. Fixed: gate on a CONFIG_SCAN_INTERVAL_MS wall-clock bound (Date.now() - lastConfigScanAt), which states the real requirement and is stable regardless of poll cadence.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "preReleaseHardening";
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from preReleaseHardening to issueTokenTtlCrutch;
+    #Resolves dependency from preReleaseHardening to issueConfigScanPollCrutch;
 }
