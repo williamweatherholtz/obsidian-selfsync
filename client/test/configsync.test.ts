@@ -37,6 +37,14 @@ describe("shouldSync — SelfSync self-exclusion is absolute", () => {
     // ".../obsidian-sync/..." must still sync — only the exact SelfSync id is barred.
     expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on({ community: true }), SELF)).toBe(true);
   });
+  it("excludes the self-folder CASE-INSENSITIVELY (SEC-R2#1 — no cred-hijack via an uppercased path)", () => {
+    const sel = on({ community: true });
+    // On a case-insensitive FS these resolve to the SAME folder as new-livesync/SELF, so they
+    // must NOT sync — else a shared vault could overwrite the victim's stored server URL + creds.
+    expect(shouldSync(".obsidian/plugins/NEW-LIVESYNC/data.json", sel, SELF)).toBe(false);
+    expect(shouldSync(".obsidian/plugins/New-LiveSync/main.js", sel, SELF)).toBe(false);
+    expect(shouldSync(`.obsidian/plugins/${SELF.toUpperCase()}/data.json`, sel, SELF)).toBe(false);
+  });
 });
 
 describe("shouldSync — category defaults", () => {

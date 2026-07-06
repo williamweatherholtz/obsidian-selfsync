@@ -138,13 +138,16 @@ describe("chunk sync engine", () => {
   });
 
   it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {
-    const order = ["a", "b", "c", "d", "e"];
+    const letters = ["a", "b", "c", "d", "e"];
+    const store: Record<string, string> = {}; // content-addressed: hash -> letter
+    const order: string[] = [];
+    for (const l of letters) { const h = await sha256hex(enc(l)); store[h] = l; order.push(h); }
     // later chunks resolve FASTER, so completion order is reversed — output must still be in list order
     const api = {
       async getChunk(h: string) {
         const i = order.indexOf(h);
         await new Promise((r) => setTimeout(r, (order.length - i) * 2));
-        return enc(h);
+        return enc(store[h]);
       },
     } as unknown as SyncApi;
     const bytes = await fetchFileBytes(api, new Map() as ChunkCache, order);

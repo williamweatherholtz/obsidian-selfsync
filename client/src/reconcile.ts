@@ -97,29 +97,38 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // when the io supports it; otherwise fetch + write buffered. Base is set to the remote hash;
 // the mergeable base TEXT is kept only on the buffered path (streamed files are large and
 // non-mergeable, so their base is hash-only).
-// `expectLocalHash` is the local content hash the reconcile decision was based on (null when
-// the caller is an explicit overwrite — a switch or user adjudication — where a racing edit has
-// no meaning). When given, applyPull re-checks disk just before writing and, if the content
-// changed mid-fetch, preserves that racing edit as a conflict copy instead of clobbering it. (DI-3)
-async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expectLocalHash: string | null = null): Promise<void> {
-  if (rmeta.size >= STREAM_MIN_BYTES && await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
-    d.base.set(path, { hash: rmeta.hash });
-    d.onBaseChanged?.();
-    return;
+// If the on-disk content no longer matches what the reconcile decision was based on
+// (`expectLocalHash`, null = "expected absent"), a local edit/CREATE raced this pull — preserve
+// it as a conflict copy before we overwrite. Covers a racing edit of a present file AND a racing
+// create of an expected-absent path (DI-3 / DI-R2#2 / DI-R2#4).
+async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<void> {
+  const cur = await readOrNull(d.io, path);
+  const curHash = cur ? await sha256hex(cur) : null;
+  if (curHash !== expectLocalHash && cur) {
+    const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
+    await d.io.write(copy, cur);
+    d.onConflict?.(path, copy);
   }
-  const bytes = await fetchVerified(d, rmeta);
-  // DI-3: a local save may have landed on disk DURING the multi-chunk fetch above. If the
-  // current on-disk content no longer matches what we decided on, don't silently overwrite —
-  // keep the racing edit as a conflict copy first, then adopt remote.
-  if (expectLocalHash !== null) {
-    const cur = await readOrNull(d.io, path);
-    const curHash = cur ? await sha256hex(cur) : null;
-    if (curHash !== expectLocalHash && cur) {
-      const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
-      await d.io.write(copy, cur);
-      d.onConflict?.(path, copy);
+}
+
+// `expectLocalHash` is the local content hash the reconcile decision was based on. `guardRace`
+// is true for reconcile-driven pulls (a racing local edit/create must be preserved) and false for
+// explicit overwrites (a switch or user adjudication, where adopting remote IS the intent).
+async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expectLocalHash: string | null = null, guardRace = false): Promise<void> {
+  if (rmeta.size >= STREAM_MIN_BYTES && d.io.appendWrite) {
+    // Streamed large file: run the racing-edit check BEFORE streaming (streamFileToDisk writes +
+    // renames atomically, so there's no post-fetch/pre-write seam to insert it into). The narrow
+    // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
+    if (guardRace) await conflictCopyIfRaced(d, path, expectLocalHash);
+    if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
+      d.base.set(path, { hash: rmeta.hash });
+      d.onBaseChanged?.();
+      return;
     }
   }
+  const bytes = await fetchVerified(d, rmeta);
+  // Buffered path: check AFTER the fetch (catches a save that landed during the multi-chunk fetch).
+  if (guardRace) await conflictCopyIfRaced(d, path, expectLocalHash);
   await d.io.write(path, bytes);
   setBase(d, path, bytes, rmeta.hash);
 }
@@ -148,8 +157,11 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   // restore / reindex over an incomplete dir), not a genuine mass delete. Count the base paths this
   // pass would actually delete (missing from the manifest, still local, and accepted by this device)
   // and refuse the batch if that's the whole manifest (empty) or >= BULK_DELETE_RATIO of base.
-  const basePaths = d.base.paths();
-  const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p) && (!d.accepts || d.accepts(p))).length;
+  // Ratio denominator counts only ACCEPTED base paths: a stale base entry for a path this device
+  // no longer accepts is never a deletion candidate, so including it would dilute the ratio and let
+  // a genuine mass delete slip under the guard. (DI-R2 note)
+  const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p));
+  const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
   const guardBulkDelete = basePaths.length > 0 && (remote.size === 0
     || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
@@ -157,8 +169,11 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0); }
     catch (e) { d.onFileError?.(p, e); } // isolate: one file's failure must never abort the whole sync
   }
-  // Advance our cursor to the server's version so idle polls can check incrementally.
-  d.state.version = Math.max(d.state.version, resp.version);
+  // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
+  // us consistent with it). ASSIGN, not max: if the server REWOUND (reindex/restore, V_s < V_c),
+  // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
+  // reconcile indefinitely. Assigning lets the incremental poll path converge again. (CONC-R2#3)
+  d.state.version = resp.version;
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
@@ -175,8 +190,8 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     // to catch, and deletions frequently route through this per-event path under live editing.
     const manifest = await d.api.changes(0);
     const remoteSet = new Set(manifest.upserts.map((f) => f.path));
-    const basePaths = d.base.paths();
-    const wouldDelete = basePaths.filter((p) => !remoteSet.has(p) && (!d.accepts || d.accepts(p))).length;
+    const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p)); // accepted-only denominator (DI-R2 note)
+    const wouldDelete = basePaths.filter((p) => !remoteSet.has(p)).length;
     guardDelete = basePaths.length > 0 && (remoteSet.size === 0
       || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   }
@@ -241,7 +256,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     }
     case "pull":
-      await applyPull(d, path, rmeta!, localHash); // guard a local edit racing the fetch (DI-3)
+      await applyPull(d, path, rmeta!, localHash, true); // guard a local edit/create racing the fetch (DI-3)
       return;
     case "delete-local":
       if (guardDelete) { d.onGuard?.(path); return; } // C2: suspicious empty remote — keep the local file
@@ -256,7 +271,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     }
     case "edit-wins-pull":
-      await applyPull(d, path, rmeta!, localHash); // guard a local edit racing the fetch (DI-3)
+      await applyPull(d, path, rmeta!, localHash, true); // guard a local edit racing the fetch (DI-3)
       return;
     case "merge":
     case "conflict-copy": {
@@ -264,8 +279,11 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       if (d.readOnly) {
         // Read-only share: the owner's version is canonical and we push nothing. Keep the
         // reader's local edit as a LOCAL-only conflict copy so it isn't silently lost.
+        // DI-R2#5: preserve the CURRENT on-disk content (a save may have raced the remote fetch),
+        // not the stale localBytes read before the fetch.
+        const curRo = (await readOrNull(d.io, path)) ?? localBytes!;
         const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
-        await d.io.write(copy, localBytes!);
+        await d.io.write(copy, curRo);
         await d.io.write(path, remoteBytes);
         setBase(d, path, remoteBytes, rmeta!.hash);
         d.onReadOnly?.(path); d.onConflict?.(path, copy);
@@ -276,15 +294,19 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       if (canMerge) {
         const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(localBytes!), new TextDecoder().decode(remoteBytes));
         if (clean) {
-          const bytes = new TextEncoder().encode(merged);
-          const h = await pushBytes(d.api, d.io, d.state, d.cache, path, bytes);
-          setBase(d, path, bytes, h);
+          const mergedBytes = new TextEncoder().encode(merged);
+          // DI-R2#3: record base from the COMMITTED bytes pushBytes returns, not the pre-write
+          // merged bytes — a racing save between write and re-read would otherwise desync base.
+          const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes);
+          setBase(d, path, committed, h);
           return;
         }
       }
       // Fallback / conflict-copy: remote becomes canonical; local kept as a copy.
+      // DI-R2#5: copy the CURRENT on-disk content (a save may have raced the remote fetch).
+      const curLocal = (await readOrNull(d.io, path)) ?? localBytes!;
       const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
-      await d.io.write(copy, localBytes!);
+      await d.io.write(copy, curLocal);
       await d.io.write(path, remoteBytes);
       const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
       d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
@@ -370,5 +392,5 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       if (!local.has(p)) await d.api.deleteFile(p); // remote is already accepts-filtered above
     }
   }
-  d.state.version = Math.max(d.state.version, resp.version);
+  d.state.version = resp.version; // assign, not max — see CONC-R2#3 note in reconcileAll
 }

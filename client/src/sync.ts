@@ -69,14 +69,23 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
   return results;
 }
 
+// Fetch one chunk, cache-first. A FRESHLY fetched chunk is verified against its content address
+// BEFORE it enters the cache, so the cache only ever holds authentic bytes and a later cache HIT
+// is safe to trust. Without this, a corrupt blob cached during a (later-aborted) buffered fetch
+// could be laundered into a streamed file on a dedup cache hit. (DI-2 / DI-R2#1)
+async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string): Promise<Uint8Array> {
+  const hit = cache.get(hash);
+  if (hit) return hit;
+  const b = await api.getChunk(hash);
+  if ((await sha256hex(b)) !== hash) throw new Error(`chunk ${hash.slice(0, 8)} failed content verification`);
+  cachePut(cache, hash, b);
+  return b;
+}
+
 // Fetch + reassemble a single file's bytes from its chunk list (cache-first). Chunks are
 // fetched with bounded concurrency but reassembled in order (mapPool preserves it).
 export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[]): Promise<Uint8Array> {
-  const parts = await mapPool(chunks, TRANSFER_CONCURRENCY, async (h) => {
-    let b = cache.get(h);
-    if (!b) { b = await api.getChunk(h); cachePut(cache, h, b); }
-    return b;
-  });
+  const parts = await mapPool(chunks, TRANSFER_CONCURRENCY, (h) => getVerifiedChunk(api, cache, h));
   return concat(parts);
 }
 
@@ -89,18 +98,10 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
   const h = await io.appendWrite(path);
   try {
     for (const hash of chunks) {
-      let b = cache.get(hash);
-      if (!b) {
-        b = await api.getChunk(hash);
-        // DI-2: VERIFY each freshly-fetched chunk against its content address before writing it.
-        // The buffered path re-hashes the whole file (fetchVerified); the streamed path never
-        // buffered the whole file, so we verify per chunk instead — since every chunk is
-        // content-addressed, all-chunks-authentic ⇒ the reassembled file is authentic. This
-        // stops on-disk server bit-rot (get_chunk doesn't re-verify) from being laundered into
-        // a "known-good" base and then pushed back as canonical corruption.
-        if ((await sha256hex(b)) !== hash) throw new Error(`chunk ${hash.slice(0, 8)} failed content verification`);
-        cachePut(cache, hash, b);
-      }
+      // DI-2/DI-R2#1: getVerifiedChunk verifies a freshly-fetched chunk before caching, and a
+      // cache hit is authentic by construction — so a streamed file is never assembled from an
+      // unverified (possibly bit-rotted) blob, even one another file cached earlier.
+      const b = await getVerifiedChunk(api, cache, hash);
       await h.append(b);
     }
     await h.close();
@@ -112,9 +113,12 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
 }
 
 // Write explicit bytes to a path then push it (used for merged/conflict results).
-export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array): Promise<string> {
+// Returns the PushResult (committed bytes + hash), NOT just the hash: a caller recording a base
+// must use the COMMITTED bytes, since a racing local save between io.write and pushFile's re-read
+// would otherwise leave base.text and base.hash describing different content. (DI-5 / DI-R2#3)
+export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array): Promise<PushResult> {
   await io.write(path, bytes);
-  return (await pushFile(api, io, state, cache, path)).hash;
+  return pushFile(api, io, state, cache, path);
 }
 
 // The result of a push: the committed file's SHA-256 AND the exact bytes that were hashed +

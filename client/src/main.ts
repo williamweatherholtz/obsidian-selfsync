@@ -579,13 +579,17 @@ export default class NewLiveSyncPlugin extends Plugin {
   // ---- connection lifecycle (self-healing) ----
   async reconnect() {
     if (this.connecting || this.unloading) return; // H2: one at a time; never after unload
-    if (this.applying) { this.scheduleReconnect(); return; } // CO-race: never reconnect mid-reconcile
+    if (this.applying) { this.scheduleReconnect(false); return; } // defer for the reconcile lock; don't inflate backoff (CONC-R2#5)
     this.connecting = true;
     // Hold the reconcile lock for the WHOLE connect (not just reconcileAll): otherwise a local
     // vault event during acquireToken()/status() would start a reconcilePath with applying=false,
     // then reconcileAll runs interleaved — both mutating base/version/cache (CONC-3).
     this.applying = true;
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+    // CONC-R2#4: cancel any pending WS re-dial — reconnect rebuilds the socket itself, and a stale
+    // redial (armed by the old socket's close during our awaits) must not race it, especially if
+    // this connect then fails and leaves this.ws pointing at the old socket.
+    if (this.wsRedialTimer !== undefined) { window.clearTimeout(this.wsRedialTimer); this.wsRedialTimer = undefined; }
     try {
       // CONC-2: dispatch (which fires the status callback → arbitrary UI code) is INSIDE the
       // try, so a throw from it can't leak `applying`/`connecting` true and permanently wedge
@@ -651,10 +655,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     const ws = this.api.connectWs(() => this.onRemoteChanged());
     this.ws = ws ?? undefined;
     if (!ws) { this.log("ws not available — polling fallback active"); return; }
-    ws.addEventListener("open", () => this.log("ws channel open (instant sync)"));
+    let opened = false;
+    ws.addEventListener("open", () => { opened = true; this.log("ws channel open (instant sync)"); });
     ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
     ws.addEventListener("close", () => {
       if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down — don't re-dial
+      // CONC-R2#6: if the socket NEVER opened (rejected upgrade — e.g. an expired token), a bare
+      // re-dial with the same dead token just loops every 3s. Escalate to a full reconnect (which
+      // re-acquires the token). Only a socket that HAD opened gets the cheap in-place re-dial.
+      if (!opened) { this.log("ws upgrade rejected — reconnecting"); this.scheduleReconnect(); return; }
       this.log("ws closed — re-dialing (polling continues meanwhile)");
       if (this.wsRedialTimer === undefined) {
         this.wsRedialTimer = window.setTimeout(() => {
@@ -665,7 +674,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     });
   }
 
-  private scheduleReconnect() {
+  // `bumpBackoff` doubles the backoff (a genuine connect failure). Pass false when merely deferring
+  // for the reconcile lock, so repeatedly deferring doesn't ratchet the delay to the 30s cap even
+  // though the server is reachable. (CONC-R2#5)
+  private scheduleReconnect(bumpBackoff = true) {
     if (this.reconnectTimer !== undefined || this.unloading) return;
     // Full jitter on the exponential backoff: pick a random delay in [base/2, base]. Without
     // it, many devices knocked offline together (server restart, LAN blip) would all retry on
@@ -674,7 +686,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     const delay = Math.round(base / 2 + Math.random() * (base / 2));
     this.log(`retrying in ${Math.round(delay / 1000)}s`);
     this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = undefined; this.reconnect(); }, delay);
-    this.backoff = Math.min(base * 2, 30000);
+    if (bumpBackoff) this.backoff = Math.min(base * 2, 30000);
   }
 
   private startPolling() {
@@ -725,8 +737,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.machine.dispatch("error");
       if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
       this.scheduleReconnect();
-    } finally { this.applying = false; }
-    void this.drainPending(); // H1: flush edits queued during this reconcile
+    } finally {
+      this.applying = false;
+      // CONC-R2#1: drain queued local edits on EVERY path (incl. the idle short-circuit `return`
+      // above, which previously skipped this line and stranded a re-queued edit until the next
+      // full reconcile — under a misleading green light).
+      void this.drainPending();
+    }
   }
 
   // A "raw" adapter event for a hidden `.obsidian/` file (desktop). Filter to config paths we
@@ -783,7 +800,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.applying) { this.pendingLocal.add(f.path); return; } // H1: queue, don't drop
     this.applying = true;
     try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), f.path, f.stat.size); this.machine.dispatch("syncDone"); }
-    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
+    catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(f.path); } // CONC-R2#2: re-queue so the drain retries
     finally { this.applying = false; }
     void this.drainPending();
   }
@@ -793,7 +810,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.applying) { this.pendingLocal.add(path); return; }
     this.applying = true;
     try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), path); this.machine.dispatch("syncDone"); }
-    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
+    catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(path); } // CONC-R2#2
     finally { this.applying = false; }
     void this.drainPending();
   }
@@ -807,7 +824,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       await reconcilePath(this.deps(), oldPath);                    // old path removed
       await reconcilePath(this.deps(), file.path, file.stat.size); // new path created
       this.machine.dispatch("syncDone");
-    } catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); }
+    } catch (e: any) { this.log(`rename sync FAILED: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); } // CONC-R2#2
     finally { this.applying = false; }
     void this.drainPending();
   }

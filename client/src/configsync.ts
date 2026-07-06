@@ -98,10 +98,16 @@ export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId:
 
   const p = path.slice(CONFIG_PREFIX.length);
 
-  // (1) HARD, non-optional exclusion: SelfSync's own plugin folder — plus any FORMER
-  // self-folder id, so a leftover pre-rename folder's credentials can never sync.
-  for (const self of [selfPluginId, ...LEGACY_SELF_IDS]) {
-    if (self && (p === `plugins/${self}` || p.startsWith(`plugins/${self}/`))) return false;
+  // (1) HARD, non-optional exclusion: SelfSync's own plugin folder — plus any FORMER self-folder
+  // id. CASE-INSENSITIVE (SEC-R2#1): on a case-insensitive filesystem a differently-cased path
+  // (plugins/NEW-LIVESYNC/) resolves to the SAME folder, so a case-sensitive check let a shared
+  // vault smuggle attacker-controlled server/creds into the victim's data.json via an uppercased
+  // path — a connection hijack. Match the plugin-id folder segment case-insensitively.
+  const pl = p.toLowerCase();
+  if (pl.startsWith("plugins/")) {
+    const idLc = pl.slice("plugins/".length).split("/")[0];
+    const selfIds = [selfPluginId, ...LEGACY_SELF_IDS].filter(Boolean).map((s) => s.toLowerCase());
+    if (selfIds.includes(idLc)) return false;
   }
 
   // (2) recognized categories
