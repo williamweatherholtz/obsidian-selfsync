@@ -94,6 +94,10 @@ pub async fn ws_handler(
 // drop the socket if the peer misses two consecutive pings (dead/half-open connection).
 async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard) {
     let mut ping = tokio::time::interval(WS_PING_INTERVAL);
+    // Delay (not the default Burst): if a busy change stream starves the ping branch for a full
+    // interval, we DON'T fire two ticks back-to-back — which could see awaiting_pong still true
+    // (the Pong unread in the buffer) and wrongly drop a healthy client. (CONC-4)
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping.tick().await; // consume the immediate first tick
     let mut awaiting_pong = false;
     loop {

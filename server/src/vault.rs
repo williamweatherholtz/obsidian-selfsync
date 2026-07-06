@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-// Reject absurd/hostile declared file sizes before allocating anything for them.
-const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+// Reject absurd/hostile declared file sizes before allocating anything for them. commit
+// reassembles the whole body into one Vec bounded only by this ceiling, so several concurrent
+// large commits could OOM the server; 512 MiB is well above any real Obsidian attachment while
+// bounding the transient per-commit allocation. (SEC-5)
+const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
 // Cap on retained deletion tombstones. Tombstones only serve the INCREMENTAL
 // changes(since) poll; a full reconcile infers deletions from absence, so dropping
@@ -23,12 +26,30 @@ fn compact_tombstones(dels: &mut Vec<Deletion>, max: usize) {
     }
 }
 
+// Windows reserved DOS device basenames (case-insensitive, with OR without an extension) — a file
+// named e.g. `con.md` maps to a device, not a file, on a Windows host: the mirror write would hang
+// or error and could wedge the write. Reject them so behavior is portable. (SEC-7)
+fn is_reserved_win_name(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or(component).to_ascii_lowercase();
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
+}
+
 pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\\') || path.starts_with('/') { return None; }
     let p = PathBuf::from(path);
     if p.is_absolute() { return None; }
     for c in p.components() {
-        if !matches!(c, Component::Normal(_)) { return None; }
+        match c {
+            Component::Normal(seg) => {
+                let s = seg.to_str()?; // reject non-UTF-8 segments
+                if is_reserved_win_name(s) { return None; }
+            }
+            _ => return None,
+        }
     }
     Some(p)
 }
@@ -510,6 +531,28 @@ fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_rel_path_rejects_windows_reserved_device_names() {
+        // SEC-7: reserved DOS device basenames (with or without extension, any case) are rejected.
+        for bad in ["con", "CON", "nul.md", "aux.txt", "com1", "LPT9.dat", "sub/con.md", "prn"] {
+            assert!(safe_rel_path(bad).is_none(), "expected reject: {bad}");
+        }
+        // ...but names that merely CONTAIN a reserved word, or have a non-1..9 suffix, are fine.
+        for ok in ["console.md", "com0.md", "com10.md", "connie/notes.md", "lpt.md", "auxiliary.md"] {
+            assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
+        }
+    }
+
+    #[test]
+    fn safe_name_is_lowercase_canonical() {
+        // SEC-1: uppercase is rejected so store-key == on-disk segment (no case-collision).
+        assert!(crate::users::safe_name("alice"));
+        assert!(crate::users::safe_name("my-vault_2.0"));
+        assert!(!crate::users::safe_name("Alice"));
+        assert!(!crate::users::safe_name("MyVault"));
+        assert!(!crate::users::safe_name("ADMIN"));
+    }
 
     // Materialize a file directly into the vault's bind-mount tree (as if it were
     // present on disk but absent/lost from the index) and return its abs path.

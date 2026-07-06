@@ -24,7 +24,12 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
-            AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            // SEC-6: never return the raw internal error (std::io messages can carry absolute
+            // server paths) to the client — log it server-side, hand back a generic 500 body.
+            AppError::Internal(m) => {
+                eprintln!("[500] {m}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         };
         (code, msg).into_response()
     }

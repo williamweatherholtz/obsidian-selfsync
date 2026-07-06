@@ -33,7 +33,14 @@ pub struct AppState {
     pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
     pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
+    // Bounds concurrent argon2 password hashing (login/register): argon2 is deliberately
+    // memory-hard (~19 MiB each), so an unauthenticated flood could otherwise exhaust CPU+RAM.
+    // A small permit pool caps in-flight hashes; excess auth requests queue briefly. (SEC-2)
+    pub auth_slots: Arc<tokio::sync::Semaphore>,
 }
+
+// Max concurrent password-hash operations across all login/register requests. (SEC-2)
+pub const MAX_CONCURRENT_AUTH_HASHES: usize = 8;
 
 impl AppState {
     pub fn new(cfg: Config) -> std::io::Result<Self> {
@@ -63,6 +70,7 @@ impl AppState {
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
+            auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
         };
         // Ensure the bootstrap account has a `default` vault to land in.
         if safe_name(&state.cfg.user) {

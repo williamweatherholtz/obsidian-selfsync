@@ -16,14 +16,26 @@ fn dummy_hash() -> &'static str {
     })
 }
 
-// Namespace-safe name: no path traversal, no separators. Used for usernames and
-// vault ids, which both become filesystem path segments.
+// Namespace-safe name: no path traversal, no separators. Used for usernames and vault ids,
+// which both become filesystem path segments. LOWERCASE-ONLY (SEC-1): the account store keys
+// users case-sensitively, but the on-disk namespace DATA_ROOT/<user>/<vault> collapses case on
+// a case-insensitive filesystem (Windows, default macOS) — so "Alice" and "alice" would map to
+// the same directory while being distinct accounts, letting one read/write the other's vault.
+// Forcing a single canonical case (lowercase) makes store-key == directory-segment, so no two
+// distinct names can ever collide on disk.
 pub fn safe_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+        && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_'))
         && s != "."
         && s != ".."
+}
+
+// Pure argon2 verify of a password against a stored PHC string. Kept free-standing (no lock,
+// no self) so the caller can run it on a blocking thread with the users mutex already released. (SEC-2)
+pub fn verify_password(phc: &str, password: &str) -> bool {
+    let Ok(parsed) = PasswordHash::new(phc) else { return false; };
+    Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -90,6 +102,15 @@ impl UserStore {
             .to_string();
         self.file.users.insert(user.to_string(), hash);
         self.save()
+    }
+
+    // Return (user_exists, PHC-to-verify-against). Absent users yield a dummy hash so the caller
+    // does the SAME argon2 work either way — no timing oracle on which usernames are valid. (SEC-2)
+    pub fn phc_for(&self, user: &str) -> (bool, String) {
+        match self.file.users.get(user) {
+            Some(h) => (true, h.clone()),
+            None => (false, dummy_hash().to_string()),
+        }
     }
 
     pub fn verify(&self, user: &str, password: &str) -> bool {
