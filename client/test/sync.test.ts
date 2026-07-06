@@ -42,7 +42,7 @@ describe("chunk sync engine", () => {
     const { api, chunks } = fakeServer();
     const io = fakeIo({ "a.md": "hello world" });
     const cache: ChunkCache = new Map();
-    const h = await pushFile(api, io, { version: 0 }, cache, "a.md");
+    const { hash: h } = await pushFile(api, io, { version: 0 }, cache, "a.md");
     expect(h).toBe(await sha256hex(enc("hello world")));
     const cs = await chunk(enc("hello world"));
     for (const c of cs) expect(chunks.has(c.hash)).toBe(true);

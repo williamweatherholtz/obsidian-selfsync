@@ -104,12 +104,17 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
 // Write explicit bytes to a path then push it (used for merged/conflict results).
 export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array): Promise<string> {
   await io.write(path, bytes);
-  return pushFile(api, io, state, cache, path);
+  return (await pushFile(api, io, state, cache, path)).hash;
 }
 
-// Chunk a local file, upload only the chunks the server lacks, then commit its
-// manifest. Returns the file's SHA-256. Populates the cache with its chunks.
-export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string): Promise<string> {
+// The result of a push: the committed file's SHA-256 AND the exact bytes that were hashed +
+// committed. Callers that record a base MUST use these bytes (not a fresh re-read) so the base's
+// (bytes, hash) pair can never disagree if the file changes mid-operation. (DI-5)
+export interface PushResult { hash: string; bytes: Uint8Array; }
+
+// Chunk a local file, upload only the chunks the server lacks, then commit its manifest.
+// Returns the committed bytes + their SHA-256. Populates the cache with its chunks.
+export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string): Promise<PushResult> {
   const bytes = await io.read(path);
   const chunks = await chunk(bytes);
   for (const c of chunks) cachePut(cache, c.hash, c.bytes);
@@ -123,5 +128,5 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   // remote commits we haven't pulled yet; advancing the poll cursor to it would skip them
   // (changes(since) is exclusive), silently missing a concurrent remote change until some
   // unrelated later commit forces a full reconcile. Only reconcileAll advances the cursor.
-  return fileHash;
+  return { hash: fileHash, bytes };
 }

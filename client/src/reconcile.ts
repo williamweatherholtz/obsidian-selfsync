@@ -212,8 +212,8 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     case "push": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't upload to a read-only share
-      const h = await pushFile(d.api, d.io, d.state, d.cache, path);
-      setBase(d, path, localBytes!, h);
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path);
+      setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
       return;
     }
     case "pull":
@@ -227,8 +227,8 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "edit-wins-keep-local": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push
-      const h = await pushFile(d.api, d.io, d.state, d.cache, path); // re-create remotely
-      setBase(d, path, localBytes!, h);
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path); // re-create remotely
+      setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
       return;
     }
     case "edit-wins-pull":
@@ -262,8 +262,8 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
       await d.io.write(copy, localBytes!);
       await d.io.write(path, remoteBytes);
-      const ch = await pushFile(d.api, d.io, d.state, d.cache, copy);
-      d.base.set(copy, isMergeable(copy, localBytes!) ? { hash: ch, text: new TextDecoder().decode(localBytes!) } : { hash: ch });
+      const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
+      d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
       setBase(d, path, remoteBytes, rmeta!.hash);
       d.onConflict?.(path, copy);
       return;
@@ -279,10 +279,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
 // removal locally). Base is set to the winner so the next sync sees them agreeing.
 export async function resolveConfigConflict(d: ReconcileDeps, path: string, choice: "local" | "remote"): Promise<void> {
   if (choice === "local") {
-    const bytes = await readOrNull(d.io, path);
-    if (bytes === null) { await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return; }
-    const h = await pushFile(d.api, d.io, d.state, d.cache, path);
-    setBase(d, path, bytes, h);
+    const exists = await readOrNull(d.io, path);
+    if (exists === null) { await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return; }
+    const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path);
+    setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
   } else {
     const rmeta = await d.api.fileMeta(path);
     if (rmeta === null) { await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return; }
@@ -316,10 +316,12 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
 
   if (mode === "download") {
     for (const [p, meta] of remote) {
-      if (meta.size > max) { d.onSkip?.(p, meta.size); continue; }
-      const bytes = await fetchVerified(d, meta); // verify the adopted target bytes too
-      await d.io.write(p, bytes);
-      setBase(d, p, bytes, meta.hash);
+      // DI-6: adopt each remote file via applyPull, which STREAMS a large file straight to disk
+      // (never buffering it whole) and buffer-verifies a small one — the same path reconcileAll
+      // uses. Only a large file we CAN'T stream (no appendWrite) is size-gated + skipped.
+      const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
+      if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
+      await applyPull(d, p, meta);
     }
     for (const [p, info] of local) {            // drop local files the target lacks
       if (remote.has(p)) continue;
@@ -329,9 +331,8 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   } else { // upload
     for (const [p, info] of local) {
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
-      const h = await pushFile(d.api, d.io, d.state, d.cache, p);
-      const bytes = await readOrNull(d.io, p);
-      if (bytes) setBase(d, p, bytes, h);
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
+      setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
     }
     for (const p of remote.keys()) {            // drop remote files this vault lacks
       if (!local.has(p)) await d.api.deleteFile(p);
