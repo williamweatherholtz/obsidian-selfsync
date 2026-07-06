@@ -33,6 +33,16 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     Some(p)
 }
 
+// Atomically mirror a committed file to the bind-mount path (create parents, write a sibling temp,
+// then rename), so a crash mid-write never leaves a torn bind-mount file. (DI-3)
+fn write_mirror(abs: &Path, body: &[u8]) -> std::io::Result<()> {
+    if let Some(p) = abs.parent() { std::fs::create_dir_all(p)?; }
+    let name = abs.file_name().and_then(|s| s.to_str()).unwrap_or("f");
+    let tmp = abs.with_file_name(format!(".{name}.selfsync-tmp"));
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, abs)
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Index {
     version: u64,
@@ -245,6 +255,16 @@ impl Vault {
         let mut rels: Vec<(String, PathBuf)> = Vec::new();
         collect_files(&self.vault_dir, &self.vault_dir, &mut rels)?;
         rels.sort(); // deterministic version assignment order
+        // If any currently-indexed path is missing from disk, the vault dir is INCOMPLETE (a partial
+        // restore / in-flight copy). Refuse rather than drop those paths + GC their chunks — that
+        // would be permanent loss that then drives client-side deletions. A genuinely deleted file
+        // went through delete() (which removed its index entry too), so it isn't in idx.files. (DI-4)
+        let present: std::collections::HashSet<&str> = rels.iter().map(|(rel, _)| rel.as_str()).collect();
+        let missing = self.idx.files.keys().filter(|k| !present.contains(k.as_str())).count();
+        if missing > 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound,
+                format!("reindex aborted: {missing} indexed file(s) missing from disk (incomplete vault dir?)")));
+        }
         for (rel, abs) in rels {
             let body = std::fs::read(&abs)?;
             let hash = sha256_hex(&body);
@@ -339,6 +359,11 @@ impl Vault {
     pub fn commit(&mut self, req: CommitRequest) -> std::io::Result<FileMeta> {
         let rel = safe_rel_path(&req.path)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad path"))?;
+        // Reject a case-only collision: two index keys differing only in case map to ONE file on a
+        // case-insensitive FS, and a later reindex would collapse them (phantom deletion). (PROTO-4)
+        if self.idx.files.keys().any(|k| k != &req.path && k.eq_ignore_ascii_case(&req.path)) {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "a path differing only in case already exists"));
+        }
         // Reject a hostile/absurd declared size before allocating (a client-supplied
         // u64 must never drive a capacity hint — 2^60 would panic/abort).
         if req.size > MAX_FILE_BYTES {
@@ -361,12 +386,15 @@ impl Vault {
         if body.len() as u64 != req.size || sha256_hex(&body) != req.hash {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file hash/size mismatch"));
         }
-        // write bind-mount file (content is already safe in the chunk store; do this
-        // before mutating the index so the index stays the source of truth)
-        let abs = self.vault_dir.join(&rel);
-        if let Some(p) = abs.parent() { std::fs::create_dir_all(p)?; }
-        std::fs::write(&abs, &body)?;
-        // --- durable mutation: snapshot so a persist failure rolls back cleanly ---
+        // Idempotent re-commit: identical path+hash+chunks already recorded → return it unchanged,
+        // with no version bump, no journal append, and no broadcast — so a client retry after a
+        // transient error is a genuine no-op instead of version churn + a spurious "changed". (protocol-5)
+        if let Some(existing) = self.idx.files.get(&req.path) {
+            if existing.hash == req.hash && existing.chunks == req.chunks {
+                return Ok(existing.clone());
+            }
+        }
+        // --- mutate the index in memory, journal it durably, THEN mirror to the bind-mount file ---
         let snapshot = self.idx.clone();
         for h in &req.chunks { *self.idx.chunk_refs.entry(h.clone()).or_insert(0) += 1; }
         let to_remove = match self.idx.files.get(&req.path).map(|m| m.chunks.clone()) {
@@ -383,6 +411,15 @@ impl Vault {
         if let Err(e) = self.journal(&JournalRecord::Put { meta: meta.clone() }) {
             self.idx = snapshot; // append failed → not durable (a torn record is dropped on replay); match disk
             return Err(e);
+        }
+        // Journal is durable. NOW mirror to the bind-mount file — AFTER the journal, via atomic
+        // temp+rename, so disk is never ahead of the durable index. A crash before this leaves the
+        // OLD file, and reindex can't resurrect never-committed content (DI-3). Best-effort: the
+        // authoritative bytes live in the chunk store (served by get_chunk), so a mirror-write
+        // failure is a recoverable mismatch, not a lost commit.
+        let abs = self.vault_dir.join(&rel);
+        if let Err(e) = write_mirror(&abs, &body) {
+            eprintln!("[commit] WARN: bind-mount mirror write failed for '{}': {e} (content is durable in the chunk store)", req.path);
         }
         // Index is durable; NOW drop de-referenced blobs. A failure here is a
         // recoverable orphan (startup GC reclaims it), never corruption.
