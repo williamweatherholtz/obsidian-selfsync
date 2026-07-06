@@ -9,7 +9,7 @@ use axum::Json;
 
 // Reject an absurdly long password BEFORE hashing it — argon2's cost scales with input, so an
 // uncapped multi-MB password is a cheap CPU-amplification vector. 1 KiB is far above any real one. (SEC-2)
-const MAX_PASSWORD_LEN: usize = 1024;
+pub const MAX_PASSWORD_LEN: usize = 1024;
 
 pub async fn login(
     State(st): State<AppState>,

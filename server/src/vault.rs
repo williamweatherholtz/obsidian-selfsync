@@ -46,7 +46,11 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
         match c {
             Component::Normal(seg) => {
                 let s = seg.to_str()?; // reject non-UTF-8 segments
-                if is_reserved_win_name(s) { return None; }
+                // SEC-R2#2: reject a name reindex's collect_files would SKIP as junk (.DS_Store,
+                // .git, …). Otherwise commit could put it in the index, but reindex wouldn't find
+                // it on disk → the DI-4 "indexed file missing" check aborts every repair, bricking
+                // the vault permanently (a readWrite grantee could inflict this on the owner).
+                if is_reserved_win_name(s) || is_junk(s) { return None; }
             }
             _ => return None,
         }
@@ -542,6 +546,16 @@ mod tests {
         for ok in ["console.md", "com0.md", "com10.md", "connie/notes.md", "lpt.md", "auxiliary.md"] {
             assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
         }
+    }
+
+    #[test]
+    fn safe_rel_path_rejects_reindex_junk_names() {
+        // SEC-R2#2: a name reindex's collect_files skips as junk must never enter the index,
+        // or a later reindex would abort forever ("indexed file missing from disk").
+        for bad in [".DS_Store", "Thumbs.db", "desktop.ini", ".git", "sub/.DS_Store", "a/b/.git"] {
+            assert!(safe_rel_path(bad).is_none(), "expected reject: {bad}");
+        }
+        assert!(safe_rel_path("notes/.gitignore").is_some()); // .gitignore is a real file, not junk
     }
 
     #[test]

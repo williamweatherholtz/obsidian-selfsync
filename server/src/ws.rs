@@ -86,13 +86,14 @@ pub async fn ws_handler(
     eprintln!("[ws] {owner}/{vault} connected (by {user}) [{live}/{MAX_WS_CONNECTIONS}]");
     let rx = handle.tx.subscribe();
     // Echo back only the non-secret subprotocol so the handshake completes.
+    let (st2, o2, v2, u2) = (st.clone(), owner.clone(), vault.clone(), user.clone());
     ws.protocols([WS_SUBPROTOCOL])
-        .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard).await })
+        .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard, st2, o2, v2, u2).await })
 }
 
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
 // drop the socket if the peer misses two consecutive pings (dead/half-open connection).
-async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard) {
+async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard, st: AppState, owner: String, vault: String, user: String) {
     let mut ping = tokio::time::interval(WS_PING_INTERVAL);
     // Delay (not the default Burst): if a busy change stream starves the ping branch for a full
     // interval, we DON'T fire two ticks back-to-back — which could see awaiting_pong still true
@@ -104,6 +105,14 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(version) => {
+                    // SEC-R2#3: re-check the ACL before forwarding — a share revoked AFTER connect
+                    // must stop this socket leaking change/version metadata (HTTP reads already
+                    // re-authorize per request; the long-lived WS did not until now).
+                    let still_ok = match lock(&st.shares) {
+                        Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
+                        Err(_) => false,
+                    };
+                    if !still_ok { break; }
                     let msg = format!("{{\"type\":\"changed\",\"version\":{version}}}");
                     if socket.send(Message::Text(msg)).await.is_err() { break; }
                 }

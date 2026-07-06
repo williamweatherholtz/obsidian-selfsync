@@ -124,7 +124,21 @@ pub async fn users_create(
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
-    match lock(&st.users)?.register(&req.username, &req.password) {
+    // SEC-R2#4: same argon2 DoS protection as the public register path — cap the password length
+    // and run the memory-hard hash on a blocking thread bounded by the auth permit pool, instead
+    // of hashing an uncapped password synchronously on an async worker.
+    if req.password.len() > crate::auth::MAX_PASSWORD_LEN {
+        return Err(AppError::BadRequest("password too long".into()));
+    }
+    let permit = st.auth_slots.clone().acquire_owned().await.map_err(|_| AppError::Unavailable("auth busy".into()))?;
+    let users = st.users.clone();
+    let (u, p) = (req.username.clone(), req.password.clone());
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
+        g.register(&u, &p)
+    }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
+    match result {
         Ok(()) => Ok(StatusCode::OK),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AppError::Conflict("user exists".into())),
         Err(_) => Err(AppError::BadRequest("could not create user".into())),
