@@ -103,18 +103,23 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta): Promi
     d.onBaseChanged?.();
     return;
   }
-  const bytes = await fetchFileBytes(d.api, d.cache, rmeta.chunks);
-  // Integrity: verify the reassembled bytes actually hash to what the server claimed before we
-  // write them over the user's file and record base = that hash. Otherwise a corrupted chunk blob
-  // (bit rot / bad restore) would be written and then laundered into "known-good" state, and served
-  // to every device. On mismatch we throw — the per-file guard in reconcileAll logs it and skips
-  // this file, leaving the good local copy untouched, while the rest of the sync proceeds.
-  const got = await sha256hex(bytes);
-  if (got !== rmeta.hash) {
-    throw new Error(`integrity check failed for '${path}': got ${got.slice(0, 12)}, expected ${rmeta.hash.slice(0, 12)} — not writing (corrupt download?)`);
-  }
+  const bytes = await fetchVerified(d, rmeta);
   await d.io.write(path, bytes);
   setBase(d, path, bytes, rmeta.hash);
+}
+
+// Fetch a remote file's chunks and VERIFY the reassembly hashes to the claimed value before it's
+// used anywhere (written, merged, or adopted on a switch). A corrupt chunk blob (bit rot / bad
+// restore) would otherwise be written to the user's note and laundered into "known-good" base, then
+// re-served to every device. On mismatch we throw; reconcileAll's per-file guard logs + skips it,
+// leaving the good local copy untouched while the rest of the sync proceeds.
+async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Array> {
+  const bytes = await fetchFileBytes(d.api, d.cache, meta.chunks);
+  const got = await sha256hex(bytes);
+  if (got !== meta.hash) {
+    throw new Error(`integrity check failed for '${meta.path}': got ${got.slice(0, 12)}, expected ${meta.hash.slice(0, 12)} — not applying (corrupt download?)`);
+  }
+  return bytes;
 }
 
 export async function reconcileAll(d: ReconcileDeps): Promise<void> {
@@ -231,7 +236,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       return;
     case "merge":
     case "conflict-copy": {
-      const remoteBytes = await fetchFileBytes(d.api, d.cache, rmeta!.chunks);
+      const remoteBytes = await fetchVerified(d, rmeta!); // verify before merge/write (a corrupt blob must not be merged in)
       if (d.readOnly) {
         // Read-only share: the owner's version is canonical and we push nothing. Keep the
         // reader's local edit as a LOCAL-only conflict copy so it isn't silently lost.
@@ -312,7 +317,7 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   if (mode === "download") {
     for (const [p, meta] of remote) {
       if (meta.size > max) { d.onSkip?.(p, meta.size); continue; }
-      const bytes = await fetchFileBytes(d.api, d.cache, meta.chunks);
+      const bytes = await fetchVerified(d, meta); // verify the adopted target bytes too
       await d.io.write(p, bytes);
       setBase(d, p, bytes, meta.hash);
     }

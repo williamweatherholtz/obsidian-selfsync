@@ -508,6 +508,27 @@ describe("critique fixes — data integrity + correctness", () => {
     expect(conflicts).toContain(CP);               // edit-wins-pull on config → adjudicate
     expect((io as any).m.has(CP)).toBe(false);     // NOT resurrected locally
   });
+
+  it("PROTO-1: pushFile does NOT advance the poll cursor (concurrent remote commits aren't skipped)", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "a.md": "hi" });
+    const state = { version: 5 };
+    await pushFile(api, io, state, new Map() as ChunkCache, "a.md"); // commits, bumps the SERVER version
+    expect(state.version).toBe(5); // our poll cursor must stay put, so changes(5) still returns any remote commit
+  });
+
+  it("PROTO-2: a corrupt blob on the MERGE path is rejected, not merged over the local file", async () => {
+    const { api, chunks, files } = fakeServer();
+    await serverPut(api, "n.md", "REMOTE");
+    const io = fakeIo({ "n.md": "LOCAL" });
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("BASE")), text: "BASE" }); // both diverged from base → merge/conflict-copy
+    for (const h of files.get("n.md")!.chunks) chunks.set(h, enc("CORRUPT")); // rot the remote blob
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { base, onFileError: (p) => errs.push(p) }));
+    expect(dec((io as any).m.get("n.md")!)).toBe("LOCAL"); // local NOT overwritten with corrupt bytes
+    expect(errs).toContain("n.md");
+  });
 });
 
 describe("settings drive behavior: conflict strategy + device name", () => {

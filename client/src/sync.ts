@@ -118,7 +118,10 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   const toPush = chunks.filter((c) => missing.has(c.hash));
   await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => api.putChunk(c.hash, c.bytes));
   const fileHash = await sha256hex(bytes);
-  const meta = await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes });
-  state.version = Math.max(state.version, meta.version);
+  await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes });
+  // NB: do NOT advance state.version here. The commit's returned version can be higher than
+  // remote commits we haven't pulled yet; advancing the poll cursor to it would skip them
+  // (changes(since) is exclusive), silently missing a concurrent remote change until some
+  // unrelated later commit forces a full reconcile. Only reconcileAll advances the cursor.
   return fileHash;
 }

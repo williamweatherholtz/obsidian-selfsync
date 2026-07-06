@@ -566,7 +566,12 @@ export default class NewLiveSyncPlugin extends Plugin {
   // ---- connection lifecycle (self-healing) ----
   async reconnect() {
     if (this.connecting || this.unloading) return; // H2: one at a time; never after unload
+    if (this.applying) { this.scheduleReconnect(); return; } // CO-race: never reconnect mid-reconcile
     this.connecting = true;
+    // Hold the reconcile lock for the WHOLE connect (not just reconcileAll): otherwise a local
+    // vault event during acquireToken()/status() would start a reconcilePath with applying=false,
+    // then reconcileAll runs interleaved — both mutating base/version/cache (CONC-3).
+    this.applying = true;
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     this.machine.dispatch("connect");
     this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
@@ -591,11 +596,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       // reconcile; captured-and-cleared up front so a failed switch never silently
       // re-applies an authoritative overwrite on a later reconnect.
       const switchMode = this.pendingSwitchMode; this.pendingSwitchMode = undefined;
-      this.applying = true;
-      try {
-        if (switchMode) await switchTo(this.deps(), switchMode);
-        else await reconcileAll(this.deps());
-      } finally { this.applying = false; }
+      if (switchMode) await switchTo(this.deps(), switchMode);
+      else await reconcileAll(this.deps());
       await this.flushConfigReload();
       this.log(`reconciled → v${this.state.version}`);
 
@@ -617,7 +619,6 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
-      this.applying = false;
       this.machine.dispatch("error");
       this.lastIssue = /no password stored/.test(String(e?.message))
         ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
@@ -625,6 +626,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`connect FAILED: ${e?.message ?? e}`); // goes red in the status bar; no toast on each retry
       this.scheduleReconnect();
     } finally {
+      this.applying = false; // always release the reconcile lock (covers the health-not-ready early return + catch)
       this.connecting = false;
     }
     void this.drainPending(); // flush any edits queued during the initial reconcile
