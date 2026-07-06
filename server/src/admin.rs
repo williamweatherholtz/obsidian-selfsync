@@ -155,19 +155,23 @@ pub async fn users_delete(
     if !lock(&st.users)?.exists(&name) {
         return Err(AppError::NotFound);
     }
-    // SEC-R3#2 / SEC-MED-2: purge the vault data FIRST and treat failure as a HARD error. If the
-    // account row were removed first and the purge then failed (e.g. a Windows-locked chunk file),
-    // the account would be gone while DATA_ROOT/<name>/ remained — a same-name recreation would
-    // inherit the prior owner's notes. Purging first means a failure leaves the account intact +
-    // retryable, and the row is only removed once the data is provably gone.
+    // SEC-R5#2: revoke the account's sessions FIRST, so no still-valid token of the deleted user
+    // can race the purge (create_vault / an in-flight commit re-materializing DATA_ROOT/<name>/
+    // after remove_dir_all). Only then purge data.
+    lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    // SEC-R3#2 / SEC-MED-2: purge the vault data (drops cached handles + the dir) and treat failure
+    // as a HARD error. If the account row were removed first and the purge then failed (e.g. a
+    // Windows-locked chunk file), the account would be gone while DATA_ROOT/<name>/ remained — a
+    // same-name recreation would inherit the prior owner's notes. Purging before removing the row
+    // means a failure leaves the account intact + retryable, and the row is removed only once the
+    // data is provably gone.
     st.purge_user_data(&name).map_err(|e| AppError::Internal(format!("could not purge vault data: {e}")))?;
     let removed = lock(&st.users)?.remove(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     if !removed {
         return Err(AppError::NotFound);
     }
-    // Drop the account's shares (as owner or grantee) and revoke any active sessions.
+    // Drop the account's shares (as owner or grantee). Tokens were already revoked up front.
     lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
-    lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(StatusCode::OK)
 }
 

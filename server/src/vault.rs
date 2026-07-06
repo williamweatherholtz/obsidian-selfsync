@@ -398,7 +398,12 @@ impl Vault {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad path"))?;
         // Reject a case-only collision: two index keys differing only in case map to ONE file on a
         // case-insensitive FS, and a later reindex would collapse them (phantom deletion). (PROTO-4)
-        if self.idx.files.keys().any(|k| k != &req.path && k.eq_ignore_ascii_case(&req.path)) {
+        // DI-R5#1: fold FULL Unicode case, not just ASCII — a case-insensitive filesystem folds
+        // 'café' and 'CAFÉ' to one file too, and an ASCII-only guard would let both into the index
+        // (→ reindex brick + phantom-delete). safe_rel_path permits arbitrary Unicode segments, so
+        // the collision check must match the FS's folding strength.
+        let req_folded = req.path.to_lowercase();
+        if self.idx.files.keys().any(|k| k != &req.path && k.to_lowercase() == req_folded) {
             return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "a path differing only in case already exists"));
         }
         // Reject a hostile/absurd declared size before allocating (a client-supplied
@@ -465,7 +470,14 @@ impl Vault {
     }
 
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
-        let Some(rel) = safe_rel_path(path) else { return Ok(None); };
+        // DI-R5#4: a file committed BEFORE safe_rel_path was tightened (or ingested via the bind
+        // mount + reindex, which doesn't apply safe_rel_path) may be an index key that no longer
+        // passes safe_rel_path. It must still be DELETABLE — if the exact key is present, evict it
+        // even though the name is now invalid; otherwise a client's delete-remote 404-loops forever
+        // and the tombstone never propagates. Only the on-disk mirror removal is skipped for a
+        // rejected name (there's no safe rel path to join).
+        let rel = safe_rel_path(path);
+        if rel.is_none() && !self.idx.files.contains_key(path) { return Ok(None); }
         if !self.idx.files.contains_key(path) { return Ok(None); }
         let snapshot = self.idx.clone();
         let old = self.idx.files.remove(path).expect("present: checked above");
@@ -478,11 +490,14 @@ impl Vault {
             self.idx = snapshot; // append failed → not durable; roll back to match disk
             return Err(e);
         }
-        // Durable; now remove the materialized file + de-referenced blobs (best-effort).
-        let abs = self.vault_dir.join(rel);
-        if abs.exists() {
-            if let Err(e) = std::fs::remove_file(&abs) {
-                eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+        // Durable; now remove the materialized file + de-referenced blobs (best-effort). Only when
+        // the name has a valid rel path (a legacy invalid-name key has no safe on-disk target).
+        if let Some(rel) = rel {
+            let abs = self.vault_dir.join(rel);
+            if abs.exists() {
+                if let Err(e) = std::fs::remove_file(&abs) {
+                    eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+                }
             }
         }
         self.remove_blobs(&to_remove);
@@ -580,6 +595,26 @@ mod tests {
         for ok in [".gitignore", "my note.md", "a.b.c.md", "notes/deep file.md"] {
             assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
         }
+    }
+
+    #[test]
+    fn commit_rejects_unicode_case_collision_and_delete_evicts_legacy_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        // Store a chunk + commit 'CAFÉ.md' (uppercase É, U+00C9).
+        let body = b"x";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "CAFÉ.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()] }).unwrap();
+        // DI-R5#1: committing the Unicode-case variant 'café.md' (lowercase é) is rejected.
+        let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()] }).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted).
+        v.idx.files.insert("legacy.md.".into(), FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.idx.version, chunks: vec![h.clone()] });
+        assert!(safe_rel_path("legacy.md.").is_none());
+        let d = v.delete("legacy.md.").unwrap();
+        assert!(d.is_some(), "legacy invalid-name key must be deletable");
+        assert!(!v.idx.files.contains_key("legacy.md."));
     }
 
     #[test]
