@@ -274,7 +274,7 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     const SELF = "obsidian-selfsync";
     // Pin the selection this test exercises (independent of default changes): community
     // plugins ON (to prove they propagate), appearance OFF (to prove opt-out holds).
-    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, community: true, appearance: false };
+    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, community: true, appearance: false, pluginAllow: ["dataview"] };
     const token = await NodeTransport.login(base, "admin", "admin");
     await NodeTransport.createVault(base, token, "cfgsync");
     const build = async (tag: string, device: string): Promise<Client> => {
@@ -498,7 +498,9 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
   for (const { dial, on, off } of DIALS) {
     it(`config dial "${dial}": its file syncs; an off-dial file does not`, async () => {
       const SELF = "selfsync";
-      const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, core: false, hotkeys: false, appearance: false, snippets: false, community: false, [dial]: true } as ConfigSyncSelection;
+      // pluginAllow opts dataview in for the "community" dial (the on-file is a plugin folder now
+      // gated by the allowlist); harmless for the other dials (community stays false there).
+      const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, core: false, hotkeys: false, appearance: false, snippets: false, community: false, pluginAllow: ["dataview"], [dial]: true } as ConfigSyncSelection;
       const [a, b] = await filteredPair(`dial-${dial}`, sel, SELF);
       await a.io.write(on, enc(`${dial} payload`));                 // opted-in → should sync
       await fs.mkdir(path.dirname(path.join(a.root, off)), { recursive: true });
@@ -512,7 +514,7 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
 
   it("SelfSync's own plugin folder never syncs (credentials stay local), even with community on", async () => {
     const SELF = "selfsync";
-    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, community: true };
+    const sel: ConfigSyncSelection = { ...DEFAULT_CONFIG_SYNC, enabled: true, community: true, pluginAllow: ["dataview"] };
     const [a, b] = await filteredPair("selfexcl", sel, SELF);
     await fs.mkdir(path.join(a.root, ".obsidian", "plugins", SELF), { recursive: true });
     await fs.writeFile(path.join(a.root, ".obsidian", "plugins", SELF, "data.json"), '{"serverUrl":"http://A-secret","password":"hunter2"}');

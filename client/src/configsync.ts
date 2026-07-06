@@ -18,7 +18,11 @@ export interface ConfigSyncSelection {
   appearance: boolean;   // appearance.json, themes/**  (default OFF)
   snippets: boolean;     // snippets/**                 (default OFF)
   hotkeys: boolean;      // hotkeys.json
-  pluginDeny: string[];  // community plugin ids to exclude individually
+  // Community plugin ids to INCLUDE (allowlist). A plugin's code+settings sync ONLY if its id is
+  // here — so a NEWLY-installed plugin is NOT shared until the user opts it in (or bulk-adds all).
+  // Default-OFF, opt-in: installing a plugin on one device never auto-pushes it (and its files
+  // overwriting the other devices) before the user decides to share it. (was pluginDeny: default-share)
+  pluginAllow: string[];
 }
 
 // Category defaults mirror official Obsidian Sync's "Vault configuration sync": core
@@ -33,7 +37,7 @@ export const DEFAULT_CONFIG_SYNC: ConfigSyncSelection = {
   appearance: true,
   snippets: true,
   community: false,
-  pluginDeny: [],
+  pluginAllow: [], // no community plugins shared until the user opts them in (or bulk-adds all)
 };
 
 const CONFIG_PREFIX = ".obsidian/";
@@ -120,8 +124,9 @@ export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId:
     if (!sel.community) return false;
     const id = p.slice("plugins/".length).split("/")[0];
     if (!id) return false;
-    if (sel.pluginDeny.includes(id)) return false;
-    return true;
+    // ALLOWLIST: a plugin syncs only if the user explicitly opted it in. A new plugin's folder is
+    // NOT in pluginAllow, so it stays device-local until the user adds it (per-plugin or bulk).
+    return sel.pluginAllow.includes(id);
   }
 
   // (3) unrecognized .obsidian/ file → device-local, never synced

@@ -22,23 +22,25 @@ describe("shouldSync — master switch", () => {
 });
 
 describe("shouldSync — SelfSync self-exclusion is absolute", () => {
-  it("never syncs SelfSync's own plugin folder, even with everything enabled", () => {
-    const sel = on({ community: true });
+  // Allowlist the self ids in these tests, so the ONLY reason a self path is excluded is the
+  // self-exclusion rule — proving it OVERRIDES the allowlist (not just an empty-allowlist artifact).
+  it("never syncs SelfSync's own plugin folder, even when enabled AND allowlisted", () => {
+    const sel = on({ community: true, pluginAllow: [SELF, "new-livesync"] });
     expect(shouldSync(`.obsidian/plugins/${SELF}/data.json`, sel, SELF)).toBe(false);
     expect(shouldSync(`.obsidian/plugins/${SELF}/main.js`, sel, SELF)).toBe(false);
     expect(shouldSync(`.obsidian/plugins/${SELF}`, sel, SELF)).toBe(false);
   });
   it("also excludes a leftover FORMER self-folder (new-livesync) so old creds can't sync", () => {
-    const sel = on({ community: true });
+    const sel = on({ community: true, pluginAllow: [SELF, "new-livesync"] });
     expect(shouldSync(".obsidian/plugins/new-livesync/data.json", sel, SELF)).toBe(false);
     expect(shouldSync(".obsidian/plugins/new-livesync/main.js", sel, SELF)).toBe(false);
   });
   it("does not accidentally exclude a plugin whose id is a prefix of SelfSync's", () => {
-    // ".../obsidian-sync/..." must still sync — only the exact SelfSync id is barred.
-    expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on({ community: true }), SELF)).toBe(true);
+    // ".../obsidian-sync/..." must still sync when allowlisted — only the exact SelfSync id is barred.
+    expect(shouldSync(`.obsidian/plugins/obsidian-sync/data.json`, on({ community: true, pluginAllow: ["obsidian-sync"] }), SELF)).toBe(true);
   });
   it("excludes the self-folder CASE-INSENSITIVELY (SEC-R2#1 — no cred-hijack via an uppercased path)", () => {
-    const sel = on({ community: true });
+    const sel = on({ community: true, pluginAllow: [SELF, "new-livesync"] });
     // On a case-insensitive FS these resolve to the SAME folder as new-livesync/SELF, so they
     // must NOT sync — else a shared vault could overwrite the victim's stored server URL + creds.
     expect(shouldSync(".obsidian/plugins/NEW-LIVESYNC/data.json", sel, SELF)).toBe(false);
@@ -62,17 +64,20 @@ describe("shouldSync — category defaults", () => {
     expect(shouldSync(".obsidian/community-plugins.json", sel, SELF)).toBe(false);
     expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(false);
   });
-  it("opting in enables community-plugin sync", () => {
+  it("community ON syncs the enabled-list, but a plugin's CODE syncs only when allowlisted", () => {
+    // Turning community on lets the manifest (enabled list) sync; a plugin FOLDER still needs an
+    // explicit per-plugin opt-in — so a newly-installed plugin is NOT auto-shared.
     expect(shouldSync(".obsidian/community-plugins.json", on({ community: true }), SELF)).toBe(true);
-    expect(shouldSync(".obsidian/plugins/dataview/data.json", on({ community: true }), SELF)).toBe(true);
+    expect(shouldSync(".obsidian/plugins/dataview/data.json", on({ community: true }), SELF)).toBe(false); // not allowlisted
+    expect(shouldSync(".obsidian/plugins/dataview/data.json", on({ community: true, pluginAllow: ["dataview"] }), SELF)).toBe(true);
   });
 });
 
-describe("shouldSync — per-plugin deny + community toggle", () => {
-  it("a denied plugin id is excluded but others still sync", () => {
-    const sel = on({ community: true, pluginDeny: ["dataview"] });
-    expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(false);
+describe("shouldSync — per-plugin ALLOWLIST + community toggle", () => {
+  it("only allowlisted plugins sync; a new (non-allowlisted) plugin does NOT", () => {
+    const sel = on({ community: true, pluginAllow: ["templater"] });
     expect(shouldSync(".obsidian/plugins/templater/data.json", sel, SELF)).toBe(true);
+    expect(shouldSync(".obsidian/plugins/dataview/data.json", sel, SELF)).toBe(false); // newly installed → not shared
   });
   it("turning community off excludes all plugin folders and the manifest", () => {
     const sel = on({ community: false });

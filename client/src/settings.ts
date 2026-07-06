@@ -241,7 +241,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     );
   }
 
-  // Per-plugin allow/deny (the SelfSync-never-syncs reassurance is shown once, above).
+  // Per-plugin ALLOWLIST (opt-in): check a plugin to share its code + settings across devices.
+  // A newly-installed plugin is NOT shared until you add it here — so installing something on one
+  // device never auto-pushes it (overwriting the others) before you decide to. The SelfSync-never-
+  // syncs reassurance is shown once, above.
   private renderPluginChecklist(c: HTMLElement, cs: NewLiveSyncSettings["configSync"]): void {
     const selfId = this.plugin.selfFolderId();
     const manifests = ((this.app as any).plugins?.manifests ?? {}) as Record<string, { id: string; name: string }>;
@@ -250,14 +253,26 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .sort((a, b) => (manifests[a].name || a).localeCompare(manifests[b].name || b));
     if (ids.length === 0) return;
     const box = c.createEl("div"); box.addClass("selfsync-plugins");
-    box.createEl("div", { text: "Community plugins — uncheck to exclude one:" })
+    const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
+    box.createEl("div", { text: `Community plugins — check the ones to share (${shared}/${ids.length} shared). New plugins are NOT shared until you add them.` })
       .setAttribute("style", "font-size:12px;opacity:0.7;margin:10px 0 2px;");
+
+    // Bulk actions: opt in everything at once (for a full mirror), or clear the set.
+    new Setting(box).setName("Share all installed plugins")
+      .setDesc("Add every currently-installed plugin to the shared set at once. Plugins you install LATER still won't share until you add them.")
+      .addButton((b) => b.setButtonText("Share all").onClick(async () => {
+        cs.pluginAllow = ids.slice(); await this.plugin.saveSettings(); this.display();
+      }))
+      .addButton((b) => b.setButtonText("Share none").setWarning().onClick(async () => {
+        cs.pluginAllow = []; await this.plugin.saveSettings(); this.display();
+      }));
+
     for (const id of ids) {
       new Setting(box).setName(manifests[id].name || id)
-        .addToggle((tg) => tg.setValue(!cs.pluginDeny.includes(id)).onChange(async (v) => {
-          const set = new Set(cs.pluginDeny);
-          if (v) set.delete(id); else set.add(id);
-          cs.pluginDeny = [...set];
+        .addToggle((tg) => tg.setValue(cs.pluginAllow.includes(id)).onChange(async (v) => {
+          const set = new Set(cs.pluginAllow);
+          if (v) set.add(id); else set.delete(id);
+          cs.pluginAllow = [...set];
           await this.plugin.saveSettings();
         }));
     }
