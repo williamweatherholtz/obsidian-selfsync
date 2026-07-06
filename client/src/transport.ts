@@ -125,7 +125,11 @@ export class HttpTransport implements SyncApi {
   connectWs(onChanged: () => void): WebSocket | null {
     try {
       const ownerParam = this.owner ? `&owner=${encodeURIComponent(this.owner)}` : "";
-      const ws = new WebSocket(this.baseUrl.replace(/^http/, "ws") + `/api/ws?token=${this.token}&vault=${encodeURIComponent(this.vault)}${ownerParam}`);
+      const url = this.baseUrl.replace(/^http/, "ws") + `/api/ws?vault=${encodeURIComponent(this.vault)}${ownerParam}`;
+      // Pass the session token via the Sec-WebSocket-Protocol header (the WebSocket API's only
+      // client-settable header) rather than the URL, so it never lands in server/proxy logs or
+      // history. The server reads the `auth.<token>` entry and echoes back "selfsync.v1". (SEC-1)
+      const ws = new WebSocket(url, ["selfsync.v1", `auth.${this.token}`]);
       ws.onmessage = (ev) => { try { if (JSON.parse(ev.data).type === "changed") onChanged(); } catch {} };
       return ws;
     } catch {

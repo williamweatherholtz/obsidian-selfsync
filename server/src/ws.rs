@@ -22,15 +22,30 @@ impl Drop for ConnGuard {
     fn drop(&mut self) { self.0.fetch_sub(1, Ordering::Relaxed); }
 }
 
+// The subprotocol the server speaks; the client offers it alongside its `auth.<token>` entry
+// and the server echoes THIS one back (never the secret) to complete the handshake.
+const WS_SUBPROTOCOL: &str = "selfsync.v1";
+
+// Pull the session token out of the Sec-WebSocket-Protocol header — the browser WebSocket API's
+// only client-controlled header. The client offers ["selfsync.v1", "auth.<token>"]; we read the
+// `auth.` entry. Keeping the token OFF the URL query keeps it out of access/proxy logs and
+// browser history. (SEC-1)
+fn token_from_protocols(headers: &axum::http::HeaderMap) -> Option<String> {
+    let raw = headers.get("sec-websocket-protocol")?.to_str().ok()?;
+    raw.split(',').map(str::trim).find_map(|p| p.strip_prefix("auth.").map(str::to_string))
+}
+
 pub async fn ws_handler(
     State(st): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     // Resolve token -> user, then subscribe to the requested vault's channel. A
     // poisoned token store returns 503 rather than panicking (matches error::lock).
+    let token = token_from_protocols(&headers);
     let user = match lock(&st.tokens) {
-        Ok(mut g) => q.get("token").and_then(|t| g.resolve(t)),
+        Ok(mut g) => token.as_deref().and_then(|t| g.resolve(t)),
         Err(_) => { eprintln!("[ws] connect REJECTED (token store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
     };
     let Some(user) = user else {
@@ -70,7 +85,9 @@ pub async fn ws_handler(
     let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
     eprintln!("[ws] {owner}/{vault} connected (by {user}) [{live}/{MAX_WS_CONNECTIONS}]");
     let rx = handle.tx.subscribe();
-    ws.on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard).await })
+    // Echo back only the non-secret subprotocol so the handshake completes.
+    ws.protocols([WS_SUBPROTOCOL])
+        .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard).await })
 }
 
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
