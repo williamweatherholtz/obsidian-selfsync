@@ -218,6 +218,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.machine.dispatch("unload");
     if (this.reconnectTimer !== undefined) window.clearTimeout(this.reconnectTimer);
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
+    if (this.wsRedialTimer !== undefined) window.clearTimeout(this.wsRedialTimer);
     this.ws?.close();
     this.log("plugin unloaded");
   }
@@ -318,10 +319,15 @@ export default class NewLiveSyncPlugin extends Plugin {
       const path = this.pendingLocal.values().next().value as string;
       this.pendingLocal.delete(path);
       this.applying = true;
-      this.machine.dispatch("syncStart");
-      try { await reconcilePath(this.deps(), path, this.localSizeOf(path)); this.machine.dispatch("syncDone"); }
-      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
+      let failed = false;
+      // CONC-2: dispatch INSIDE the try — the status callback it fires runs arbitrary UI code;
+      // if that throws before the try, `applying` would leak true forever and wedge all sync.
+      try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), path, this.localSizeOf(path)); this.machine.dispatch("syncDone"); }
+      catch (e: any) { this.log(`queued sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); this.pendingLocal.add(path); failed = true; }
       finally { this.applying = false; }
+      // CONC-6: on failure re-queue the path and STOP draining (a later poll/reconnect or full
+      // reconcile retries it) rather than dropping it or hot-spinning on a persistent error.
+      if (failed) break;
     }
   }
 
@@ -580,9 +586,12 @@ export default class NewLiveSyncPlugin extends Plugin {
     // then reconcileAll runs interleaved — both mutating base/version/cache (CONC-3).
     this.applying = true;
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
-    this.machine.dispatch("connect");
-    this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
     try {
+      // CONC-2: dispatch (which fires the status callback → arbitrary UI code) is INSIDE the
+      // try, so a throw from it can't leak `applying`/`connecting` true and permanently wedge
+      // the connection lifecycle (the finally always releases them).
+      this.machine.dispatch("connect");
+      this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
       this.ws?.close();
       const token = await this.acquireToken();
       this.api = new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
@@ -609,15 +618,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`reconciled → v${this.state.version}`);
 
       if (this.unloading) return; // H2: torn down while awaiting — don't spin up WS/poll
-      const ws = this.api.connectWs(() => this.onRemoteChanged());
-      this.ws = ws ?? undefined;
-      if (ws) {
-        ws.addEventListener("open", () => this.log("ws channel open (instant sync)"));
-        ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
-        ws.addEventListener("close", () => { if (!this.unloading) this.log("ws closed — polling continues"); });
-      } else {
-        this.log("ws not available — polling fallback active");
-      }
+      this.spinUpWs();
       this.startPolling();
 
       this.backoff = 3000;
@@ -637,6 +638,31 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.connecting = false;
     }
     void this.drainPending(); // flush any edits queued during the initial reconcile
+  }
+
+  // Connect the change-notification WebSocket and attach handlers. CONC-3: on a WS-only drop
+  // (proxy/idle timeout, or the server's own idle disconnect) while HTTP polling stays healthy,
+  // nothing else re-establishes the socket — reconnect() only runs on a POLL failure — so the
+  // client would silently degrade to ≤4s polling for the rest of the session. Re-dial on close,
+  // on a short delay, independent of poll health. Guarded so it never stacks or fights teardown.
+  private wsRedialTimer?: number;
+  private spinUpWs() {
+    if (this.unloading || !this.api) return;
+    const ws = this.api.connectWs(() => this.onRemoteChanged());
+    this.ws = ws ?? undefined;
+    if (!ws) { this.log("ws not available — polling fallback active"); return; }
+    ws.addEventListener("open", () => this.log("ws channel open (instant sync)"));
+    ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
+    ws.addEventListener("close", () => {
+      if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down — don't re-dial
+      this.log("ws closed — re-dialing (polling continues meanwhile)");
+      if (this.wsRedialTimer === undefined) {
+        this.wsRedialTimer = window.setTimeout(() => {
+          this.wsRedialTimer = undefined;
+          if (!this.unloading && this.api && this.ws === ws) this.spinUpWs();
+        }, 3000);
+      }
+    });
   }
 
   private scheduleReconnect() {
@@ -731,8 +757,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Mid-sync: queue onto the same drain the note events use, so we never reconcile re-entrantly.
     if (this.applying) { for (const p of paths) this.pendingLocal.add(p); return; }
     this.applying = true;
-    this.machine.dispatch("syncStart");
     try {
+      this.machine.dispatch("syncStart");
       for (const p of paths) await reconcilePath(this.deps(), p, this.localSizeOf(p));
       await this.flushConfigReload();
       this.machine.dispatch("syncDone");
@@ -756,8 +782,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api || !(f instanceof TFile)) return;
     if (this.applying) { this.pendingLocal.add(f.path); return; } // H1: queue, don't drop
     this.applying = true;
-    this.machine.dispatch("syncStart");
-    try { await reconcilePath(this.deps(), f.path, f.stat.size); this.machine.dispatch("syncDone"); }
+    try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), f.path, f.stat.size); this.machine.dispatch("syncDone"); }
     catch (e: any) { this.log(`sync FAILED for ${f.path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
     void this.drainPending();
@@ -767,8 +792,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api) return;
     if (this.applying) { this.pendingLocal.add(path); return; }
     this.applying = true;
-    this.machine.dispatch("syncStart");
-    try { await reconcilePath(this.deps(), path); this.machine.dispatch("syncDone"); }
+    try { this.machine.dispatch("syncStart"); await reconcilePath(this.deps(), path); this.machine.dispatch("syncDone"); }
     catch (e: any) { this.log(`delete sync FAILED for ${path}: ${e?.message ?? e}`); this.machine.dispatch("error"); }
     finally { this.applying = false; }
     void this.drainPending();
@@ -778,8 +802,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api || !(file instanceof TFile)) return;
     if (this.applying) { this.pendingLocal.add(oldPath); this.pendingLocal.add(file.path); return; }
     this.applying = true;
-    this.machine.dispatch("syncStart");
     try {
+      this.machine.dispatch("syncStart");
       await reconcilePath(this.deps(), oldPath);                    // old path removed
       await reconcilePath(this.deps(), file.path, file.stat.size); // new path created
       this.machine.dispatch("syncDone");
@@ -799,10 +823,24 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.base = new BaseStore(data.base ?? {});
   }
   async saveSettings() { await this.persist(); }
-  private async persist() {
-    // Never silently swallow a persist failure: a lost base write corrupts the next
-    // merge's ancestor, and callers fire this with `void`. Log loudly instead.
-    try { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
-    catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
+  // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so
+  // dozens of saveData writes to the same data.json used to be in flight at once; on a store that
+  // does tmp-write+rename (not internally serialized) they can land out of order, so an earlier
+  // snapshot overwrites a later one and a base entry is LOST on disk — corrupting the next merge's
+  // ancestor. Serialize instead: one writer at a time, and coalesce concurrent calls into a single
+  // trailing write that re-snapshots the latest state, so the last write always reflects the newest base.
+  private persisting = false;
+  private persistPending = false;
+  private async persist(): Promise<void> {
+    if (this.persisting) { this.persistPending = true; return; }
+    this.persisting = true;
+    try {
+      do {
+        this.persistPending = false;
+        // Snapshot INSIDE the loop so a coalesced trailing write captures the latest base/settings.
+        try { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
+        catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
+      } while (this.persistPending);
+    } finally { this.persisting = false; }
   }
 }
