@@ -23,9 +23,12 @@ export interface NewLiveSyncSettings {
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
-  serverUrl: "http://127.0.0.1:8789", // 127.0.0.1 (not localhost) forces IPv4; 8789 avoids Docker/WSL on 8080
-  username: "admin",
-  password: "admin",
+  // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
+  // check below), which routes to the setup wizard where the user enters their own server URL
+  // and account. Never ship a baked-in server address or (worse) a guessable credential.
+  serverUrl: "",
+  username: "",
+  password: "",
   conflictStrategy: "auto-merge",
   deviceName: "",
   vaultId: "default",
