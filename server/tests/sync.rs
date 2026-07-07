@@ -262,12 +262,17 @@ fn vault_open_locks_on_corrupt_index_not_blank_reset() {
     use new_livesync_server::vault::Vault;
     let dir = tempfile::tempdir().unwrap();
     // a genuinely-absent index starts fresh (first run), not corrupt
-    let fresh = Vault::open(dir.path()).unwrap();
-    assert!(!fresh.is_corrupt());
-    // a present-but-corrupt index must NOT silently reset (would hide all files):
-    // it opens in a LOCKED error state (fail-loud, requires explicit reindex) rather
-    // than either resetting to blank OR crashing the whole open.
-    std::fs::write(dir.path().join(".sync-index.json"), b"{ this is not json").unwrap();
+    {
+        let fresh = Vault::open(dir.path()).unwrap();
+        assert!(!fresh.is_corrupt());
+    } // drop the handle (closes the SQLite DB) before corrupting the file on disk
+    // a present-but-corrupt index DB must NOT silently reset (would hide all files): it opens in a
+    // LOCKED error state (fail-loud, requires explicit reindex) rather than resetting to blank OR
+    // crashing the whole open. Clobber the main DB (+ drop the WAL sidecars) with non-SQLite bytes.
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(dir.path().join(format!(".sync-index.db{suffix}")));
+    }
+    std::fs::write(dir.path().join(".sync-index.db"), b"{ this is not a sqlite database").unwrap();
     let v = Vault::open(dir.path()).unwrap();
     assert!(v.is_corrupt(), "corrupt index must open in ERROR state, not blank/OK");
 }

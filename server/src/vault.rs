@@ -1,7 +1,7 @@
 use crate::chunkstore::ContentStore;
 use crate::hash::sha256_hex;
+use crate::index_store::SqliteIndex;
 use crate::protocol::{ChangesResponse, CommitRequest, Deletion, FileMeta};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
@@ -89,98 +89,24 @@ fn write_mirror(abs: &Path, body: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, abs)
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct Index {
-    version: u64,
-    files: HashMap<String, FileMeta>,
-    deletions: Vec<Deletion>,
-    chunk_refs: HashMap<String, u64>,
-}
-
-// After this many journalled mutations, fold the log back into a fresh .sync-index.json
-// snapshot and truncate it (bounds replay cost + log size). D0010 (B9 Part A).
-const JOURNAL_COMPACT_THRESHOLD: u64 = 500;
-
-// One durable, ABSOLUTE mutation appended to .sync-index.log per commit/delete (the
-// append-only journal — avoids rewriting the whole index on every change). Records carry
-// full state (a FileMeta / a Deletion), so replay is idempotent and chunk_refs are
-// RECOMPUTED from files on load rather than journalled — no fragile refcount deltas.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "op")]
-enum JournalRecord {
-    #[serde(rename = "put")]
-    Put { meta: FileMeta },
-    #[serde(rename = "del")]
-    Del { del: Deletion },
-}
-
-// chunk_refs[h] = total occurrences of h across all files' chunk lists — a pure function
-// of `files`, so it's rebuilt on load (self-healing; keeps the journal delta-free).
-fn recompute_chunk_refs(idx: &mut Index) {
-    let mut refs: HashMap<String, u64> = HashMap::new();
-    for meta in idx.files.values() {
-        for h in &meta.chunks {
-            *refs.entry(h.clone()).or_insert(0) += 1;
-        }
-    }
-    idx.chunk_refs = refs;
-}
-
-// Replay the append-only journal onto `idx`; returns the count applied. A torn TRAILING
-// record (crash mid-append, i.e. bytes after the last newline) is silently discarded; a
-// malformed COMPLETE record is genuine corruption and errors (caller opens ERROR state).
-fn replay_journal(path: &Path, idx: &mut Index) -> std::io::Result<u64> {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e),
-    };
-    // Only bytes up to and including the final newline are complete records.
-    let complete = match data.iter().rposition(|&b| b == b'\n') {
-        Some(i) => &data[..=i],
-        None => &[][..],
-    };
-    let mut n = 0u64;
-    for line in complete.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let rec: JournalRecord = serde_json::from_slice(line).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("journal record: {e}"))
-        })?;
-        match rec {
-            JournalRecord::Put { meta } => {
-                idx.version = idx.version.max(meta.version);
-                idx.deletions.retain(|d| d.path != meta.path);
-                idx.files.insert(meta.path.clone(), meta);
-            }
-            JournalRecord::Del { del } => {
-                idx.version = idx.version.max(del.version);
-                idx.files.remove(&del.path);
-                if !idx.deletions.iter().any(|d| d.path == del.path && d.version == del.version) {
-                    idx.deletions.push(del);
-                }
-            }
-        }
-        n += 1;
-    }
-    Ok(n)
-}
-
 pub struct Vault {
     root: PathBuf,
     vault_dir: PathBuf,
     store: ContentStore,
-    idx: Index,
-    // True when the persisted index was unreadable/corrupt. The vault OPENS (so the
-    // process survives and the operator can inspect + repair) but refuses every sync
-    // operation until `reindex()` rebuilds the manifest from the materialized files.
-    // This is the "fail loud, require explicit repair" model (Postgres/SQLite), NOT
-    // silent auto-reset — a blank index would advertise an empty vault and our
-    // hash-based reconcile could read that as "delete everything".
+    // The per-vault index: a SQLite (WAL) DB (D0018). Behind a Mutex internally so the Vault is Sync
+    // and drops into Arc<RwLock<Vault>> as axum state. The index is a DERIVED view — the source of
+    // truth is the chunk store + the bind-mount mirror — so a corrupt index is repaired by reindex.
+    index: SqliteIndex,
+    // True when the persisted index couldn't be trusted (unreadable DB, or an EMPTY index with
+    // materialized files present). The vault OPENS (so the process survives and the operator can
+    // inspect + repair) but refuses every sync op until `reindex()` rebuilds the manifest from the
+    // materialized files. This is "fail loud, require explicit repair", NOT silent auto-reset — a
+    // blank index would advertise an empty vault and our hash-based reconcile could read that as
+    // "delete everything".
     corrupt: bool,
-    // Mutations appended to .sync-index.log since the last full snapshot (triggers compaction).
-    journal_len: u64,
+    // Current version, cached in lockstep with the index on every mutation, so version() is a field
+    // read (hot /status path) rather than a DB round-trip.
+    version: u64,
 }
 
 impl Vault {
@@ -188,83 +114,77 @@ impl Vault {
         let vault_dir = root.join("vault");
         std::fs::create_dir_all(&vault_dir)?;
         let store = ContentStore::open(&root.join(".chunks"))?;
-        // A corrupt index must NOT silently reset to blank (that would drop every
-        // file->chunk mapping and advertise an empty vault). Instead open in a
-        // locked/corrupt state: the vault exists but refuses sync ops until an
-        // operator runs reindex. Only a genuinely-absent file (first run) is fresh.
-        let (idx, mut corrupt): (Index, bool) = match std::fs::read(root.join(".sync-index.json")) {
-            Ok(b) => match serde_json::from_slice::<Index>(&b) {
-                Ok(idx) => (idx, false),
-                Err(e) => {
-                    eprintln!(
-                        "[vault] {} .sync-index.json is CORRUPT ({e}); opening in ERROR state — run reindex to rebuild",
-                        root.display()
-                    );
-                    (Index::default(), true)
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // No snapshot yet, but a JOURNAL is a valid reconstructable index (this is
-                // the normal state between the first commit and the first compaction) —
-                // replay it, don't trip ERROR.
-                if root.join(".sync-index.log").exists() {
-                    (Index::default(), false)
-                } else {
-                // A MISSING index (and no journal) is only "fresh" if there are no
-                // MATERIALIZED FILES. Committed files live in vault/; if any exist but the
-                // index is gone (e.g. a backup restored without it), opening blank would let
-                // clients mass-delete against the empty manifest AND wipe chunks — open ERROR
-                // instead and require reindex. (Blobs WITHOUT files are uploaded-but-never-
-                // committed orphans — safe to treat as fresh; startup GC reclaims them.)
-                let mut existing = Vec::new();
-                // Fail CLOSED: if we can't scan the vault dir (permission/IO), we can't
-                // prove it's empty — treat as data-present (ERROR) rather than open blank.
-                let scan_ok = collect_files(&vault_dir, &vault_dir, &mut existing).is_ok();
-                if !existing.is_empty() || !scan_ok {
-                    eprintln!(
-                        "[vault] {} has data but NO .sync-index.json — opening in ERROR state; run reindex to rebuild",
-                        root.display()
-                    );
-                    (Index::default(), true)
-                } else {
-                    (Index::default(), false) // truly fresh first run
-                }
-                }
+        let db_path = root.join(".sync-index.db");
+        // Open the SQLite index. A genuinely-corrupt DB (bit-rot, truncation) fails to open; rather
+        // than brick the vault (a corrupt DB would 500 every request AND block reindex, which needs
+        // an open vault), quarantine the bad DB, open a FRESH empty index, and mark ERROR so the
+        // operator reindexes from the authoritative chunk store + materialized files. The index is a
+        // derived view, so discarding a corrupt one and rebuilding is safe — this mirrors the old
+        // corrupt-JSON "open in ERROR, require reindex" behavior.
+        let (index, mut corrupt) = match SqliteIndex::open(&db_path) {
+            Ok(idx) => (idx, false),
+            Err(e) => {
+                eprintln!("[vault] {} index DB is CORRUPT ({e}); quarantining + opening in ERROR state — run reindex", root.display());
+                Self::quarantine_db(&db_path);
+                (SqliteIndex::open(&db_path)?, true) // fresh empty DB
             }
-            Err(e) => return Err(e),
         };
-        let mut idx = idx;
-        if idx.version == 0 { idx.version = 1; }
-        // Replay the append-only journal onto the snapshot, then rebuild chunk_refs from the
-        // resulting files. A corrupt (non-trailing) journal record fails closed → ERROR.
-        let mut journal_len = 0u64;
-        if !corrupt {
-            match replay_journal(&root.join(".sync-index.log"), &mut idx) {
-                Ok(n) => { journal_len = n; recompute_chunk_refs(&mut idx); }
-                Err(e) => {
-                    eprintln!("[vault] {} .sync-index.log is CORRUPT ({e}); opening in ERROR state — run reindex", root.display());
-                    corrupt = true;
-                }
+        let version = index.version()?;
+        // A MISSING/empty index is only "fresh" when there are NO materialized files. Committed files
+        // live in vault/; if any exist but the index is empty (e.g. a backup restored without the DB),
+        // opening blank would let clients mass-delete against the empty manifest AND wipe chunks —
+        // open ERROR instead and require reindex. Fail CLOSED: if we can't scan the vault dir, we
+        // can't prove it's empty → treat as data-present (ERROR) rather than open blank.
+        if !corrupt && index.all_paths()?.is_empty() {
+            let mut existing = Vec::new();
+            let scan_ok = collect_files(&vault_dir, &vault_dir, &mut existing).is_ok();
+            if !existing.is_empty() || !scan_ok {
+                eprintln!("[vault] {} has data but an EMPTY index — opening in ERROR state; run reindex to rebuild", root.display());
+                corrupt = true;
             }
         }
-        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, idx, corrupt, journal_len };
+        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, index, corrupt, version };
         if !v.corrupt { v.verify_and_gc(); }
         Ok(v)
     }
 
-    // Startup integrity pass — safe because `open` runs before the handle is published,
-    // so there are no concurrent uploads/commits:
-    //   * dangling reference (index cites a chunk with no blob on disk) → mark the
-    //     vault ERROR so the operator reindexes (rebuilds from the intact materialized
-    //     files). This catches a crash between a blob removal and its would-be persist.
-    //   * orphan blob (on disk but unreferenced — e.g. uploaded then the client dropped
-    //     before committing) → reclaim it (bounded disk leak, B5).
+    // Move a corrupt index DB (+ its WAL/SHM sidecars) aside so a fresh one can be created; the
+    // quarantined copy is kept (renamed `.corrupt`) for forensics. Best-effort — the fresh open is
+    // what matters, so a rename failure falls back to removing the unusable file.
+    fn quarantine_db(db_path: &Path) {
+        let base = db_path.to_string_lossy().to_string();
+        for suffix in ["", "-wal", "-shm"] {
+            let p = PathBuf::from(format!("{base}{suffix}"));
+            if p.exists() {
+                let bak = PathBuf::from(format!("{base}{suffix}.corrupt"));
+                let _ = std::fs::remove_file(&bak); // clear a stale quarantine first
+                if std::fs::rename(&p, &bak).is_err() { let _ = std::fs::remove_file(&p); }
+            }
+        }
+    }
+
+    // Startup integrity pass — safe because `open` runs before the handle is published, so there are
+    // no concurrent uploads/commits:
+    //   * dangling reference (index cites a chunk with no blob on disk) → mark the vault ERROR so the
+    //     operator reindexes (rebuilds from the intact materialized files). This catches a crash
+    //     between a blob removal and its would-be persist.
+    //   * orphan blob (on disk but unreferenced — e.g. uploaded then the client dropped before
+    //     committing) → reclaim it (bounded disk leak, B5).
     fn verify_and_gc(&mut self) {
-        let missing: Vec<String> = self.idx.chunk_refs.keys().filter(|h| !self.store.has(h)).cloned().collect();
+        let referenced = match self.index.all_referenced_chunks() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[vault] {}: index read failed ({e}); marking ERROR — run reindex", self.root.display());
+                self.corrupt = true;
+                return;
+            }
+        };
+        let refset: std::collections::HashSet<String> = referenced.into_iter().collect();
+        let missing: Vec<&String> = refset.iter().filter(|h| !self.store.has(h)).collect();
         if !missing.is_empty() {
             eprintln!(
                 "[vault] {}: {} referenced chunk(s) missing on disk (e.g. {}); marking ERROR — run reindex",
-                self.root.display(), missing.len(), &missing[0]
+                self.root.display(), missing.len(), missing[0]
             );
             self.corrupt = true;
             return; // don't GC a vault we're about to rebuild
@@ -273,7 +193,7 @@ impl Vault {
             Ok(hashes) => {
                 let mut reclaimed = 0usize;
                 for h in hashes {
-                    if !self.idx.chunk_refs.contains_key(&h) && self.store.remove(&h).is_ok() { reclaimed += 1; }
+                    if !refset.contains(&h) && self.store.remove(&h).is_ok() { reclaimed += 1; }
                 }
                 if reclaimed > 0 {
                     eprintln!("[vault] {}: reclaimed {reclaimed} orphan chunk(s)", self.root.display());
@@ -283,43 +203,45 @@ impl Vault {
         }
     }
 
-    // True while the persisted index was corrupt and has not yet been reindexed.
+    // True while the persisted index was corrupt/empty-with-data and has not yet been reindexed.
     pub fn is_corrupt(&self) -> bool { self.corrupt }
 
-    // Rebuild the manifest from the materialized bind-mount files — the operator's
-    // explicit repair for a corrupt index (and safe to run on a healthy vault).
-    // Version-PRESERVING: a file whose bytes are unchanged keeps its old version, so
-    // clients see no spurious change. Files are re-ingested as WHOLE-FILE chunks: the
-    // FastCDC chunk boundaries live only client-side, so the server can't re-derive
-    // them — dedup re-establishes as clients next edit each file. Deterministic:
-    // same files on disk -> same {path->hash->chunks} mapping every run.
-    // Rebuild the manifest — the operator's repair for a corrupt index (and safe on a healthy vault).
+    // Rebuild the manifest from the materialized bind-mount files — the operator's explicit repair
+    // for a corrupt index (and safe to run on a healthy vault). Version-PRESERVING: a file whose
+    // bytes are unchanged keeps its old version, so clients see no spurious change. Files are
+    // re-ingested as WHOLE-FILE chunks (FastCDC boundaries live only client-side); dedup
+    // re-establishes as clients next edit each file. Deterministic: same files -> same mapping.
+    //
     // `force` (Round-7 RC-2): when a file is missing from disk AND unrecoverable from the chunk store
     // (truly gone), reindex normally ABORTS to preserve the DI-4 no-silent-drop guarantee. `force`
     // lets an authorized operator drop those provably-lost entries so the REST of the vault can be
     // repaired instead of the whole repair bricking permanently.
     pub fn reindex(&mut self, force: bool) -> std::io::Result<()> {
-        // Round-6 DI: capture whether the index was CORRUPT before we clear the flag. When it was
-        // NOT corrupt (an operator running reindex on a healthy vault, which the docs allow), the
-        // index is trustworthy and the chunk store is AUTHORITATIVE — we must prefer it over the
-        // bind-mount mirror, which can be stale after a best-effort mirror-write failure. Only a
-        // genuinely-corrupt index forces a rebuild from disk bytes.
+        // Round-6 DI: capture whether the index was CORRUPT before we clear the flag. When it was NOT
+        // corrupt (an operator running reindex on a healthy vault, which the docs allow), the index is
+        // trustworthy and the chunk store is AUTHORITATIVE — prefer it over the bind-mount mirror,
+        // which can be stale after a best-effort mirror-write failure. Only a genuinely-corrupt index
+        // forces a rebuild from disk bytes.
         let was_corrupt = self.corrupt;
-        let mut new_files: HashMap<String, FileMeta> = HashMap::new();
-        let mut new_refs: HashMap<String, u64> = HashMap::new();
-        let mut max_version = self.idx.version;
+        // The current manifest as a path->meta map (empty when the DB was corrupt/blank).
+        let old_files: HashMap<String, FileMeta> =
+            self.index.changes(0)?.upserts.into_iter().map(|m| (m.path.clone(), m)).collect();
+        let old_refs: Vec<String> = self.index.all_referenced_chunks()?;
+        let mut new_files: Vec<FileMeta> = Vec::new();
+        let mut new_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut max_version = self.version;
         let mut rels: Vec<(String, PathBuf)> = Vec::new();
         collect_files(&self.vault_dir, &self.vault_dir, &mut rels)?;
         rels.sort(); // deterministic version assignment order
         let present: std::collections::HashSet<&str> = rels.iter().map(|(rel, _)| rel.as_str()).collect();
-        // Round-7 RC-2: files indexed but absent from disk are RECOVERED from the AUTHORITATIVE
-        // chunk store (a best-effort mirror write can fail, leaving content in the store but not on
-        // disk). Only files whose chunks are ALSO gone are truly unrecoverable — those abort the
-        // reindex (the DI-4 no-silent-drop guarantee) UNLESS `force`. Without this, one lost file
-        // bricked the WHOLE-vault repair, escapable only by shelling in.
+        // Round-7 RC-2: files indexed but absent from disk are RECOVERED from the AUTHORITATIVE chunk
+        // store (a best-effort mirror write can fail, leaving content in the store but not on disk).
+        // Only files whose chunks are ALSO gone are truly unrecoverable — those abort the reindex (the
+        // DI-4 no-silent-drop guarantee) UNLESS `force`. Without this, one lost file bricked the
+        // WHOLE-vault repair, escapable only by shelling in.
         let mut recovered: Vec<String> = Vec::new();
         let mut lost: Vec<String> = Vec::new();
-        for (k, meta) in &self.idx.files {
+        for (k, meta) in &old_files {
             if present.contains(k.as_str()) { continue; }
             if !meta.chunks.is_empty() && meta.chunks.iter().all(|h| self.store.has(h)) { recovered.push(k.clone()); }
             else { lost.push(k.clone()); }
@@ -342,7 +264,7 @@ impl Vault {
         // the mirror so disk matches). A parse-corrupt index is empty here, so `recovered` is empty
         // then — nothing to recover, and the full disk rebuild below proceeds.
         for k in &recovered {
-            let meta = self.idx.files.get(k).expect("recovered key present").clone();
+            let meta = old_files.get(k).expect("recovered key present").clone();
             let mut body = Vec::new();
             for h in &meta.chunks {
                 let c = self.store.get(h)?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
@@ -353,20 +275,20 @@ impl Vault {
                     eprintln!("[reindex] WARN: could not re-materialize '{k}': {e} (content remains in the chunk store)");
                 }
             }
-            for h in &meta.chunks { *new_refs.entry(h.clone()).or_insert(0) += 1; }
-            new_files.insert(k.clone(), meta);
+            for h in &meta.chunks { new_refs.insert(h.clone()); }
+            new_files.push(meta);
         }
         for (rel, abs) in rels {
             // Round-6 DI (prefer authoritative store): on a HEALTHY reindex, if the current index
             // already maps this path and all its chunks are present in the store, keep that entry
-            // VERBATIM (content + version + real chunk list) instead of re-hashing the mirror —
-            // which could revert the file to stale bytes left by a failed mirror write. Rebuild
-            // from disk only when the index was corrupt (untrustworthy) or a chunk is missing.
+            // VERBATIM (content + version + real chunk list) instead of re-hashing the mirror — which
+            // could revert the file to stale bytes left by a failed mirror write. Rebuild from disk
+            // only when the index was corrupt (untrustworthy) or a chunk is missing.
             if !was_corrupt {
-                if let Some(old) = self.idx.files.get(&rel) {
-                    if old.chunks.iter().all(|h| self.store.has(h)) {
-                        for h in &old.chunks { *new_refs.entry(h.clone()).or_insert(0) += 1; }
-                        new_files.insert(rel.clone(), old.clone());
+                if let Some(old) = old_files.get(&rel) {
+                    if !old.chunks.is_empty() && old.chunks.iter().all(|h| self.store.has(h)) {
+                        for h in &old.chunks { new_refs.insert(h.clone()); }
+                        new_files.push(old.clone());
                         continue;
                     }
                 }
@@ -381,61 +303,21 @@ impl Vault {
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
             // version-preserving: unchanged path+hash keeps its version
-            let version = match self.idx.files.get(&rel) {
+            let version = match old_files.get(&rel) {
                 Some(old) if old.hash == hash => old.version,
                 _ => { max_version += 1; max_version }
             };
-            *new_refs.entry(hash.clone()).or_insert(0) += 1;
-            new_files.insert(rel.clone(), FileMeta {
-                path: rel, hash, size: body.len() as u64, mtime, version, chunks: vec![],
-            });
+            new_refs.insert(hash.clone());
+            // disk-ingested file = a single whole-file chunk (its own hash).
+            new_files.push(FileMeta { path: rel, hash: hash.clone(), size: body.len() as u64, mtime, version, chunks: vec![hash] });
         }
-        // fix up single-chunk lists for DISK-INGESTED files only (chunks left empty above); a
-        // preferred-from-store entry keeps its real (possibly multi-chunk) list untouched.
-        for meta in new_files.values_mut() { if meta.chunks.is_empty() { meta.chunks = vec![meta.hash.clone()]; } }
-        // GC chunks no longer referenced by any file
-        for h in self.idx.chunk_refs.keys() {
-            if !new_refs.contains_key(h) { let _ = self.store.remove(h); }
-        }
-        self.idx.files = new_files;
-        self.idx.chunk_refs = new_refs;
-        self.idx.version = max_version;
+        // Publish the rebuilt manifest FIRST (the new index becomes authoritative), THEN GC chunks it
+        // no longer references — so a GC'd blob is never still cited by the live index.
+        self.index.replace_files(&new_files, max_version)?;
+        self.version = max_version;
         self.corrupt = false;
-        self.snapshot() // fresh full index; drops any now-stale journal
-    }
-
-    // Write the full index snapshot atomically (.sync-index.json).
-    fn persist(&self) -> std::io::Result<()> {
-        let tmp = self.root.join(".sync-index.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&self.idx)?)?;
-        std::fs::rename(tmp, self.root.join(".sync-index.json")) // atomic replace
-    }
-
-    // Snapshot = fold the journal in: write the full index, then truncate the log. Ordering
-    // is safe because journal records are absolute/idempotent — a crash between the two just
-    // replays already-snapshotted records harmlessly on the next open.
-    fn snapshot(&mut self) -> std::io::Result<()> {
-        self.persist()?;
-        let _ = std::fs::remove_file(self.root.join(".sync-index.log"));
-        self.journal_len = 0;
-        Ok(())
-    }
-
-    // Durably append one mutation to the journal (append + fsync) instead of rewriting the
-    // whole index. Compacts to a fresh snapshot once the log grows past the threshold.
-    fn journal(&mut self, rec: &JournalRecord) -> std::io::Result<()> {
-        use std::io::Write;
-        let mut line = serde_json::to_vec(rec)?;
-        line.push(b'\n');
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.join(".sync-index.log"))?;
-        f.write_all(&line)?;
-        f.sync_all()?; // durable before we report the mutation committed
-        self.journal_len += 1;
-        if self.journal_len >= JOURNAL_COMPACT_THRESHOLD {
-            let _ = self.snapshot(); // best-effort — the log is already the durable record
+        for h in &old_refs {
+            if !new_refs.contains(h) { let _ = self.store.remove(h); }
         }
         Ok(())
     }
@@ -446,52 +328,34 @@ impl Vault {
     pub fn missing(&self, hashes: &[String]) -> Vec<String> {
         hashes.iter().filter(|h| !self.store.has(h)).cloned().collect()
     }
-    pub fn version(&self) -> u64 { self.idx.version }
-
-    // Decrement refcounts and RETURN the hashes that dropped to zero. The physical
-    // blob removal is deferred to AFTER the index is durably persisted (see commit/
-    // delete): removing a blob before persist risks a persist failure leaving the
-    // on-disk index dangling-referencing a chunk that's already gone.
-    fn decref_collect(&mut self, chunks: &[String]) -> Vec<String> {
-        let mut to_remove = Vec::new();
-        for h in chunks {
-            let n = self.idx.chunk_refs.get(h).copied().unwrap_or(0);
-            if n <= 1 { self.idx.chunk_refs.remove(h); to_remove.push(h.clone()); }
-            else { self.idx.chunk_refs.insert(h.clone(), n - 1); }
-        }
-        to_remove
-    }
+    pub fn version(&self) -> u64 { self.version }
 
     pub fn commit(&mut self, req: CommitRequest) -> std::io::Result<FileMeta> {
         let rel = safe_rel_path(&req.path)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad path"))?;
-        // Reject a case-only collision: two index keys differing only in case map to ONE file on a
-        // case-insensitive FS, and a later reindex would collapse them (phantom deletion). (PROTO-4)
-        // DI-R5#1: fold FULL Unicode case, not just ASCII — a case-insensitive filesystem folds
-        // 'café' and 'CAFÉ' to one file too, and an ASCII-only guard would let both into the index
-        // (→ reindex brick + phantom-delete). safe_rel_path permits arbitrary Unicode segments, so
-        // the collision check must match the FS's folding strength.
-        let req_folded = req.path.to_lowercase();
-        if self.idx.files.keys().any(|k| k != &req.path && k.to_lowercase() == req_folded) {
-            // InvalidInput (→ 400): a permanent, client-side-fixable bad request. Kept distinct from
-            // the CAS AlreadyExists below, which maps to 409 so the client re-reconciles (not skips).
+        // Reject a case-only / Unicode-fold collision: two index keys folding to ONE file on a
+        // case-insensitive FS, which a later reindex would collapse (phantom deletion). (PROTO-4 /
+        // DI-R5#1 — the `fold` column matches Rust's full-Unicode to_lowercase, not SQLite's ASCII
+        // lower()). InvalidInput (→ 400): a permanent, client-side-fixable bad request, kept distinct
+        // from the CAS AlreadyExists below (→ 409, so the client re-reconciles rather than skips).
+        if self.index.colliding_key(&req.path)?.is_some() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a path differing only in case already exists"));
         }
-        // Reject a hostile/absurd declared size before allocating (a client-supplied
-        // u64 must never drive a capacity hint — 2^60 would panic/abort).
+        // Reject a hostile/absurd declared size before allocating (a client-supplied u64 must never
+        // drive a capacity hint — 2^60 would panic/abort).
         if req.size > MAX_FILE_BYTES {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "file exceeds size limit"));
         }
-        // reassemble from chunks (all must be present). Grow from empty — never pre-size
-        // from the untrusted hint; the size/hash check below verifies the real bytes.
+        // reassemble from chunks (all must be present). Grow from empty — never pre-size from the
+        // untrusted hint; the size/hash check below verifies the real bytes.
         let mut body = Vec::new();
         for h in &req.chunks {
             let c = self.store.get(h)?
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
             body.extend_from_slice(&c);
-            // Bound the running total: req.chunks may repeat a hash arbitrarily, so cap
-            // reassembly at the declared size (already ≤ MAX_FILE_BYTES) — aborts a
-            // "one small chunk × 250k repeats → 250 GB in RAM" DoS before it grows.
+            // Bound the running total: req.chunks may repeat a hash arbitrarily, so cap reassembly at
+            // the declared size (already ≤ MAX_FILE_BYTES) — aborts a "one small chunk × 250k repeats
+            // → 250 GB in RAM" DoS before it grows.
             if body.len() as u64 > req.size {
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "reassembled size exceeds declared size"));
             }
@@ -500,97 +364,86 @@ impl Vault {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file hash/size mismatch"));
         }
         // Idempotent re-commit: identical path+hash+chunks already recorded → return it unchanged,
-        // with no version bump, no journal append, and no broadcast — so a client retry after a
-        // transient error is a genuine no-op instead of version churn + a spurious "changed". (protocol-5)
-        if let Some(existing) = self.idx.files.get(&req.path) {
+        // with no version bump, no persist, and no broadcast — so a client retry after a transient
+        // error is a genuine no-op instead of version churn + a spurious "changed". (protocol-5)
+        if let Some(existing) = self.index.file_meta(&req.path)? {
             if existing.hash == req.hash && existing.chunks == req.chunks {
-                return Ok(existing.clone());
+                return Ok(existing);
             }
         }
         // Optimistic concurrency (CAS): if the client declared the version it based this write on,
-        // reject when the server has since advanced past it. Two clients both at base v3 that edit
-        // and commit concurrently would otherwise both push: the write lock serializes them, the
-        // second silently overwrites the first, and the first committer later pulls it (a lost
-        // update). With CAS the second commit sees current != expected and 409s; the client then
-        // re-reconciles and MERGES the intervening change. Runs AFTER the idempotent short-circuit
-        // (a same-content retry is a no-op, never a conflict) and only when the client opted in
-        // (an authoritative switch/adjudication omits it). AlreadyExists → 409 in the API layer.
+        // reject when the server has since advanced past it. Two clients both at base v3 that edit and
+        // commit concurrently would otherwise both push: the write lock serializes them, the second
+        // silently overwrites the first, and the first committer later pulls it (a lost update). With
+        // CAS the second commit sees current != expected and 409s; the client then re-reconciles and
+        // MERGES the intervening change. Runs AFTER the idempotent short-circuit (a same-content retry
+        // is a no-op, never a conflict) and only when the client opted in (an authoritative
+        // switch/adjudication omits it). AlreadyExists → 409 in the API layer.
         if let Some(expected) = req.expected_version {
-            let current = self.idx.files.get(&req.path).map(|m| m.version).unwrap_or(0);
+            let current = self.index.file_meta(&req.path)?.map(|m| m.version).unwrap_or(0);
             if expected != current {
                 return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
                     format!("version conflict on '{}': client based on v{expected}, server at v{current}", req.path)));
             }
         }
-        // --- mutate the index in memory, journal it durably, THEN mirror to the bind-mount file ---
-        let snapshot = self.idx.clone();
-        for h in &req.chunks { *self.idx.chunk_refs.entry(h.clone()).or_insert(0) += 1; }
-        let to_remove = match self.idx.files.get(&req.path).map(|m| m.chunks.clone()) {
-            Some(old) => self.decref_collect(&old),
-            None => Vec::new(),
-        };
-        self.idx.version += 1;
+        // Atomically upsert the new version. The SQLite transaction in put() IS the durability +
+        // all-or-nothing guarantee that the old append-only journal + manual rollback provided: on
+        // any failure the transaction rolls back and self.version is left untouched (we advance it
+        // only after put() returns Ok). put() returns the chunks now referenced by NO file, to drop
+        // AFTER the index is durable.
+        let new_version = self.version + 1;
         let meta = FileMeta {
             path: req.path.clone(), hash: req.hash, size: req.size, mtime: req.mtime,
-            version: self.idx.version, chunks: req.chunks,
+            version: new_version, chunks: req.chunks,
         };
-        self.idx.files.insert(req.path.clone(), meta.clone());
-        self.idx.deletions.retain(|d| d.path != req.path);
-        if let Err(e) = self.journal(&JournalRecord::Put { meta: meta.clone() }) {
-            self.idx = snapshot; // append failed → not durable (a torn record is dropped on replay); match disk
-            return Err(e);
-        }
-        // Journal is durable. NOW mirror to the bind-mount file — AFTER the journal, via atomic
+        let dereferenced = self.index.put(&meta)?;
+        self.version = new_version;
+        // Index is durable. NOW mirror to the bind-mount file — AFTER the index, via atomic
         // temp+rename, so disk is never ahead of the durable index. A crash before this leaves the
-        // OLD file, and reindex can't resurrect never-committed content (DI-3). Best-effort: the
-        // authoritative bytes live in the chunk store (served by get_chunk), so a mirror-write
-        // failure is a recoverable mismatch, not a lost commit.
+        // OLD file, and reindex recovers the committed content from the authoritative chunk store
+        // (DI-3). Best-effort: the authoritative bytes live in the store (served by get_chunk), so a
+        // mirror-write failure is a recoverable mismatch, not a lost commit.
         let abs = self.vault_dir.join(&rel);
         if let Err(e) = write_mirror(&abs, &body) {
             eprintln!("[commit] WARN: bind-mount mirror write failed for '{}': {e} (content is durable in the chunk store)", req.path);
         }
-        // Index is durable; NOW drop de-referenced blobs. A failure here is a
-        // recoverable orphan (startup GC reclaims it), never corruption.
-        self.remove_blobs(&to_remove);
+        // Index is durable; NOW drop de-referenced blobs. A failure here is a recoverable orphan
+        // (startup GC reclaims it), never corruption.
+        self.remove_blobs(&dereferenced);
         Ok(meta)
     }
 
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
-        // DI-R5#4: a file committed BEFORE safe_rel_path was tightened (or ingested via the bind
-        // mount + reindex, which doesn't apply safe_rel_path) may be an index key that no longer
-        // passes safe_rel_path. It must still be DELETABLE — if the exact key is present, evict it
-        // even though the name is now invalid; otherwise a client's delete-remote 404-loops forever
-        // and the tombstone never propagates. Only the on-disk mirror removal is skipped for a
-        // rejected name (there's no safe rel path to join).
+        // DI-R5#4: a file committed BEFORE safe_rel_path was tightened (or ingested via the bind mount
+        // + reindex, which doesn't apply safe_rel_path) may be an index key that no longer passes
+        // safe_rel_path. It must still be DELETABLE — index.delete evicts by the exact raw key
+        // regardless of name validity; otherwise a client's delete-remote 404-loops forever and the
+        // tombstone never propagates. Only the on-disk mirror removal is skipped for a rejected name
+        // (there's no safe rel path to join).
         let rel = safe_rel_path(path);
-        if rel.is_none() && !self.idx.files.contains_key(path) { return Ok(None); }
-        if !self.idx.files.contains_key(path) { return Ok(None); }
-        let snapshot = self.idx.clone();
-        let old = self.idx.files.remove(path).expect("present: checked above");
-        let to_remove = self.decref_collect(&old.chunks);
-        self.idx.version += 1;
-        let d = Deletion { path: path.to_string(), version: self.idx.version };
-        self.idx.deletions.push(d.clone());
-        if let Err(e) = self.journal(&JournalRecord::Del { del: d.clone() }) {
-            self.idx = snapshot; // append failed → not durable; roll back to match disk
-            return Err(e);
-        }
-        // Durable; now remove the materialized file + de-referenced blobs (best-effort). Only when
-        // the name has a valid rel path (a legacy invalid-name key has no safe on-disk target).
-        if let Some(rel) = rel {
-            let abs = self.vault_dir.join(rel);
-            if abs.exists() {
-                if let Err(e) = std::fs::remove_file(&abs) {
-                    eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+        let new_version = self.version + 1;
+        match self.index.delete(path, new_version)? {
+            None => Ok(None), // absent (or a bad name that isn't an index key) → nothing to delete
+            Some((d, dereferenced)) => {
+                self.version = new_version;
+                // Durable; now remove the materialized file + de-referenced blobs (best-effort). Only
+                // when the name has a valid rel path (a legacy invalid-name key has no on-disk target).
+                if let Some(rel) = rel {
+                    let abs = self.vault_dir.join(rel);
+                    if abs.exists() {
+                        if let Err(e) = std::fs::remove_file(&abs) {
+                            eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+                        }
+                    }
                 }
+                self.remove_blobs(&dereferenced);
+                Ok(Some(d))
             }
         }
-        self.remove_blobs(&to_remove);
-        Ok(Some(d))
     }
 
-    // Best-effort physical blob removal, called only after a durable persist. A
-    // failure leaves a reclaimable orphan (logged), never a dangling reference.
+    // Best-effort physical blob removal, called only after a durable persist. A failure leaves a
+    // reclaimable orphan (logged), never a dangling reference.
     fn remove_blobs(&self, hashes: &[String]) {
         for h in hashes {
             if let Err(e) = self.store.remove(h) {
@@ -599,29 +452,37 @@ impl Vault {
         }
     }
 
-    // Metadata for a single path (or None) — lets a client reconcile one file without
-    // fetching the whole manifest.
+    // Metadata for a single path (or None) — lets a client reconcile one file without fetching the
+    // whole manifest. A read error is exceptional (the DB opened + passed verify) → log + treat as
+    // absent; the client re-fetches next poll.
     pub fn file_meta(&self, path: &str) -> Option<FileMeta> {
-        self.idx.files.get(path).cloned()
+        self.index.file_meta(path).unwrap_or_else(|e| {
+            eprintln!("[vault] {}: file_meta({path}) read failed: {e}", self.root.display());
+            None
+        })
     }
 
     pub fn changes(&self, since: u64) -> ChangesResponse {
-        ChangesResponse {
-            version: self.idx.version,
-            upserts: self.idx.files.values().filter(|m| m.version > since).cloned().collect(),
-            deletes: self.idx.deletions.iter().filter(|d| d.version > since).cloned().collect(),
-        }
+        self.index.changes(since).unwrap_or_else(|e| {
+            // A read error at this point is exceptional (the DB opened + passed verify). Return an
+            // EMPTY delta at the cached version rather than fabricating a manifest: under the
+            // tombstone-authoritative delete model, empty upserts/deletes can NOT trigger a
+            // client-side mass-delete (only a tombstone deletes), so this is a safe transient — the
+            // client simply retries on its next poll.
+            eprintln!("[vault] {}: changes({since}) read failed: {e}; returning empty delta (client retries)", self.root.display());
+            ChangesResponse { version: self.version, upserts: Vec::new(), deletes: Vec::new() }
+        })
     }
 }
 
-// Recursively collect every file under `dir` as (forward-slash rel path, abs path),
-// relative to `base`. Used by reindex to rebuild the manifest from materialized files.
-// OS/tooling junk that must never count as vault data (would trip the missing-index
-// ERROR check and get re-ingested by reindex). `.obsidian` config is NOT junk.
+// OS/tooling junk that must never count as vault data (would trip the missing-index ERROR check and
+// get re-ingested by reindex). `.obsidian` config is NOT junk.
 fn is_junk(name: &str) -> bool {
     matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | ".git")
 }
 
+// Recursively collect every file under `dir` as (forward-slash rel path, abs path), relative to
+// `base`. Used by reindex to rebuild the manifest from materialized files.
 fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)?.flatten() {
         let abs = entry.path();
@@ -695,12 +556,13 @@ mod tests {
         // (InvalidInput → 400: a permanent bad request, distinct from the CAS AlreadyExists → 409.)
         let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted).
-        v.idx.files.insert("legacy.md.".into(), FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.idx.version, chunks: vec![h.clone()] });
+        // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted). Insert it
+        // straight into the index (commit would reject the name) to simulate a legacy key.
+        v.index.put(&FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.version() + 1, chunks: vec![h.clone()] }).unwrap();
         assert!(safe_rel_path("legacy.md.").is_none());
         let d = v.delete("legacy.md.").unwrap();
         assert!(d.is_some(), "legacy invalid-name key must be deletable");
-        assert!(!v.idx.files.contains_key("legacy.md."));
+        assert!(v.file_meta("legacy.md.").is_none());
     }
 
     // Optimistic concurrency (CAS): a commit that declares the wrong base version is rejected
@@ -751,21 +613,25 @@ mod tests {
         assert!(!crate::users::safe_name("ADMIN"));
     }
 
-    // Materialize a file directly into the vault's bind-mount tree (as if it were
-    // present on disk but absent/lost from the index) and return its abs path.
+    // Materialize a file directly into the vault's bind-mount tree (as if it were present on disk
+    // but absent/lost from the index) and return its abs path.
     fn write_vault_file(root: &Path, rel: &str, body: &[u8]) {
         let abs = root.join("vault").join(rel);
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(abs, body).unwrap();
     }
 
+    // A garbage (non-SQLite) index DB must open in ERROR state (survive), not error out or blank —
+    // so the operator can reindex. The corrupt DB is quarantined and a fresh one opened.
     #[test]
     fn corrupt_index_opens_in_error_state_not_blank() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("vault")).unwrap();
-        std::fs::write(dir.path().join(".sync-index.json"), b"{ this is not json").unwrap();
+        std::fs::write(dir.path().join(".sync-index.db"), b"this is not a sqlite database").unwrap();
         let v = Vault::open(dir.path()).unwrap(); // opens (survives), does NOT error out
         assert!(v.is_corrupt(), "corrupt index must open in ERROR state");
+        // the bad DB was quarantined
+        assert!(dir.path().join(".sync-index.db.corrupt").exists(), "corrupt DB quarantined for forensics");
     }
 
     #[test]
@@ -773,7 +639,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_vault_file(dir.path(), "notes/a.md", b"hello");
         write_vault_file(dir.path(), "b.md", b"world");
-        std::fs::write(dir.path().join(".sync-index.json"), b"corrupt!!").unwrap();
+        std::fs::write(dir.path().join(".sync-index.db"), b"corrupt!!").unwrap();
 
         let mut v = Vault::open(dir.path()).unwrap();
         assert!(v.is_corrupt());
@@ -824,10 +690,11 @@ mod tests {
         assert_eq!(map1, map2, "same files -> same path->hash mapping");
     }
 
-    // B6: a persist failure mid-commit must roll back in-memory state and never drop a
-    // referenced blob (no data loss, no dangling reference).
+    // A failed commit is atomic: a commit that fails validation must not bump the version, drop the
+    // prior file, or lose a referenced blob. (Replaces the old journal-append rollback test — the
+    // append-only journal is gone; the SQLite transaction in put() gives all-or-nothing.)
     #[test]
-    fn commit_rolls_back_on_journal_failure_without_losing_blobs() {
+    fn failed_commit_is_atomic_and_keeps_blobs() {
         let dir = tempfile::tempdir().unwrap();
         let mut v = Vault::open(dir.path()).unwrap();
         let b1 = b"version one"; let h1 = sha256_hex(b1);
@@ -835,47 +702,34 @@ mod tests {
         v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
         let good_version = v.version();
 
-        // Sabotage the journal append: a DIRECTORY where the log file belongs makes the
-        // append open() fail (the first commit created it as a file, so remove-then-dir).
-        std::fs::remove_file(dir.path().join(".sync-index.log")).ok();
-        std::fs::create_dir(dir.path().join(".sync-index.log")).unwrap();
+        // A commit referencing a chunk that was never uploaded must fail (NotFound) and change nothing.
         let b2 = b"version two"; let h2 = sha256_hex(b2);
-        v.put_chunk(&h2, b2).unwrap();
         let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()], expected_version: None });
-        assert!(res.is_err(), "commit must fail when the journal append fails");
+        assert!(res.is_err(), "commit with a missing chunk must fail");
 
-        // rolled back: version unchanged, file still points at v1, v1's blob intact
-        assert_eq!(v.version(), good_version);
+        assert_eq!(v.version(), good_version, "failed commit must not bump version");
         let meta = v.changes(0).upserts.into_iter().find(|m| m.path == "f.md").unwrap();
-        assert_eq!(meta.chunks, vec![h1.clone()]);
-        assert!(v.has_chunk(&h1), "referenced blob must NOT be removed on rollback");
-
-        // and the vault is still usable once the fault clears
-        std::fs::remove_dir(dir.path().join(".sync-index.log")).unwrap();
-        v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 3, chunks: vec![h2], expected_version: None }).unwrap();
-        assert!(v.version() > good_version);
+        assert_eq!(meta.chunks, vec![h1.clone()], "prior version intact");
+        assert!(v.has_chunk(&h1), "referenced blob must survive a failed commit");
     }
 
-    // B9 Part A — the append-only index journal.
+    // SQLite persists on commit (no snapshot step): a committed file is durable across a reopen.
     #[test]
-    fn journal_survives_reopen_without_a_snapshot() {
+    fn commit_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let b = b"hello"; let h = sha256_hex(b);
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
             v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
-            // below the compaction threshold: only the journal exists, no snapshot yet
-            assert!(!dir.path().join(".sync-index.json").exists());
-            assert!(dir.path().join(".sync-index.log").exists());
         }
-        let v = Vault::open(dir.path()).unwrap(); // reconstructs by replaying the journal
+        let v = Vault::open(dir.path()).unwrap();
         assert!(!v.is_corrupt());
         assert!(v.changes(0).upserts.iter().any(|m| m.path == "n.md"));
     }
 
     #[test]
-    fn journalled_delete_replays_on_reopen() {
+    fn delete_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let b = b"x"; let h = sha256_hex(b);
         {
@@ -885,48 +739,11 @@ mod tests {
             v.delete("d.md").unwrap();
         }
         let v = Vault::open(dir.path()).unwrap();
-        assert!(!v.changes(0).upserts.iter().any(|m| m.path == "d.md"), "deleted file must not reappear after replay");
+        assert!(!v.changes(0).upserts.iter().any(|m| m.path == "d.md"), "deleted file must not reappear after reopen");
     }
 
     #[test]
-    fn torn_trailing_journal_record_is_discarded() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let b = b"good"; let h = sha256_hex(b);
-        {
-            let mut v = Vault::open(dir.path()).unwrap();
-            v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "g.md".into(), hash: h.clone(), size: 4, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
-        }
-        // crash mid-append: a partial record with NO trailing newline
-        let mut f = std::fs::OpenOptions::new().append(true).open(dir.path().join(".sync-index.log")).unwrap();
-        f.write_all(b"{\"op\":\"put\",\"meta\":{partial").unwrap();
-        drop(f);
-        let v = Vault::open(dir.path()).unwrap();
-        assert!(!v.is_corrupt(), "a torn trailing record must not corrupt the vault");
-        assert!(v.changes(0).upserts.iter().any(|m| m.path == "g.md"));
-    }
-
-    #[test]
-    fn corrupt_complete_journal_record_opens_error() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let b = b"ok"; let h = sha256_hex(b);
-        {
-            let mut v = Vault::open(dir.path()).unwrap();
-            v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "c.md".into(), hash: h.clone(), size: 2, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
-        }
-        // a COMPLETE but malformed record (has a trailing newline) is genuine corruption
-        let mut f = std::fs::OpenOptions::new().append(true).open(dir.path().join(".sync-index.log")).unwrap();
-        f.write_all(b"this is not json\n").unwrap();
-        drop(f);
-        let v = Vault::open(dir.path()).unwrap();
-        assert!(v.is_corrupt(), "a malformed complete journal record must open ERROR");
-    }
-
-    #[test]
-    fn chunk_refs_recomputed_keeps_shared_chunk_after_reopen() {
+    fn shared_chunk_survives_reopen_gc() {
         let dir = tempfile::tempdir().unwrap();
         let b = b"shared bytes"; let h = sha256_hex(b);
         {
@@ -936,10 +753,9 @@ mod tests {
             v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
             v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 2, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
-        // reopen → replay + recompute chunk_refs + startup GC: the shared chunk has 2 refs,
-        // so it must NOT be reclaimed as an orphan.
+        // reopen → startup GC: the shared chunk is referenced by 2 files, so it must NOT be reclaimed.
         let v = Vault::open(dir.path()).unwrap();
-        assert!(v.has_chunk(&h), "chunk referenced by 2 files must survive recompute + GC");
+        assert!(v.has_chunk(&h), "chunk referenced by 2 files must survive reopen GC");
     }
 
     // B5: a chunk uploaded but never committed (client dropped) is reclaimed at startup.
@@ -957,8 +773,8 @@ mod tests {
         assert!(!v2.has_chunk(&orphan), "orphan chunk should be reclaimed at startup");
     }
 
-    // B6: a referenced chunk missing from disk on startup marks the vault ERROR so it
-    // is reindexed rather than silently serving a dangling reference.
+    // B6: a referenced chunk missing from disk on startup marks the vault ERROR so it is reindexed
+    // rather than silently serving a dangling reference.
     #[test]
     fn startup_marks_corrupt_on_dangling_reference() {
         let dir = tempfile::tempdir().unwrap();
@@ -976,8 +792,8 @@ mod tests {
         assert!(v2.is_corrupt(), "dangling chunk reference must mark the vault ERROR");
     }
 
-    // C1: a MISSING index with materialized data present must open ERROR (require
-    // reindex), never "fresh empty" (which would wipe chunks + trigger client deletes).
+    // C1: a MISSING index with materialized data present must open ERROR (require reindex), never
+    // "fresh empty" (which would wipe chunks + trigger client deletes).
     #[test]
     fn missing_index_with_existing_data_opens_error_not_fresh() {
         let dir = tempfile::tempdir().unwrap();
@@ -1028,8 +844,8 @@ mod tests {
         assert_eq!(v.get_chunk(&meta.chunks[0]).unwrap().unwrap(), good);
     }
 
-    // Round-7 RC-2: reindex recovers a file missing from disk but present in the store (failed
-    // mirror write) instead of bricking; a truly-lost file aborts unless forced.
+    // Round-7 RC-2: reindex recovers a file missing from disk but present in the store (failed mirror
+    // write) instead of bricking; a truly-lost file aborts unless forced.
     #[test]
     fn reindex_recovers_from_store_and_force_drops_truly_lost() {
         let dir = tempfile::tempdir().unwrap();
