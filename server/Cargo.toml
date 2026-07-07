@@ -22,6 +22,8 @@ sha2 = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+# Embedded SQLite (bundled = compiled in, no system dep) — the per-vault index store (D0018).
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

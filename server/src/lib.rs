@@ -7,6 +7,7 @@ pub mod auth;
 pub mod chunkstore;
 pub mod config;
 pub mod hash;
+pub mod index_store;
 pub mod error;
 pub mod protocol;
 pub mod registration;
