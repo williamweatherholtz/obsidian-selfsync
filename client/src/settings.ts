@@ -21,6 +21,12 @@ export interface NewLiveSyncSettings {
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
+  // D0019: the deletion-history floor this device last synced at, per vault (key = `owner/vaultId`).
+  // When the server's floor advances past the stored one (a rebuild-from-disk reindex reset the
+  // deletion history), the client stays conservative (keep + push) and shows ONE batched notice
+  // instead of silently resurrecting. Persisted (state.version is ephemeral) so it works across
+  // sessions — the common case is the server being reindexed while this device was offline.
+  historyFloors?: Record<string, number>;
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
@@ -40,6 +46,9 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   vaultReadOnly: false,
   storePassword: true,
   configConflicts: [],
+  // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
+  // would be ALIASED across instances by Object.assign (a shared-mutable-default bug). It's created
+  // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).
 };
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {

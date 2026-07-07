@@ -77,6 +77,13 @@ export interface ReconcileDeps {
   // O(1) local size for one path (RS-3 incremental reconcile), so the size gate works without a
   // whole-vault io.list(). Absent ⇒ 0 (reconcileOne reads the file to hash it anyway).
   localSizeOf?: (path: string) => number;
+  // D0019: fired for a local file KEPT + pushed back because it was absent from the server with NO
+  // deletion tombstone (the tombstone-authoritative "restore, never destroy" branch). Normally this
+  // is a legitimate keep; when the server's deletion history was RESET (history_floor advanced past
+  // the client's stored floor, or the version rewound), these are AMBIGUOUS — a pruned deletion or a
+  // never-synced file — so main batches them into ONE notice for the user to review, instead of
+  // silently resurrecting them. Purely observational: it never changes the keep-and-push behavior.
+  onKeptAbsent?: (path: string) => void;
 }
 
 // The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
@@ -319,6 +326,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // deleted on the next pass. Requiring a tombstone is durable across passes. Without one, the
       // safe action is to RESTORE the file to the server, never to destroy local data.
       if (!hasTombstone(path)) {
+        // D0019: report this keep-because-absent-without-tombstone so a history-reset pass can batch
+        // it into one review notice (it's kept + pushed either way — this is observational only).
+        d.onKeptAbsent?.(path);
         if (d.readOnly) { d.onReadOnly?.(path); return; } // read-only share: can't restore; just keep local
         const { hash: rh, bytes: rb } = await pushFile(d.api, d.io, d.state, d.cache, path);
         setBase(d, path, rb, rh);

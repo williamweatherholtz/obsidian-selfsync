@@ -751,17 +751,46 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Short-circuit when nothing changed AND the version matches (no config scan due).
     if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) return;
     const before = this.state.version;
+    // D0019: detect a server DELETION-HISTORY RESET — its history_floor advanced past the floor this
+    // device last synced at (a rebuild-from-disk reindex reset the tombstones), OR the version rewound
+    // below our cursor (the mass-loss signature). Either way an absent-without-tombstone file is
+    // AMBIGUOUS (a pruned deletion vs a never-synced file); we stay conservative (keep + push, which
+    // reconcileOne already does) and collect those files for ONE batched review notice.
+    const floorKey = this.historyFloorKey();
+    const floors = (this.settings.historyFloors ??= {});
+    const storedFloor = floors[floorKey];
+    const floor = delta.history_floor;
+    const historyReset =
+      (storedFloor !== undefined && floor !== undefined && floor > storedFloor) // deletion history reset upstream
+      || delta.version < this.state.version;                                    // version rewind (mass-loss)
+    const kept: string[] = [];
+    const d = this.deps();
+    if (historyReset) d.onKeptAbsent = (p) => kept.push(p);
     // RS-3: a normal forward remote delta is reconciled INCREMENTALLY — only the changed paths, not
     // a re-hash of the entire vault. The FULL reconcile is reserved for (a) the periodic config scan
     // (local .obsidian edits fire no vault event + don't bump the version, so only a full pass sees
-    // them) and (b) a version REWIND (delta.version < ours: a server reindex/restore below our
-    // cursor — the mass-loss signature), which needs the whole-manifest restore-on-absence + the
-    // empty-manifest bulk-delete guard that only the full path carries.
-    if (forceConfigScan || delta.version < this.state.version) await reconcileAll(this.deps());
-    else await reconcileDelta(this.deps(), delta);
+    // them) and (b) a history reset (version rewind OR floor advance): only the whole-manifest pass
+    // visits every local file to restore-on-absence + carries the bulk-delete guard, and it's what
+    // surfaces the kept-absent files a reset must report.
+    if (forceConfigScan || historyReset) await reconcileAll(d);
+    else await reconcileDelta(d, delta);
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
+    // D0019: advance the stored floor (also sets the baseline on a vault's first sync) — persist only
+    // on change, so this isn't a per-poll write. Then, if the reset kept files, surface ONE batched
+    // notice (the full list goes to the sync log); the files are already kept + re-uploaded either way.
+    if (floor !== undefined && floors[floorKey] !== floor) { floors[floorKey] = floor; void this.saveSettings(); }
+    if (historyReset && kept.length > 0) {
+      this.log(`server deletion history was reset — kept ${kept.length} local file(s) absent from the server: ${kept.slice(0, 50).join(", ")}${kept.length > 50 ? ` …(+${kept.length - 50} more)` : ""}`);
+      new Notice(`SelfSync: the server's deletion history was reset. ${kept.length} file(s) on this device weren't on the server and were kept + re-uploaded. If any were deleted on another device, delete them here (full list in the sync log).`, 15000);
+    }
     this.settings.lastSyncedAt = Date.now();
+  }
+
+  // Per-vault key for the persisted deletion-history floor (D0019). Owner-qualified so a shared
+  // vault and an own vault of the same name never share a floor.
+  private historyFloorKey(): string {
+    return `${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`;
   }
 
   // A "raw" adapter event for a hidden `.obsidian/` file (desktop). Filter to config paths we

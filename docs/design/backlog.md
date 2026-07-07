@@ -6,10 +6,14 @@
 **Raised:** 2026-07-04. **Target:** later, per-item. The critique's data-loss / credential / DoS
 cluster and the bounded UX/perf items were fixed in that pass; these remain because each is a real
 feature or architecture change, not a bounded fix — deferred with rationale rather than half-built:
-- **Server index scaling** — tombstones NOW capped (2026-07-04, `compact_tombstones`). REMAINING: `persist()`
-  re-serializes the WHOLE index on every commit and `commit`/`delete` deep-clone it for rollback — bounded
-  by vault size (amplification), not unbounded. True fix = an append-only journal + periodic compaction;
-  deferred as a larger durability rewrite (don't rush the data-integrity path).
+- **Server index scaling** — ✅ RESOLVED. The whole-index-rewrite/deep-clone amplification is gone: the
+  index is now per-vault SQLite (WAL) with row-level writes + version-indexed `changes(since)` (D0018,
+  `sqliteMigration`). The arbitrary tombstone cap was REMOVED (Round 6 — it silently resurrected genuine
+  deletions for long-offline clients); tombstone growth is instead bounded by a deliberate HISTORY HORIZON
+  (D0019, `historyRebase`): the server tracks a `history_floor`, a rebuild-from-disk reindex raises it, and a
+  below-floor client stays conservative (keep + push + a batched notice) rather than resurrecting. REMAINING:
+  the deliberate operator tombstone-PRUNE (actively drop tombstones below the floor to reclaim space) is
+  deferred as `tombstonePrune` (Low — tombstones are tiny; the horizon is the correctness bound).
 - **`reconcilePath` per-event manifest fetch** — ✅ DONE (2026-07-04): added `GET /meta?path=` and
   reconcilePath now fetches one FileMeta instead of `changes(0)`.
 - **Large files** — ✅ size-gate DONE (2026-07-04): files over `DEFAULT_MAX_SYNC_BYTES` (200 MiB) are skipped

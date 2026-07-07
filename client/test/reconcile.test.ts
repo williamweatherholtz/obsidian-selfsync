@@ -145,6 +145,27 @@ describe("reconcileAll", () => {
     expect(base.get("keep.md")).toBeDefined();
   });
 
+  it("onKeptAbsent (D0019) fires for a kept absent-without-tombstone file, not for a real tombstone", async () => {
+    // A reset pass reports every local file KEPT because it was absent from the server with no
+    // tombstone (the restore branch) so main can batch them into one review notice; a genuinely
+    // tombstoned delete must NOT be reported (it's a real deletion, not an ambiguous keep).
+    const { api } = fakeServer();
+    await serverPut(api, "stay.md", "s");   // stays on the server → remote non-empty (empty-remote guard off)
+    await serverPut(api, "tomb.md", "t");   // will be tombstoned
+    const io = fakeIo({ "keep.md": "important", "tomb.md": "t", "stay.md": "s" });
+    const base = new BaseStore();
+    base.set("keep.md", { hash: await sha256hex(enc("important")) }); // synced before, now absent w/o tombstone
+    base.set("tomb.md", { hash: await sha256hex(enc("t")) });
+    base.set("stay.md", { hash: await sha256hex(enc("s")) });
+    await api.deleteFile("tomb.md");         // a REAL deletion → tombstone
+    const kept: string[] = [];
+    await reconcileAll(deps(api, io, { base, onKeptAbsent: (p) => kept.push(p) }));
+    expect(kept).toEqual(["keep.md"]);                  // only the absent-without-tombstone file
+    expect((io as any).m.has("keep.md")).toBe(true);    // kept (restored)
+    expect((io as any).m.has("tomb.md")).toBe(false);   // real tombstone still deletes
+    expect((io as any).m.has("stay.md")).toBe(true);    // in-sync, untouched
+  });
+
   it("skips a file larger than the sync limit (no push, path untouched)", async () => {
     const { api, files } = fakeServer();
     const io = fakeIo({ "big.md": "x".repeat(100), "ok.md": "small" });

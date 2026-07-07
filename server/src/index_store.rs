@@ -75,6 +75,16 @@ impl SqliteIndex {
         Self::meta_get(&conn, "history_floor")
     }
 
+    // Raise the deletion-history floor (D0019): the version at/above which tombstone history is
+    // COMPLETE. Called when a reindex rebuilds from disk and tombstones are unrecoverable — the
+    // history is reset, so the floor moves up to the current version. Set-exact (a corrupt reindex
+    // starts a fresh version epoch, so a MAX against a lost old value is meaningless).
+    pub fn set_history_floor(&self, version: u64) -> std::io::Result<()> {
+        let conn = self.conn.lock().map_err(io)?;
+        conn.execute("UPDATE meta SET value=?1 WHERE key='history_floor'", params![version as i64]).map_err(io)?;
+        Ok(())
+    }
+
     fn chunks_of(conn: &Connection, path: &str) -> std::io::Result<Vec<String>> {
         let mut stmt = conn.prepare("SELECT chunk FROM file_chunks WHERE path=?1 ORDER BY seq").map_err(io)?;
         let rows = stmt.query_map(params![path], |r| r.get::<_, String>(0)).map_err(io)?;
@@ -103,6 +113,7 @@ impl SqliteIndex {
     pub fn changes(&self, since: u64) -> std::io::Result<ChangesResponse> {
         let conn = self.conn.lock().map_err(io)?;
         let version = Self::meta_get(&conn, "version")?;
+        let history_floor = Self::meta_get(&conn, "history_floor")?;
         let mut upserts = Vec::new();
         {
             let mut stmt = conn.prepare("SELECT path, hash, size, mtime, version FROM files WHERE version > ?1").map_err(io)?;
@@ -115,7 +126,7 @@ impl SqliteIndex {
             let rows = stmt.query_map(params![since as i64], |r| Ok(Deletion { path: r.get(0)?, version: r.get::<_, i64>(1)? as u64 })).map_err(io)?;
             for row in rows { deletes.push(row.map_err(io)?); }
         }
-        Ok(ChangesResponse { version, upserts, deletes })
+        Ok(ChangesResponse { version, upserts, deletes, history_floor })
     }
 
     // Every indexed path (for reindex's missing-from-disk / verify passes).
@@ -304,6 +315,17 @@ mod tests {
         assert!(s.file_meta("old.md").unwrap().is_none());
         assert_eq!(s.version().unwrap(), 9);
         assert!(s.changes(4).unwrap().deletes.iter().any(|d| d.path == "t.md"), "tombstone kept across rebuild");
+    }
+
+    #[test]
+    fn history_floor_set_and_reported_in_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
+        assert_eq!(s.changes(0).unwrap().history_floor, 1, "genesis floor reported in changes");
+        s.put(&meta("a.md", "h", 5, &["c"])).unwrap();
+        s.set_history_floor(5).unwrap();
+        assert_eq!(s.history_floor().unwrap(), 5);
+        assert_eq!(s.changes(0).unwrap().history_floor, 5, "raised floor reported in changes");
     }
 
     #[test]

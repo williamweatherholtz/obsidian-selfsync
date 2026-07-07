@@ -23,24 +23,27 @@ function spyApi() {
   const calls: Record<string, any[][]> = {};
   const rec = (name: string, args: any[]) => { (calls[name] ??= []).push(args); };
   let failChanges = false;
+  let changesResp: any = { version: 0, upserts: [], deletes: [] }; // D0019: settable so a test can advance history_floor / rewind version
   let wsOnChanged: (() => void) | null = null;
   let statusApiVersion: number | undefined;   // undefined = omit apiVersion (legacy server)
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
+    __setChanges: (r: any) => void;
   } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
     __failChanges: (v) => { failChanges = v; },
     __setApiVersion: (v) => { statusApiVersion = v; },
     __failStatusAuth: (n) => { failStatusAuthTimes = n; },
+    __setChanges: (r: any) => { changesResp = r; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
     },
-    async changes(since) { rec("changes", [since]); if (failChanges) throw new Error("server down"); return { version: 0, upserts: [], deletes: [] }; },
+    async changes(since) { rec("changes", [since]); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
     async getChunk(h) { rec("getChunk", [h]); return new Uint8Array(0); },
@@ -132,6 +135,24 @@ describe("plugin wiring — producers → engine → effects", () => {
     api.__poke();       // simulate a server change notification
     await flush();
     expect((api.__calls.changes?.length ?? 0)).toBeGreaterThan(before);
+    p.onunload();
+  });
+
+  it("D0019: a server history_floor advance is detected → full reconcile + the per-vault floor persists", async () => {
+    const { p, api } = await bootPlugin();
+    const changes0 = () => (api.__calls.changes ?? []).filter((c) => c[0] === 0).length;
+    // First poke establishes the baseline floor (1) — stored, but NOT a reset (no prior floor).
+    api.__setChanges({ version: 5, upserts: [], deletes: [], history_floor: 1 });
+    api.__poke(); await flush();
+    expect(p.settings.historyFloors?.["/default"]).toBe(1);
+    // Now the server's deletion history was reset (floor 1 → 50, e.g. a corrupt-index reindex).
+    const before0 = changes0();
+    api.__setChanges({ version: 50, upserts: [], deletes: [], history_floor: 50 });
+    api.__poke(); await flush();
+    // Detected as a reset → routed to the FULL reconcile (which re-queries changes(0)), and the new
+    // floor is persisted so it isn't re-flagged next poll.
+    expect(changes0()).toBeGreaterThan(before0);
+    expect(p.settings.historyFloors?.["/default"]).toBe(50);
     p.onunload();
   });
 

@@ -7,7 +7,13 @@ export const CLIENT_API_VERSION = 1;
 
 export interface FileMeta { path: string; hash: string; size: number; mtime: number; version: number; chunks: string[]; }
 export interface Deletion { path: string; version: number; }
-export interface ChangesResponse { version: number; upserts: FileMeta[]; deletes: Deletion[]; }
+// history_floor (D0019): the version at/above which the server's DELETION history is complete
+// (genesis = 1). A rebuild-from-disk reindex raises it, declaring the deletion history reset. When
+// it advances past the floor this client last synced at (or the version rewinds), an absent-without-
+// tombstone file is ambiguous, so the client stays conservative (keep + push) and surfaces a batched
+// notice. Optional so an older server (no field) decodes as undefined → treated as genesis, never a
+// false reset. See reconcile.onKeptAbsent + main's history-reset handling.
+export interface ChangesResponse { version: number; upserts: FileMeta[]; deletes: Deletion[]; history_floor?: number; }
 // `expectedVersion` (optional): the server file version this write was based on. Sent on
 // reconcile-driven overwrites so the server can reject (409) a commit that would clobber an
 // intervening change (optimistic concurrency). Omitted for authoritative overwrites (vault

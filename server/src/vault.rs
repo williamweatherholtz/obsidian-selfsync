@@ -107,6 +107,10 @@ pub struct Vault {
     // Current version, cached in lockstep with the index on every mutation, so version() is a field
     // read (hot /status path) rather than a DB round-trip.
     version: u64,
+    // Deletion-history floor (D0019), cached from the index. Raised to the current version when a
+    // reindex rebuilds from disk (tombstones unrecoverable — history reset). Reported to clients so a
+    // below-floor client stays conservative (keep + push + a batched notice), never resurrecting silently.
+    history_floor: u64,
 }
 
 impl Vault {
@@ -130,6 +134,7 @@ impl Vault {
             }
         };
         let version = index.version()?;
+        let history_floor = index.history_floor()?;
         // A MISSING/empty index is only "fresh" when there are NO materialized files. Committed files
         // live in vault/; if any exist but the index is empty (e.g. a backup restored without the DB),
         // opening blank would let clients mass-delete against the empty manifest AND wipe chunks —
@@ -143,7 +148,7 @@ impl Vault {
                 corrupt = true;
             }
         }
-        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, index, corrupt, version };
+        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, index, corrupt, version, history_floor };
         if !v.corrupt { v.verify_and_gc(); }
         Ok(v)
     }
@@ -315,6 +320,13 @@ impl Vault {
         // no longer references — so a GC'd blob is never still cited by the live index.
         self.index.replace_files(&new_files, max_version)?;
         self.version = max_version;
+        // D0019: a rebuild-from-disk (was_corrupt) reindex cannot recover tombstones — the deletion
+        // history is reset here, so raise the floor to the current version. A HEALTHY reindex keeps
+        // tombstones (replace_files preserves the deletions table), so its floor is left untouched.
+        if was_corrupt {
+            self.index.set_history_floor(max_version)?;
+            self.history_floor = max_version;
+        }
         self.corrupt = false;
         for h in &old_refs {
             if !new_refs.contains(h) { let _ = self.store.remove(h); }
@@ -470,7 +482,7 @@ impl Vault {
             // client-side mass-delete (only a tombstone deletes), so this is a safe transient — the
             // client simply retries on its next poll.
             eprintln!("[vault] {}: changes({since}) read failed: {e}; returning empty delta (client retries)", self.root.display());
-            ChangesResponse { version: self.version, upserts: Vec::new(), deletes: Vec::new() }
+            ChangesResponse { version: self.version, upserts: Vec::new(), deletes: Vec::new(), history_floor: self.history_floor }
         })
     }
 }
@@ -867,6 +879,40 @@ mod tests {
         v.reindex(true).unwrap(); // force drops b.md, repairs the rest
         let paths2: std::collections::HashSet<_> = v.changes(0).upserts.iter().map(|m| m.path.clone()).collect();
         assert!(paths2.contains("a.md") && !paths2.contains("b.md"), "force drops only the truly-lost file");
+    }
+
+    // D0019 (RC-1): a rebuild-from-disk (corrupt) reindex cannot recover tombstones, so it raises
+    // the deletion-history floor to the current version — the signal a below-floor client uses to
+    // stay conservative (keep + push + notify) instead of silently resurrecting deleted files.
+    #[test]
+    fn corrupt_reindex_raises_history_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        write_vault_file(dir.path(), "a.md", b"hello");
+        write_vault_file(dir.path(), "b.md", b"world");
+        std::fs::write(dir.path().join(".sync-index.db"), b"not a sqlite db").unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        assert!(v.is_corrupt());
+        assert_eq!(v.changes(0).history_floor, 1, "genesis floor before repair");
+        v.reindex(false).unwrap();
+        let floor = v.changes(0).history_floor;
+        assert!(floor > 1, "corrupt reindex must raise the floor above genesis");
+        assert_eq!(floor, v.version(), "floor = the current version (deletion history complete only from here)");
+    }
+
+    // A HEALTHY reindex preserves tombstones (replace_files keeps the deletions table), so it must
+    // NOT raise the floor — an up-to-date client is never told history was reset in normal operation.
+    #[test]
+    fn healthy_reindex_keeps_history_floor_and_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let b = b"x"; let h = sha256_hex(b);
+        v.put_chunk(&h, b).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.delete("f.md").unwrap(); // real tombstone
+        assert_eq!(v.changes(0).history_floor, 1, "genesis floor");
+        v.reindex(false).unwrap(); // healthy
+        assert_eq!(v.changes(0).history_floor, 1, "healthy reindex must leave the floor at genesis");
+        assert!(v.changes(0).deletes.iter().any(|d| d.path == "f.md"), "healthy reindex keeps the tombstone");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS

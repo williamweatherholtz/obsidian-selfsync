@@ -28,6 +28,14 @@ pub struct ChangesResponse {
     pub version: u64,
     pub upserts: Vec<FileMeta>,
     pub deletes: Vec<Deletion>,
+    // The version at/above which DELETION history is complete (D0019). Genesis = 1. A rebuild-from-
+    // disk reindex — which can't recover tombstones — raises it to the current version, declaring the
+    // deletion history reset. A client whose stored floor is below this (or whose cursor rewound)
+    // treats an absent-without-tombstone file conservatively (keep + push + a batched notice), never
+    // deleting without a real tombstone. `#[serde(default)]` so an OLDER server (no field) decodes as
+    // 0 on the client — which is < genesis, so it never false-triggers a reset.
+    #[serde(default)]
+    pub history_floor: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
