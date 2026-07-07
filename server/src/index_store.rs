@@ -35,8 +35,9 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS files (
         path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL,
-        mtime INTEGER NOT NULL, version INTEGER NOT NULL);
+        mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_files_version ON files(version);
+    CREATE INDEX IF NOT EXISTS idx_files_fold ON files(fold);
     CREATE TABLE IF NOT EXISTS file_chunks (
         path TEXT NOT NULL, seq INTEGER NOT NULL, chunk TEXT NOT NULL, PRIMARY KEY(path, seq));
     CREATE INDEX IF NOT EXISTS idx_fc_chunk ON file_chunks(chunk);
@@ -146,9 +147,9 @@ impl SqliteIndex {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
         let old = Self::chunks_of(&tx, &meta.path)?;
-        tx.execute("INSERT INTO files(path, hash, size, mtime, version) VALUES (?1,?2,?3,?4,?5)
-                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5",
-                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64]).map_err(io)?;
+        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)
+                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6",
+                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase()]).map_err(io)?;
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
         for (i, c) in meta.chunks.iter().enumerate() {
             tx.execute("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)", params![meta.path, i as i64, c]).map_err(io)?;
@@ -165,6 +166,35 @@ impl SqliteIndex {
         }
         tx.commit().map_err(io)?;
         Ok(dereferenced)
+    }
+
+    // An existing index key that folds (full Unicode lower-case) to the same name as `path` but is
+    // NOT `path` — the case/Unicode-collision guard commit uses (a folding FS would collapse them).
+    // Uses the `fold` column (computed in Rust with to_lowercase, so it matches Rust's fold, not
+    // SQLite's ASCII-only lower()).
+    pub fn colliding_key(&self, path: &str) -> std::io::Result<Option<String>> {
+        let conn = self.conn.lock().map_err(io)?;
+        conn.query_row("SELECT path FROM files WHERE fold=?1 AND path<>?2 LIMIT 1",
+                       params![path.to_lowercase(), path], |r| r.get::<_, String>(0)).optional().map_err(io)
+    }
+
+    // Transactionally REPLACE all file rows (+ their chunk lists) with `metas` and set the version —
+    // reindex's rebuild. Tombstones (deletions) are left intact (a healthy reindex keeps history).
+    pub fn replace_files(&self, metas: &[FileMeta], version: u64) -> std::io::Result<()> {
+        let mut conn = self.conn.lock().map_err(io)?;
+        let tx = conn.transaction().map_err(io)?;
+        tx.execute("DELETE FROM file_chunks", []).map_err(io)?;
+        tx.execute("DELETE FROM files", []).map_err(io)?;
+        for m in metas {
+            tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)",
+                       params![m.path, m.hash, m.size as i64, m.mtime, m.version as i64, m.path.to_lowercase()]).map_err(io)?;
+            for (i, c) in m.chunks.iter().enumerate() {
+                tx.execute("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)", params![m.path, i as i64, c]).map_err(io)?;
+            }
+        }
+        tx.execute("UPDATE meta SET value=MAX(value, ?1) WHERE key='version'", params![version as i64]).map_err(io)?;
+        tx.commit().map_err(io)?;
+        Ok(())
     }
 
     // Delete a path: remove its row + chunks, record a tombstone at `version`, bump the stored
@@ -248,6 +278,32 @@ mod tests {
         assert!(s.file_meta("a.md").unwrap().is_none());
         assert_eq!(s.changes(3).unwrap().deletes.iter().map(|d| d.path.clone()).collect::<Vec<_>>(), vec!["a.md"]);
         assert!(s.delete("a.md", 5).unwrap().is_none(), "deleting an absent path is a no-op");
+    }
+
+    #[test]
+    fn colliding_key_finds_unicode_fold() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
+        s.put(&meta("CAFÉ.md", "h", 2, &["c"])).unwrap();
+        assert_eq!(s.colliding_key("café.md").unwrap().as_deref(), Some("CAFÉ.md")); // Unicode fold
+        assert_eq!(s.colliding_key("CAFÉ.md").unwrap(), None);                        // same key, not a collision
+        assert_eq!(s.colliding_key("other.md").unwrap(), None);
+    }
+
+    #[test]
+    fn replace_files_rebuilds_and_keeps_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
+        s.put(&meta("old.md", "h", 2, &["c1"])).unwrap();
+        s.delete("gone.md", 3).ok(); // no-op (absent) — but record a real tombstone via put+delete:
+        s.put(&meta("t.md", "h", 4, &["c1"])).unwrap();
+        s.delete("t.md", 5).unwrap();
+        // Rebuild with a fresh set; tombstone for t.md must survive.
+        s.replace_files(&[meta("new.md", "h2", 9, &["c2"])], 9).unwrap();
+        assert_eq!(s.all_paths().unwrap(), vec!["new.md"]);
+        assert!(s.file_meta("old.md").unwrap().is_none());
+        assert_eq!(s.version().unwrap(), 9);
+        assert!(s.changes(4).unwrap().deletes.iter().any(|d| d.path == "t.md"), "tombstone kept across rebuild");
     }
 
     #[test]
