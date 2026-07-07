@@ -212,18 +212,27 @@ async function renderInvites() {
 
 function renderRepair() {
   $("repair").innerHTML = `
-    <div class="muted" style="font-size:13px;margin-bottom:8px">Rebuild a vault's index from its files. Use this when a vault reports an <strong>error</strong> state (corrupt index) — including a shared vault you don't own.</div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">Repair a vault that reports an <strong>error</strong> (corrupt index) — including a shared vault you don't own — or delete one entirely. Reindex recovers files from the chunk store where possible; <strong>force</strong> drops entries that are unrecoverable (their content is already gone) so the rest can be repaired.</div>
     <div class="row">
-      <input id="ro" placeholder="owner username" style="flex:1;min-width:130px" />
-      <input id="rv" placeholder="vault name" style="flex:1;min-width:130px" />
+      <input id="ro" placeholder="owner username" style="flex:1;min-width:120px" />
+      <input id="rv" placeholder="vault name" style="flex:1;min-width:120px" />
+      <label class="inline"><input type="checkbox" id="rf" /> force</label>
       <button id="rgo">Reindex</button>
+      <button class="danger" id="rdel">Delete vault</button>
     </div>`;
+  const owner = () => $("ro").value.trim(), vault = () => $("rv").value.trim();
   $("rgo").onclick = async () => {
-    const owner = $("ro").value.trim(), vault = $("rv").value.trim();
-    if (!owner || !vault) { setMsg("Enter both the owner and the vault name.", "err"); return; }
-    if (!confirm(`Rebuild the index for "${owner}/${vault}" from its files on disk?`)) return;
-    try { const r = await api("POST", "/api/admin/reindex", { owner, vault }); setMsg(`Reindexed ${owner}/${vault} — now at v${r.version}.`, "ok"); }
+    if (!owner() || !vault()) { setMsg("Enter both the owner and the vault name.", "err"); return; }
+    const force = $("rf").checked;
+    if (!confirm(`Rebuild the index for "${owner()}/${vault()}"${force ? " (force — drops unrecoverable entries)" : ""}?`)) return;
+    try { const r = await api("POST", "/api/admin/reindex", { owner: owner(), vault: vault(), force }); setMsg(`Reindexed ${owner()}/${vault()} — now at v${r.version}.`, "ok"); }
     catch (e) { setMsg("Reindex failed: " + e.message, "err"); }
+  };
+  $("rdel").onclick = async () => {
+    if (!owner() || !vault()) { setMsg("Enter both the owner and the vault name.", "err"); return; }
+    if (!confirm(`DELETE vault "${owner()}/${vault()}"? This removes all of its data on the server and cannot be undone.`)) return;
+    try { await api("DELETE", "/api/admin/vault", { owner: owner(), vault: vault() }); setMsg(`Deleted ${owner()}/${vault()}.`, "ok"); }
+    catch (e) { setMsg("Delete failed: " + e.message, "err"); }
   };
 }
 

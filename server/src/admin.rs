@@ -107,6 +107,11 @@ pub async fn share_delete(
 pub struct ReindexReq {
     owner: String,
     vault: String,
+    // Round-7 RC-2: drop index entries for files that are missing from disk AND unrecoverable from
+    // the chunk store (truly lost), so the rest of the vault can be repaired instead of the whole
+    // reindex aborting. Off by default (the safe DI-4 behavior); an explicit operator choice.
+    #[serde(default)]
+    force: bool,
 }
 // Server-admin repair of ANY (owner, vault)'s index — the admin surface for a corrupt shared
 // vault that today only its owner could fix via curl. Rebuilds the manifest from the materialized
@@ -124,10 +129,12 @@ pub async fn reindex(
     }
     let h = st.vault(&req.owner, &req.vault).map_err(|_| AppError::NotFound)?;
     let tx = h.tx.clone();
-    let (owner, vault) = (req.owner.clone(), req.vault.clone());
+    let (owner, vault, force) = (req.owner.clone(), req.vault.clone(), req.force);
     let version = tokio::task::spawn_blocking(move || -> Result<u64, AppError> {
         let mut v = crate::error::wlock(&h.vault)?;
-        v.reindex().map_err(|e| AppError::Internal(e.to_string()))?;
+        // A forced reindex that still can't complete is a genuine BadRequest (unsafe/colliding
+        // names on disk), not an internal error; surface the message so the operator can act.
+        v.reindex(force).map_err(|e| if force { AppError::BadRequest(e.to_string()) } else { AppError::Internal(e.to_string()) })?;
         Ok(v.version())
     }).await.map_err(|e| AppError::Internal(format!("reindex join failed: {e}")))??;
     eprintln!("[{owner}/{vault} reindex by admin {user}] rebuilt manifest -> v{version}");
@@ -136,6 +143,29 @@ pub async fn reindex(
         status: "ready".to_string(), detail: String::new(), version,
         api_version: crate::protocol::API_VERSION,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct VaultDelReq {
+    owner: String,
+    vault: String,
+}
+// Server-admin per-vault delete (Round-7 RC-4) — removes one vault's data (dir + cached handle),
+// the finer-grained complement to whole-account users_delete. Admin-only; the vault must exist.
+// (Any dangling share grants on it become inert — scoped() 404s a request to a non-existent vault.)
+pub async fn vault_delete(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<VaultDelReq>,
+) -> Result<StatusCode, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&req.owner) || !safe_name(&req.vault) {
+        return Err(AppError::BadRequest("invalid owner or vault".into()));
+    }
+    if !st.vault_exists(&req.owner, &req.vault) {
+        return Err(AppError::NotFound);
+    }
+    st.purge_vault(&req.owner, &req.vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
+    eprintln!("[admin {user}] deleted vault {}/{}", req.owner, req.vault);
+    Ok(StatusCode::OK)
 }
 
 // ---- server-admin only: accounts, registration policy, invite tokens ----

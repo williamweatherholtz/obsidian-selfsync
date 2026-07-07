@@ -229,7 +229,7 @@ pub async fn reindex(
     // reindex walks the whole vault dir + rehashes — always on the blocking pool.
     let version = blocking(move || {
         let mut v = wlock(&h.vault)?;
-        v.reindex().map_err(|e| AppError::Internal(e.to_string()))?;
+        v.reindex(false).map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(v.version())
     }).await?;
     eprintln!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");

@@ -667,8 +667,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
       // Keep the specific reason if one was already set (the health case); else a friendly generic.
-      this.lastIssue = /no password stored|session expired/.test(String(e?.message))
+      // A 404 means the server is reachable but the VAULT is gone (deleted/renamed) — that's not a
+      // connectivity problem, so say so actionably instead of "retrying…" forever (Round-7 RC-3).
+      const em = String(e?.message);
+      this.lastIssue = /no password stored|session expired/.test(em)
         ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
+        : /HTTP 404/.test(em)
+        ? "This vault no longer exists on the server — re-create it or pick another in “Set up / switch vault”. Your local files are untouched."
         : (this.lastIssue ?? `Can't reach the server (${e?.message ?? e}). Retrying…`);
       throw e; // → engine: onError logs it, state goes offline, backoff reconnect is scheduled
     }

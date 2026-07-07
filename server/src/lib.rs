@@ -69,6 +69,7 @@ pub fn app(state: AppState) -> Router {
         // Operator repair of ANY vault's corrupt index (owner-scoped reindex is own-vault only;
         // this lets the server-admin fix a shared/non-owned vault without shelling in via curl).
         .route("/api/admin/reindex", post(admin::reindex))
+        .route("/api/admin/vault", axum::routing::delete(admin::vault_delete)) // per-vault delete (RC-4)
         .route("/api/admin/users", get(admin::users_list).post(admin::users_create))
         .route("/api/admin/users/:name", axum::routing::delete(admin::users_delete))
         .route("/api/admin/registration", get(admin::registration_get).put(admin::registration_set))

@@ -137,6 +137,16 @@ impl AppState {
         Ok(())
     }
 
+    // Remove ONE vault's data (cached handle + on-disk dir) — the operator's per-vault delete
+    // (Round-7 RC-4), the finer-grained complement to purge_user_data. Best-effort on the dir.
+    pub fn purge_vault(&self, owner: &str, vault: &str) -> std::io::Result<()> {
+        if !safe_name(owner) || !safe_name(vault) { return Ok(()); }
+        if let Ok(mut map) = self.ns.lock() { map.remove(&(owner.to_string(), vault.to_string())); }
+        let dir = self.ns_dir(owner, vault);
+        if dir.exists() { std::fs::remove_dir_all(&dir)?; }
+        Ok(())
+    }
+
     pub fn for_test(data_root: &Path) -> Self {
         let cfg = Config {
             data_root: data_root.to_path_buf(),

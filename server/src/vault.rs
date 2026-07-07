@@ -293,7 +293,12 @@ impl Vault {
     // FastCDC chunk boundaries live only client-side, so the server can't re-derive
     // them — dedup re-establishes as clients next edit each file. Deterministic:
     // same files on disk -> same {path->hash->chunks} mapping every run.
-    pub fn reindex(&mut self) -> std::io::Result<()> {
+    // Rebuild the manifest — the operator's repair for a corrupt index (and safe on a healthy vault).
+    // `force` (Round-7 RC-2): when a file is missing from disk AND unrecoverable from the chunk store
+    // (truly gone), reindex normally ABORTS to preserve the DI-4 no-silent-drop guarantee. `force`
+    // lets an authorized operator drop those provably-lost entries so the REST of the vault can be
+    // repaired instead of the whole repair bricking permanently.
+    pub fn reindex(&mut self, force: bool) -> std::io::Result<()> {
         // Round-6 DI: capture whether the index was CORRUPT before we clear the flag. When it was
         // NOT corrupt (an operator running reindex on a healthy vault, which the docs allow), the
         // index is trustworthy and the chunk store is AUTHORITATIVE — we must prefer it over the
@@ -306,25 +311,50 @@ impl Vault {
         let mut rels: Vec<(String, PathBuf)> = Vec::new();
         collect_files(&self.vault_dir, &self.vault_dir, &mut rels)?;
         rels.sort(); // deterministic version assignment order
-        // Round-6 DI: reindex must not mint index keys that commit would reject or that collide
-        // under filesystem folding — otherwise a repaired vault re-introduces the exact aliasing/
-        // index-desync hazards safe_rel_path + the case-collision guard prevent on the commit path
-        // (two disk files that fold to one client-side name → overwrite + phantom-delete churn).
-        let names: Vec<String> = rels.iter().map(|(r, _)| r.clone()).collect();
+        let present: std::collections::HashSet<&str> = rels.iter().map(|(rel, _)| rel.as_str()).collect();
+        // Round-7 RC-2: files indexed but absent from disk are RECOVERED from the AUTHORITATIVE
+        // chunk store (a best-effort mirror write can fail, leaving content in the store but not on
+        // disk). Only files whose chunks are ALSO gone are truly unrecoverable — those abort the
+        // reindex (the DI-4 no-silent-drop guarantee) UNLESS `force`. Without this, one lost file
+        // bricked the WHOLE-vault repair, escapable only by shelling in.
+        let mut recovered: Vec<String> = Vec::new();
+        let mut lost: Vec<String> = Vec::new();
+        for (k, meta) in &self.idx.files {
+            if present.contains(k.as_str()) { continue; }
+            if !meta.chunks.is_empty() && meta.chunks.iter().all(|h| self.store.has(h)) { recovered.push(k.clone()); }
+            else { lost.push(k.clone()); }
+        }
+        if !lost.is_empty() && !force {
+            lost.sort();
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound,
+                format!("reindex aborted: {} indexed file(s) missing from disk and unrecoverable from the chunk store: {}. Re-run with force to drop them (their content is already gone) and recover the rest.", lost.len(), lost.join(", "))));
+        }
+        // Round-6 DI: reindex must not mint index keys that commit would reject or that collide under
+        // filesystem folding — check both on-disk names AND the recovered keys we re-materialize.
+        let mut names: Vec<String> = rels.iter().map(|(r, _)| r.clone()).collect();
+        names.extend(recovered.iter().cloned());
         let bad = conflicting_or_unsafe_rels(&names);
         if !bad.is_empty() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
                 format!("reindex aborted: {} path(s) unsafe or colliding — resolve on disk first: {}", bad.len(), bad.join("; "))));
         }
-        // If any currently-indexed path is missing from disk, the vault dir is INCOMPLETE (a partial
-        // restore / in-flight copy). Refuse rather than drop those paths + GC their chunks — that
-        // would be permanent loss that then drives client-side deletions. A genuinely deleted file
-        // went through delete() (which removed its index entry too), so it isn't in idx.files. (DI-4)
-        let present: std::collections::HashSet<&str> = rels.iter().map(|(rel, _)| rel.as_str()).collect();
-        let missing = self.idx.files.keys().filter(|k| !present.contains(k.as_str())).count();
-        if missing > 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::NotFound,
-                format!("reindex aborted: {missing} indexed file(s) missing from disk (incomplete vault dir?)")));
+        // Re-materialize recoverable files from the store (keep the authoritative index entry, write
+        // the mirror so disk matches). A parse-corrupt index is empty here, so `recovered` is empty
+        // then — nothing to recover, and the full disk rebuild below proceeds.
+        for k in &recovered {
+            let meta = self.idx.files.get(k).expect("recovered key present").clone();
+            let mut body = Vec::new();
+            for h in &meta.chunks {
+                let c = self.store.get(h)?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
+                body.extend_from_slice(&c);
+            }
+            if let Some(rel) = safe_rel_path(k) {
+                if let Err(e) = write_mirror(&self.vault_dir.join(&rel), &body) {
+                    eprintln!("[reindex] WARN: could not re-materialize '{k}': {e} (content remains in the chunk store)");
+                }
+            }
+            for h in &meta.chunks { *new_refs.entry(h.clone()).or_insert(0) += 1; }
+            new_files.insert(k.clone(), meta);
         }
         for (rel, abs) in rels {
             // Round-6 DI (prefer authoritative store): on a HEALTHY reindex, if the current index
@@ -749,7 +779,7 @@ mod tests {
         assert!(v.is_corrupt());
         assert!(v.changes(0).upserts.is_empty(), "corrupt vault advertises nothing");
 
-        v.reindex().unwrap();
+        v.reindex(false).unwrap();
         assert!(!v.is_corrupt(), "reindex clears ERROR state");
         let mut paths: Vec<_> = v.changes(0).upserts.iter().map(|m| m.path.clone()).collect();
         paths.sort();
@@ -775,7 +805,7 @@ mod tests {
         }).unwrap();
         let original_version = meta.version;
 
-        v.reindex().unwrap(); // same bytes on disk -> version must not bump
+        v.reindex(false).unwrap(); // same bytes on disk -> version must not bump
         let after = v.changes(0).upserts.iter().find(|m| m.path == "keep.md").unwrap().clone();
         assert_eq!(after.version, original_version, "unchanged file keeps its version");
         assert_eq!(after.hash, hash);
@@ -787,9 +817,9 @@ mod tests {
         write_vault_file(dir.path(), "x/one.md", b"1");
         write_vault_file(dir.path(), "two.md", b"22");
         let mut v = Vault::open(dir.path()).unwrap();
-        v.reindex().unwrap();
+        v.reindex(false).unwrap();
         let map1: HashMap<_, _> = v.changes(0).upserts.iter().map(|m| (m.path.clone(), m.hash.clone())).collect();
-        v.reindex().unwrap();
+        v.reindex(false).unwrap();
         let map2: HashMap<_, _> = v.changes(0).upserts.iter().map(|m| (m.path.clone(), m.hash.clone())).collect();
         assert_eq!(map1, map2, "same files -> same path->hash mapping");
     }
@@ -992,10 +1022,35 @@ mod tests {
         // Simulate a stale mirror: a failed mirror-write left OLD bytes on disk while the store holds the new ones.
         std::fs::write(dir.path().join("vault").join("n.md"), b"STALE").unwrap();
         assert!(!v.is_corrupt());
-        v.reindex().unwrap();
+        v.reindex(false).unwrap();
         let meta = v.changes(0).upserts.into_iter().find(|m| m.path == "n.md").unwrap();
         assert_eq!(meta.hash, h, "healthy reindex must keep the authoritative store content, not the stale mirror");
         assert_eq!(v.get_chunk(&meta.chunks[0]).unwrap().unwrap(), good);
+    }
+
+    // Round-7 RC-2: reindex recovers a file missing from disk but present in the store (failed
+    // mirror write) instead of bricking; a truly-lost file aborts unless forced.
+    #[test]
+    fn reindex_recovers_from_store_and_force_drops_truly_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        v.put_chunk(&ha, a).unwrap(); v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.put_chunk(&hb, b).unwrap(); v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+        // Failed mirror write for a.md: gone from disk, but its chunk is still in the store.
+        std::fs::remove_file(dir.path().join("vault").join("a.md")).unwrap();
+        v.reindex(false).unwrap(); // must RECOVER a.md from the store, not abort
+        let paths: std::collections::HashSet<_> = v.changes(0).upserts.iter().map(|m| m.path.clone()).collect();
+        assert!(paths.contains("a.md") && paths.contains("b.md"), "recoverable file re-materialized");
+        assert!(dir.path().join("vault").join("a.md").exists(), "recovered file re-written to disk");
+        // Now make b.md TRULY lost: off disk AND its chunk removed from the store.
+        std::fs::remove_file(dir.path().join("vault").join("b.md")).unwrap();
+        std::fs::remove_file(dir.path().join(".chunks").join(&hb[0..2]).join(&hb)).unwrap();
+        assert_eq!(v.reindex(false).unwrap_err().kind(), std::io::ErrorKind::NotFound, "unforced reindex aborts on a truly-lost file");
+        v.reindex(true).unwrap(); // force drops b.md, repairs the rest
+        let paths2: std::collections::HashSet<_> = v.changes(0).upserts.iter().map(|m| m.path.clone()).collect();
+        assert!(paths2.contains("a.md") && !paths2.contains("b.md"), "force drops only the truly-lost file");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
