@@ -356,7 +356,7 @@ package ProjectIssues {
     #Resolves dependency from scaleHardening to issueBasePersistConflict;
     // Storage-INDEPENDENT scale fixes stay under scaleHardening.
     #Resolves dependency from scaleHardening to issueHandleNoEviction;      // RS-1
-    #Resolves dependency from scaleHardening to issueFullReconcileOnRemote; // RS-3
+    #Resolves dependency from incrementalReconcile to issueFullReconcileOnRemote; // RS-3 (DONE 0.10.29)
     #Resolves dependency from scaleHardening to issueBaseFullText;          // RS-4
     // Storage-FORMAT-dependent findings are resolved BY the SQLite migration (D0018) — SQLite's
     // row writes / indexed queries / WAL moot them; patching the JSON index for these was throwaway.
