@@ -9,11 +9,23 @@
 //   from the analysis with a recorded justification (see the PRUNED CHANNELS block below).
 //   Decomposition depth is proportional to the severity of the reachable Loss.
 //
-// SCOPE OF THIS STEP: the control STRUCTURE only (controllers, controlled processes, control
-// actions [downward], feedback [upward], and each controller's process model). Sensors/Actuators
-// are deferred to Step 4 per the SOP. Controller responsibilities traced to Safety Constraints
-// are PENDING — SCs derive from Hazards, which are deferred (Hazard is the first analytical
-// output, not an input). UCAs (Step 3) and loss scenarios (Step 4) are NOT authored here.
+// SCOPE OF THIS STEP: the control STRUCTURE — controllers, controlled processes, control actions
+// [downward], feedback [upward], each controller's process model, and (pulled forward at the
+// owner's request for a comprehensiveness check — the SOP defers these to Step 4) the Sensors and
+// Actuators, so each control loop is closed. The full STPA loop element classes are therefore all
+// present EXCEPT: the CONTROL ALGORITHM (the in-controller decision logic — not a separate item,
+// it lives in its Controller) and EXTERNAL DISTURBANCES/INPUTS (the environment assumptions
+// A1-A8 in safety.sysml). Controller responsibilities traced to Safety Constraints are PENDING —
+// SCs derive from Hazards, which are deferred (Hazard is the first analytical output, not an
+// input). UCAs (Step 3) and loss scenarios (Step 4) are NOT authored here.
+//
+// COMPREHENSIVENESS AUDIT (2026-07-07, vs the client+server function inventory): the one control
+// loop the first structural pass MISSED was config APPLICATION — flushConfigReload enabling/
+// disabling community plugins + loading theme/snippet CSS acts on the LOCAL OBSIDIAN RUNTIME
+// (p5), and that action is exactly where L-3 (device harm via sync) is realized (the SEC-3
+// gate lives on it). Added below (p5LocalRuntime + caApplyConfig). Vault provisioning
+// (caProvisionVault) was also added. Everything else in the inventory maps to an existing
+// controller/process or a pruned channel (see the PRUNED CHANNELS block).
 //
 // Arrows (STPA convention): a ControlAction points DOWN (controller -> controlled process, via
 // issuedBy/actsOn); a Feedback points UP (process -> controller, via sensedFrom/reportsTo). An
@@ -101,6 +113,14 @@ package ProjectControlStructure {
         :>> id = "c0f1a5cc-b304-4a10-9b20-a1b2c3d4b304";
         :>> title = "Accounts + share ACL store (users, tokens, grants, registration policy)";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
+    }
+    // Audit find (2026-07-07): the local Obsidian app runtime — enabled plugins + their CODE,
+    // loaded theme/snippet CSS. Distinct from p1 (the files on disk): applying a synced config
+    // file MUTATES this runtime (runs plugin code). L-3 (device harm via sync) is realized here.
+    part p5LocalRuntime : ControlledProcess {
+        :>> id = "c0f1a5cc-b305-4a10-9b20-a1b2c3d4b305";
+        :>> title = "Local Obsidian runtime (enabled plugins + their code, loaded CSS)";
+        :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
     }
 
     // ---- Process models (each controller's beliefs + the feedback that maintains them) ----
@@ -238,6 +258,16 @@ package ProjectControlStructure {
         :>> id = "c0f1a5cc-b413-4a10-9b20-a1b2c3d4b413"; :>> title = "Repair a vault (admin reindex of any owner's vault)";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz"; :>> issuedBy = c7Operator; :>> actsOn = p2ServerIndex;
     }
+    // Audit find: apply a pulled config to the running app — the L-3 locus (SEC-3 gate: NEVER
+    // auto-enable plugin code arriving over a shared/non-owned vault).
+    part caApplyConfig : ControlAction {
+        :>> id = "c0f1a5cc-b414-4a10-9b20-a1b2c3d4b414"; :>> title = "Apply synced config to the local runtime (enable/disable plugin, load CSS)";
+        :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz"; :>> issuedBy = c4Reconciler; :>> actsOn = p5LocalRuntime;
+    }
+    part caProvisionVault : ControlAction {
+        :>> id = "c0f1a5cc-b415-4a10-9b20-a1b2c3d4b415"; :>> title = "Provision a vault namespace (create, per-account cap enforced)";
+        :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz"; :>> issuedBy = c1User; :>> actsOn = p4AccountStore;
+    }
 
     // ---- Feedback (upward: sensedFrom process, reportsTo controller) ----
     part fbStatusIndicator : Feedback {
@@ -283,5 +313,51 @@ package ProjectControlStructure {
     part fbVaultHealth : Feedback {
         :>> id = "c0f1a5cc-b50b-4a10-9b20-a1b2c3d4b50b"; :>> title = "Vault health (ready/corrupt) + account/share roster";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz"; :>> sensedFrom = p2ServerIndex; :>> reportsTo = c7Operator;
+    }
+
+    // ---- Actuators (effect a control action on a process; schema type is bare, so the action +
+    // process + span are named in the title). Pulled forward for the comprehensiveness check. ----
+    part actLocalVaultIo : Actuator {
+        :>> id = "c0f1a5cc-b601-4a10-9b20-a1b2c3d4b601"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Obsidian VaultIo (write/remove/streamed appendWrite) — effects pull/deleteLocal/writeConflictCopy on the local vault [c4->p1]";
+    }
+    part actConfigReloader : Actuator {
+        :>> id = "c0f1a5cc-b602-4a10-9b20-a1b2c3d4b602"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Config applier (enable/disable plugin, load theme/snippet CSS) — effects Apply-config on the local runtime [c4->p5]; SEC-3-gated for shared-vault code";
+    }
+    part actClientTransport : Actuator {
+        :>> id = "c0f1a5cc-b603-4a10-9b20-a1b2c3d4b603"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "HTTP transport out (chunk PUT / commit / delete) — effects push/deleteRemote on the server [c4->p2/p3]";
+    }
+    part actServerStore : Actuator {
+        :>> id = "c0f1a5cc-b604-4a10-9b20-a1b2c3d4b604"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Server writer: journal(fsync) + write_mirror(temp+rename) + chunk-store put/remove — effects commit/tombstone/reindex/GC [c5->p2/p3]";
+    }
+    part actWsBroadcast : Actuator {
+        :>> id = "c0f1a5cc-b605-4a10-9b20-a1b2c3d4b605"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "WS broadcaster — emits the change notification other clients' sensors read [c5->change stream]";
+    }
+
+    // ---- Sensors (measure a process -> the feedback above). Bare schema type; association named
+    // in the title. Each pairs with a Feedback item (sensor -> feedback parity). ----
+    part senVaultWatcher : Sensor {
+        :>> id = "c0f1a5cc-b701-4a10-9b20-a1b2c3d4b701"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Vault event watcher (modify/create/delete/rename) + raw config watcher + content hashing — measures p1 -> local-change trigger + fbLocalHashes";
+    }
+    part senRemoteChannel : Sensor {
+        :>> id = "c0f1a5cc-b702-4a10-9b20-a1b2c3d4b702"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "WebSocket change stream + 4s poll of changes(since) — measures p2 version -> fbChangeNotice + fbRemoteManifest";
+    }
+    part senCommitResponse : Sensor {
+        :>> id = "c0f1a5cc-b703-4a10-9b20-a1b2c3d4b703"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Commit/HTTP response reader — measures accept vs 409 conflict -> fbCommitOutcome; also health/version handshake -> fbConnResult";
+    }
+    part senIndexVerifier : Sensor {
+        :>> id = "c0f1a5cc-b704-4a10-9b20-a1b2c3d4b704"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "Journal replay + verify_and_gc chunk-presence scan (on open) + status is_corrupt — measures p2/p3 integrity -> fbIndexHealth + fbVaultHealth";
+    }
+    part senAuthResolver : Sensor {
+        :>> id = "c0f1a5cc-b705-4a10-9b20-a1b2c3d4b705"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
+        :>> title = "AuthToken extractor + shares/permission lookup — measures p4 identity + ACL -> fbCallerIdentity + fbAuthResponse";
     }
 }
