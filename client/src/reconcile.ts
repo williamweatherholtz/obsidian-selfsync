@@ -90,9 +90,17 @@ async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null>
 
 function nowUtc(): Date { return new Date(); }
 
-// Record a file's post-sync state as the new base (text kept only if mergeable).
+// RS-4 (Round-7 scale): cap the merge-ancestor TEXT kept in the base. The base stored full text for
+// every mergeable file, so a large-text vault held a second full copy in RAM and re-serialized all
+// of it to data.json on every base change. Keep text only for reasonably-sized text files (the
+// common note); a larger text file falls back to hash-only base — it can still sync, it just
+// conflict-copies instead of 3-way-merging on divergence (fine for a 1 MB+ note, which is rare).
+export const MAX_BASE_TEXT_BYTES = 1024 * 1024; // 1 MiB
+
+// Record a file's post-sync state as the new base (text kept only if mergeable AND under the cap).
 function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string): void {
-  d.base.set(path, isMergeable(path, bytes) ? { hash, text: new TextDecoder().decode(bytes) } : { hash });
+  const keepText = isMergeable(path, bytes) && bytes.length <= MAX_BASE_TEXT_BYTES;
+  d.base.set(path, keepText ? { hash, text: new TextDecoder().decode(bytes) } : { hash });
   d.onBaseChanged?.();
 }
 

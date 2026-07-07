@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 // Hard ceiling on concurrently-open change-notification WebSockets across all vaults, so a
@@ -15,13 +16,30 @@ use tokio::sync::broadcast;
 // self-hosted deployment's device count. (concurrency: WS connection cap)
 pub const MAX_WS_CONNECTIONS: usize = 512;
 
+// RS-1 (Round-7 scale): bound resident vault handles. The ns map was insert-only (removed only on
+// account/vault delete), so every vault ever opened stayed fully in RAM (its whole Index) for the
+// process's life. When the map reaches this soft cap, opening a new vault first evicts IDLE ones
+// (not accessed in IDLE_EVICT) that have NO live WS subscribers — safe (an active/subscribed vault
+// is never evicted; a re-open re-reads from disk) and non-thrashing (the idle window >> the 4s poll).
+pub const MAX_CACHED_VAULTS: usize = 256;
+const IDLE_EVICT: Duration = Duration::from_secs(600); // 10 min
+
 // A lazily-opened per-(user,vault) namespace: the Vault plus its own change
 // broadcast channel (so a client only wakes for its own vault). The Vault is behind
 // an RwLock so reads/uploads run concurrently and only mutations are exclusive.
+// `last_access` drives idle eviction (RS-1).
 #[derive(Clone)]
 pub struct VaultHandle {
     pub vault: Arc<RwLock<Vault>>,
     pub tx: broadcast::Sender<u64>,
+    pub last_access: Arc<Mutex<Instant>>,
+}
+
+// RS-1 eviction predicate: a handle is "in use" (never evict) if it has a live WS subscriber OR was
+// accessed within IDLE_EVICT. Keeps active/subscribed vaults; a poisoned lock keeps it (fail-safe).
+fn handle_in_use(h: &VaultHandle, now: Instant) -> bool {
+    h.tx.receiver_count() > 0
+        || h.last_access.lock().map(|la| now.duration_since(*la) < IDLE_EVICT).unwrap_or(true)
 }
 
 #[derive(Clone)]
@@ -91,12 +109,22 @@ impl AppState {
         let key = (user.to_string(), vault.to_string());
         {
             let map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
-            if let Some(h) = map.get(&key) { return Ok(h.clone()); }
+            if let Some(h) = map.get(&key) {
+                if let Ok(mut la) = h.last_access.lock() { *la = Instant::now(); } // touch for idle eviction
+                return Ok(h.clone());
+            }
         }
         let v = Vault::open(&self.ns_dir(user, vault))?;
         let (tx, _rx) = broadcast::channel(256);
-        let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx };
+        let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx, last_access: Arc::new(Mutex::new(Instant::now())) };
         let mut map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
+        // RS-1: bound resident handles — before inserting a new one, evict IDLE vaults with no live
+        // WS subscribers. Keeps active/subscribed vaults (an evicted one just re-opens from disk on
+        // next access); an in-flight op holds its own Arc, so removal never breaks it.
+        if map.len() >= MAX_CACHED_VAULTS {
+            let now = Instant::now();
+            map.retain(|_, h| handle_in_use(h, now));
+        }
         // Another thread may have opened it meanwhile — keep the first.
         Ok(map.entry(key).or_insert(handle).clone())
     }
@@ -162,5 +190,29 @@ impl AppState {
         // bootstrap only makes `default`) so vault_exists() gating in scoped() lets them through.
         let _ = st.vault("admin", "vault");
         st
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // RS-1: the eviction predicate keeps a subscribed or recently-accessed handle and drops an
+    // idle, unsubscribed one — so a busy/connected vault is never evicted while idle ones bound RAM.
+    #[test]
+    fn idle_handle_evictable_unless_subscribed_or_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = AppState::for_test(dir.path());
+        let h = st.vault("admin", "vault").unwrap();
+        // Backdate last access beyond the idle window; no WS subscriber -> evictable.
+        *h.last_access.lock().unwrap() = Instant::now() - IDLE_EVICT - Duration::from_secs(1);
+        assert!(!handle_in_use(&h, Instant::now()), "idle + no subscriber -> evictable");
+        // A live WS subscriber pins it even when idle.
+        let rx = h.tx.subscribe();
+        assert!(handle_in_use(&h, Instant::now()), "idle but subscribed -> kept");
+        drop(rx);
+        // Recently accessed -> kept regardless of subscribers.
+        *h.last_access.lock().unwrap() = Instant::now();
+        assert!(handle_in_use(&h, Instant::now()), "recently accessed -> kept");
     }
 }

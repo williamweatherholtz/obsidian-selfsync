@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcileDelta, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps } from "../src/reconcile";
+import { decide, reconcileAll, reconcileDelta, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES } from "../src/reconcile";
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -695,5 +695,19 @@ describe("reconcileDelta (RS-3 incremental remote reconcile)", () => {
     await reconcileDelta(deps(api, io, { base, onGuard: (p) => guarded.push(p) }), delta as any);
     for (let i = 0; i < 8; i++) expect((io as any).m.has(`f${i}.md`)).toBe(true); // kept, not deleted
     expect(guarded.length).toBe(8);
+  });
+});
+
+describe("RS-4 base-text cap", () => {
+  it("keeps merge-ancestor text for a small file but hash-only for a large one", async () => {
+    const { api } = fakeServer();
+    const small = "small note";
+    const large = "x".repeat(MAX_BASE_TEXT_BYTES + 10); // just over the 1 MiB cap
+    const io = fakeIo({ "small.md": small, "large.md": large });
+    const base = new BaseStore();
+    await reconcileAll(deps(api, io, { base }));
+    expect(base.get("small.md")?.text).toBe(small);       // small text kept (3-way merge works)
+    expect(base.get("large.md")?.text).toBeUndefined();    // over the cap -> hash-only base
+    expect(base.get("large.md")?.hash).toBeTruthy();       // still tracked (conflict-copies on divergence)
   });
 });
