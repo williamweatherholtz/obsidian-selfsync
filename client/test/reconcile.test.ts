@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps } from "../src/reconcile";
+import { decide, reconcileAll, reconcileDelta, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps } from "../src/reconcile";
 import { BaseStore } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -656,5 +656,44 @@ describe("commit CAS (optimistic concurrency)", () => {
     const broken: SyncApi = { ...api, async fileMeta() { throw new Error("network down"); } };
     // A genuine connectivity error must NOT be swallowed — the engine should go offline + reconnect.
     await expect(reconcilePath(deps(broken, io), "n.md", 2)).rejects.toThrow("network down");
+  });
+});
+
+describe("reconcileDelta (RS-3 incremental remote reconcile)", () => {
+  it("reconciles ONLY the delta's paths — a full-vault change is left untouched", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "changed.md", "from server");
+    const delta = await api.changes(0);                    // upserts:[changed.md], deletes:[]
+    const io = fakeIo({ "untouched.md": "local-only, not in the delta" });
+    await reconcileDelta(deps(api, io), delta);
+    expect(dec((io as any).m.get("changed.md"))).toBe("from server"); // the delta path pulled
+    expect(files.has("untouched.md")).toBe(false);          // NOT pushed — it wasn't in the delta
+  });
+
+  it("applies a delta tombstone (real positive-evidence deletion)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "gone.md", "v1");
+    const io = fakeIo({ "gone.md": "v1" });
+    const base = new BaseStore(); base.set("gone.md", { hash: await sha256hex(enc("v1")) });
+    const d = deps(api, io, { base });
+    await api.deleteFile("gone.md");                        // server records a tombstone
+    const delta = await api.changes(0);                     // upserts:[], deletes:[gone.md]
+    await reconcileDelta(d, delta);
+    expect((io as any).m.has("gone.md")).toBe(false);       // deleted locally on the tombstone
+  });
+
+  it("guards a suspicious MASS tombstone delta (keeps the files)", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {}; for (let i = 0; i < 10; i++) seed[`f${i}.md`] = "x";
+    const io = fakeIo(seed);
+    const base = new BaseStore();
+    const hx = await sha256hex(enc("x"));
+    for (let i = 0; i < 10; i++) base.set(`f${i}.md`, { hash: hx });
+    // A delta that tombstones 8 of 10 base files at once (>= the ratio) — treated as a mass-delete.
+    const delta = { version: 100, upserts: [], deletes: Array.from({ length: 8 }, (_, i) => ({ path: `f${i}.md`, version: 90 + i })) };
+    const guarded: string[] = [];
+    await reconcileDelta(deps(api, io, { base, onGuard: (p) => guarded.push(p) }), delta as any);
+    for (let i = 0; i < 8; i++) expect((io as any).m.has(`f${i}.md`)).toBe(true); // kept, not deleted
+    expect(guarded.length).toBe(8);
   });
 });

@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore } from "./base";
-import { reconcileAll, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -585,6 +585,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
       // reconcile too, so a device that opted out never records a base for it (no phantom delete).
       accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
+      localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
@@ -747,11 +748,17 @@ export default class NewLiveSyncPlugin extends Plugin {
       && Date.now() - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
     if (forceConfigScan) this.lastConfigScanAt = Date.now();
     const delta = await this.api.changes(this.state.version);
-    // Short-circuit when nothing changed AND the version matches (no config scan due). A version
-    // MISMATCH with no upserts/deletes means the manifest was rebuilt/rewound → do a full reconcile.
+    // Short-circuit when nothing changed AND the version matches (no config scan due).
     if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) return;
     const before = this.state.version;
-    await reconcileAll(this.deps());
+    // RS-3: a normal forward remote delta is reconciled INCREMENTALLY — only the changed paths, not
+    // a re-hash of the entire vault. The FULL reconcile is reserved for (a) the periodic config scan
+    // (local .obsidian edits fire no vault event + don't bump the version, so only a full pass sees
+    // them) and (b) a version REWIND (delta.version < ours: a server reindex/restore below our
+    // cursor — the mass-loss signature), which needs the whole-manifest restore-on-absence + the
+    // empty-manifest bulk-delete guard that only the full path carries.
+    if (forceConfigScan || delta.version < this.state.version) await reconcileAll(this.deps());
+    else await reconcileDelta(this.deps(), delta);
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.settings.lastSyncedAt = Date.now();

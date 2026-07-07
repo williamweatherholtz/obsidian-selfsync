@@ -2,7 +2,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFile
 import { sha256hex } from "./chunker";
 import { BaseStore, conflictCopyName } from "./base";
 import { isMergeable, merge3 } from "./merge";
-import { CommitConflictError, FileMeta } from "./protocol";
+import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -74,6 +74,9 @@ export interface ReconcileDeps {
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
+  // O(1) local size for one path (RS-3 incremental reconcile), so the size gate works without a
+  // whole-vault io.list(). Absent ⇒ 0 (reconcileOne reads the file to hash it anyway).
+  localSizeOf?: (path: string) => number;
 }
 
 // The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
@@ -176,6 +179,28 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
   // reconcile indefinitely. Assigning lets the incremental poll path converge again. (CONC-R2#3)
   d.state.version = resp.version;
+}
+
+// Incremental remote reconcile (RS-3): reconcile ONLY the paths the server reports changed since
+// our cursor (delta.upserts + delta.deletes) — NOT the whole vault. A remote poke previously ran
+// the full reconcileAll (changes(0) + a re-hash of EVERY local file), which is seconds of CPU +
+// battery on a large vault on mobile for a one-file change. Local-only edits are handled by the
+// event path; the mass-loss / version-rewind cases route to the full reconcileAll (which carries
+// the restore-on-absence + empty-manifest guard). Deletes here arrive as EXPLICIT tombstones
+// (positive deletion evidence); a suspicious fraction of accepted base tombstoned at once is still
+// guarded. Per-file errors are isolated (one bad file never aborts the batch).
+export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): Promise<void> {
+  const remote = new Map<string, FileMeta>();
+  for (const f of delta.upserts) remote.set(f.path, f);
+  const tombstoned = new Set(delta.deletes.map((x) => x.path));
+  const baseSet = new Set(d.base.paths().filter((p) => !d.accepts || d.accepts(p)));
+  const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
+  const guardBulkDelete = baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO;
+  for (const p of new Set<string>([...remote.keys(), ...tombstoned])) {
+    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp)); }
+    catch (e) { d.onFileError?.(p, e); }
+  }
+  d.state.version = delta.version; // assign, not max (rewind convergence) — same as reconcileAll
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
