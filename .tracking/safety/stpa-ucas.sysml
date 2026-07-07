@@ -68,8 +68,8 @@ package ProjectStpaAnalysis {
         :>> id = "c0f1a5cc-d007-4a10-9b20-a1b2c3d4d007"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-7: Reconciler applies config that enables plugin code from a non-owned shared vault";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
-        :>> context = "The changed config arrived over a vault the account does not own (a share peer committed plugin code).";
-        :>> statement = "The Reconciler provides apply-config that enables/loads community-plugin CODE received over a shared, non-owned vault without explicit user authorization. [H-5]";
+        :>> context = "The changed config carries plugin CODE (or theme/snippet CSS) that originated from an UNTRUSTED writer — a share peer, whether the local account owns the vault or not (Round-6: the untrusted writer can be a readWrite grantee on a vault the local account OWNS, not only a non-owned vault).";
+        :>> statement = "The Reconciler provides apply-config that enables/loads community-plugin CODE (or applies theme/snippet CSS) received via sync from any vault that has an untrusted writer, without explicit user authorization. [H-5]";
     }
     part uca8 : UnsafeControlAction {
         :>> id = "c0f1a5cc-d008-4a10-9b20-a1b2c3d4d008"; :>> ucaType = UcaType::provided;
@@ -365,11 +365,11 @@ package ProjectStpaAnalysis {
         :>> safeState = "no phantom deletion of a path another device holds";
         :>> safetyFunction = "REALIZED: accepts() gate in reconcileOne + switchTo manifest filter; verified by acConfigAdditiveSafe."; }
     part sr5 : SafetyRequirement { :>> id = "c0f1a5cc-d305-4a10-9b20-a1b2c3d4d305"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
-        :>> title = "SR-5: no auto-execution of non-owned plugin code";
-        :>> statement = "Never auto-enable/load community-plugin code arriving over a shared, non-owned vault without explicit user authorization.";
-        :>> triggeringEvent = "config sync applies a plugin folder change from a non-owned vault";
-        :>> safeState = "the code is not enabled; the user is prompted to decide";
-        :>> safetyFunction = "REALIZED: SEC-3 gate in flushConfigReload (vaultOwner set -> notice, no auto-enable)."; }
+        :>> title = "SR-5: no auto-execution/apply of untrusted synced code or CSS";
+        :>> statement = "Never auto-enable community-plugin CODE, nor auto-apply theme/snippet CSS, that arrived via sync — for ANY vault; require an explicit user reload to apply.";
+        :>> triggeringEvent = "config sync writes plugin code or theme/snippet CSS to disk";
+        :>> safeState = "nothing is executed/applied automatically; the user reloads to apply, only if they trust the source";
+        :>> safetyFunction = "REALIZED (0.10.27, Round-6): flushConfigReload never auto-enables synced plugin code nor auto-applies synced CSS for ANY vault. The prior gate keyed only on non-owned vaults — missing the owner-of-a-shared-vault RCE (a readWrite peer's main.js) and leaving CSS ungated entirely."; }
     part sr6 : SafetyRequirement { :>> id = "c0f1a5cc-d306-4a10-9b20-a1b2c3d4d306"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> title = "SR-6: never sync/apply the plugin's own config folder";
         :>> statement = "Exclude SelfSync's own credential/config folder from sync and application under all selections.";

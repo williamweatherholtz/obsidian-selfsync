@@ -41,7 +41,7 @@ package ProjectSafety {
         :>> id = "c0f1a5cc-a001-4a10-9b20-a1b2c3d4a001";
         :>> title = "L-1: Loss or corruption of note content";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
-        :>> statement = "Note content a user created — including a specific edit or version — is permanently lost, silently corrupted, or overwritten so the stored content no longer reflects what the user wrote. Priority: highest (the core value: never lose what I write). Traces to selfHoster + collaborator.";
+        :>> statement = "Note content a user created — including a specific edit or version — is permanently lost, silently corrupted, or overwritten so the stored content no longer reflects what the user wrote. This is INDUCED, USER-PERCEIVED loss: the SYSTEM making a note gone or wrong from the user's vantage — which also covers RESURRECTING content the user deliberately deleted (the deletion is undone). Raw byte durability (disk / backups) is out of scope for L-1; the concern is what the sync system itself induces. Priority: highest (the core value: never lose or silently alter what I write). Traces to selfHoster + collaborator.";
     }
     part l2 : Loss {
         :>> id = "c0f1a5cc-a002-4a10-9b20-a1b2c3d4a002";
