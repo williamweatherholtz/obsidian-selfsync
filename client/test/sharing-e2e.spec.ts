@@ -19,7 +19,7 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
   let server: RunningServer; let base = "";
   const roots: string[] = [];
   beforeAll(async () => { server = await startServer(); base = server.base; }, 20000);
-  afterAll(() => { server?.stop(); for (const r of roots) rmSync(r, { recursive: true, force: true }); });
+  afterAll(async () => { await server?.stop(); for (const r of roots) rmSync(r, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); });
   const root = (tag: string) => { const r = mkdtempSync(path.join(os.tmpdir(), `nls-share-${tag}-`)); roots.push(r); return r; };
 
   it("read-write share syncs both ways; read-only pulls but never pushes", async () => {

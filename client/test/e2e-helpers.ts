@@ -164,11 +164,11 @@ export const enc = (s: string) => new TextEncoder().encode(s);
 export const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 export const exists = (p: string) => fs.access(p).then(() => true, () => false);
 
-export interface RunningServer { base: string; dataDir: string; stop: () => void; }
+export interface RunningServer { base: string; dataDir: string; stop: () => Promise<void>; }
 
 // Spawn the server binary (or target SYNC_SERVER_URL) and resolve once it's listening.
 export async function startServer(): Promise<RunningServer> {
-  if (externalUrl) return { base: externalUrl, dataDir: "", stop: () => {} };
+  if (externalUrl) return { base: externalUrl, dataDir: "", stop: async () => {} };
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
   const srv = spawn(serverBin, [], {
     // ALLOW_WEAK_ADMIN=1: the throwaway test server deliberately uses admin/admin, so it must
@@ -181,5 +181,21 @@ export async function startServer(): Promise<RunningServer> {
     const onData = (b: Buffer) => { const m = b.toString().match(/listening on (\S+)/); if (m) { clearTimeout(timer); resolve(`http://${m[1]}`); } };
     srv.stderr!.on("data", onData); srv.stdout!.on("data", onData);
   });
-  return { base, dataDir, stop: () => { try { srv.kill(); } catch { /* already gone */ } if (dataDir) rmSync(dataDir, { recursive: true, force: true }); } };
+  return {
+    base, dataDir,
+    // Wait for the process to actually EXIT before removing dataDir: the server holds the per-vault
+    // SQLite DB (+ WAL/SHM) open for its lifetime, so on Windows those files stay locked until the OS
+    // reaps the killed process — an immediate rm would hit EPERM. Kill, await exit (with a timeout
+    // fallback so the suite never hangs), then remove with retries as a backstop for handle-release lag.
+    stop: async () => {
+      await new Promise<void>((resolve) => {
+        if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
+        srv.once("exit", () => resolve());
+        const t = setTimeout(resolve, 5000);
+        if (typeof t.unref === "function") t.unref();
+        try { srv.kill(); } catch { resolve(); /* already gone */ }
+      });
+      if (dataDir) { try { rmSync(dataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); } catch { /* best-effort temp cleanup */ } }
+    },
+  };
 }

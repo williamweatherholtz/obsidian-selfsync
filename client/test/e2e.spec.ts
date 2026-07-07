@@ -161,9 +161,21 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     });
   }, 20000);
 
-  afterAll(() => {
-    srv?.kill();
-    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+  afterAll(async () => {
+    // Await the server's EXIT before removing dataDir: it holds the per-vault SQLite DB (+ WAL/SHM)
+    // open for its lifetime, so on Windows the files stay locked until the OS reaps the killed
+    // process — an immediate rm would hit EPERM. Kill, await exit (timeout fallback), rm with retries.
+    if (srv) {
+      const s = srv;
+      await new Promise<void>((resolve) => {
+        if (s.exitCode !== null || s.signalCode !== null) return resolve();
+        s.once("exit", () => resolve());
+        const t = setTimeout(resolve, 5000);
+        if (typeof t.unref === "function") t.unref();
+        try { s.kill(); } catch { resolve(); }
+      });
+    }
+    if (dataDir) { try { rmSync(dataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); } catch { /* best-effort temp cleanup */ } }
   });
 
   it("propagates create/edit/delete, a binary file, and dedups shared chunks", async () => {
