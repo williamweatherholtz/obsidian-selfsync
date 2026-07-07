@@ -354,10 +354,10 @@ package ProjectIssues {
     #Resolves dependency from round7RecoveryFixes to issueVaultGone404;
     #Resolves dependency from round7RecoveryFixes to issueNoPerVaultDelete;
     #Resolves dependency from scaleHardening to issueBasePersistConflict;
-    // Storage-INDEPENDENT scale fixes stay under scaleHardening.
-    #Resolves dependency from scaleHardening to issueHandleNoEviction;      // RS-1
-    #Resolves dependency from incrementalReconcile to issueFullReconcileOnRemote; // RS-3 (DONE 0.10.29)
-    #Resolves dependency from scaleHardening to issueBaseFullText;          // RS-4
+    // Storage-INDEPENDENT scale fixes — RS-1/3/4 now DONE; only RS-5 base-persist remains open.
+    #Resolves dependency from resourceScaleFixes to issueHandleNoEviction;         // RS-1 (DONE 0.10.30)
+    #Resolves dependency from incrementalReconcile to issueFullReconcileOnRemote;  // RS-3 (DONE 0.10.29)
+    #Resolves dependency from resourceScaleFixes to issueBaseFullText;             // RS-4 (DONE 0.10.30)
     // Storage-FORMAT-dependent findings are resolved BY the SQLite migration (D0018) — SQLite's
     // row writes / indexed queries / WAL moot them; patching the JSON index for these was throwaway.
     #Resolves dependency from sqliteMigration to issueIndexClonePerWrite;  // RS-2
