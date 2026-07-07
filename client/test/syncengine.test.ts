@@ -160,6 +160,41 @@ describe("SyncEngine — terminal transitions", () => {
   });
 });
 
+describe("SyncEngine — Round-6 CONC fixes", () => {
+  it("failToOffline drops `connected`, so a WS redial/poke in the offline window is IGNORED (one recovery path)", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick();
+    const g = h.block("reconcileAll");
+    h.e.enqueue({ kind: "remote" }); await tick();
+    g.reject(new Error("blip")); await tick();
+    expect(h.e.getState()).toBe("offline");
+    // A WS `close` in the offline→reconnect window enqueues {rews}; it must be ignored now that
+    // connected=false, and a stray poll {remote} too — ONLY the scheduled backoff reconnect recovers.
+    h.e.enqueue({ kind: "rews" }); await tick();
+    h.e.enqueue({ kind: "remote" }); await tick();
+    expect(h.calls.filter((c) => c === "rews").length).toBe(0);         // redial did not run
+    expect(h.calls.filter((c) => c === "reconcileAll").length).toBe(1); // stray poke ignored
+    expect(h.reconnects).toBe(1);                                       // exactly one recovery path
+  });
+
+  it("coalescing a queued path keeps the LARGER size (stale small size can't bypass the RAM/size gate)", async () => {
+    const sizes: number[] = [];
+    const fx: EngineEffects = {
+      connect: () => Promise.resolve(),
+      reconcileAll: () => Promise.resolve(),
+      reconcilePath: (_p, s) => { sizes.push(s); return Promise.resolve(); },
+      rews: () => Promise.resolve(), teardown: () => {}, onPhase: () => {}, onError: () => {}, scheduleReconnect: () => {},
+    };
+    const e = new SyncEngine(fx);
+    e.enqueue({ kind: "connect" });                       // in-flight; the paths below queue behind it
+    e.enqueue({ kind: "path", path: "big.md", size: 100 });
+    e.enqueue({ kind: "path", path: "big.md", size: 900_000_000 }); // grew past the gate
+    e.enqueue({ kind: "path", path: "big.md", size: 500 });          // smaller → must NOT lower it
+    await tick();
+    expect(sizes).toEqual([900_000_000]);                 // ran once, with the MAX size observed
+  });
+});
+
 describe("engineStateToPhase — light projection", () => {
   it("maps operational state to the display phase", () => {
     expect(engineStateToPhase("connecting")).toBe("connecting");

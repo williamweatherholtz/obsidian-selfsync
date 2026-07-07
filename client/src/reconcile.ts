@@ -2,7 +2,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFile
 import { sha256hex } from "./chunker";
 import { BaseStore, conflictCopyName } from "./base";
 import { isMergeable, merge3 } from "./merge";
-import { FileMeta } from "./protocol";
+import { CommitConflictError, FileMeta } from "./protocol";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -200,7 +200,17 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     guardDelete = basePaths.length > 0 && (remoteSet.size === 0
       || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   }
-  await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone);
+  try {
+    await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone);
+  } catch (e) {
+    // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
+    // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
+    // guard, so the engine turned a routine concurrent-edit conflict into an offline+backoff flap
+    // (Round-6 CONC). Isolate it the same way: leave base unchanged so the next reconcile sees the
+    // advanced remote and MERGES. Any OTHER error propagates → the engine goes offline + reconnects.
+    if (e instanceof CommitConflictError) { d.onFileError?.(path, e); return; }
+    throw e;
+  }
 }
 
 async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false): Promise<void> {

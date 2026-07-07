@@ -72,11 +72,17 @@ export class SyncEngine {
   enqueue(ev: EngineEvent): void {
     if (this.state === "unloading") return;
     if (ev.kind === "unload") { this.state = "unloading"; this.queue = []; this.fx.teardown(); this.fx.onPhase(this.phase()); return; }
+    // A repeat {path} for a path already queued coalesces — but keep the LARGER size, so a save
+    // that grew the file past the RAM/size gate between the two events isn't judged on the stale
+    // smaller size (which would bypass the pre-read skip). (Round-6 CONC)
+    if (ev.kind === "path") {
+      const q = this.queue.find((x) => x.kind === "path" && x.path === ev.path) as { kind: "path"; path: string; size: number } | undefined;
+      if (q) { if (ev.size > q.size) q.size = ev.size; return; }
+    }
     const dup =
       (ev.kind === "remote" && this.queue.some((q) => q.kind === "remote")) ||
       (ev.kind === "connect" && this.queue.some((q) => q.kind === "connect")) ||
-      (ev.kind === "rews" && this.queue.some((q) => q.kind === "rews")) ||
-      (ev.kind === "path" && this.queue.some((q) => q.kind === "path" && q.path === ev.path));
+      (ev.kind === "rews" && this.queue.some((q) => q.kind === "rews"));
     if (dup) return;
     this.queue.push(ev);
     void this.pump();
@@ -92,6 +98,12 @@ export class SyncEngine {
   // no lost data. disconnect/unload events are preserved.
   private failToOffline(where: string, e: unknown): void {
     this.setState("offline");
+    // Drop `connected` so the path/remote/rews guards short-circuit during the offline→reconnect
+    // window. Without this, a WS `close` firing after the failure would enqueue {rews}, pass the
+    // `if (!connected) return` guard (connected was still true), and re-dial a socket while the
+    // backoff reconnect is ALSO pending — two live recovery paths (Round-6 CONC). Only the
+    // backoff {connect} recovers now; it sets connected=true again on success.
+    this.connected = false;
     this.fx.onError(where, e);
     this.queue = this.queue.filter((q) => q.kind === "disconnect" || q.kind === "unload");
     this.fx.scheduleReconnect();

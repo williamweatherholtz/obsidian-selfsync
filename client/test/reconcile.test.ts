@@ -633,4 +633,28 @@ describe("commit CAS (optimistic concurrency)", () => {
     expect(dec((io as any).m.get("n.md"))).toBe("v2");  // local edit preserved, not clobbered
     expect(base.get("n.md")?.hash).toBe(hv1);           // base unchanged → next pass sees divergence → merge
   });
+
+  it("Round-6 CONC: a CAS conflict on the SINGLE-PATH event reconcile is isolated (no throw → engine won't flap offline)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "v1");
+    const hv1 = await sha256hex(enc("v1"));
+    const base = new BaseStore(); base.set("n.md", { hash: hv1 }); // base==remote → local edit decides 'push'
+    const io = fakeIo({ "n.md": "v2" });
+    const conflicting: SyncApi = { ...api, async commit() { throw new CommitConflictError("advanced"); } };
+    const errors: string[] = [];
+    // Must RESOLVE (not reject): a throw here becomes failToOffline in the engine — an offline flap
+    // on a routine concurrent edit. It isolates the conflict instead and converges next pass.
+    await expect(reconcilePath(deps(conflicting, io, { base, onFileError: (p) => errors.push(p) }), "n.md", 2)).resolves.toBeUndefined();
+    expect(errors).toContain("n.md");
+    expect(dec((io as any).m.get("n.md"))).toBe("v2"); // local edit preserved
+    expect(base.get("n.md")?.hash).toBe(hv1);          // base unchanged → merges next pass
+  });
+
+  it("Round-6 CONC: a non-conflict error on the single-path reconcile STILL propagates (engine goes offline)", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "n.md": "v2" });
+    const broken: SyncApi = { ...api, async fileMeta() { throw new Error("network down"); } };
+    // A genuine connectivity error must NOT be swallowed — the engine should go offline + reconnect.
+    await expect(reconcilePath(deps(broken, io), "n.md", 2)).rejects.toThrow("network down");
+  });
 });

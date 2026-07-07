@@ -11,20 +11,13 @@ use std::path::{Component, Path, PathBuf};
 // bounding the transient per-commit allocation. (SEC-5)
 const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
-// Cap on retained deletion tombstones. Tombstones only serve the INCREMENTAL
-// changes(since) poll; a full reconcile infers deletions from absence, so dropping
-// the oldest beyond this cap is safe (online clients see each delete promptly as the
-// version advances; a long-offline client catches up via full reconcile on reconnect).
-// Prevents the deletions Vec from growing without bound on a churny, long-lived vault.
-const MAX_TOMBSTONES: usize = 10_000;
-
-// Keep only the newest `max` tombstones (they're appended in ascending version order,
-// so drop from the front). Pure + unit-tested.
-fn compact_tombstones(dels: &mut Vec<Deletion>, max: usize) {
-    if dels.len() > max {
-        dels.drain(0..dels.len() - max);
-    }
-}
+// Tombstones are retained DURABLY and are NEVER dropped by an arbitrary count cap. A cap was a
+// timing/size crutch: under the tombstone-authoritative delete model (0.10.25), a delete-local
+// requires a real tombstone, so silently dropping the oldest tombstones makes a long-offline
+// client read a genuinely-deleted file as "never had it" and RESTORE it — resurrecting deleted
+// data fleet-wide (Round-6 DI finding). Tombstones are tiny (a path + a u64); the correct way to
+// bound their growth is a deliberate HISTORY REBASE (reset history to a floor version + a client
+// horizon + a prompted reconcile below it), tracked as historyRebase — NOT an arbitrary cap.
 
 // Windows reserved DOS device basenames (case-insensitive, with OR without an extension) — a file
 // named e.g. `con.md` maps to a device, not a file, on a Windows host: the mirror write would hang
@@ -68,6 +61,22 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     // can never alias a different on-disk file (silent overwrite) or desync from it (reindex brick).
     if segs.join("/") != path { return None; }
     Some(p)
+}
+
+// Round-6 DI: names that reindex must refuse — a name commit would reject (safe_rel_path None) or
+// a pair that folds to the same lowercase key (would collapse to one file on a case-insensitive
+// client FS, causing overwrite + phantom-delete churn). Pure over the rel names so it's testable
+// cross-platform (the real collision only materializes on a case-sensitive server FS).
+fn conflicting_or_unsafe_rels(rels: &[String]) -> Vec<String> {
+    let mut fold: HashMap<String, String> = HashMap::new();
+    let mut bad: Vec<String> = Vec::new();
+    for rel in rels {
+        if safe_rel_path(rel).is_none() { bad.push(format!("{rel} (unsafe name)")); continue; }
+        if let Some(prev) = fold.insert(rel.to_lowercase(), rel.clone()) {
+            bad.push(format!("{rel} vs {prev} (case/fold collision)"));
+        }
+    }
+    bad
 }
 
 // Atomically mirror a committed file to the bind-mount path (create parents, write a sibling temp,
@@ -238,7 +247,6 @@ impl Vault {
                 }
             }
         }
-        compact_tombstones(&mut idx.deletions, MAX_TOMBSTONES);
         let mut v = Vault { root: root.to_path_buf(), vault_dir, store, idx, corrupt, journal_len };
         if !v.corrupt { v.verify_and_gc(); }
         Ok(v)
@@ -286,12 +294,28 @@ impl Vault {
     // them — dedup re-establishes as clients next edit each file. Deterministic:
     // same files on disk -> same {path->hash->chunks} mapping every run.
     pub fn reindex(&mut self) -> std::io::Result<()> {
+        // Round-6 DI: capture whether the index was CORRUPT before we clear the flag. When it was
+        // NOT corrupt (an operator running reindex on a healthy vault, which the docs allow), the
+        // index is trustworthy and the chunk store is AUTHORITATIVE — we must prefer it over the
+        // bind-mount mirror, which can be stale after a best-effort mirror-write failure. Only a
+        // genuinely-corrupt index forces a rebuild from disk bytes.
+        let was_corrupt = self.corrupt;
         let mut new_files: HashMap<String, FileMeta> = HashMap::new();
         let mut new_refs: HashMap<String, u64> = HashMap::new();
         let mut max_version = self.idx.version;
         let mut rels: Vec<(String, PathBuf)> = Vec::new();
         collect_files(&self.vault_dir, &self.vault_dir, &mut rels)?;
         rels.sort(); // deterministic version assignment order
+        // Round-6 DI: reindex must not mint index keys that commit would reject or that collide
+        // under filesystem folding — otherwise a repaired vault re-introduces the exact aliasing/
+        // index-desync hazards safe_rel_path + the case-collision guard prevent on the commit path
+        // (two disk files that fold to one client-side name → overwrite + phantom-delete churn).
+        let names: Vec<String> = rels.iter().map(|(r, _)| r.clone()).collect();
+        let bad = conflicting_or_unsafe_rels(&names);
+        if !bad.is_empty() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                format!("reindex aborted: {} path(s) unsafe or colliding — resolve on disk first: {}", bad.len(), bad.join("; "))));
+        }
         // If any currently-indexed path is missing from disk, the vault dir is INCOMPLETE (a partial
         // restore / in-flight copy). Refuse rather than drop those paths + GC their chunks — that
         // would be permanent loss that then drives client-side deletions. A genuinely deleted file
@@ -303,6 +327,20 @@ impl Vault {
                 format!("reindex aborted: {missing} indexed file(s) missing from disk (incomplete vault dir?)")));
         }
         for (rel, abs) in rels {
+            // Round-6 DI (prefer authoritative store): on a HEALTHY reindex, if the current index
+            // already maps this path and all its chunks are present in the store, keep that entry
+            // VERBATIM (content + version + real chunk list) instead of re-hashing the mirror —
+            // which could revert the file to stale bytes left by a failed mirror write. Rebuild
+            // from disk only when the index was corrupt (untrustworthy) or a chunk is missing.
+            if !was_corrupt {
+                if let Some(old) = self.idx.files.get(&rel) {
+                    if old.chunks.iter().all(|h| self.store.has(h)) {
+                        for h in &old.chunks { *new_refs.entry(h.clone()).or_insert(0) += 1; }
+                        new_files.insert(rel.clone(), old.clone());
+                        continue;
+                    }
+                }
+            }
             let body = std::fs::read(&abs)?;
             let hash = sha256_hex(&body);
             self.store.put(&hash, &body)?; // content-addressed; idempotent
@@ -322,8 +360,9 @@ impl Vault {
                 path: rel, hash, size: body.len() as u64, mtime, version, chunks: vec![],
             });
         }
-        // fix up single-chunk lists (borrow dance: set chunks from each file's hash)
-        for meta in new_files.values_mut() { meta.chunks = vec![meta.hash.clone()]; }
+        // fix up single-chunk lists for DISK-INGESTED files only (chunks left empty above); a
+        // preferred-from-store entry keeps its real (possibly multi-chunk) list untouched.
+        for meta in new_files.values_mut() { if meta.chunks.is_empty() { meta.chunks = vec![meta.hash.clone()]; } }
         // GC chunks no longer referenced by any file
         for h in self.idx.chunk_refs.keys() {
             if !new_refs.contains_key(h) { let _ = self.store.remove(h); }
@@ -502,7 +541,6 @@ impl Vault {
         self.idx.version += 1;
         let d = Deletion { path: path.to_string(), version: self.idx.version };
         self.idx.deletions.push(d.clone());
-        compact_tombstones(&mut self.idx.deletions, MAX_TOMBSTONES);
         if let Err(e) = self.journal(&JournalRecord::Del { del: d.clone() }) {
             self.idx = snapshot; // append failed → not durable; roll back to match disk
             return Err(e);
@@ -925,16 +963,54 @@ mod tests {
         assert!(!v.is_corrupt(), "a genuinely empty namespace is a fresh first run");
     }
 
-    // Index scaling: tombstones are capped, keeping the NEWEST (highest-version) ones.
+    // Tombstones are retained durably (no arbitrary cap): a long-offline client must still see a
+    // genuine deletion's tombstone rather than reading absence as "never had it" and restoring it.
     #[test]
-    fn compact_tombstones_keeps_newest() {
-        let mut dels: Vec<Deletion> = (1..=10).map(|v| Deletion { path: format!("f{v}"), version: v }).collect();
-        compact_tombstones(&mut dels, 4);
-        assert_eq!(dels.len(), 4);
-        assert_eq!(dels.iter().map(|d| d.version).collect::<Vec<_>>(), vec![7, 8, 9, 10]);
-        // under the cap: unchanged
-        compact_tombstones(&mut dels, 100);
-        assert_eq!(dels.len(), 4);
+    fn tombstones_are_retained_not_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let b = b"x"; let h = sha256_hex(b);
+        // Commit 50 distinct files (all sharing one chunk), THEN delete them all; every deletion
+        // tombstone must survive (re-put the chunk each round since deletes GC it when refcount hits 0).
+        for i in 0..50 {
+            v.put_chunk(&h, b).unwrap();
+            v.commit(CommitRequest { path: format!("f{i}.md"), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        }
+        for i in 0..50 { v.delete(&format!("f{i}.md")).unwrap(); }
+        assert_eq!(v.changes(0).deletes.len(), 50, "all tombstones retained, none dropped by a cap");
+    }
+
+    // Round-6 DI: a HEALTHY reindex must keep the authoritative chunk-store content, never adopt
+    // stale bind-mount bytes left by a failed mirror write.
+    #[test]
+    fn reindex_prefers_store_over_stale_mirror_when_healthy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let good = b"authoritative"; let h = sha256_hex(good);
+        v.put_chunk(&h, good).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: good.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        // Simulate a stale mirror: a failed mirror-write left OLD bytes on disk while the store holds the new ones.
+        std::fs::write(dir.path().join("vault").join("n.md"), b"STALE").unwrap();
+        assert!(!v.is_corrupt());
+        v.reindex().unwrap();
+        let meta = v.changes(0).upserts.into_iter().find(|m| m.path == "n.md").unwrap();
+        assert_eq!(meta.hash, h, "healthy reindex must keep the authoritative store content, not the stale mirror");
+        assert_eq!(v.get_chunk(&meta.chunks[0]).unwrap().unwrap(), good);
+    }
+
+    // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
+    // where two folding files can't coexist on disk — the collision is a real case-sensitive-server
+    // scenario). Commit already enforces this; reindex must too.
+    #[test]
+    fn reindex_path_conflict_guard() {
+        // case/fold collision (would collapse to one file on a client FS)
+        assert!(!conflicting_or_unsafe_rels(&["Notes/A.md".into(), "Notes/a.md".into()]).is_empty());
+        // Unicode case fold
+        assert!(!conflicting_or_unsafe_rels(&["CAFÉ.md".into(), "café.md".into()]).is_empty());
+        // an unsafe name commit would reject (trailing dot / reserved / junk)
+        assert!(!conflicting_or_unsafe_rels(&["evil.md.".into()]).is_empty());
+        // distinct, safe names: no conflict
+        assert!(conflicting_or_unsafe_rels(&["a.md".into(), "b.md".into(), "sub/c.md".into()]).is_empty());
     }
 
     // H3: repeated hashes must not reassemble past the declared size (OOM DoS guard).

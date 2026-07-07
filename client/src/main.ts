@@ -361,16 +361,27 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Exchange the stored password for a new token (and drop the plaintext password if the user
   // opted into token-only storage). No password at rest ⇒ the session can't self-renew, so
   // open setup for the user to re-authenticate rather than fail silently.
-  private async freshLogin(): Promise<string> {
-    if (!this.settings.password) {
-      this.openSetup();
-      throw new Error("session expired — please re-enter your password in setup");
-    }
-    const token = await this.loginRemote();
-    if (!this.settings.storePassword) this.settings.password = "";
-    this.setAuthToken(token); // persists the token (and the cleared password)
-    this.log("login OK");
-    return token;
+  // SINGLE-FLIGHT (Round-6 CONC): both the engine's reactive-401 path (doConnect) and the non-engine
+  // withAuth path (setup/switch modals) can call this concurrently. `freshLogin` READS the password
+  // (in loginRemote) and then destructively CLEARS it — two entrants would race that read-modify-
+  // write, so the second reads an emptied password and spuriously prompts "session expired" while a
+  // login is actually succeeding, minting an orphan token. Coalesce concurrent calls into one login.
+  private loginInFlight?: Promise<string>;
+  private freshLogin(): Promise<string> {
+    if (this.loginInFlight) return this.loginInFlight;
+    const run = (async () => {
+      if (!this.settings.password) {
+        this.openSetup();
+        throw new Error("session expired — please re-enter your password in setup");
+      }
+      const token = await this.loginRemote();
+      if (!this.settings.storePassword) this.settings.password = "";
+      this.setAuthToken(token); // persists the token (and the cleared password)
+      this.log("login OK");
+      return token;
+    })();
+    this.loginInFlight = run;
+    return run.finally(() => { this.loginInFlight = undefined; });
   }
 
   // A server auth rejection (401) — the reactive signal that replaces the proactive probe.
@@ -453,40 +464,28 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.pendingReload.size === 0) return;
     const paths = [...this.pendingReload];
     this.pendingReload.clear();
-    const app = this.app as any; // app.plugins / app.customCss are not in the public typings
-    let needsRestart = false;
 
-    // Appearance: reload theme + snippet CSS live.
-    if (paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"))) {
-      try { app.customCss?.loadData?.(); app.customCss?.loadSnippets?.(); this.app.workspace.trigger("css-change"); }
-      catch { needsRestart = true; }
-    }
-
-    // Community plugins: disable+enable each touched plugin (never SelfSync itself;
-    // tolerate a plugin whose code isn't installed yet — reload must not throw).
+    // SECURITY (Round-6 SEC): config that arrives via SYNC can carry UNTRUSTED, executable content.
+    // A share peer — OR the owner of a vault shared with you — can commit community-plugin CODE
+    // (.obsidian/plugins/<id>/main.js) or theme/snippet CSS (exfil/phishing via Obsidian's un-CSP'd
+    // renderer). We therefore NEVER auto-execute or auto-apply sync-driven config, for ANY vault.
+    // The previous gate only covered NON-OWNED vaults (`vaultOwner` set) and auto-reloaded plugin
+    // code + auto-applied CSS for owned vaults — but a vault you OWN and share readWrite also holds
+    // a peer's untrusted content (the owner-direction RCE). And CSS was never gated at all. The
+    // safe, uniform rule: surface a reload notice; the user applies changes explicitly. Non-code,
+    // non-CSS config (e.g. a plugin's data.json) is already written to disk and read on next load.
+    const touchedCss = paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"));
     const pluginIds = new Set<string>();
     for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.selfFolderId()) pluginIds.add(id); }
-    // SEC-3: NEVER auto-(re)enable community-plugin CODE that arrived from a vault this account
-    // does not own. A shared vault's owner could push a malicious plugin main.js; silently
-    // enabling it would execute their code on this device. Surface it and let the user decide.
-    if (this.settings.vaultOwner && pluginIds.size > 0) {
-      new Notice("SelfSync: plugins changed in a shared vault are NOT auto-enabled. Enable them manually only if you trust the source.");
+    const touchedCore = paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p));
+
+    if (pluginIds.size > 0) {
+      new Notice("SelfSync: synced community-plugin changes are NOT auto-enabled (plugins are code). Reload Obsidian to apply — only if you trust the source.");
+    } else if (touchedCss || touchedCore) {
+      new Notice("SelfSync: some synced settings (appearance / core) will apply after you reload Obsidian.");
     } else {
-      for (const id of pluginIds) {
-        try {
-          if (app.plugins?.enabledPlugins?.has?.(id) && app.plugins?.plugins?.[id]) {
-            await app.plugins.disablePlugin(id);
-            await app.plugins.enablePlugin(id);
-          }
-        } catch { needsRestart = true; }
-      }
+      this.log(`applied synced config (${paths.length} file(s))`);
     }
-
-    // Core settings / hotkeys / the plugin-enable list can't be fully re-applied live.
-    if (paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p))) needsRestart = true;
-
-    if (needsRestart) new Notice("SelfSync: some synced settings will apply after you reload Obsidian.");
-    else this.log(`applied synced config (${paths.length} file(s))`);
   }
 
   // The status light is a pure function of the FSM phase (see syncstate.ts). It drives
@@ -618,7 +617,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     try {
       this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
-      this.ws?.close();
+      // Clear the ref BEFORE the awaits below: the close we just triggered fires asynchronously,
+      // and the close handler only suppresses a superseded socket via the `this.ws !== ws` check.
+      // Leaving this.ws pointing at the closing socket during the await would let its close enqueue
+      // a spurious {rews} that re-dials on top of this connect. (Round-6 CONC)
+      this.ws?.close(); this.ws = undefined;
       const token = await this.acquireToken();
       this.api = this.buildApi(token);
       // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
