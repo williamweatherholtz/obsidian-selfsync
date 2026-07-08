@@ -19,7 +19,17 @@ import { androidModelFromUA, platformDisplayName, usableModel } from "./devicena
 // mobile fallback + safety net; desktop also has the live `raw` path). A wall-clock interval —
 // rather than a poll COUNT — keeps detection latency stable regardless of how the poll cadence
 // changes, and reads as an actual latency bound instead of an arbitrary tick count.
-const CONFIG_SCAN_INTERVAL_MS = 32_000;
+// Periodic full-config reconcile cadence — the mobile fallback for config edits (which fire no
+// reliable `raw` event). Raised 32s → 120s: the scan re-hashes local files, so a tight cadence
+// burns battery on a large mobile vault; config changes are infrequent so ~2-min latency is fine,
+// and desktop gets instant config sync via the raw watcher regardless. (R11-#3; a config-ONLY scan
+// that skips re-hashing notes is the deeper fix, planned for the config-sync round.)
+const CONFIG_SCAN_INTERVAL_MS = 120_000;
+// Mobile has no streamed I/O (ObsidianVaultIo.appendWrite is desktop-only), so a synced file is
+// buffered whole in the WebView heap (~2× its size during fetch+concat). Cap the buffered size well
+// below the desktop ceiling so a mid-size attachment can't OOM-crash the app; bigger files sync on
+// desktop and the peer's copy is never endangered (skipped, not deleted). (R11-#2)
+const MOBILE_MAX_SYNC_BYTES = 50 * 1024 * 1024;
 // Coalesce the burst of "raw" events a single config change emits before reconciling.
 const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
@@ -182,6 +192,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private backoff = 3000;
   private unloading = false;
   private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
+  private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
   private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
   private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
@@ -276,7 +287,16 @@ export default class NewLiveSyncPlugin extends Plugin {
   getLogText() { return this.logs.join("\n"); }
   clearLogs() { this.logs = []; this.log("log cleared"); }
   showLog() { new LogModal(this.app, this).open(); }
-  openSetup() { new SetupWizardModal(this.app, this).open(); }
+  openSetup() {
+    // R11-#8: token-only mode with an expired token retries {connect} forever; without this guard,
+    // each ~30s attempt opened ANOTHER wizard, stacking modals the user couldn't escape. Open at most one.
+    if (this.setupOpen) return;
+    this.setupOpen = true;
+    const modal = new SetupWizardModal(this.app, this);
+    const done = modal.onClose.bind(modal);
+    modal.onClose = () => { this.setupOpen = false; done(); };
+    modal.open();
+  }
 
   // The plugin's ACTUAL install-folder name (last segment of manifest.dir), which is
   // what shouldSync must exclude. Keying on manifest.dir rather than manifest.id keeps
@@ -639,6 +659,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(),
       readOnly: this.settings.vaultReadOnly,
+      maxSyncBytes: this.io.appendWrite ? undefined : MOBILE_MAX_SYNC_BYTES, // R11-#2: tighter buffered cap on mobile (no streaming)
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
       // reconcile too, so a device that opted out never records a base for it (no phantom delete).
       accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
@@ -653,7 +674,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       onSkip: (p, bytes) => {
         if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
         this.skipNotified.add(p);
-        this.log(`skipped '${p}' — too large to sync (${Math.round(bytes / 1048576)} MB, over the ${Math.round(DEFAULT_MAX_SYNC_BYTES / 1048576)} MB limit)`, true);
+        const cap = this.io.appendWrite ? DEFAULT_MAX_SYNC_BYTES : MOBILE_MAX_SYNC_BYTES; // platform-aware: mobile buffers, desktop streams
+        this.log(`skipped '${p}' — ${Math.round(bytes / 1048576)} MB, over this device's ${Math.round(cap / 1048576)} MB sync limit${this.io.appendWrite ? "" : " (larger files sync on desktop)"}`, true);
       },
     };
   }
@@ -792,7 +814,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
     ws.addEventListener("close", () => {
       if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
-      this.engine.enqueue(opened ? { kind: "rews" } : { kind: "connect" });
+      if (opened) {
+        // R11-#7: delay the WS re-dial so a server that flaps the socket (accept-then-drop) can't be
+        // hammered with reconnects many times a second (rews had no backoff). A normal one-off drop
+        // just waits ~2s; the 4s poll keeps catching remote changes in the meantime.
+        window.setTimeout(() => { if (!this.unloading && this.api && this.ws === ws) this.engine.enqueue({ kind: "rews" }); }, 2000);
+      } else {
+        this.engine.enqueue({ kind: "connect" }); // never opened → full, backed-off reconnect
+      }
     });
     return ws;
   }

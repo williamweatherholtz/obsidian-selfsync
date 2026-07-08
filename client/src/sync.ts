@@ -38,7 +38,7 @@ export type ChunkCache = Map<string, Uint8Array>;
 // buffer; caching the view would pin the entire source file in RAM (2048 views from
 // 2048 files ≈ 2048 whole files, not ~128 MiB — a mobile OOM). We copy each chunk
 // (`slice`) so only its ~64 KiB is retained; evict oldest (Map is insertion-ordered).
-const MAX_CACHE_ENTRIES = 2048;
+const MAX_CACHE_ENTRIES = 512; // ~32 MiB worst case (64 KiB max chunk) — bounded for mobile WebView RAM (R11-#10)
 function cachePut(cache: ChunkCache, hash: string, bytes: Uint8Array): void {
   if (cache.has(hash)) return;
   if (cache.size >= MAX_CACHE_ENTRIES) {

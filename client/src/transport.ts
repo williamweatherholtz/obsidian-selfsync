@@ -1,6 +1,21 @@
-import { requestUrl } from "obsidian";
+import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
 import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta } from "./protocol";
 import { SyncApi } from "./sync";
+
+// R11-HIGH: Obsidian's requestUrl has NO timeout, so a half-open/stalled connection (VPN drop,
+// captive portal, dead NAT entry) hangs forever — and since the sync engine is serial, one hung
+// request wedges ALL sync with no error and no recovery (the offline/backoff machinery only fires
+// on a REJECTION). Race every request against a timeout so a stall becomes a normal rejection the
+// engine already handles → offline → backoff → reconnect. (Can't abort the underlying request; the
+// leaked promise just settles unobserved.)
+const REQUEST_TIMEOUT_MS = 30_000;
+function httpReq(params: RequestUrlParam): Promise<RequestUrlResponse> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("request timed out (no response) — treating as offline")), REQUEST_TIMEOUT_MS);
+  });
+  return Promise.race([requestUrl(params), timeout]).finally(() => clearTimeout(timer)) as Promise<RequestUrlResponse>;
+}
 
 // A vault shared WITH the current account (owned by someone else on the server).
 export type SharedVaultRef = { owner: string; vault: string; perm: "read" | "readWrite" };
@@ -16,7 +31,7 @@ export class HttpTransport implements SyncApi {
   // Hits the unauthenticated /health endpoint; true iff the server answers 200 "ok".
   static async testConnection(baseUrl: string): Promise<boolean> {
     try {
-      const r = await requestUrl({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
+      const r = await httpReq({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
       return r.status === 200;
     } catch {
       return false;
@@ -24,7 +39,7 @@ export class HttpTransport implements SyncApi {
   }
 
   static async login(baseUrl: string, username: string, password: string): Promise<string> {
-    const r = await requestUrl({
+    const r = await httpReq({
       url: `${baseUrl}/api/login`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ username, password }), throw: false,
     });
@@ -33,7 +48,7 @@ export class HttpTransport implements SyncApi {
   }
 
   static async register(baseUrl: string, username: string, password: string, invite = ""): Promise<void> {
-    const r = await requestUrl({
+    const r = await httpReq({
       url: `${baseUrl}/api/register`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ username, password, invite }), throw: false,
     });
@@ -41,13 +56,13 @@ export class HttpTransport implements SyncApi {
   }
 
   static async listVaults(baseUrl: string, token: string): Promise<string[]> {
-    const r = await requestUrl({ url: `${baseUrl}/api/vaults`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+    const r = await httpReq({ url: `${baseUrl}/api/vaults`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
     if (r.status !== 200) throw new Error(`vaults: HTTP ${r.status}`);
     return (r.json as { vaults: string[] }).vaults;
   }
 
   static async createVault(baseUrl: string, token: string, name: string): Promise<void> {
-    const r = await requestUrl({
+    const r = await httpReq({
       url: `${baseUrl}/api/vaults`, method: "POST", contentType: "application/json",
       headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ name }), throw: false,
     });
@@ -56,7 +71,7 @@ export class HttpTransport implements SyncApi {
 
   // Vaults shared WITH this account (owned by others) — the complement of listVaults.
   static async listShared(baseUrl: string, token: string): Promise<SharedVaultRef[]> {
-    const r = await requestUrl({ url: `${baseUrl}/api/shared`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+    const r = await httpReq({ url: `${baseUrl}/api/shared`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
     if (r.status !== 200) throw new Error(`shared: HTTP ${r.status}`);
     return r.json as SharedVaultRef[];
   }
@@ -76,7 +91,7 @@ export class HttpTransport implements SyncApi {
   // will 503 until an operator reindexes — checked before reconciling so we surface a
   // clear reason rather than a bare "HTTP 503", and never act on a degraded manifest.
   async status(): Promise<StatusResponse> {
-    const r = await requestUrl({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
+    const r = await httpReq({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`status: HTTP ${r.status}`);
     const j = r.json as { status: string; detail: string; version: number; api_version?: number };
     // Server serializes snake_case `api_version`; expose it as camelCase apiVersion.
@@ -84,18 +99,18 @@ export class HttpTransport implements SyncApi {
   }
 
   async changes(since: number): Promise<ChangesResponse> {
-    const r = await requestUrl({ url: this.v(`/changes?since=${since}`), method: "GET", headers: this.auth(), throw: false });
+    const r = await httpReq({ url: this.v(`/changes?since=${since}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`changes: HTTP ${r.status}`);
     return validateChanges(r.json);
   }
   async fileMeta(path: string): Promise<FileMeta | null> {
-    const r = await requestUrl({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
+    const r = await httpReq({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status === 404) return null;
     if (r.status !== 200) throw new Error(`meta: HTTP ${r.status}`);
     return validateFileMeta(r.json);
   }
   async missing(hashes: string[]): Promise<string[]> {
-    const r = await requestUrl({
+    const r = await httpReq({
       url: this.v("/chunks/missing"), method: "POST", contentType: "application/json",
       headers: this.auth(), body: JSON.stringify({ hashes }), throw: false,
     });
@@ -105,12 +120,12 @@ export class HttpTransport implements SyncApi {
     return m as string[];
   }
   async getChunk(hash: string): Promise<Uint8Array> {
-    const r = await requestUrl({ url: this.v(`/chunk/${hash}`), method: "GET", headers: this.auth(), throw: false });
+    const r = await httpReq({ url: this.v(`/chunk/${hash}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`getChunk: HTTP ${r.status}`);
     return new Uint8Array(r.arrayBuffer);
   }
   async putChunk(hash: string, bytes: Uint8Array): Promise<void> {
-    const r = await requestUrl({ url: this.v(`/chunk/${hash}`), method: "PUT", headers: this.auth(), body: this.toArrayBuffer(bytes), throw: false });
+    const r = await httpReq({ url: this.v(`/chunk/${hash}`), method: "PUT", headers: this.auth(), body: this.toArrayBuffer(bytes), throw: false });
     if (r.status !== 200) throw new Error(`putChunk: HTTP ${r.status}`);
   }
   async commit(req: CommitRequest): Promise<FileMeta> {
@@ -120,18 +135,23 @@ export class HttpTransport implements SyncApi {
       path: req.path, hash: req.hash, size: req.size, mtime: req.mtime, chunks: req.chunks,
     };
     if (req.expectedVersion !== undefined) body.expected_version = req.expectedVersion;
-    const r = await requestUrl({
+    const r = await httpReq({
       url: this.v("/commit"), method: "POST", contentType: "application/json",
       headers: this.auth(), body: JSON.stringify(body), throw: false,
     });
     // 409 = optimistic-concurrency conflict: the server advanced past our base. Signal it
     // distinctly so reconcile converges via merge on the next pass instead of clobbering.
     if (r.status === 409) throw new CommitConflictError(`commit conflict on '${req.path}' (server version advanced)`);
+    // 404 = a referenced chunk was reclaimed (orphan-swept) between missing() and commit — the
+    // dedup optimization thought it was present. Signal it as an isolatable/retryable condition (like
+    // a CAS conflict) so the event path doesn't flap OFFLINE on a routine re-upload: the next
+    // reconcile's pushFile recomputes missing() and re-uploads the gap, then commits. (R11-#4)
+    if (r.status === 404) throw new CommitConflictError(`commit for '${req.path}' referenced a missing chunk (will re-upload)`);
     if (r.status !== 200) throw new Error(`commit: HTTP ${r.status}`);
     return validateFileMeta(r.json);
   }
   async deleteFile(path: string): Promise<void> {
-    const r = await requestUrl({ url: this.v(`/file?path=${encodeURIComponent(path)}`), method: "DELETE", headers: this.auth(), throw: false });
+    const r = await httpReq({ url: this.v(`/file?path=${encodeURIComponent(path)}`), method: "DELETE", headers: this.auth(), throw: false });
     if (r.status !== 200 && r.status !== 404) throw new Error(`deleteFile: HTTP ${r.status}`);
   }
 
