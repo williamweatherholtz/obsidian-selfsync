@@ -23,6 +23,7 @@ function spyApi() {
   const calls: Record<string, any[][]> = {};
   const rec = (name: string, args: any[]) => { (calls[name] ??= []).push(args); };
   let failChanges = false;
+  let changesError: string | null = null; // D0021: settable custom error (e.g. an HTTP 404) from changes()
   let changesResp: any = { version: 0, upserts: [], deletes: [] }; // D0019: settable so a test can advance history_floor / rewind version
   let wsOnChanged: (() => void) | null = null;
   let statusApiVersion: number | undefined;   // undefined = omit apiVersion (legacy server)
@@ -31,6 +32,7 @@ function spyApi() {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
     __setChanges: (r: any) => void;
+    __failChangesWith: (msg: string) => void;
   } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
@@ -38,12 +40,13 @@ function spyApi() {
     __setApiVersion: (v) => { statusApiVersion = v; },
     __failStatusAuth: (n) => { failStatusAuthTimes = n; },
     __setChanges: (r: any) => { changesResp = r; },
+    __failChangesWith: (msg: string) => { changesError = msg; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
     },
-    async changes(since) { rec("changes", [since]); if (failChanges) throw new Error("server down"); return changesResp; },
+    async changes(since) { rec("changes", [since]); if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
     async getChunk(h) { rec("getChunk", [h]); return new Uint8Array(0); },
@@ -167,6 +170,15 @@ describe("plugin wiring — producers → engine → effects", () => {
     const probed = (api.__calls.fileMeta ?? []).map((c) => c[0] as string);
     expect(probed).toContain(".obsidian/app.json");                     // the live pipeline reconciled it
     expect(probed.some((x) => x.includes("obsidian-selfsync"))).toBe(false); // self-folder never synced (SEC)
+    p.onunload();
+  });
+
+  it("D0021: a vault-gone 404 on connect → offline + isVaultGone (re-create-from-device prompt)", async () => {
+    // The synced vault was deleted server-side: the connect reconcile 404s. The engine goes offline
+    // and the plugin flags vaultGone so settings can offer 'Re-create this vault from this device'.
+    const { p } = await bootPlugin(true, { preOnload: (pp) => pp.api_.__failChangesWith("changes: HTTP 404") });
+    expect(p.statusText()).toBe("offline");
+    expect(p.isVaultGone()).toBe(true);
     p.onunload();
   });
 

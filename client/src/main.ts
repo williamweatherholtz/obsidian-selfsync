@@ -607,6 +607,27 @@ export default class NewLiveSyncPlugin extends Plugin {
   // flag needed (that state now lives in the machine).
   async reconnect() { this.engine.enqueue({ kind: "connect" }); }
 
+  // True when the last connect failed because the vault is GONE server-side (a 404 — deleted or
+  // renamed). Drives the "Re-create this vault from this device" prompt in settings (D0021).
+  private vaultGone = false;
+  isVaultGone(): boolean { return this.vaultGone; }
+
+  // Deliberate recovery from a deleted vault (D0021): re-create the same-named vault on the server,
+  // then reconnect. The vault comes back EMPTY, so the normal reconcile keeps this device's local
+  // files and pushes them back up (tombstone-authoritative), repopulating it from this device's
+  // copy — the no-data-loss behavior, now an explicit user choice rather than implicit. Other
+  // devices' server-side history is NOT restored (only this device's current content).
+  async recreateVault(): Promise<void> {
+    try {
+      await this.withAuth((t) => HttpTransport.createVault(this.settings.serverUrl, t, this.settings.vaultId));
+      this.log(`re-created vault '${this.settings.vaultId}' — repopulating from this device`, true);
+      this.vaultGone = false;
+      await this.reconnect();
+    } catch (e: any) {
+      this.log(`could not re-create the vault: ${e?.message ?? e}`, true);
+    }
+  }
+
   // EFFECT: (re)establish the connection — acquire token, health-check, initial reconcile (or a
   // pending switch), then spin up the WS + poll. THROWS on any failure; the engine catches it,
   // goes offline, and arms the backoff reconnect. No re-entrancy flags here: the engine guarantees
@@ -669,6 +690,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.startPolling();
       this.backoff = 3000;
       this.lastIssue = undefined;
+      this.vaultGone = false; // a successful connect means the vault exists again
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
@@ -676,10 +698,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       // A 404 means the server is reachable but the VAULT is gone (deleted/renamed) — that's not a
       // connectivity problem, so say so actionably instead of "retrying…" forever (Round-7 RC-3).
       const em = String(e?.message);
+      this.vaultGone = /HTTP 404/.test(em); // the vault was deleted/renamed server-side (D0021 prompt)
       this.lastIssue = /no password stored|session expired/.test(em)
         ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
-        : /HTTP 404/.test(em)
-        ? "This vault no longer exists on the server — re-create it or pick another in “Set up / switch vault”. Your local files are untouched."
+        : this.vaultGone
+        ? "This vault no longer exists on the server — re-create it from this device (button below) or pick another in “Set up / switch vault”. Your local files are untouched."
         : (this.lastIssue ?? `Can't reach the server (${e?.message ?? e}). Retrying…`);
       throw e; // → engine: onError logs it, state goes offline, backoff reconnect is scheduled
     }

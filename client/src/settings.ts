@@ -117,7 +117,14 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       setup.onclick = () => this.plugin.openSetup();
       return;
     }
-    if (phase === "offline") { const r = bar.createEl("button", { text: "Reconnect" }); r.onclick = () => this.plugin.reconnect(); }
+    if (phase === "offline") {
+      const r = bar.createEl("button", { text: "Reconnect" }); r.onclick = () => this.plugin.reconnect();
+      // D0021: the vault was deleted server-side — offer a deliberate re-create-from-this-device.
+      if (this.plugin.isVaultGone()) {
+        const rc = bar.createEl("button", { text: "Re-create vault from this device" }); rc.addClass("mod-cta");
+        rc.onclick = () => void this.plugin.recreateVault();
+      }
+    }
   }
 
   // Setup & transitions — the explicit actions you perform (change wiring, switch vault,
