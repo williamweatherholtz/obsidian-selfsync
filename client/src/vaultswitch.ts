@@ -36,10 +36,6 @@ export class SwitchVaultModal extends Modal {
 
   private render() {
     const c = this.contentEl; c.empty();
-    const s = this.plugin.settings;
-    c.createEl("p", { text: `Signed in as ${s.username} · ${s.serverUrl}` })
-      .setAttribute("style", "font-size:12px;opacity:.7;margin-bottom:8px;");
-
     if (this.loading) { c.createEl("p", { text: "Loading vaults…" }); return; }
     if (this.error) {
       c.createEl("p", { text: this.error });

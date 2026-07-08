@@ -75,6 +75,12 @@ export class SyncEngine {
   // succeeded in reaching the server) to "reconciling", so recovery shows "Syncing…", not a stale
   // "offline"/"connecting".
   markReconciling(): void { if (this.state === "connecting" || this.state === "offline") this.setState("reconciling"); }
+
+  // Called by the reconcile EFFECT the instant it has genuine work — a non-empty delta, a history
+  // reset, or a config scan that actually mutates a file. A routine no-op poll never calls it, so a
+  // settled "idle" ("Fully synced") STAYS idle instead of blipping "Syncing…" every few seconds.
+  // Escalates only from a settled idle while connected; pump() returns it to idle when work drains.
+  beginReconcile(): void { if (this.connected && this.state === "idle") this.setState("reconciling"); }
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 
@@ -157,7 +163,9 @@ export class SyncEngine {
         return;
       case "remote":
         if (!this.connected) return;       // ignored until connected; connect() reconciles anyway
-        this.setState("reconciling");
+        // Do NOT flip to "reconciling" up front — a routine poll is usually a no-op. The reconcile
+        // effect calls beginReconcile() the moment it has genuine work, so an idle poll stays "idle"
+        // (the light doesn't blip "Syncing…" every few seconds). pump() settles back to idle after.
         try { await this.fx.reconcileAll(); } catch (e) { this.failToOffline("remote", e); }
         return;
       case "path":

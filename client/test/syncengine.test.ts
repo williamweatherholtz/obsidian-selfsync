@@ -22,9 +22,12 @@ function harness() {
     if (q && q.length) return q.shift()!.p; // held by a test
     return Promise.resolve();
   };
+  let e: SyncEngine;
   const fx: EngineEffects = {
     connect: () => run("connect"),
-    reconcileAll: () => run("reconcileAll"),
+    // Models a remote reconcile that HAS work: the real effect (doReconcileAll) calls beginReconcile
+    // only when there's a genuine delta; a no-op poll doesn't. Tests exercise the has-work path.
+    reconcileAll: () => { e.beginReconcile(); return run("reconcileAll"); },
     reconcilePath: (p) => run("path:" + p),
     rews: () => run("rews"),
     teardown: () => { calls.push("teardown"); },
@@ -33,7 +36,7 @@ function harness() {
     scheduleReconnect: () => { reconnects++; },
   };
   const block = (name: string) => { const d = deferred(); (blocks[name] ??= []).push(d); return d; };
-  const e = new SyncEngine(fx);
+  e = new SyncEngine(fx);
   return { e, calls, phases, errors, block, get reconnects() { return reconnects; } };
 }
 
@@ -66,6 +69,35 @@ describe("SyncEngine — serial run-to-completion", () => {
     h.e.enqueue({ kind: "connect" }); await tick(); // now idle
     h.e.markReconciling();
     expect(h.e.getState()).toBe("idle");            // not upgraded from a settled state
+  });
+
+  it("beginReconcile escalates idle→reconciling only when connected (a no-op poll can't blip it)", async () => {
+    const h = harness();
+    h.e.beginReconcile();
+    expect(h.e.getState()).toBe("off");             // not connected yet → no escalation
+    h.e.enqueue({ kind: "connect" }); await tick();
+    expect(h.e.getState()).toBe("idle");
+    h.e.beginReconcile();
+    expect(engineStateToPhase(h.e.getState())).toBe("syncing"); // work found → escalates from idle
+  });
+
+  it("a poke that finds NO work leaves the light at idle (no Syncing blip)", async () => {
+    // A reconcile effect that does NOT call beginReconcile models an idle poll — nothing to sync.
+    const calls: string[] = []; const phases: string[] = [];
+    const fx: EngineEffects = {
+      connect: () => { calls.push("connect"); return Promise.resolve(); },
+      reconcileAll: () => { calls.push("reconcileAll"); return Promise.resolve(); }, // no beginReconcile → no work
+      reconcilePath: () => Promise.resolve(), rews: () => Promise.resolve(),
+      teardown: () => {}, onPhase: (p) => phases.push(p), onError: () => {}, scheduleReconnect: () => {},
+    };
+    const e = new SyncEngine(fx);
+    e.enqueue({ kind: "connect" }); await tick();
+    expect(e.getState()).toBe("idle");
+    phases.length = 0;
+    e.enqueue({ kind: "remote" }); await tick();
+    expect(e.getState()).toBe("idle");              // stayed idle across the no-op poll
+    expect(phases).toEqual([]);                     // and NEVER projected "syncing"
+    expect(calls).toContain("reconcileAll");         // (the effect did run)
   });
 
   it("a backoff retry stays 'offline' — it never flashes 'connecting' while the server is down", async () => {

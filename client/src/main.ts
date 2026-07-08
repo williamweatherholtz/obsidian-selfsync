@@ -823,7 +823,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Short-circuit an idle poll (nothing changed AND no reset) — but still RECORD the floor/version
     // first (noteHistory), so an idle vault tracks them and a LATER reset stays detectable (a pure
     // tombstone-prune bumps the floor without any delta). No reconcile ran, so nothing was kept.
-    if (!forceConfigScan && !reset && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
+    const noChange = delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version;
+    if (!forceConfigScan && !reset && noChange) {
       this.noteHistory(delta.version, delta.history_floor, []);
       return;
     }
@@ -831,6 +832,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     const kept: string[] = [];
     const d = this.deps();
     d.onKeptAbsent = (p) => kept.push(p); // always collect; noteHistory decides whether to notify
+    // Show "Syncing…" only for genuine work, so "Fully synced" doesn't clip on every poll. A real
+    // delta or a history reset IS work → escalate now (so a large transfer shows syncing throughout).
+    // A FORCED config scan with an empty delta might be a no-op → escalate lazily: only when the scan
+    // actually mutates a base (onBaseChanged), so a scan that finds nothing stays "Fully synced".
+    if (!noChange || reset) {
+      this.engine.beginReconcile();
+    } else {
+      const prevOnBaseChanged = d.onBaseChanged;
+      d.onBaseChanged = () => { this.engine.beginReconcile(); prevOnBaseChanged?.(); };
+    }
     // RS-3: a normal forward delta reconciles INCREMENTALLY. The FULL reconcile is reserved for the
     // periodic config scan and a HISTORY RESET (only the whole-manifest pass visits every local file
     // to restore-on-absence + carries the bulk-delete guard + surfaces the kept files a reset reports).
