@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { decide, reconcileAll, reconcileDelta, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES } from "../src/reconcile";
-import { BaseStore } from "../src/base";
+import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta } from "../src/protocol";
@@ -583,6 +583,23 @@ describe("critique fixes — data integrity + correctness", () => {
     await reconcileAll(deps(api, io, { base, onFileError: (p) => errs.push(p) }));
     expect(dec((io as any).m.get("n.md")!)).toBe("LOCAL"); // local NOT overwritten with corrupt bytes
     expect(errs).toContain("n.md");
+  });
+});
+
+describe("originalOfConflictCopy — derive the pending-conflict set from filenames", () => {
+  it("round-trips conflictCopyName back to the original path (with dir + ext + tag)", () => {
+    const copy = conflictCopyName("notes/foo.md", "MyLaptop", new Date(Date.UTC(2026, 6, 8, 13, 15, 0)), "abc123");
+    expect(copy).toBe("notes/foo (conflict MyLaptop 20260708131500-abc123).md");
+    expect(originalOfConflictCopy(copy)).toBe("notes/foo.md");
+  });
+  it("recovers the original even when the device name has spaces and there's no tag", () => {
+    const copy = conflictCopyName("a b.md", "My Phone 12", new Date(Date.UTC(2026, 0, 1, 0, 0, 0)), "");
+    expect(originalOfConflictCopy(copy)).toBe("a b.md");
+  });
+  it("returns null for ordinary files, including a user file that merely mentions '(conflict …)'", () => {
+    expect(originalOfConflictCopy("notes/foo.md")).toBeNull();
+    expect(originalOfConflictCopy("a (conflict about war).md")).toBeNull(); // no 14-digit timestamp
+    expect(isConflictCopy("plain.md")).toBe(false);
   });
 });
 

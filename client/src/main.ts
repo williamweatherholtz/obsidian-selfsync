@@ -1,11 +1,12 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
-import { BaseStore } from "./base";
+import { BaseStore, originalOfConflictCopy } from "./base";
 import { reconcileAll, reconcileDelta, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
+import { NoteConflictModal } from "./noteconflict";
 import { encodeSetupLink } from "./connstr";
 import { Phase, light } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
@@ -284,6 +285,41 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (seg) return seg;
     }
     return this.manifest.id;
+  }
+
+  // --- note conflicts: when concurrent edits can't merge cleanly, this device's version is kept as
+  // a conflict-copy file beside the note (which holds the other version). The pending set is DERIVED
+  // from the vault (files matching the conflict-copy name) so it can't go stale — resolving deletes
+  // the copy and it drops off. See NoteConflictModal.
+  listNoteConflicts(): { copy: string; original: string }[] {
+    const out: { copy: string; original: string }[] = [];
+    for (const f of this.app.vault.getFiles()) {
+      const original = originalOfConflictCopy(f.path);
+      if (original) out.push({ copy: f.path, original });
+    }
+    return out;
+  }
+  openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
+  // Text of a file for the conflict preview ("" if gone or unreadable).
+  async readTextOrEmpty(path: string): Promise<string> {
+    try { return new TextDecoder().decode(await this.io.read(path)); } catch { return ""; }
+  }
+  // Resolve one note conflict. "mine" promotes this device's copy to canonical; "theirs" keeps the
+  // on-disk (other) version; both then delete the copy. Each change is enqueued so it propagates.
+  // "manual" opens both files for hand-merging and leaves them (the copy stays until the user deletes it).
+  async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual"): Promise<void> {
+    if (choice === "manual") {
+      await this.app.workspace.openLinkText(original, "", false);
+      await this.app.workspace.openLinkText(copy, "", "split");
+      return;
+    }
+    if (choice === "mine") {
+      const bytes = await this.io.read(copy);
+      await this.io.write(original, bytes);
+      this.engine.enqueue({ kind: "path", path: original, size: bytes.byteLength });
+    }
+    await this.io.remove(copy);
+    this.engine.enqueue({ kind: "path", path: copy, size: 0 });
   }
 
   // --- config adjudication (D00xx): divergent/removed `.obsidian/` files are never auto-

@@ -181,12 +181,20 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // where possible, else a conflict copy), so nothing to configure. This section appears ONLY when
   // there's a pending config divergence that needs a manual choice; otherwise it's absent entirely.
   private renderConflicts(c: HTMLElement): void {
-    const conflictGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
-    if (!conflictGroups.length) return;
+    const configGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
+    const noteConflicts = this.plugin.listNoteConflicts();
+    if (!configGroups.length && !noteConflicts.length) return;
     const g = new SettingGroup(c).setHeading("Conflicts");
-    g.addSetting((st) => st.setName(`${conflictGroups.length} config differences`).setClass("mod-warning")
-      .setDesc("Choose which version to keep.")
-      .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
+    if (noteConflicts.length) {
+      g.addSetting((st) => st.setName(`${noteConflicts.length} file${noteConflicts.length > 1 ? "s" : ""} need review`).setClass("mod-warning")
+        .setDesc("Concurrent edits that couldn't merge automatically.")
+        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openNoteConflicts())));
+    }
+    if (configGroups.length) {
+      g.addSetting((st) => st.setName(`${configGroups.length} config differences`).setClass("mod-warning")
+        .setDesc("Choose which version to keep.")
+        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
+    }
   }
 
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {

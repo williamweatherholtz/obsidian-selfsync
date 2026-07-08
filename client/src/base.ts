@@ -32,3 +32,19 @@ export function conflictCopyName(path: string, device: string, when: Date, tag =
   const ext = dot > 0 ? name.slice(dot) : "";
   return `${dir}${stem} (conflict ${device} ${ts}${suffix})${ext}`;
 }
+
+// Inverse of conflictCopyName: given a path, return the ORIGINAL path it's a conflict copy of, or
+// null if it isn't one. Matches the exact "<orig> (conflict <device> <14-digit ts>[-tag])" shape
+// (the 14-digit timestamp keeps a user's own "(conflict …)"-named file from false-matching). Used to
+// DERIVE the set of unresolved conflicts from the vault, so it can never go stale.
+export function originalOfConflictCopy(path: string): string | null {
+  const slash = path.lastIndexOf("/");
+  const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const m = stem.match(/^(.*) \(conflict .+ \d{14}(?:-[0-9a-z]+)?\)$/i);
+  return m ? `${dir}${m[1]}${ext}` : null;
+}
+export function isConflictCopy(path: string): boolean { return originalOfConflictCopy(path) !== null; }
