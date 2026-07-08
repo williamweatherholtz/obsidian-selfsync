@@ -179,7 +179,7 @@ export async function startServer(): Promise<RunningServer> {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("server did not report a listening address in time")), 15000);
+    const timer = setTimeout(() => reject(new Error("server did not report a listening address in time")), 30000);
     const onData = (b: Buffer) => { const m = b.toString().match(/listening on (\S+)/); if (m) { clearTimeout(timer); resolve(`http://${m[1]}`); } };
     srv.stderr!.on("data", onData); srv.stdout!.on("data", onData);
   });

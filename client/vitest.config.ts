@@ -10,5 +10,12 @@ export default defineConfig({
     alias: {
       obsidian: fileURLToPath(new URL("./test/obsidian-stub.ts", import.meta.url)),
     },
+    // Run spec FILES one at a time. Several specs (e2e, config-permutations) spawn the real server
+    // binary; with the default file-level parallelism, multiple files spawn a burst of server
+    // processes at once and — on a loaded machine (esp. Windows) — some lose the listen-timeout race,
+    // producing intermittent "lots of failed e2e" runs that pass in isolation. Serial files remove
+    // the spawn storm; tests within a file still run in order, so at most one server starts at a time.
+    // (Unit tests are milliseconds, so the wall-clock cost is negligible; CI doesn't run tests.)
+    fileParallelism: false,
   },
 });
