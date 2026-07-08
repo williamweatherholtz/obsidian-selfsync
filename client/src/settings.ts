@@ -20,6 +20,10 @@ export interface NewLiveSyncSettings {
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
+  // Conflict-copy paths SelfSync ITSELF created when concurrent edits couldn't merge (onConflict).
+  // Tracked explicitly — NOT derived from filenames — so a user's own note that happens to be named
+  // like a conflict copy is never mistaken for one and destroyed by the resolver (critique R9-H1).
+  noteConflicts: string[];
   // D0019: the deletion-history floor this device last synced at, per vault (key = `owner/vaultId`).
   // When the server's floor advances past the stored one (a rebuild-from-disk reindex reset the
   // deletion history), the client stays conservative (keep + push) and shows ONE batched notice
@@ -50,6 +54,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   vaultReadOnly: false,
   storePassword: true,
   configConflicts: [],
+  noteConflicts: [],
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
   // would be ALIASED across instances by Object.assign (a shared-mutable-default bug). It's created
   // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).

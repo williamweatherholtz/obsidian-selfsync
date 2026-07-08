@@ -23,13 +23,14 @@ export class NoteConflictModal extends Modal {
     c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
+    const theirs = await this.plugin.readTextOrEmpty(original); // captured to guard "keep mine" against a stale preview
     this.preview(c, "This device's version", await this.plugin.readTextOrEmpty(copy));
-    this.preview(c, "The other version (currently on disk)", await this.plugin.readTextOrEmpty(original));
+    this.preview(c, "The other version (currently on disk)", theirs);
 
     new Setting(c)
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
-      .addButton((b) => b.setButtonText("Keep the other").onClick(() => void this.resolve(copy, original, "theirs")))
-      .addButton((b) => b.setButtonText("Keep this device's").setCta().onClick(() => void this.resolve(copy, original, "mine")));
+      .addButton((b) => b.setButtonText("Keep the other").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
+      .addButton((b) => b.setButtonText("Keep this device's").setCta().onClick(() => void this.resolve(copy, original, "mine", theirs)));
   }
 
   private preview(c: HTMLElement, label: string, text: string) {
@@ -39,10 +40,11 @@ export class NoteConflictModal extends Modal {
       .setAttribute("style", "max-height:180px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;");
   }
 
-  private async resolve(copy: string, original: string, choice: "mine" | "theirs") {
+  private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther: string) {
     try {
-      await this.plugin.resolveNoteConflict(copy, original, choice);
-      new Notice(`SelfSync: resolved ${original}`);
+      // false = the file changed since we previewed it (resolveNoteConflict warned) → just re-render
+      // so the user reviews the new content; true = resolved.
+      if (await this.plugin.resolveNoteConflict(copy, original, choice, previewedOther)) new Notice(`SelfSync: resolved ${original}`);
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
     void this.render(); // advance to the next conflict, or the done state
   }

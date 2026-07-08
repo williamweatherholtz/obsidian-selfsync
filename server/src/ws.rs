@@ -85,10 +85,11 @@ pub async fn ws_handler(
     let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
     // Routine connects are NOT logged. Emit capacity telemetry only: warn once we're at/over 80% of
     // the cap, and error at 100% (the next client will be refused).
+    let pct = live * 100 / MAX_WS_CONNECTIONS;
     if live == MAX_WS_CONNECTIONS {
         log::error!("[ws] at capacity — {live}/{MAX_WS_CONNECTIONS} connections; further clients will be refused");
-    } else if live >= MAX_WS_CONNECTIONS * 4 / 5 {
-        log::warn!("[ws] {live}/{MAX_WS_CONNECTIONS} connections ({}% of capacity)", live * 100 / MAX_WS_CONNECTIONS);
+    } else if pct >= 80 {
+        log::warn!("[ws] {live}/{MAX_WS_CONNECTIONS} connections ({pct}% of capacity)");
     }
     let rx = handle.tx.subscribe();
     // Echo back only the non-secret subprotocol so the handshake completes.

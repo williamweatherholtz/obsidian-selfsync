@@ -180,14 +180,19 @@ pub async fn commit(
     let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.commit(req).map_err(|e| {
-            log::error!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
-            match e.kind() {
-                std::io::ErrorKind::NotFound => AppError::NotFound,
-                // CAS mismatch (optimistic concurrency): the client based this write on a stale
-                // version. 409 tells it to re-reconcile + merge rather than treat it as a hard error.
-                std::io::ErrorKind::AlreadyExists => AppError::Conflict(e.to_string()),
-                _ => AppError::BadRequest(e.to_string()),
+        v.commit(req).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => AppError::NotFound, // a 404 the client handles; not logged
+            // CAS mismatch (optimistic concurrency): a NORMAL multi-device edit race — the client
+            // based this write on a stale version, gets 409, and re-reconciles + merges. Log at debug
+            // so routine concurrent edits don't flood the error stream (they aren't failures).
+            std::io::ErrorKind::AlreadyExists => {
+                log::debug!("[{o}/{vlt} commit by {u}] {p} -> 409 stale version (client re-reconciles)");
+                AppError::Conflict(e.to_string())
+            }
+            // A genuine bad/failed commit — this one is an error worth surfacing.
+            _ => {
+                log::error!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
+                AppError::BadRequest(e.to_string())
             }
         })
     }).await?;

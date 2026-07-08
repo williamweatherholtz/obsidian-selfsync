@@ -288,16 +288,25 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
 
   // --- note conflicts: when concurrent edits can't merge cleanly, this device's version is kept as
-  // a conflict-copy file beside the note (which holds the other version). The pending set is DERIVED
-  // from the vault (files matching the conflict-copy name) so it can't go stale — resolving deletes
-  // the copy and it drops off. See NoteConflictModal.
+  // a conflict-copy file beside the note (which holds the other version). We track ONLY the copies
+  // SelfSync itself created (recorded from onConflict) — never files merely matching the conflict
+  // name — so a user's own "(conflict …)"-named note can't be mistaken for one and destroyed. The
+  // list self-cleans: a copy the user deleted (or resolved) drops off. See NoteConflictModal.
   listNoteConflicts(): { copy: string; original: string }[] {
-    const out: { copy: string; original: string }[] = [];
-    for (const f of this.app.vault.getFiles()) {
-      const original = originalOfConflictCopy(f.path);
-      if (original) out.push({ copy: f.path, original });
-    }
-    return out;
+    const present = this.settings.noteConflicts.filter((copy) => this.app.vault.getAbstractFileByPath(copy) != null);
+    if (present.length !== this.settings.noteConflicts.length) { this.settings.noteConflicts = present; void this.saveSettings(); }
+    return present.map((copy) => ({ copy, original: originalOfConflictCopy(copy) ?? copy }));
+  }
+  private recordNoteConflict(copy: string): void {
+    if (this.settings.noteConflicts.includes(copy)) return;
+    this.settings.noteConflicts.push(copy);
+    void this.saveSettings();
+    this.settingsRefresh?.(); this.statusListener?.();
+  }
+  private clearNoteConflict(copy: string): void {
+    if (!this.settings.noteConflicts.includes(copy)) return;
+    this.settings.noteConflicts = this.settings.noteConflicts.filter((p) => p !== copy);
+    void this.saveSettings();
   }
   openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
   // Text of a file for the conflict preview ("" if gone or unreadable).
@@ -307,19 +316,28 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Resolve one note conflict. "mine" promotes this device's copy to canonical; "theirs" keeps the
   // on-disk (other) version; both then delete the copy. Each change is enqueued so it propagates.
   // "manual" opens both files for hand-merging and leaves them (the copy stays until the user deletes it).
-  async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual"): Promise<void> {
+  // Returns false (without touching anything) if `original` changed since the modal previewed it —
+  // so "keep mine" can't silently overwrite a newer version that a poll pulled in while the modal sat
+  // open (critique R9-M2). previewedOther is the "other version" text the modal showed.
+  async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual", previewedOther?: string): Promise<boolean> {
     if (choice === "manual") {
       await this.app.workspace.openLinkText(original, "", false);
       await this.app.workspace.openLinkText(copy, "", "split");
-      return;
+      return true;
     }
     if (choice === "mine") {
+      if (previewedOther !== undefined && (await this.readTextOrEmpty(original)) !== previewedOther) {
+        new Notice("SelfSync: that file changed since you opened this — review it again");
+        return false; // don't clobber the newer version; the modal re-renders with the new content
+      }
       const bytes = await this.io.read(copy);
       await this.io.write(original, bytes);
       this.engine.enqueue({ kind: "path", path: original, size: bytes.byteLength });
     }
     await this.io.remove(copy);
     this.engine.enqueue({ kind: "path", path: copy, size: 0 });
+    this.clearNoteConflict(copy);
+    return true;
   }
 
   // --- config adjudication (D00xx): divergent/removed `.obsidian/` files are never auto-
@@ -623,7 +641,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
-      onConflict: (p, c) => this.log(`conflict on ${p} → kept your copy as ${c}`, true),
+      onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.recordNoteConflict(c); },
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
@@ -989,6 +1007,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(data.settings?.configSync ?? {}) };
     // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
     this.settings.configConflicts = [...(data.settings?.configConflicts ?? [])];
+    this.settings.noteConflicts = [...(data.settings?.noteConflicts ?? [])];
     this.base = new BaseStore(data.base ?? {});
   }
   async saveSettings() { await this.persist(); }

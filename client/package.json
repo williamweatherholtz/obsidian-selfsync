@@ -1,6 +1,6 @@
 {
   "name": "new-livesync-client",
-  "version": "0.10.45",
+  "version": "0.10.46",
   "private": true,
   "scripts": {
     "build": "node esbuild.config.mjs",
