@@ -58,6 +58,8 @@ export class SyncEngine {
   private running = false;                 // is the processor loop active? (replaces `applying`)
   private state: EngineState = "off";
   private connected = false;               // has a connect() completed? gates path/remote/rews
+  private retrying = false;                // in a backoff-reconnect cycle after a failure — so doomed
+                                           // retry attempts keep showing "offline", not flashing "connecting"
 
   constructor(private fx: EngineEffects) {}
 
@@ -68,7 +70,11 @@ export class SyncEngine {
   // initial reconcile, so the initial sync shows "Syncing…" not "Connecting…" (the connect effect does
   // the full initial reconcile, which is the bulk of the time). Only upgrades the `connecting` phase;
   // never overrides offline/unloading/idle.
-  markReconciling(): void { if (this.state === "connecting") this.setState("reconciling"); }
+  // Called by connect() AFTER the health check passes — so the connection is confirmed reachable.
+  // Upgrades from either "connecting" (fresh connect) or "offline" (a backoff retry that just
+  // succeeded in reaching the server) to "reconciling", so recovery shows "Syncing…", not a stale
+  // "offline"/"connecting".
+  markReconciling(): void { if (this.state === "connecting" || this.state === "offline") this.setState("reconciling"); }
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 
@@ -104,6 +110,7 @@ export class SyncEngine {
   // no lost data. disconnect/unload events are preserved.
   private failToOffline(where: string, e: unknown): void {
     this.setState("offline");
+    this.retrying = true; // we're now in a backoff loop; further connect attempts stay "offline"
     // Drop `connected` so the path/remote/rews guards short-circuit during the offline→reconnect
     // window. Without this, a WS `close` firing after the failure would enqueue {rews}, pass the
     // `if (!connected) return` guard (connected was still true), and re-dial a socket while the
@@ -135,10 +142,12 @@ export class SyncEngine {
       case "unload":
         this.setState("unloading"); this.queue = []; this.fx.teardown(); return;
       case "disconnect":
-        this.connected = false; this.queue = []; this.fx.teardown(); this.setState("off"); return;
+        this.connected = false; this.retrying = false; this.queue = []; this.fx.teardown(); this.setState("off"); return;
       case "connect": {
-        this.setState("connecting");
-        try { await this.fx.connect(); this.connected = true; this.setState(this.queue.length ? "reconciling" : "idle"); }
+        // A fresh connect shows "Connecting…"; a backoff RETRY (server was down) keeps showing
+        // "Offline — retrying" so the light doesn't flash connecting↔offline every attempt.
+        this.setState(this.retrying ? "offline" : "connecting");
+        try { await this.fx.connect(); this.connected = true; this.retrying = false; this.setState(this.queue.length ? "reconciling" : "idle"); }
         catch (e) { this.connected = false; this.failToOffline("connect", e); }
         return;
       }

@@ -61,11 +61,42 @@ describe("SyncEngine — serial run-to-completion", () => {
     expect(h.e.getState()).toBe("idle");          // settles once connect returns
   });
 
-  it("markReconciling is a no-op unless connecting", async () => {
+  it("markReconciling is a no-op unless connecting/offline", async () => {
     const h = harness();
     h.e.enqueue({ kind: "connect" }); await tick(); // now idle
     h.e.markReconciling();
-    expect(h.e.getState()).toBe("idle");            // not upgraded from a non-connecting state
+    expect(h.e.getState()).toBe("idle");            // not upgraded from a settled state
+  });
+
+  it("a backoff retry stays 'offline' — it never flashes 'connecting' while the server is down", async () => {
+    const h = harness();
+    const g1 = h.block("connect");
+    h.e.enqueue({ kind: "connect" }); await tick();
+    expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // first attempt: honest "Connecting…"
+    g1.reject(new Error("down")); await tick();
+    expect(h.e.getState()).toBe("offline");
+    // The backoff fires another connect while the server is still down.
+    const g2 = h.block("connect");
+    h.e.enqueue({ kind: "connect" }); await tick();
+    expect(engineStateToPhase(h.e.getState())).toBe("offline");    // stays offline — NOT "connecting"
+    g2.reject(new Error("still down")); await tick();
+    expect(h.e.getState()).toBe("offline");
+    expect(h.phases.filter((p) => p === "connecting").length).toBe(1); // "connecting" projected exactly once
+  });
+
+  it("a retry that reaches the server upgrades to syncing (via markReconciling), then idle", async () => {
+    const h = harness();
+    const g1 = h.block("connect");
+    h.e.enqueue({ kind: "connect" }); await tick();
+    g1.reject(new Error("down")); await tick();
+    expect(h.e.getState()).toBe("offline");
+    const g2 = h.block("connect");
+    h.e.enqueue({ kind: "connect" }); await tick();
+    expect(engineStateToPhase(h.e.getState())).toBe("offline");
+    h.e.markReconciling();                                         // connect() confirmed reachability
+    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // recovery shows Syncing, not offline/connecting
+    g2.resolve(); await tick();
+    expect(h.e.getState()).toBe("idle");
   });
 
   it("runs exactly one effect at a time — a poke during a reconcile waits, never overlaps (CONC-R3#3)", async () => {

@@ -27,10 +27,18 @@ export class SetupWizardModal extends Modal {
   onClose() { this.contentEl.empty(); }
 
   // Re-rendered on button actions (Test / Log in / Sign out); text fields update state via onChange
-  // and are re-seeded from state, so their values survive a re-render.
+  // and are re-seeded from state, so their values survive a re-render. After each render we place
+  // focus on the field the user should fill next and wire Enter to advance — so keyboard flow is
+  // top-to-bottom and a re-render never strands focus (which read as tab order being "all over").
   private render() {
     const c = this.contentEl; c.empty();
     this.titleEl.setText("Set up SelfSync");
+    let serverInput: HTMLInputElement | undefined;
+    let usernameInput: HTMLInputElement | undefined;
+    let passwordInput: HTMLInputElement | undefined;
+    let newVaultInput: HTMLInputElement | undefined;
+    const onEnter = (el: HTMLInputElement | undefined, fn: () => void) =>
+      el?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); fn(); } });
 
     new Setting(c).setName("Have a setup link?").setDesc("Prefill the server and account from a link created on another device.")
       .addButton((b) => b.setButtonText("Paste setup link").onClick(() => this.promptSetupLink()));
@@ -38,9 +46,10 @@ export class SetupWizardModal extends Modal {
     // ── Server ──
     new Setting(c).setName("Server").setHeading();
     new Setting(c).setName("Server URL")
-      .addText((t) => t.setPlaceholder("https://sync.example.com").setValue(this.s.server)
-        .onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }))
+      .addText((t) => { serverInput = t.inputEl; t.setPlaceholder("https://sync.example.com").setValue(this.s.server)
+        .onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }); })
       .addButton((b) => b.setButtonText(this.s.serverOk ? "Reachable ✓" : "Test").setDisabled(!this.s.server).onClick(() => void this.doTest()));
+    onEnter(serverInput, () => { if (this.s.server) void this.doTest(); });
     if (this.serverMsg) {
       c.createEl("p", { text: this.serverMsg })
         .setAttribute("style", this.s.serverOk ? "font-size:12px;color:var(--color-green);margin:0 0 8px;" : "font-size:12px;opacity:0.85;margin:0 0 8px;");
@@ -57,10 +66,12 @@ export class SetupWizardModal extends Modal {
       new Setting(c).setName("Mode")
         .addDropdown((dd) => dd.addOption("login", "Log in").addOption("register", "Create account")
           .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
-      new Setting(c).setName("Username").addText((t) => t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }));
-      new Setting(c).setName("Password").addText((t) => { t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
+      new Setting(c).setName("Username").addText((t) => { usernameInput = t.inputEl; t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }); });
+      new Setting(c).setName("Password").addText((t) => { passwordInput = t.inputEl; t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
       new Setting(c).addButton((b) => b.setButtonText(this.s.mode === "login" ? "Log in" : "Create & log in").setCta()
         .setDisabled(!canLogIn(this.s)).onClick(() => void this.doLogin()));
+      onEnter(usernameInput, () => passwordInput?.focus());
+      onEnter(passwordInput, () => { if (canLogIn(this.s)) void this.doLogin(); });
     }
 
     // ── Vault ── (needs a login to list what exists)
@@ -75,11 +86,19 @@ export class SetupWizardModal extends Modal {
         new Setting(c).setDesc("No remote vaults yet — create one below.");
       }
       new Setting(c).setName("Or create a new vault")
-        .addText((t) => t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { this.s.newVault = v.trim(); }));
+        .addText((t) => { newVaultInput = t.inputEl; t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { this.s.newVault = v.trim(); }); });
+      onEnter(newVaultInput, () => { if (canFinish(this.s)) void this.finish(); });
     }
 
     // ── Finish ──
     new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().setDisabled(!canFinish(this.s)).onClick(() => void this.finish()));
+
+    // Focus the next field to fill: the first blank of server → username → password before login,
+    // then the create-vault box after. Deferred a tick so it wins over the modal's default focus.
+    const target = !this.s.loggedIn
+      ? (!this.s.server ? serverInput : (!this.s.username ? usernameInput : passwordInput))
+      : newVaultInput;
+    if (target) window.setTimeout(() => target.focus(), 0);
   }
 
   private promptSetupLink() {
