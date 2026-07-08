@@ -862,8 +862,24 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.engine.enqueue({ kind: "path", path: file.path, size: file.stat.size }); // new path created
   }
 
+  // The persisted-data (data.json) schema version — bumped whenever the SHAPE of settings/base
+  // changes, with a matching step in migratePersisted, so an old data.json is upgraded FORWARD
+  // rather than silently mis-read (issueDataMigration). 1 = the current shape.
+  private readonly dataSchemaVersion = 1;
+
+  // Forward-migrate a loaded data.json to the current schema. A no-op today — v0/undefined → v1 is a
+  // pure superset that DEFAULT_SETTINGS backfill already handles — but this is the SEAM: a future
+  // shape change (e.g. a base-map key/hash format change) adds an `if (v < N) { …transform… }` step
+  // here so upgraders migrate their data instead of the loader misreading or dropping it.
+  private migratePersisted(data: any): any {
+    if (!data || typeof data !== "object") return {};
+    const v = typeof data.schemaVersion === "number" ? data.schemaVersion : 0;
+    if (v < 1) { /* future: transform pre-v1 shapes here; v0→v1 is additive (handled by backfill) */ }
+    return data;
+  }
+
   async loadSettings() {
-    const data = (await this.loadData()) ?? {};
+    const data = this.migratePersisted((await this.loadData()) ?? {});
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
     // Fresh, fully-defaulted configSync object (never share the module constant, and
     // backfill any categories added since this vault last saved).
@@ -888,7 +904,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       do {
         this.persistPending = false;
         // Snapshot INSIDE the loop so a coalesced trailing write captures the latest base/settings.
-        try { await this.saveData({ settings: this.settings, base: this.base.toJSON() }); }
+        try { await this.saveData({ schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON() }); }
         catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
       } while (this.persistPending);
     } finally { this.persisting = false; }

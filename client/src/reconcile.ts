@@ -119,14 +119,19 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // (`expectLocalHash`, null = "expected absent"), a local edit/CREATE raced this pull — preserve
 // it as a conflict copy before we overwrite. Covers a racing edit of a present file AND a racing
 // create of an expected-absent path (DI-3 / DI-R2#2 / DI-R2#4).
-async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<void> {
+// Returns the conflict-copy path it wrote (so a caller whose subsequent write FAILS can remove the
+// now-orphaned copy), or null if no race was detected. The copy name is tagged with the CURRENT
+// content's hash — never a stale pre-fetch hash — so the tag always matches the copy's bytes.
+async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<string | null> {
   const cur = await readOrNull(d.io, path);
   const curHash = cur ? await sha256hex(cur) : null;
   if (curHash !== expectLocalHash && cur) {
     const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
     await d.io.write(copy, cur);
     d.onConflict?.(path, copy);
+    return copy;
   }
+  return null;
 }
 
 // `expectLocalHash` is the local content hash the reconcile decision was based on. `guardRace`
@@ -137,12 +142,26 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     // Streamed large file: run the racing-edit check BEFORE streaming (streamFileToDisk writes +
     // renames atomically, so there's no post-fetch/pre-write seam to insert it into). The narrow
     // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
-    if (guardRace) await conflictCopyIfRaced(d, path, expectLocalHash);
-    if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
-      d.base.set(path, { hash: rmeta.hash });
-      d.onBaseChanged?.();
-      return;
+    const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
+    try {
+      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
+        d.base.set(path, { hash: rmeta.hash });
+        d.onBaseChanged?.();
+        return;
+      }
+    } catch (e) {
+      // The stream failed AFTER a racing-edit conflict copy was written, but nothing was overwritten
+      // — so that copy is just a redundant duplicate of the current file. Remove the orphan before
+      // propagating (issueConflictCopyCosmetic). Best-effort; the reconcile still fails the path.
+      if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } }
+      throw e;
     }
+    // streamFileToDisk returned false → fall back to the buffered path. The racing-edit copy (if any)
+    // is already made above, so DON'T re-check/re-copy here (that produced a duplicate copy).
+    const bytes = await fetchVerified(d, rmeta);
+    await d.io.write(path, bytes);
+    setBase(d, path, bytes, rmeta.hash);
+    return;
   }
   const bytes = await fetchVerified(d, rmeta);
   // Buffered path: check AFTER the fetch (catches a save that landed during the multi-chunk fetch).
@@ -359,10 +378,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // conflict copy (so it's preserved) — the DI-R2#5 fix covered the copies but the clean-merge
       // branch still used the stale pre-fetch localBytes, silently dropping the racing edit.
       const liveLocal = (await readOrNull(d.io, path)) ?? localBytes!;
+      // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT
+      // the pre-fetch localHash — a save that raced the multi-chunk fetch changes liveLocal, and a
+      // stale tag would mislabel the copy (issueConflictCopyCosmetic).
+      const liveLocalHash = await sha256hex(liveLocal);
       if (d.readOnly) {
         // Read-only share: the owner's version is canonical and we push nothing. Keep the
         // reader's (current) local edit as a LOCAL-only conflict copy so it isn't silently lost.
-        const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
+        const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
         await d.io.write(copy, liveLocal);
         await d.io.write(path, remoteBytes);
         setBase(d, path, remoteBytes, rmeta!.hash);
@@ -385,7 +408,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
         }
       }
       // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
-      const copy = conflictCopyName(path, d.device, nowUtc(), localHash?.slice(0, 6) ?? "");
+      const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
       await d.io.write(copy, liveLocal);
       await d.io.write(path, remoteBytes);
       const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);

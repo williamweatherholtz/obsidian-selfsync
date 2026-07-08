@@ -57,7 +57,7 @@ package ProjectRequirements {
         :>> id = "0da5a2bb-a6ee-42c6-b57f-42095a96e496";
         :>> title = "Content-addressed, durable storage";
         :>> createdAt = "2026-07-04"; :>> createdBy = "wweatherholtz";
-        :>> statement = "The server shall store file content as content-addressed chunks with a persistent index, snapshot-rollback durability, and startup orphan GC.";
+        :>> statement = "The server shall store file content as content-addressed chunks with a persistent, schema-versioned index (per-vault SQLite/WAL, D0018), transactional all-or-nothing durability, and orphan GC that runs both at first-access/open and opportunistically at runtime (lazy, not only at boot — RS-1 handle eviction re-runs it on reopen and SEC#4 sweeps abandoned uploads).";
         :>> rationale = "Own-storage backend must be durable and self-healing without a DBMS.";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }

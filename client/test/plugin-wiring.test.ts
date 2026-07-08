@@ -156,6 +156,20 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("orchestration: a raw config event syncs an in-scope path via the live pipeline, never the plugin's own folder", async () => {
+    // Exercises the imperative raw-event config pipeline end to end (issueOrchestrationUntested):
+    // raw event → security filter (scope + self-folder) → debounce/coalesce → engine → reconcilePath.
+    const { p, fire, api } = await bootPlugin(true, { settings: { configSync: { enabled: true } } });
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    fire("raw", ".obsidian/app.json");                                  // in-scope core config → should sync
+    fire("raw", ".obsidian/plugins/obsidian-selfsync/data.json");       // OUR OWN plugin folder → must be filtered (credentials never leave)
+    await wait(700); await flush();                                     // > RAW_DEBOUNCE_MS (600ms)
+    const probed = (api.__calls.fileMeta ?? []).map((c) => c[0] as string);
+    expect(probed).toContain(".obsidian/app.json");                     // the live pipeline reconciled it
+    expect(probed.some((x) => x.includes("obsidian-selfsync"))).toBe(false); // self-folder never synced (SEC)
+    p.onunload();
+  });
+
   it("a reconcile failure drives the engine offline", async () => {
     const { p, api } = await bootPlugin();
     api.__failChanges(true);

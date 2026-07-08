@@ -54,6 +54,10 @@ impl SqliteIndex {
         conn.execute_batch(SCHEMA).map_err(io)?;
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('version', 1)", []).map_err(io)?;
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('history_floor', 1)", []).map_err(io)?;
+        // Explicit index-schema tag (issueDataMigration): the formal version of the on-disk table
+        // shape, so a future schema change bumps this + runs a migration instead of forcing a
+        // CORRUPT→reindex. 1 = the current schema (meta/files/file_chunks/deletions).
+        conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', 1)", []).map_err(io)?;
         Ok(SqliteIndex { conn: Mutex::new(conn) })
     }
 
