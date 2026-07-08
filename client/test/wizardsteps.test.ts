@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canAdvance, nextStep, statusTitle, isValidVaultName, WizardState } from "../src/wizardsteps";
+import { canLogIn, canFinish, statusTitle, isValidVaultName, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -7,33 +7,21 @@ const base: WizardState = {
   vaults: [], chosenVault: "", newVault: "",
 };
 
-describe("canAdvance gating", () => {
-  it("welcome always advances", () => expect(canAdvance("welcome", base)).toBe(true));
-  it("server needs a passing connection test", () => {
-    expect(canAdvance("server", base)).toBe(false);
-    expect(canAdvance("server", { ...base, serverOk: true })).toBe(true);
-  });
-  it("account needs a successful login", () => {
-    expect(canAdvance("account", { ...base, serverOk: true })).toBe(false);
-    expect(canAdvance("account", { ...base, serverOk: true, loggedIn: true })).toBe(true);
-  });
-  it("vault needs a chosen or a new vault name", () => {
-    expect(canAdvance("vault", base)).toBe(false);
-    expect(canAdvance("vault", { ...base, chosenVault: "notes" })).toBe(true);
-    expect(canAdvance("vault", { ...base, newVault: "  x " })).toBe(true);
+describe("canLogIn", () => {
+  it("needs server + username + password", () => {
+    expect(canLogIn(base)).toBe(false);
+    expect(canLogIn({ ...base, server: "https://x", username: "u" })).toBe(false);
+    expect(canLogIn({ ...base, server: "https://x", username: "u", password: "p" })).toBe(true);
   });
 });
 
-describe("nextStep", () => {
-  it("welcome → server normally, → account when a setup link prefilled server+user", () => {
-    expect(nextStep("welcome")).toBe("server");
-    expect(nextStep("welcome", { haveLink: true })).toBe("account");
-  });
-  it("server → account → vault → done, done is terminal", () => {
-    expect(nextStep("server")).toBe("account");
-    expect(nextStep("account")).toBe("vault");
-    expect(nextStep("vault")).toBe("done");
-    expect(nextStep("done")).toBe("done");
+describe("canFinish", () => {
+  it("needs a login and a chosen or new vault name", () => {
+    expect(canFinish(base)).toBe(false);
+    expect(canFinish({ ...base, loggedIn: true })).toBe(false);
+    expect(canFinish({ ...base, loggedIn: true, chosenVault: "notes" })).toBe(true);
+    expect(canFinish({ ...base, loggedIn: true, newVault: "  x " })).toBe(true);
+    expect(canFinish({ ...base, chosenVault: "notes" })).toBe(false); // not logged in
   });
 });
 

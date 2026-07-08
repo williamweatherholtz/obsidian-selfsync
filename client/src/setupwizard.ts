@@ -1,14 +1,14 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
-import { WizardStep, WizardState, canAdvance, nextStep, isValidVaultName } from "./wizardsteps";
+import { WizardState, canLogIn, canFinish, isValidVaultName } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
-// Guided first-run setup: Welcome → Server(test) → Account → Remote vault → Done.
-// Next is disabled until the current step validates. A pasted setup link prefills
-// server+username and skips straight to the account (password) step.
+// Guided first-run setup, all in ONE pane: Server → Account → Vault, revealed progressively.
+// "Test" checks reachability (green ✓); "Log in" authenticates and loads the vault list; "Start
+// syncing" finishes. A pasted setup link prefills server + username. No multi-step nav / welcome
+// chooser — everything is visible on the single pane.
 export class SetupWizardModal extends Modal {
-  private step: WizardStep = "welcome";
   private token = "";
   private serverMsg = ""; // Test-connection result, persisted across re-renders
   private s: WizardState;
@@ -26,25 +26,60 @@ export class SetupWizardModal extends Modal {
   onOpen() { this.render(); }
   onClose() { this.contentEl.empty(); }
 
+  // Re-rendered on button actions (Test / Log in / Sign out); text fields update state via onChange
+  // and are re-seeded from state, so their values survive a re-render.
   private render() {
     const c = this.contentEl; c.empty();
     this.titleEl.setText("Set up SelfSync");
-    switch (this.step) {
-      case "welcome": return this.renderWelcome(c);
-      case "server": return this.renderServer(c);
-      case "account": return this.renderAccount(c);
-      case "vault": return this.renderVault(c);
-      case "done": return this.renderDone(c);
+
+    new Setting(c).setName("Have a setup link?").setDesc("Prefill the server and account from a link created on another device.")
+      .addButton((b) => b.setButtonText("Paste setup link").onClick(() => this.promptSetupLink()));
+
+    // ── Server ──
+    new Setting(c).setName("Server").setHeading();
+    new Setting(c).setName("Server URL")
+      .addText((t) => t.setPlaceholder("https://sync.example.com").setValue(this.s.server)
+        .onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }))
+      .addButton((b) => b.setButtonText(this.s.serverOk ? "Reachable ✓" : "Test").setDisabled(!this.s.server).onClick(() => void this.doTest()));
+    if (this.serverMsg) {
+      c.createEl("p", { text: this.serverMsg })
+        .setAttribute("style", this.s.serverOk ? "font-size:12px;color:var(--color-green);margin:0 0 8px;" : "font-size:12px;opacity:0.85;margin:0 0 8px;");
     }
-  }
 
-  private goto(step: WizardStep) { this.step = step; this.render(); }
+    // ── Account ── (collapses to a "Signed in" line once authenticated)
+    new Setting(c).setName("Account").setHeading();
+    if (this.s.loggedIn) {
+      new Setting(c).setName("Signed in").setDesc(`${this.s.username} ✓`)
+        .addButton((b) => b.setButtonText("Sign out").onClick(() => {
+          this.s.loggedIn = false; this.s.vaults = []; this.s.password = ""; this.render();
+        }));
+    } else {
+      new Setting(c).setName("Mode")
+        .addDropdown((dd) => dd.addOption("login", "Log in").addOption("register", "Create account")
+          .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
+      new Setting(c).setName("Username").addText((t) => t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }));
+      new Setting(c).setName("Password").addText((t) => { t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
+      new Setting(c).addButton((b) => b.setButtonText(this.s.mode === "login" ? "Log in" : "Create & log in").setCta()
+        .setDisabled(!canLogIn(this.s)).onClick(() => void this.doLogin()));
+    }
 
-  private renderWelcome(c: HTMLElement) {
-    c.createEl("p", { text: "Sync your notes to your own server." });
-    new Setting(c)
-      .addButton((b) => b.setButtonText("Get started").setCta().onClick(() => this.goto(nextStep("welcome"))))
-      .addButton((b) => b.setButtonText("I have a setup link").onClick(() => this.promptSetupLink()));
+    // ── Vault ── (needs a login to list what exists)
+    new Setting(c).setName("Vault").setHeading();
+    if (!this.s.loggedIn) {
+      new Setting(c).setDesc("Log in to choose or create a vault.");
+    } else {
+      if (this.s.vaults.length) {
+        new Setting(c).setName("Sync this vault to")
+          .addDropdown((dd) => { for (const v of this.s.vaults) dd.addOption(v, v); dd.setValue(this.s.chosenVault).onChange((v) => { this.s.chosenVault = v; this.s.newVault = ""; }); });
+      } else {
+        new Setting(c).setDesc("No remote vaults yet — create one below.");
+      }
+      new Setting(c).setName("Or create a new vault")
+        .addText((t) => t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { this.s.newVault = v.trim(); }));
+    }
+
+    // ── Finish ──
+    new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().setDisabled(!canFinish(this.s)).onClick(() => void this.finish()));
   }
 
   private promptSetupLink() {
@@ -54,46 +89,25 @@ export class SetupWizardModal extends Modal {
     new Setting(c).setName("Setup link").setDesc("selfsync://… from another device")
       .addText((t) => t.setPlaceholder("selfsync://connect?…").onChange((v) => { text = v; }));
     new Setting(c)
-      .addButton((b) => b.setButtonText("Back").onClick(() => this.goto("welcome")))
+      .addButton((b) => b.setButtonText("Back").onClick(() => this.render()))
       .addButton((b) => b.setButtonText("Use link").setCta().onClick(() => {
         try {
           const link = parseSetupLink(text);
           this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false; this.serverMsg = "";
           if (link.vault) this.s.chosenVault = link.vault; // pre-select the shared vault (kept if the account has it)
-          // Land on the Server step (not straight to login) so reachability is tested —
-          // a link's URL (LAN IP / 127.0.0.1) is exactly what may not resolve on device #2.
-          this.goto("server");
+          this.render();
         } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
       }));
   }
 
-  private renderServer(c: HTMLElement) {
-    new Setting(c).setName("Server URL")
-      .addText((t) => t.setValue(this.s.server).onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }));
-    // Persisted across re-renders (a re-render used to wipe this message).
-    if (this.serverMsg) c.createEl("p", { text: this.serverMsg }).setAttribute("style", "font-size:12px;opacity:0.85;");
-    new Setting(c)
-      .addButton((b) => b.setButtonText("Test connection").onClick(async () => {
-        this.s.serverOk = await HttpTransport.testConnection(this.s.server);
-        this.serverMsg = this.s.serverOk
-          ? "Reachable ✓"
-          : (/\/\/(127\.0\.0\.1|localhost)/.test(this.s.server)
-              ? "Couldn't reach that server. Note: on a phone, 127.0.0.1/localhost is the phone itself — use the server's LAN IP or https address."
-              : "Couldn't reach that server. Check the URL and that the server is running.");
-        this.render();
-      }));
-    this.renderNav(c, "server", () => this.goto("welcome"));
-  }
-
-  private renderAccount(c: HTMLElement) {
-    new Setting(c).setName("Account")
-      .addDropdown((dd) => dd.addOption("login", "Log in").addOption("register", "Create account")
-        .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
-    new Setting(c).setName("Username").addText((t) => t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); this.s.loggedIn = false; }));
-    new Setting(c).setName("Password").addText((t) => { t.inputEl.type = "password"; t.onChange((v) => { this.s.password = v; this.s.loggedIn = false; }); });
-    new Setting(c).addButton((b) => b.setButtonText(this.s.mode === "login" ? "Log in" : "Create & log in").setCta()
-      .onClick(() => void this.doLogin()));
-    this.renderNav(c, "account", () => this.goto("server"));
+  private async doTest() {
+    this.s.serverOk = await HttpTransport.testConnection(this.s.server);
+    this.serverMsg = this.s.serverOk
+      ? "Reachable ✓"
+      : (/\/\/(127\.0\.0\.1|localhost)/.test(this.s.server)
+          ? "Couldn't reach that server. Note: on a phone, 127.0.0.1/localhost is the phone itself — use the server's LAN IP or https address."
+          : "Couldn't reach that server. Check the URL and that the server is running.");
+    this.render();
   }
 
   private async doLogin() {
@@ -104,7 +118,8 @@ export class SetupWizardModal extends Modal {
       // Keep a vault pre-selected from a setup link if the account actually has it; else default to the first.
       this.s.chosenVault = this.s.vaults.includes(this.s.chosenVault) ? this.s.chosenVault : (this.s.vaults[0] ?? this.s.chosenVault);
       this.s.loggedIn = true;
-      this.goto("vault");
+      this.s.serverOk = true; this.serverMsg = "Reachable ✓"; // a successful login proves reachability
+      this.render();
     } catch (e: any) {
       new Notice(`SelfSync: ${this.friendlyAuthError(e)}`);
     }
@@ -115,18 +130,6 @@ export class SetupWizardModal extends Modal {
     if (m.includes("401") && this.s.mode === "register") return "This server doesn't allow new accounts. Ask the admin for login details.";
     if (m.includes("401")) return "Wrong username or password.";
     return m;
-  }
-
-  private renderVault(c: HTMLElement) {
-    if (this.s.vaults.length) {
-      new Setting(c).setName("Sync this vault to")
-        .addDropdown((dd) => { for (const v of this.s.vaults) dd.addOption(v, v); dd.setValue(this.s.chosenVault).onChange((v) => { this.s.chosenVault = v; this.s.newVault = ""; }); });
-    } else {
-      c.createEl("p", { text: "No remote vaults yet — create one below." });
-    }
-    new Setting(c).setName("Or create a new vault")
-      .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { this.s.newVault = v.trim(); }));
-    this.renderNav(c, "vault", () => this.goto("account"), "Start syncing", () => void this.finish());
   }
 
   private async finish() {
@@ -141,23 +144,9 @@ export class SetupWizardModal extends Modal {
       st.serverUrl = this.s.server; st.username = this.s.username; st.password = this.s.password;
       st.vaultId = vault; st.authToken = this.token;
       await this.plugin.saveSettings();
-      this.goto("done");
+      new Notice(`SelfSync: now syncing '${vault}'`);
+      this.close();
+      void this.plugin.reconnect();
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
-  }
-
-  private renderDone(c: HTMLElement) {
-    this.titleEl.setText("All set");
-    c.createEl("p", { text: `SelfSync is now syncing '${this.plugin.settings.vaultId}'.` });
-    new Setting(c).addButton((b) => b.setButtonText("Done").setCta().onClick(() => { this.close(); void this.plugin.reconnect(); }));
-  }
-
-  // Back / Next nav; Next is disabled until the step validates.
-  private renderNav(c: HTMLElement, step: WizardStep, back?: () => void, nextLabel = "Next", nextAction?: () => void) {
-    const nav = new Setting(c);
-    if (back) nav.addButton((b) => b.setButtonText("Back").onClick(back));
-    nav.addButton((b) => {
-      b.setButtonText(nextLabel).setCta().setDisabled(!canAdvance(step, this.s))
-        .onClick(nextAction ?? (() => this.goto(nextStep(step))));
-    });
   }
 }

@@ -2,8 +2,6 @@
 // so it is fully unit-testable; SetupWizardModal / the settings tab render over it.
 import { Phase } from "./syncstate";
 
-export type WizardStep = "welcome" | "server" | "account" | "vault" | "done";
-
 // Mirrors the server's safe_name: letters/numbers/.-_ , 1–64 chars, not "."/"..".
 // Validated client-side so a bad new-vault name gets a clear message, not a raw 400.
 export function isValidVaultName(name: string): boolean {
@@ -12,7 +10,7 @@ export function isValidVaultName(name: string): boolean {
 
 export interface WizardState {
   server: string;
-  serverOk: boolean;          // set true once "Test connection" succeeds
+  serverOk: boolean;          // set true once "Test connection" succeeds (or login proves reachability)
   mode: "login" | "register";
   username: string;
   password: string;
@@ -22,26 +20,15 @@ export interface WizardState {
   newVault: string;           // a to-be-created vault name
 }
 
-export function canAdvance(step: WizardStep, s: WizardState): boolean {
-  switch (step) {
-    case "welcome": return true;
-    case "server": return s.serverOk;
-    case "account": return s.loggedIn;
-    case "vault": return Boolean(s.chosenVault || s.newVault.trim());
-    case "done": return true;
-  }
+// The single-pane wizard has no step machine — it enables two actions as their inputs fill in:
+// "Log in" once the server + credentials are present, and "Start syncing" once logged in with a
+// vault chosen or named.
+export function canLogIn(s: WizardState): boolean {
+  return Boolean(s.server && s.username && s.password);
 }
 
-// A setup link prefills server + username and validates them, so we skip the server
-// step and land on account (password only).
-export function nextStep(step: WizardStep, opts?: { haveLink?: boolean }): WizardStep {
-  switch (step) {
-    case "welcome": return opts?.haveLink ? "account" : "server";
-    case "server": return "account";
-    case "account": return "vault";
-    case "vault": return "done";
-    case "done": return "done";
-  }
+export function canFinish(s: WizardState): boolean {
+  return s.loggedIn && Boolean(s.chosenVault || s.newVault.trim());
 }
 
 // The status-card headline for a connection phase. Identity (account, remote vault)
