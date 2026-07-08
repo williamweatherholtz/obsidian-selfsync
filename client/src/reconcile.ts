@@ -50,7 +50,7 @@ export const STREAM_MIN_BYTES = 8 * 1024 * 1024; // 8 MiB
 
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
-  device: string; strategy: "auto-merge" | "conflict-file";
+  device: string;
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
   // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
@@ -395,7 +395,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
         d.onReadOnly?.(path); d.onConflict?.(path, copy);
         return;
       }
-      const canMerge = action === "merge" && d.strategy === "auto-merge"
+      // Both sides changed: always attempt a clean three-way merge; fall through to a conflict copy
+      // only when it can't merge cleanly (overlapping edits) or the file isn't mergeable text.
+      const canMerge = action === "merge"
         && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
       if (canMerge) {
         const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes));

@@ -147,7 +147,7 @@ export class FilteredFsVaultIo extends FsVaultIo {
 export type Client = { io: FsVaultIo; api: NodeTransport; state: SyncState; known: Set<string>; cache: ChunkCache; base: BaseStore; device: string; root: string };
 
 export function dep(c: Client): ReconcileDeps {
-  return { api: c.api, io: c.io, base: c.base, cache: c.cache, state: c.state, device: c.device, strategy: "auto-merge" };
+  return { api: c.api, io: c.io, base: c.base, cache: c.cache, state: c.state, device: c.device };
 }
 
 export async function connect(base: string, root: string, device = "Dev", vault = "default"): Promise<Client> {

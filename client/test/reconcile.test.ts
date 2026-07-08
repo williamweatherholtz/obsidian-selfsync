@@ -62,7 +62,7 @@ function fakeIo(seed: Record<string, string> = {}) {
   return io;
 }
 function deps(api: SyncApi, io: VaultIo, extra: Partial<ReconcileDeps> = {}): ReconcileDeps {
-  return { api, io, base: new BaseStore(), cache: new Map() as ChunkCache, state: { version: 0 }, device: "Dev", strategy: "auto-merge", ...extra };
+  return { api, io, base: new BaseStore(), cache: new Map() as ChunkCache, state: { version: 0 }, device: "Dev", ...extra };
 }
 async function serverPut(api: SyncApi, path: string, text: string) {
   await pushFile(api, fakeIo({ [path]: text }), { version: 0 }, new Map() as ChunkCache, path);
@@ -586,8 +586,8 @@ describe("critique fixes — data integrity + correctness", () => {
   });
 });
 
-describe("settings drive behavior: conflict strategy + device name", () => {
-  it("conflictStrategy 'auto-merge' merges cleanly-mergeable concurrent edits", async () => {
+describe("conflict handling: merge where clean, else conflict copy + device name", () => {
+  it("cleanly-mergeable concurrent edits are auto-merged (no copy)", async () => {
     const { api } = fakeServer();
     await serverPut(api, "n.md", "l1\nl2\nl3\n");
     const io = fakeIo({ "n.md": "l1\nl2\nl3\n" });
@@ -595,26 +595,26 @@ describe("settings drive behavior: conflict strategy + device name", () => {
     base.set("n.md", { hash: await sha256hex(enc("l1\nl2\nl3\n")), text: "l1\nl2\nl3\n" });
     (io as any).m.set("n.md", enc("L1\nl2\nl3\n"));   // local edits line 1
     await serverPut(api, "n.md", "l1\nl2\nL3\n");       // remote edits line 3 (non-overlapping)
-    await reconcileAll(deps(api, io, { base, strategy: "auto-merge" }));
+    await reconcileAll(deps(api, io, { base }));
     const merged = dec((io as any).m.get("n.md")!);
     expect(merged).toContain("L1"); expect(merged).toContain("L3"); // both edits merged
     expect([...(io as any).m.keys()].some((k: string) => k.includes("(conflict"))).toBe(false); // no copy
   });
 
-  it("conflictStrategy 'conflict-file' NEVER auto-merges — keeps both as a conflict copy", async () => {
+  it("overlapping edits that can't merge cleanly fall back to a conflict copy", async () => {
     const { api } = fakeServer();
     await serverPut(api, "n.md", "l1\nl2\nl3\n");
     const io = fakeIo({ "n.md": "l1\nl2\nl3\n" });
     const base = new BaseStore();
     base.set("n.md", { hash: await sha256hex(enc("l1\nl2\nl3\n")), text: "l1\nl2\nl3\n" });
-    (io as any).m.set("n.md", enc("L1\nl2\nl3\n"));   // same cleanly-mergeable edit as above
-    await serverPut(api, "n.md", "l1\nl2\nL3\n");
-    await reconcileAll(deps(api, io, { base, strategy: "conflict-file" }));
+    (io as any).m.set("n.md", enc("l1\nLOCAL\nl3\n"));  // local edits line 2
+    await serverPut(api, "n.md", "l1\nREMOTE\nl3\n");     // remote edits the SAME line 2 (overlap)
+    await reconcileAll(deps(api, io, { base }));
     const m = (io as any).m as Map<string, Uint8Array>;
-    expect(dec(m.get("n.md")!)).toBe("l1\nl2\nL3\n"); // remote canonical — NOT merged
+    expect(dec(m.get("n.md")!)).toBe("l1\nREMOTE\nl3\n"); // remote canonical when merge can't be clean
     const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
     expect(copies.length).toBe(1);
-    expect(dec(m.get(copies[0])!)).toBe("L1\nl2\nl3\n"); // local kept as a copy
+    expect(dec(m.get(copies[0])!)).toBe("l1\nLOCAL\nl3\n"); // local kept as a copy
   });
 
   it("the device name flows into the conflict-copy filename", async () => {

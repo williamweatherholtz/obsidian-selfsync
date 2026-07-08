@@ -10,7 +10,6 @@ export interface NewLiveSyncSettings {
   serverUrl: string;
   username: string;
   password: string;
-  conflictStrategy: "auto-merge" | "conflict-file";
   deviceName: string; // shown in conflict-copy filenames; blank = auto
   vaultId: string;    // which server-side vault this Obsidian vault syncs to
   configSync: ConfigSyncSelection; // which .obsidian/ config surfaces to sync (see configsync.ts)
@@ -41,7 +40,6 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   serverUrl: "",
   username: "",
   password: "",
-  conflictStrategy: "auto-merge",
   deviceName: "",
   vaultId: "default",
   configSync: { ...DEFAULT_CONFIG_SYNC },
@@ -79,7 +77,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     if (!configured) return; // unconfigured: only the Connection group + Set up button
 
     this.renderObsidianConfig(containerEl, s); // what config syncs (scope)
-    this.renderConflicts(containerEl, s);       // how divergence is handled (sibling to config)
+    this.renderConflicts(containerEl);          // only surfaces pending conflicts needing a manual choice
     this.renderAdvanced(containerEl, s);
   }
 
@@ -179,25 +177,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     if (cs.community) this.renderPluginChecklist(c, cs);
   }
 
-  // Conflicts — how divergence between devices is handled. A sibling section to the config scope:
-  // "Concurrent edits" applies to notes too, so it doesn't belong nested under configuration.
-  private renderConflicts(c: HTMLElement, s: NewLiveSyncSettings): void {
-    const g = new SettingGroup(c).setHeading("Conflicts");
-    // Adjudication queue: config that diverged/was-removed across devices, awaiting a choice.
-    // Surfaced prominently (not auto-resolved) so plugins are never silently deleted or resurrected.
+  // Conflicts — NOT a setting. Concurrent edits are handled automatically (clean three-way merge
+  // where possible, else a conflict copy), so nothing to configure. This section appears ONLY when
+  // there's a pending config divergence that needs a manual choice; otherwise it's absent entirely.
+  private renderConflicts(c: HTMLElement): void {
     const conflictGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
-    if (conflictGroups.length) {
-      g.addSetting((st) => st.setName(`${conflictGroups.length} config differences`).setClass("mod-warning")
-        .setDesc("Choose which version to keep.")
-        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
-    }
-    g.addSetting((st) => st.setName("Concurrent edits to the same file")
-      .setDesc("How to resolve a file edited on two devices.")
-      .addDropdown((dd) => dd
-        .addOption("auto-merge", "Automatically merge")
-        .addOption("conflict-file", "Create conflict file")
-        .setValue(s.conflictStrategy)
-        .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); })));
+    if (!conflictGroups.length) return;
+    const g = new SettingGroup(c).setHeading("Conflicts");
+    g.addSetting((st) => st.setName(`${conflictGroups.length} config differences`).setClass("mod-warning")
+      .setDesc("Choose which version to keep.")
+      .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
   }
 
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {

@@ -580,7 +580,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
-      device: this.deviceLabel(), strategy: this.settings.conflictStrategy,
+      device: this.deviceLabel(),
       readOnly: this.settings.vaultReadOnly,
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
       // reconcile too, so a device that opted out never records a base for it (no phantom delete).
