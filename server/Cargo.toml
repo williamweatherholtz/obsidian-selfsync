@@ -24,6 +24,11 @@ uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 # Embedded SQLite (bundled = compiled in, no system dep) — the per-vault index store (D0018).
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Leveled logging via the `log` façade; env_logger reads the LOG_LEVEL env var (set in compose) so
+# the report level is runtime-configurable. Levels are real (error/warn/info/debug), not baked into
+# message strings.
+log = "0.4"
+env_logger = "0.11"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

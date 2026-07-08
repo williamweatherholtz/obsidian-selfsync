@@ -26,6 +26,10 @@ services:
       SYNC_USER: ${SYNC_USER:?set SYNC_USER in .env}
       SYNC_PASSWORD: ${SYNC_PASSWORD:?set a STRONG SYNC_PASSWORD in .env}
       REGISTRATION: closed             # invite-only by default; open it from /admin if you must
+      # Log verbosity: error | warn | info (default) | debug. Set to warn to see only problems
+      # (failed logins, rejections, capacity, corruption); info adds the routine audit trail
+      # (logins, commits, deletes, reindexes). Per-module filters also work, e.g. LOG_LEVEL=warn.
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - selfsync-data:/data            # accounts, ACL, chunks, and each vault's real files
     expose:

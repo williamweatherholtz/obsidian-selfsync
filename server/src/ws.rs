@@ -46,10 +46,10 @@ pub async fn ws_handler(
     let token = token_from_protocols(&headers);
     let user = match lock(&st.tokens) {
         Ok(mut g) => token.as_deref().and_then(|t| g.resolve(t)),
-        Err(_) => { eprintln!("[ws] connect REJECTED (token store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+        Err(_) => { log::warn!("[ws] connect REJECTED (token store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
     };
     let Some(user) = user else {
-        eprintln!("[ws] connect REJECTED (missing/unknown token)");
+        log::warn!("[ws] connect REJECTED (missing/unknown token)");
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
     let vault = q.get("vault").cloned().unwrap_or_default();
@@ -58,37 +58,37 @@ pub async fn ws_handler(
     let owner = q.get("owner").cloned().unwrap_or_else(|| user.clone());
     let allowed = match lock(&st.shares) {
         Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
-        Err(_) => { eprintln!("[ws] connect REJECTED (shares store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+        Err(_) => { log::warn!("[ws] connect REJECTED (shares store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
     };
     if !allowed {
-        eprintln!("[ws] connect REJECTED (forbidden {user} -> {owner}/{vault})");
+        log::warn!("[ws] connect REJECTED (forbidden {user} -> {owner}/{vault})");
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     // Sync routes gate on vault existence (protocol-6); the WS is a read subscription, so it
     // opens the handle only if the vault already exists rather than lazily provisioning it.
     if !st.vault_exists(&owner, &vault) {
-        eprintln!("[ws] connect REJECTED (no such vault '{owner}/{vault}')");
+        log::warn!("[ws] connect REJECTED (no such vault '{owner}/{vault}')");
         return axum::http::StatusCode::NOT_FOUND.into_response();
     }
     let handle = match st.vault(&owner, &vault) {
         Ok(h) => h,
-        Err(_) => { eprintln!("[ws] connect REJECTED (bad vault '{owner}/{vault}')"); return axum::http::StatusCode::NOT_FOUND.into_response(); }
+        Err(_) => { log::warn!("[ws] connect REJECTED (bad vault '{owner}/{vault}')"); return axum::http::StatusCode::NOT_FOUND.into_response(); }
     };
     // Enforce the global connection budget BEFORE upgrading. fetch_add + rollback keeps the
     // check-and-reserve atomic so concurrent connects can't overshoot the cap.
     let live = st.ws_conns.fetch_add(1, Ordering::Relaxed) + 1;
     if live > MAX_WS_CONNECTIONS {
         st.ws_conns.fetch_sub(1, Ordering::Relaxed);
-        eprintln!("[ws] ERROR: connection refused — server is at capacity ({MAX_WS_CONNECTIONS} connections)");
+        log::error!("[ws] connection refused — server is at capacity ({MAX_WS_CONNECTIONS} connections)");
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
     // Routine connects are NOT logged. Emit capacity telemetry only: warn once we're at/over 80% of
     // the cap, and error at 100% (the next client will be refused).
     if live == MAX_WS_CONNECTIONS {
-        eprintln!("[ws] ERROR: at capacity — {live}/{MAX_WS_CONNECTIONS} connections; further clients will be refused");
+        log::error!("[ws] at capacity — {live}/{MAX_WS_CONNECTIONS} connections; further clients will be refused");
     } else if live >= MAX_WS_CONNECTIONS * 4 / 5 {
-        eprintln!("[ws] WARNING: {live}/{MAX_WS_CONNECTIONS} connections ({}% of capacity)", live * 100 / MAX_WS_CONNECTIONS);
+        log::warn!("[ws] {live}/{MAX_WS_CONNECTIONS} connections ({}% of capacity)", live * 100 / MAX_WS_CONNECTIONS);
     }
     let rx = handle.tx.subscribe();
     // Echo back only the non-secret subprotocol so the handshake completes.

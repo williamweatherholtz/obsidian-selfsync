@@ -31,10 +31,10 @@ pub async fn login(
         .await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     if present && ok {
         let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
-        eprintln!("[login] user='{}' -> OK", req.username);
+        log::info!("[login] user='{}' -> OK", req.username);
         Ok(Json(LoginResponse { token }))
     } else {
-        eprintln!("[login] user='{}' -> 401", req.username);
+        log::warn!("[login] user='{}' -> 401", req.username);
         Err(AppError::Unauthorized)
     }
 }
@@ -57,7 +57,7 @@ pub async fn register(
     if lock(&st.registration)?.mode() == crate::registration::Mode::Closed
         && (req.invite.is_empty() || !lock(&st.registration)?.redeem(&req.invite))
     {
-        eprintln!("[register] user='{}' -> 403 (registration closed; missing/invalid invite)", req.username);
+        log::warn!("[register] user='{}' -> 403 (registration closed; missing/invalid invite)", req.username);
         return Err(AppError::Forbidden);
     }
     if lock(&st.users)?.exists(&req.username) {
@@ -74,7 +74,7 @@ pub async fn register(
         g.register(&u, &p)
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     match result {
-        Ok(()) => { eprintln!("[register] user='{}' -> OK", req.username); Ok(StatusCode::OK) }
+        Ok(()) => { log::info!("[register] user='{}' -> OK", req.username); Ok(StatusCode::OK) }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AppError::Conflict("user exists".into())),
         Err(_) => Err(AppError::BadRequest("could not register".into())),
     }

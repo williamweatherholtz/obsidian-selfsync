@@ -27,7 +27,7 @@ impl IntoResponse for AppError {
             // SEC-6: never return the raw internal error (std::io messages can carry absolute
             // server paths) to the client — log it server-side, hand back a generic 500 body.
             AppError::Internal(m) => {
-                eprintln!("[500] {m}");
+                log::error!("[500] {m}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
             }
         };

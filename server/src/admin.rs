@@ -139,7 +139,7 @@ pub async fn reindex(
         v.reindex(force).map_err(|e| if force { AppError::BadRequest(e.to_string()) } else { AppError::Internal(e.to_string()) })?;
         Ok(v.version())
     }).await.map_err(|e| AppError::Internal(format!("reindex join failed: {e}")))??;
-    eprintln!("[{owner}/{vault} reindex by admin {user}] rebuilt manifest -> v{version}");
+    log::info!("[{owner}/{vault} reindex by admin {user}] rebuilt manifest -> v{version}");
     let _ = tx.send(version);
     Ok(Json(crate::protocol::StatusResponse {
         status: "ready".to_string(), detail: String::new(), version,
@@ -178,7 +178,7 @@ pub async fn prune_history(
         let n = v.prune_history(target).map_err(|e| AppError::Internal(e.to_string()))?;
         Ok((n, v.version()))
     }).await.map_err(|e| AppError::Internal(format!("prune join failed: {e}")))??;
-    eprintln!("[{owner}/{vault} prune-history by admin {user}] pruned {pruned} tombstone(s)");
+    log::info!("[{owner}/{vault} prune-history by admin {user}] pruned {pruned} tombstone(s)");
     Ok(Json(serde_json::json!({ "pruned": pruned, "version": version })))
 }
 
@@ -201,7 +201,7 @@ pub async fn vault_delete(
         return Err(AppError::NotFound);
     }
     st.purge_vault(&req.owner, &req.vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
-    eprintln!("[admin {user}] deleted vault {}/{}", req.owner, req.vault);
+    log::info!("[admin {user}] deleted vault {}/{}", req.owner, req.vault);
     Ok(StatusCode::OK)
 }
 
@@ -251,7 +251,7 @@ pub async fn admin_grant(
         return Err(AppError::NotFound);
     }
     lock(&st.admins)?.grant(&name).map_err(|e| AppError::Internal(e.to_string()))?;
-    eprintln!("[admin {user}] granted server-admin to {name}");
+    log::info!("[admin {user}] granted server-admin to {name}");
     Ok(StatusCode::OK)
 }
 
@@ -265,7 +265,7 @@ pub async fn admin_revoke(
         return Err(AppError::BadRequest("cannot demote the bootstrap admin account".into()));
     }
     lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
-    eprintln!("[admin {user}] revoked server-admin from {name}");
+    log::info!("[admin {user}] revoked server-admin from {name}");
     Ok(StatusCode::OK)
 }
 

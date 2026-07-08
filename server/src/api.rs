@@ -84,7 +84,7 @@ pub async fn changes(
     // so it would spam identical lines even when nothing changed — every actual write is already in
     // the commit log, so a read doesn't need its own line.
     if since > 0 && (!resp.upserts.is_empty() || !resp.deletes.is_empty()) {
-        eprintln!("[{owner}/{vault} changes by {user}] since={} -> v{} (+{} upserts, {} deletes)",
+        log::info!("[{owner}/{vault} changes by {user}] since={} -> v{} (+{} upserts, {} deletes)",
             since, resp.version, resp.upserts.len(), resp.deletes.len());
     }
     Ok(Json(resp))
@@ -181,7 +181,7 @@ pub async fn commit(
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
         v.commit(req).map_err(|e| {
-            eprintln!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
+            log::error!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
             match e.kind() {
                 std::io::ErrorKind::NotFound => AppError::NotFound,
                 // CAS mismatch (optimistic concurrency): the client based this write on a stale
@@ -191,7 +191,7 @@ pub async fn commit(
             }
         })
     }).await?;
-    eprintln!("[{owner}/{vault} commit by {user}] {} ({} chunks) -> v{}", meta.path, meta.chunks.len(), meta.version);
+    log::info!("[{owner}/{vault} commit by {user}] {} ({} chunks) -> v{}", meta.path, meta.chunks.len(), meta.version);
     let _ = tx.send(meta.version);
     Ok(Json(meta))
 }
@@ -210,7 +210,7 @@ pub async fn delete_file(
         v.delete(&p).map_err(|e| AppError::BadRequest(e.to_string()))
     }).await?;
     match d {
-        Some(d) => { eprintln!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = tx.send(d.version); Ok(Json(d)) }
+        Some(d) => { log::info!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = tx.send(d.version); Ok(Json(d)) }
         None => Err(AppError::NotFound),
     }
 }
@@ -243,7 +243,7 @@ pub async fn reindex(
         v.reindex(false).map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(v.version())
     }).await?;
-    eprintln!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
+    log::info!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
     let _ = tx.send(version);
     Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION }))
 }
@@ -268,6 +268,6 @@ pub async fn delete_own_vault(
         return Err(AppError::NotFound);
     }
     st.purge_vault(&user, &vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
-    eprintln!("[{user} delete-own-vault] {vault}");
+    log::info!("[{user} delete-own-vault] {vault}");
     Ok(StatusCode::OK)
 }

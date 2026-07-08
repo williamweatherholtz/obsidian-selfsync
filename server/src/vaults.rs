@@ -31,6 +31,6 @@ pub async fn create_vault(
         return Err(AppError::Conflict("vault exists".into()));
     }
     st.vault(&user, &req.name).map_err(|e| AppError::BadRequest(e.to_string()))?;
-    eprintln!("[vault create] user='{}' vault='{}'", user, req.name);
+    log::info!("[vault create] user='{}' vault='{}'", user, req.name);
     Ok(StatusCode::OK)
 }

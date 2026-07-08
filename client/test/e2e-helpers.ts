@@ -175,7 +175,9 @@ export async function startServer(): Promise<RunningServer> {
     // opt past the SEC-2 default-credential boot guard (which refuses admin/admin otherwise).
     // ADMIN_BIND_ADDR=merge: keep the admin surface on the single ephemeral port (D0021 split
     // defaults to a separate admin port, which an ephemeral :0 public port can't derive sensibly).
-    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", ADMIN_BIND_ADDR: "merge" },
+    // LOG_LEVEL=info so the "listening on" line (info level) always prints regardless of the dev's
+    // shell LOG_LEVEL — the harness parses that line to learn the ephemeral port.
+    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", ADMIN_BIND_ADDR: "merge", LOG_LEVEL: "info" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = await new Promise<string>((resolve, reject) => {

@@ -139,7 +139,7 @@ impl Vault {
         let (index, mut corrupt) = match SqliteIndex::open(&db_path) {
             Ok(idx) => (idx, false),
             Err(e) => {
-                eprintln!("[vault] {} index DB is CORRUPT ({e}); quarantining + opening in ERROR state — run reindex", root.display());
+                log::error!("[vault] {} index DB is CORRUPT ({e}); quarantining + opening in ERROR state — run reindex", root.display());
                 Self::quarantine_db(&db_path);
                 (SqliteIndex::open(&db_path)?, true) // fresh empty DB
             }
@@ -155,7 +155,7 @@ impl Vault {
             let mut existing = Vec::new();
             let scan_ok = collect_files(&vault_dir, &vault_dir, &mut existing).is_ok();
             if !existing.is_empty() || !scan_ok {
-                eprintln!("[vault] {} has data but an EMPTY index — opening in ERROR state; run reindex to rebuild", root.display());
+                log::error!("[vault] {} has data but an EMPTY index — opening in ERROR state; run reindex to rebuild", root.display());
                 corrupt = true;
             }
         }
@@ -172,8 +172,8 @@ impl Vault {
         // disk and the store → RC-2, or unsafe/colliding filenames), which needs a human (Force / rename).
         if v.corrupt {
             match v.reindex(false) {
-                Ok(()) => eprintln!("[vault] {}: auto-repaired the index (reindexed from disk).", v.root.display()),
-                Err(e) => eprintln!("[vault] {}: index unusable and NOT auto-repairable ({e}); staying in ERROR — run reindex with Force if files are truly lost, or fix the offending filenames.", v.root.display()),
+                Ok(()) => log::info!("[vault] {}: auto-repaired the index (reindexed from disk).", v.root.display()),
+                Err(e) => log::error!("[vault] {}: index unusable and NOT auto-repairable ({e}); staying in ERROR — run reindex with Force if files are truly lost, or fix the offending filenames.", v.root.display()),
             }
         }
         Ok(v)
@@ -205,7 +205,7 @@ impl Vault {
         let referenced = match self.index.all_referenced_chunks() {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[vault] {}: index read failed ({e}); marking ERROR — run reindex", self.root.display());
+                log::error!("[vault] {}: index read failed ({e}); marking ERROR — run reindex", self.root.display());
                 self.corrupt = true;
                 return;
             }
@@ -213,7 +213,7 @@ impl Vault {
         let refset: std::collections::HashSet<String> = referenced.into_iter().collect();
         let missing: Vec<&String> = refset.iter().filter(|h| !self.store.has(h)).collect();
         if !missing.is_empty() {
-            eprintln!(
+            log::error!(
                 "[vault] {}: {} referenced chunk(s) missing on disk (e.g. {}); marking ERROR — run reindex",
                 self.root.display(), missing.len(), missing[0]
             );
@@ -227,10 +227,10 @@ impl Vault {
                     if !refset.contains(&h) && self.store.remove(&h).is_ok() { reclaimed += 1; }
                 }
                 if reclaimed > 0 {
-                    eprintln!("[vault] {}: reclaimed {reclaimed} orphan chunk(s)", self.root.display());
+                    log::info!("[vault] {}: reclaimed {reclaimed} orphan chunk(s)", self.root.display());
                 }
             }
-            Err(e) => eprintln!("[vault] {}: orphan GC skipped (list failed: {e})", self.root.display()),
+            Err(e) => log::warn!("[vault] {}: orphan GC skipped (list failed: {e})", self.root.display()),
         }
     }
 
@@ -309,7 +309,7 @@ impl Vault {
             }
             if let Some(rel) = safe_rel_path(k) {
                 if let Err(e) = write_mirror(&self.vault_dir.join(&rel), &body) {
-                    eprintln!("[reindex] WARN: could not re-materialize '{k}': {e} (content remains in the chunk store)");
+                    log::warn!("[reindex] could not re-materialize '{k}': {e} (content remains in the chunk store)");
                 }
             }
             for h in &meta.chunks { new_refs.insert(h.clone()); }
@@ -401,12 +401,12 @@ impl Vault {
         if !due { return; }
         let referenced: std::collections::HashSet<String> = match self.index.all_referenced_chunks() {
             Ok(r) => r.into_iter().collect(),
-            Err(e) => { eprintln!("[vault] {}: orphan sweep skipped (index read failed: {e})", self.root.display()); return; }
+            Err(e) => { log::warn!("[vault] {}: orphan sweep skipped (index read failed: {e})", self.root.display()); return; }
         };
         match self.store.sweep_orphans(&referenced, ORPHAN_TTL) {
-            Ok(n) if n > 0 => eprintln!("[vault] {}: runtime orphan sweep reclaimed {n} abandoned chunk(s)", self.root.display()),
+            Ok(n) if n > 0 => log::info!("[vault] {}: runtime orphan sweep reclaimed {n} abandoned chunk(s)", self.root.display()),
             Ok(_) => {}
-            Err(e) => eprintln!("[vault] {}: orphan sweep failed: {e}", self.root.display()),
+            Err(e) => log::warn!("[vault] {}: orphan sweep failed: {e}", self.root.display()),
         }
     }
     pub fn get_chunk(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> { self.store.get(hash) }
@@ -490,7 +490,7 @@ impl Vault {
         // mirror-write failure is a recoverable mismatch, not a lost commit.
         let abs = self.vault_dir.join(&rel);
         if let Err(e) = write_mirror(&abs, &body) {
-            eprintln!("[commit] WARN: bind-mount mirror write failed for '{}': {e} (content is durable in the chunk store)", req.path);
+            log::warn!("[commit] bind-mount mirror write failed for '{}': {e} (content is durable in the chunk store)", req.path);
         }
         // Index is durable; NOW drop de-referenced blobs. A failure here is a recoverable orphan
         // (startup GC reclaims it), never corruption.
@@ -517,7 +517,7 @@ impl Vault {
                     let abs = self.vault_dir.join(rel);
                     if abs.exists() {
                         if let Err(e) = std::fs::remove_file(&abs) {
-                            eprintln!("[vault] warning: delete persisted but bind-mount file {} not removed: {e}", abs.display());
+                            log::warn!("[vault] delete persisted but bind-mount file {} not removed: {e}", abs.display());
                         }
                     }
                 }
@@ -532,7 +532,7 @@ impl Vault {
     fn remove_blobs(&self, hashes: &[String]) {
         for h in hashes {
             if let Err(e) = self.store.remove(h) {
-                eprintln!("[vault] warning: chunk {h} de-referenced but not removed ({e}); will be reclaimed at next startup");
+                log::warn!("[vault] chunk {h} de-referenced but not removed ({e}); will be reclaimed at next startup");
             }
         }
     }
@@ -542,7 +542,7 @@ impl Vault {
     // absent; the client re-fetches next poll.
     pub fn file_meta(&self, path: &str) -> Option<FileMeta> {
         self.index.file_meta(path).unwrap_or_else(|e| {
-            eprintln!("[vault] {}: file_meta({path}) read failed: {e}", self.root.display());
+            log::warn!("[vault] {}: file_meta({path}) read failed: {e}", self.root.display());
             None
         })
     }
@@ -554,7 +554,7 @@ impl Vault {
             // tombstone-authoritative delete model, empty upserts/deletes can NOT trigger a
             // client-side mass-delete (only a tombstone deletes), so this is a safe transient — the
             // client simply retries on its next poll.
-            eprintln!("[vault] {}: changes({since}) read failed: {e}; returning empty delta (client retries)", self.root.display());
+            log::warn!("[vault] {}: changes({since}) read failed: {e}; returning empty delta (client retries)", self.root.display());
             ChangesResponse { version: self.version, upserts: Vec::new(), deletes: Vec::new(), history_floor: self.history_floor }
         })
     }
