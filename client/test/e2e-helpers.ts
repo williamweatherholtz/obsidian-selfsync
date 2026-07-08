@@ -173,7 +173,9 @@ export async function startServer(): Promise<RunningServer> {
   const srv = spawn(serverBin, [], {
     // ALLOW_WEAK_ADMIN=1: the throwaway test server deliberately uses admin/admin, so it must
     // opt past the SEC-2 default-credential boot guard (which refuses admin/admin otherwise).
-    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1" },
+    // ADMIN_BIND_ADDR=merge: keep the admin surface on the single ephemeral port (D0021 split
+    // defaults to a separate admin port, which an ephemeral :0 public port can't derive sensibly).
+    env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", ADMIN_BIND_ADDR: "merge" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = await new Promise<string>((resolve, reject) => {

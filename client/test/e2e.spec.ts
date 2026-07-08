@@ -147,7 +147,7 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
     srv = spawn(serverBin, [], {
       // ALLOW_WEAK_ADMIN=1: throwaway test server uses admin/admin → opt past the SEC-2 boot guard.
-      env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1" },
+      env: { ...process.env, DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0", SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", ADMIN_BIND_ADDR: "merge" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     base = await new Promise<string>((resolve, reject) => {

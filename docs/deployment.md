@@ -44,7 +44,14 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
   shares.
 - **Back up the data volume** (`selfsync-data` → `/data`): it holds `.users.json`, the sharing
   ACL, the chunk store, and every vault's materialized files.
-- **The admin UI is at `/admin`**, same-origin behind the same TLS — sign in with an account.
+- **The admin surface is PRIVATE by default (D0021).** The `/admin` page and `/api/admin/*` bind to
+  a **separate, localhost-only port** (default `127.0.0.1:<public port + 1>`, e.g. `:8081`), NOT the
+  public sync port — so account management is never reachable through the public reverse proxy even
+  if the proxy is misconfigured. Reach it from the host (`http://127.0.0.1:8081/admin`) or over an
+  SSH/VPN tunnel. Override with `ADMIN_BIND_ADDR=<host:port>`. **Opt out** with `ADMIN_BIND_ADDR=merge`
+  to serve `/admin` on the public port (single-port, for a trusted/all-in-one setup only).
+  - **Upgrade note:** if you ran an earlier single-port build and *want* `/admin` on the public port,
+    set `ADMIN_BIND_ADDR=merge`; otherwise the admin page moves to the private port automatically.
 
 ## Using your own reverse proxy
 

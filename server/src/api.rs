@@ -236,3 +236,27 @@ pub async fn reindex(
     let _ = tx.send(version);
     Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION }))
 }
+
+#[derive(serde::Deserialize)]
+pub struct OwnVaultDelReq {
+    vault: String,
+}
+// Owner self-service vault delete (D0021): the caller deletes their OWN vault (owner == caller).
+// Distinct from the server-admin any-vault delete (admin::vault_delete). Purges the vault dir +
+// cached handle; a still-synced device then 404s (RC-3) and can deliberately re-create from its
+// local copy (deletedVaultRecreatePrompt). DELETE /api/vault with a JSON body {vault}.
+pub async fn delete_own_vault(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<OwnVaultDelReq>,
+) -> Result<StatusCode, AppError> {
+    let vault = req.vault;
+    if !crate::users::safe_name(&user) || !crate::users::safe_name(&vault) {
+        return Err(AppError::BadRequest("invalid vault".into()));
+    }
+    // Owner-scoped: the vault lives under the caller's own namespace, so existence == ownership.
+    if !st.vault_exists(&user, &vault) {
+        return Err(AppError::NotFound);
+    }
+    st.purge_vault(&user, &vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
+    eprintln!("[{user} delete-own-vault] {vault}");
+    Ok(StatusCode::OK)
+}

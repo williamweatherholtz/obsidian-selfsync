@@ -14,7 +14,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 fn is_server_admin(st: &AppState, user: &str) -> bool {
-    user == st.cfg.user
+    // The bootstrap SYNC_USER is always admin (implicit + undemotable); additionally-promoted
+    // accounts live in the persisted admin set (D0021). A poisoned lock denies (fail-safe).
+    user == st.cfg.user || lock(&st.admins).map(|a| a.contains(user)).unwrap_or(false)
 }
 fn require_admin(st: &AppState, user: &str) -> Result<(), AppError> {
     if is_server_admin(st, user) { Ok(()) } else { Err(AppError::Forbidden) }
@@ -205,11 +207,63 @@ pub async fn vault_delete(
 
 // ---- server-admin only: accounts, registration policy, invite tokens ----
 
+#[derive(Serialize)]
+pub struct UserView {
+    username: String,
+    is_admin: bool,
+    is_bootstrap: bool, // the SYNC_USER account — always admin, can't be demoted or deleted
+}
 pub async fn users_list(
     AuthToken(user): AuthToken, State(st): State<AppState>,
-) -> Result<Json<Vec<String>>, AppError> {
+) -> Result<Json<Vec<UserView>>, AppError> {
     require_admin(&st, &user)?;
+    let names = lock(&st.users)?.usernames();
+    let admins = lock(&st.admins)?;
+    let out = names.into_iter().map(|u| {
+        let is_bootstrap = u == st.cfg.user;
+        UserView { is_admin: is_bootstrap || admins.contains(&u), is_bootstrap, username: u }
+    }).collect();
+    Ok(Json(out))
+}
+
+// Grantee autocomplete (D0021): the username list for share typeahead + fuzzy match. Authenticated
+// (not admin-only) so a non-admin OWNER managing their own vault's shares can autocomplete — safe
+// because the admin surface is private by default (the split). In merge mode this rides the public
+// port, an accepted consequence of the operator's explicit opt-out.
+pub async fn usernames(
+    AuthToken(_user): AuthToken, State(st): State<AppState>,
+) -> Result<Json<Vec<String>>, AppError> {
     Ok(Json(lock(&st.users)?.usernames()))
+}
+
+// Promote an account to server-admin (D0021) — server-admin only. The account must exist.
+pub async fn admin_grant(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+) -> Result<StatusCode, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&name) {
+        return Err(AppError::BadRequest("invalid username".into()));
+    }
+    if !lock(&st.users)?.exists(&name) {
+        return Err(AppError::NotFound);
+    }
+    lock(&st.admins)?.grant(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    eprintln!("[admin {user}] granted server-admin to {name}");
+    Ok(StatusCode::OK)
+}
+
+// Revoke server-admin from an account (D0021) — server-admin only. The BOOTSTRAP account is always
+// admin and can never be demoted (else an operator could lock everyone out of administration).
+pub async fn admin_revoke(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+) -> Result<StatusCode, AppError> {
+    require_admin(&st, &user)?;
+    if name == st.cfg.user {
+        return Err(AppError::BadRequest("cannot demote the bootstrap admin account".into()));
+    }
+    lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    eprintln!("[admin {user}] revoked server-admin from {name}");
+    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]
@@ -272,6 +326,8 @@ pub async fn users_delete(
     }
     // Drop the account's shares (as owner or grantee). Tokens were already revoked up front.
     lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    // Drop any server-admin membership so a re-created same-name account doesn't inherit admin (D0021).
+    lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(StatusCode::OK)
 }
 

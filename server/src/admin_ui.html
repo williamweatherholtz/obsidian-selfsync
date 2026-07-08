@@ -116,44 +116,74 @@ async function dashboard() {
 }
 
 async function renderVaults() {
-  const vaults = await api("GET", "/api/admin/vaults");
+  // Fetch the vaults + the username list (for grantee autocomplete + fuzzy validation). The username
+  // list is safe here: the admin surface is private by default (D0021 split).
+  const [vaults, names] = await Promise.all([
+    api("GET", "/api/admin/vaults"),
+    api("GET", "/api/admin/usernames").catch(() => []),
+  ]);
   const box = $("vaults");
   if (!vaults.length) { box.innerHTML = `<div class="empty">You own no vaults yet.</div>`; return; }
+  const dl = `<datalist id="userlist">${names.map(n => `<option value="${esc(n)}"></option>`).join("")}</datalist>`;
   let h = "";
   for (const v of vaults) {
     const rows = v.grants.length
       ? v.grants.map(g => `<tr><td>${esc(g.grantee)}</td><td><span class="perm ${g.perm}">${g.perm}</span></td>
           <td style="text-align:right"><button class="danger" data-revoke="${esc(v.vault)}|${esc(g.grantee)}">Revoke</button></td></tr>`).join("")
       : `<tr><td colspan="3" class="empty">Not shared.</td></tr>`;
-    h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)}</div>
+    h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)}
+        <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button></div>
       <table><tr><th>Shared with</th><th>Access</th><th></th></tr>${rows}</table>
       <div class="row" style="margin-top:8px">
-        <input placeholder="grantee username" data-g="${esc(v.vault)}" style="flex:1;min-width:140px" />
+        <input placeholder="grantee username" list="userlist" data-g="${esc(v.vault)}" style="flex:1;min-width:140px" />
         <select data-perm="${esc(v.vault)}"><option value="read">read-only</option><option value="readWrite">read-write</option></select>
         <button data-share="${esc(v.vault)}">Share</button>
       </div></div>`;
   }
-  box.innerHTML = h;
+  box.innerHTML = dl + h;
   box.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
     const [vault, grantee] = b.dataset.revoke.split("|");
     try { await api("DELETE", "/api/admin/shares", { vault, grantee }); await renderVaults(); setMsg("Share revoked.", "ok"); }
     catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
+  });
+  // Owner self-service vault delete (D0021) — a typed confirmation guards the destructive action.
+  box.querySelectorAll("[data-delvault]").forEach(b => b.onclick = async () => {
+    const vault = b.dataset.delvault;
+    if (!confirm(`Delete YOUR vault "${vault}"?\n\nThis removes its data on the server. Devices still syncing it will stop until you re-create or switch; their LOCAL files are untouched.`)) return;
+    const typed = prompt(`Type the vault name "${vault}" to confirm deletion:`);
+    if (typed !== vault) { setMsg("Delete cancelled — the name didn't match.", "err"); return; }
+    try { await api("DELETE", "/api/vault", { vault }); await renderVaults(); setMsg("Vault deleted.", "ok"); }
+    catch (e) { setMsg("Delete failed: " + e.message, "err"); }
   });
   box.querySelectorAll("[data-share]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.share;
     const grantee = box.querySelector(`[data-g="${CSS.escape(vault)}"]`).value.trim();
     const perm = box.querySelector(`[data-perm="${CSS.escape(vault)}"]`).value;
     if (!grantee) { setMsg("Enter a username to share with.", "err"); return; }
+    // Fuzzy guard: reject a grantee that isn't a real account, with a "did you mean" suggestion —
+    // not a blind string that would 400 server-side with no hint. (Server still verifies existence.)
+    if (names.length && !names.includes(grantee)) {
+      const sug = names.filter(n => n.toLowerCase().includes(grantee.toLowerCase())).slice(0, 3);
+      setMsg(`No account "${grantee}".` + (sug.length ? ` Did you mean: ${sug.join(", ")}?` : " Check the username."), "err");
+      return;
+    }
     try { await api("POST", "/api/admin/shares", { vault, grantee, perm }); await renderVaults(); setMsg("Shared.", "ok"); }
     catch (e) { setMsg("Share failed: " + e.message, "err"); }
   });
 }
 
 async function renderUsers() {
-  const users = await api("GET", "/api/admin/users");
+  const users = await api("GET", "/api/admin/users"); // [{username, is_admin, is_bootstrap}]
   const box = $("users");
-  const rows = users.map(u => `<tr><td>${esc(u)}</td><td style="text-align:right">
-    ${u === me.username ? '<span class="muted">you</span>' : `<button class="danger" data-del="${esc(u)}">Delete</button>`}</td></tr>`).join("");
+  const rows = users.map(u => {
+    const badge = u.is_admin ? ` <span class="perm readWrite">admin</span>` : "";
+    let actions;
+    if (u.username === me.username) actions = '<span class="muted">you</span>';
+    else if (u.is_bootstrap) actions = '<span class="muted">bootstrap admin</span>';
+    else actions = `<button data-admin="${esc(u.username)}" data-on="${u.is_admin ? 1 : 0}">${u.is_admin ? "Revoke admin" : "Make admin"}</button>
+      <button class="danger" data-del="${esc(u.username)}">Delete</button>`;
+    return `<tr><td>${esc(u.username)}${badge}</td><td style="text-align:right">${actions}</td></tr>`;
+  }).join("");
   box.innerHTML = `<table><tr><th>Account</th><th></th></tr>${rows}</table>
     <div class="row" style="margin-top:10px">
       <input id="nu" placeholder="new username" style="flex:1;min-width:140px" />
@@ -164,8 +194,13 @@ async function renderUsers() {
     try { await api("POST", "/api/admin/users", { username: $("nu").value.trim(), password: $("np").value }); await renderUsers(); setMsg("Account created.", "ok"); }
     catch (e) { setMsg("Create failed: " + e.message, "err"); }
   };
+  box.querySelectorAll("[data-admin]").forEach(b => b.onclick = async () => {
+    const name = b.dataset.admin, on = b.dataset.on === "1";
+    try { await api(on ? "DELETE" : "POST", "/api/admin/users/" + encodeURIComponent(name) + "/admin"); await renderUsers(); setMsg(on ? "Admin revoked." : "Admin granted.", "ok"); }
+    catch (e) { setMsg("Admin change failed: " + e.message, "err"); }
+  });
   box.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm(`Delete account "${b.dataset.del}"? Their shares are removed.`)) return;
+    if (!confirm(`Delete account "${b.dataset.del}"? Their vaults, shares, and admin rights are removed.`)) return;
     try { await api("DELETE", "/api/admin/users/" + encodeURIComponent(b.dataset.del)); await renderUsers(); setMsg("Account deleted.", "ok"); }
     catch (e) { setMsg("Delete failed: " + e.message, "err"); }
   });
@@ -175,13 +210,14 @@ async function renderReg() {
   const r = await api("GET", "/api/admin/registration");
   const open = r.mode === "open";
   $("reg").innerHTML = `<div class="card-title">
-      <div>New-account registration is <strong>${open ? "OPEN" : "CLOSED"}</strong>
-        <div class="muted" style="font-size:13px">${open ? "Anyone can create an account." : "Only invite tokens (below) can create accounts."}</div></div>
-      <button class="ghost" id="toggle">${open ? "Close registration" : "Open registration"}</button>
+      <div>New-account registration
+        <div class="muted" style="font-size:13px">${open ? "OPEN — anyone can create an account." : "CLOSED — only invite tokens (below) can create accounts."}</div></div>
+      <label class="inline" style="cursor:pointer;user-select:none"><input type="checkbox" id="regtoggle" ${open ? "checked" : ""} /> <span>${open ? "Open" : "Closed"}</span></label>
     </div>`;
-  $("toggle").onclick = async () => {
-    try { await api("PUT", "/api/admin/registration", { mode: open ? "closed" : "open" }); await renderReg(); await renderInvites(); setMsg("Registration updated.", "ok"); }
-    catch (e) { setMsg("Update failed: " + e.message, "err"); }
+  $("regtoggle").onchange = async (e) => {
+    const wantOpen = e.target.checked;
+    try { await api("PUT", "/api/admin/registration", { mode: wantOpen ? "open" : "closed" }); await renderReg(); await renderInvites(); setMsg("Registration " + (wantOpen ? "opened." : "closed."), "ok"); }
+    catch (err) { setMsg("Update failed: " + err.message, "err"); e.target.checked = !wantOpen; }
   };
 }
 

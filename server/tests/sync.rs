@@ -1,13 +1,43 @@
-use new_livesync_server::{app, AppState};
+use new_livesync_server::{admin_app, app, public_app, AppState};
+
+async fn serve(router: axum::Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+    format!("http://{addr}")
+}
 
 async fn spawn() -> String {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::for_test(dir.path());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     std::mem::forget(dir); // keep temp dir alive for the test process
-    tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
-    format!("http://{addr}")
+    serve(app(state)).await
+}
+
+// D0021: the public router must NOT carry the admin surface, and the admin router must NOT carry the
+// sync surface. A route present on one but absent on the other returns 404 (unrouted) vs 401 (routed,
+// needs auth) — that 404-vs-401 split is the proof, and needs no token.
+#[tokio::test]
+async fn admin_split_isolates_surfaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::for_test(dir.path());
+    std::mem::forget(dir);
+    let public = serve(public_app(state.clone())).await;
+    let admin = serve(admin_app(state)).await;
+    let c = reqwest::Client::new();
+    let status = |base: String, path: &'static str| {
+        let c = c.clone();
+        async move { c.get(format!("{base}{path}")).send().await.unwrap().status().as_u16() }
+    };
+    // /health on both surfaces.
+    assert_eq!(status(public.clone(), "/health").await, 200);
+    assert_eq!(status(admin.clone(), "/health").await, 200);
+    // Admin API: UNROUTED on public (404) vs routed-but-unauthed on admin (401).
+    assert_eq!(status(public.clone(), "/api/admin/me").await, 404, "admin API must not exist on the public port");
+    assert_eq!(status(admin.clone(), "/api/admin/me").await, 401, "admin API exists on the admin port (needs auth)");
+    // Sync API: routed-but-unauthed on public (401) vs UNROUTED on admin (404).
+    assert_eq!(status(public.clone(), "/api/vaults").await, 401, "sync API exists on the public port (needs auth)");
+    assert_eq!(status(admin.clone(), "/api/vaults").await, 404, "sync API must not exist on the admin port");
 }
 
 #[tokio::test]
