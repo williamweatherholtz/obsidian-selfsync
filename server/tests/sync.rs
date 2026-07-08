@@ -296,15 +296,18 @@ fn vault_open_locks_on_corrupt_index_not_blank_reset() {
         let fresh = Vault::open(dir.path()).unwrap();
         assert!(!fresh.is_corrupt());
     } // drop the handle (closes the SQLite DB) before corrupting the file on disk
-    // a present-but-corrupt index DB must NOT silently reset (would hide all files): it opens in a
-    // LOCKED error state (fail-loud, requires explicit reindex) rather than resetting to blank OR
-    // crashing the whole open. Clobber the main DB (+ drop the WAL sidecars) with non-SQLite bytes.
+    // D0022: a present-but-corrupt index DB is never silently blanked (WAL sidecars dropped, main DB
+    // clobbered), and with NO recoverable data it AUTO-REPAIRS to a clean (empty) index on open —
+    // it does not crash the open, and it does not leave stale bytes. (A corrupt DB WITH files on disk
+    // auto-repairs by rebuilding from them; a file lost from both disk and store stays ERROR — both
+    // covered by the vault unit tests.)
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(dir.path().join(format!(".sync-index.db{suffix}")));
     }
     std::fs::write(dir.path().join(".sync-index.db"), b"{ this is not a sqlite database").unwrap();
     let v = Vault::open(dir.path()).unwrap();
-    assert!(v.is_corrupt(), "corrupt index must open in ERROR state, not blank/OK");
+    assert!(!v.is_corrupt(), "corrupt DB with no recoverable data auto-repairs to a clean empty index");
+    assert!(std::path::Path::new(&dir.path().join(".sync-index.db.corrupt")).exists(), "the bad DB was quarantined");
 }
 
 #[test]
@@ -363,15 +366,15 @@ async fn vaults_are_isolated_and_listable() {
 }
 
 #[tokio::test]
-async fn corrupt_vault_refuses_sync_then_recovers_via_reindex() {
+async fn vault_with_orphaned_files_auto_reindexes_on_first_access() {
     use new_livesync_server::protocol::{StatusResponse, ChangesResponse};
-    // Pre-seed a vault "broken" (NOT the bootstrap "default", so it isn't opened until
-    // first request) with a materialized file and a corrupt on-disk index.
+    // D0022: a vault "broken" (NOT the bootstrap "default", so it isn't opened until first request)
+    // with a materialized file but NO index (a restore, or the SQLite format change) AUTO-REPAIRS on
+    // first access — status is ready and changes advertises the file, with no manual reindex.
     let dir = tempfile::tempdir().unwrap();
     let vroot = dir.path().join("admin").join("broken");
     std::fs::create_dir_all(vroot.join("vault")).unwrap();
     std::fs::write(vroot.join("vault").join("seed.md"), b"survivor").unwrap();
-    std::fs::write(vroot.join(".sync-index.json"), b"{ not valid json").unwrap();
 
     let state = AppState::for_test(dir.path());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -384,22 +387,13 @@ async fn corrupt_vault_refuses_sync_then_recovers_via_reindex() {
         login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
     let c = reqwest::Client::new();
 
-    // status reports error
+    // First access auto-repairs → status is READY (not error), no manual reindex needed.
     let st: StatusResponse = c.get(format!("{base}/api/v/broken/status"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
-    assert_eq!(st.status, "error");
+    assert_eq!(st.status, "ready", "orphaned-files vault auto-reindexes on open");
 
-    // sync ops are refused with 503 (must NOT serve an empty manifest)
-    let ch = c.get(format!("{base}/api/v/broken/changes?since=0")).bearer_auth(&tok).send().await.unwrap();
-    assert_eq!(ch.status(), 503);
-
-    // operator reindex recovers it
-    let re: StatusResponse = c.post(format!("{base}/api/v/broken/reindex"))
+    // changes serves normally and advertises the materialized file.
+    let ch: ChangesResponse = c.get(format!("{base}/api/v/broken/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
-    assert_eq!(re.status, "ready");
-
-    // now changes works and advertises the materialized file
-    let ch2: ChangesResponse = c.get(format!("{base}/api/v/broken/changes?since=0"))
-        .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
-    assert!(ch2.upserts.iter().any(|m| m.path == "seed.md"));
+    assert!(ch.upserts.iter().any(|m| m.path == "seed.md"));
 }

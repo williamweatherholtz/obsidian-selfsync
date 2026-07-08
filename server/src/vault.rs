@@ -164,6 +164,18 @@ impl Vault {
             last_orphan_sweep: std::sync::Mutex::new(std::time::Instant::now()),
         };
         if !v.corrupt { v.verify_and_gc(); } // startup GC already clears orphans, so the runtime timer starts now
+        // D0022: AUTO-REPAIR where safe. If the index is unusable (empty-with-data / corrupt DB /
+        // dangling chunk ref) but the authoritative files + chunk store can rebuild it, do so
+        // automatically instead of locking the vault for a manual reindex — safe now that
+        // tombstone-authoritative delete + the D0019 horizon mean a rebuilt index can never make a
+        // client delete. Stay ERROR only when a rebuild genuinely can't fix it (a file lost from BOTH
+        // disk and the store → RC-2, or unsafe/colliding filenames), which needs a human (Force / rename).
+        if v.corrupt {
+            match v.reindex(false) {
+                Ok(()) => eprintln!("[vault] {}: auto-repaired the index (reindexed from disk).", v.root.display()),
+                Err(e) => eprintln!("[vault] {}: index unusable and NOT auto-repairable ({e}); staying in ERROR — run reindex with Force if files are truly lost, or fix the offending filenames.", v.root.display()),
+            }
+        }
         Ok(v)
     }
 
@@ -686,40 +698,38 @@ mod tests {
         std::fs::write(abs, body).unwrap();
     }
 
-    // A garbage (non-SQLite) index DB must open in ERROR state (survive), not error out or blank —
-    // so the operator can reindex. The corrupt DB is quarantined and a fresh one opened.
+    // A garbage (non-SQLite) index DB is quarantined and then AUTO-REPAIRED from the disk files
+    // (D0022) — the vault opens clean, not locked. (Was: opened in ERROR awaiting a manual reindex.)
     #[test]
-    fn corrupt_index_opens_in_error_state_not_blank() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("vault")).unwrap();
-        std::fs::write(dir.path().join(".sync-index.db"), b"this is not a sqlite database").unwrap();
-        let v = Vault::open(dir.path()).unwrap(); // opens (survives), does NOT error out
-        assert!(v.is_corrupt(), "corrupt index must open in ERROR state");
-        // the bad DB was quarantined
-        assert!(dir.path().join(".sync-index.db.corrupt").exists(), "corrupt DB quarantined for forensics");
-    }
-
-    #[test]
-    fn reindex_rebuilds_from_materialized_files_and_clears_error() {
+    fn corrupt_db_is_quarantined_and_auto_repaired_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         write_vault_file(dir.path(), "notes/a.md", b"hello");
-        write_vault_file(dir.path(), "b.md", b"world");
-        std::fs::write(dir.path().join(".sync-index.db"), b"corrupt!!").unwrap();
+        std::fs::write(dir.path().join(".sync-index.db"), b"this is not a sqlite database").unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        assert!(dir.path().join(".sync-index.db.corrupt").exists(), "corrupt DB quarantined for forensics");
+        assert!(!v.is_corrupt(), "corrupt DB auto-repairs from the disk files");
+        assert!(v.changes(0).upserts.iter().any(|m| m.path == "notes/a.md"));
+    }
 
+    // D0022: auto-repair CANNOT fix a file lost from BOTH disk and the chunk store — the vault stays
+    // ERROR (fail-loud), and a manual FORCE reindex drops the provably-lost entry and clears it.
+    #[test]
+    fn unrecoverable_index_stays_error_until_forced() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut v = Vault::open(dir.path()).unwrap();
+            let b = b"x"; let h = sha256_hex(b);
+            v.put_chunk(&h, b).unwrap();
+            v.commit(CommitRequest { path: "lost.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            // Lose it from BOTH sides so no rebuild source remains.
+            std::fs::remove_file(dir.path().join("vault").join("lost.md")).unwrap();
+            std::fs::remove_file(dir.path().join(".chunks").join(&h[0..2]).join(&h)).unwrap();
+        }
         let mut v = Vault::open(dir.path()).unwrap();
-        assert!(v.is_corrupt());
-        assert!(v.changes(0).upserts.is_empty(), "corrupt vault advertises nothing");
-
-        v.reindex(false).unwrap();
-        assert!(!v.is_corrupt(), "reindex clears ERROR state");
-        let mut paths: Vec<_> = v.changes(0).upserts.iter().map(|m| m.path.clone()).collect();
-        paths.sort();
-        assert_eq!(paths, vec!["b.md".to_string(), "notes/a.md".to_string()]);
-        // content is fetchable via the single whole-file chunk
-        let meta = v.changes(0).upserts.iter().find(|m| m.path == "b.md").unwrap().clone();
-        assert_eq!(meta.chunks.len(), 1);
-        assert_eq!(v.get_chunk(&meta.chunks[0]).unwrap().unwrap(), b"world");
-        assert_eq!(meta.hash, sha256_hex(b"world"));
+        assert!(v.is_corrupt(), "a file lost from disk AND store can't auto-repair → stays ERROR");
+        v.reindex(true).unwrap(); // operator force
+        assert!(!v.is_corrupt());
+        assert!(!v.changes(0).upserts.iter().any(|m| m.path == "lost.md"), "force-dropped the truly-lost file");
     }
 
     #[test]
@@ -838,10 +848,10 @@ mod tests {
         assert!(!v2.has_chunk(&orphan), "orphan chunk should be reclaimed at startup");
     }
 
-    // B6: a referenced chunk missing from disk on startup marks the vault ERROR so it is reindexed
-    // rather than silently serving a dangling reference.
+    // D0022: a referenced chunk missing from the store but whose file is still on the bind-mount
+    // mirror AUTO-RECOVERS on open (re-ingests the file from disk), rather than staying ERROR.
     #[test]
-    fn startup_marks_corrupt_on_dangling_reference() {
+    fn dangling_chunk_ref_auto_recovers_from_mirror() {
         let dir = tempfile::tempdir().unwrap();
         let body = b"committed data";
         let h = sha256_hex(body);
@@ -850,21 +860,22 @@ mod tests {
             v.put_chunk(&h, body).unwrap();
             v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
         }
-        // Simulate a lost blob: delete it straight off disk (sharded by first 2 chars).
-        let blob = dir.path().join(".chunks").join(&h[0..2]).join(&h);
-        std::fs::remove_file(&blob).unwrap();
+        // Lose only the CHUNK blob; the mirror file vault/d.md remains as the rebuild source.
+        std::fs::remove_file(dir.path().join(".chunks").join(&h[0..2]).join(&h)).unwrap();
         let v2 = Vault::open(dir.path()).unwrap();
-        assert!(v2.is_corrupt(), "dangling chunk reference must mark the vault ERROR");
+        assert!(!v2.is_corrupt(), "dangling ref recovers from the mirror on open");
+        assert!(v2.changes(0).upserts.iter().any(|m| m.path == "d.md"));
     }
 
-    // C1: a MISSING index with materialized data present must open ERROR (require reindex), never
-    // "fresh empty" (which would wipe chunks + trigger client deletes).
+    // D0022: an empty index with materialized data present (e.g. after the SQLite format change)
+    // AUTO-REPAIRS on open — rebuilds the index from disk, no manual reindex. (Was: opens ERROR.)
     #[test]
-    fn missing_index_with_existing_data_opens_error_not_fresh() {
+    fn empty_index_with_data_auto_repairs_on_open() {
         let dir = tempfile::tempdir().unwrap();
         write_vault_file(dir.path(), "a.md", b"data"); // materialized file, no index
         let v = Vault::open(dir.path()).unwrap();
-        assert!(v.is_corrupt(), "missing index but data present must be ERROR, not fresh");
+        assert!(!v.is_corrupt(), "empty index + files must auto-repair, not stay ERROR");
+        assert!(v.changes(0).upserts.iter().any(|m| m.path == "a.md"), "the file is indexed after auto-repair");
     }
 
     #[test]
@@ -943,12 +954,12 @@ mod tests {
         write_vault_file(dir.path(), "a.md", b"hello");
         write_vault_file(dir.path(), "b.md", b"world");
         std::fs::write(dir.path().join(".sync-index.db"), b"not a sqlite db").unwrap();
-        let mut v = Vault::open(dir.path()).unwrap();
-        assert!(v.is_corrupt());
-        assert_eq!(v.changes(0).history_floor, 1, "genesis floor before repair");
-        v.reindex(false).unwrap();
+        // D0022: the corrupt DB auto-repairs on open (rebuild from disk), and that rebuild-from-disk
+        // raises the history floor (tombstones were unrecoverable) — no manual reindex needed.
+        let v = Vault::open(dir.path()).unwrap();
+        assert!(!v.is_corrupt(), "auto-repaired on open");
         let floor = v.changes(0).history_floor;
-        assert!(floor > 1, "corrupt reindex must raise the floor above genesis");
+        assert!(floor > 1, "auto-reindex from a corrupt index must raise the floor above genesis");
         assert_eq!(floor, v.version(), "floor = the current version (deletion history complete only from here)");
     }
 

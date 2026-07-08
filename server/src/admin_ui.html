@@ -132,7 +132,8 @@ async function renderVaults() {
           <td style="text-align:right"><button class="danger" data-revoke="${esc(v.vault)}|${esc(g.grantee)}">Revoke</button></td></tr>`).join("")
       : `<tr><td colspan="3" class="empty">Not shared.</td></tr>`;
     h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)}
-        <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button></div>
+        <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button>
+        <button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Reindex</button></div>
       <table><tr><th>Shared with</th><th>Access</th><th></th></tr>${rows}</table>
       <div class="row" style="margin-top:8px">
         <input placeholder="grantee username" list="userlist" data-g="${esc(v.vault)}" style="flex:1;min-width:140px" />
@@ -154,6 +155,14 @@ async function renderVaults() {
     if (typed !== vault) { setMsg("Delete cancelled — the name didn't match.", "err"); return; }
     try { await api("DELETE", "/api/vault", { vault }); await renderVaults(); setMsg("Vault deleted.", "ok"); }
     catch (e) { setMsg("Delete failed: " + e.message, "err"); }
+  });
+  // One-click reindex of your OWN vault (D0022). Vaults auto-repair on access, so this is rarely
+  // needed; if a rebuild reports files unrecoverable, use the repair panel's Force below.
+  box.querySelectorAll("[data-reindex]").forEach(b => b.onclick = async () => {
+    const vault = b.dataset.reindex;
+    try { const r = await api("POST", "/api/admin/reindex", { owner: me.username, vault, force: false });
+      setMsg(`Reindexed ${vault} — now at v${r.version}.`, "ok"); }
+    catch (e) { setMsg(`Reindex failed: ${e.message}. If files are unrecoverable, use Force in the repair panel below.`, "err"); }
   });
   box.querySelectorAll("[data-share]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.share;
