@@ -183,6 +183,19 @@ impl SqliteIndex {
         Ok(dereferenced)
     }
 
+    // Deliberate operator PRUNE (D0019 / tombstonePrune): physically drop tombstones strictly below
+    // `floor` AND raise history_floor to it, atomically. Reclaims tombstone space; safe because a
+    // client that ends up below the raised floor reconciles conservatively (keep + push + notify) per
+    // the horizon. Returns the number of tombstones removed. Caller clamps floor to [current_floor, version].
+    pub fn prune_tombstones(&self, floor: u64) -> std::io::Result<usize> {
+        let mut conn = self.conn.lock().map_err(io)?;
+        let tx = conn.transaction().map_err(io)?;
+        let n = tx.execute("DELETE FROM deletions WHERE version < ?1", params![floor as i64]).map_err(io)?;
+        tx.execute("UPDATE meta SET value=?1 WHERE key='history_floor'", params![floor as i64]).map_err(io)?;
+        tx.commit().map_err(io)?;
+        Ok(n)
+    }
+
     // An existing index key that folds (full Unicode lower-case) to the same name as `path` but is
     // NOT `path` — the case/Unicode-collision guard commit uses (a folding FS would collapse them).
     // Uses the `fold` column (computed in Rust with to_lowercase, so it matches Rust's fold, not
@@ -330,6 +343,20 @@ mod tests {
         s.set_history_floor(5).unwrap();
         assert_eq!(s.history_floor().unwrap(), 5);
         assert_eq!(s.changes(0).unwrap().history_floor, 5, "raised floor reported in changes");
+    }
+
+    #[test]
+    fn prune_tombstones_drops_below_floor_and_raises_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
+        s.put(&meta("a.md", "h", 2, &["c"])).unwrap(); s.delete("a.md", 3).unwrap();
+        s.put(&meta("b.md", "h", 4, &["c"])).unwrap(); s.delete("b.md", 5).unwrap();
+        // Prune below floor 4: a.md's tombstone (v3) goes, b.md's (v5) stays; floor raised to 4.
+        let n = s.prune_tombstones(4).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(s.history_floor().unwrap(), 4);
+        let dels: Vec<_> = s.changes(0).unwrap().deletes.iter().map(|d| d.path.clone()).collect();
+        assert_eq!(dels, vec!["b.md"], "only the below-floor tombstone pruned");
     }
 
     #[test]

@@ -146,6 +146,41 @@ pub async fn reindex(
 }
 
 #[derive(Deserialize)]
+pub struct PruneHistoryReq {
+    owner: String,
+    vault: String,
+    // The version below which to drop tombstones (also the new history_floor). Omitted ⇒ the current
+    // version, i.e. prune ALL current tombstones. Clamped server-side to [current floor, version].
+    #[serde(default)]
+    floor: Option<u64>,
+}
+// Server-admin deliberate tombstone PRUNE (tombstonePrune / D0019): reclaim tombstone space by
+// dropping deletions below a floor and raising the deletion-history floor to it. Safe because a
+// client left below the raised floor reconciles conservatively (keep + push + a batched notice) per
+// the horizon. Admin-only; broadcasts the (unchanged content) version so clients re-check.
+pub async fn prune_history(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<PruneHistoryReq>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&req.owner) || !safe_name(&req.vault) {
+        return Err(AppError::BadRequest("invalid owner or vault".into()));
+    }
+    if !st.vault_exists(&req.owner, &req.vault) {
+        return Err(AppError::NotFound);
+    }
+    let h = st.vault(&req.owner, &req.vault).map_err(|_| AppError::NotFound)?;
+    let (owner, vault, floor) = (req.owner.clone(), req.vault.clone(), req.floor);
+    let (pruned, version) = tokio::task::spawn_blocking(move || -> Result<(usize, u64), AppError> {
+        let mut v = crate::error::wlock(&h.vault)?;
+        let target = floor.unwrap_or_else(|| v.version()); // default: prune all current tombstones
+        let n = v.prune_history(target).map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok((n, v.version()))
+    }).await.map_err(|e| AppError::Internal(format!("prune join failed: {e}")))??;
+    eprintln!("[{owner}/{vault} prune-history by admin {user}] pruned {pruned} tombstone(s)");
+    Ok(Json(serde_json::json!({ "pruned": pruned, "version": version })))
+}
+
+#[derive(Deserialize)]
 pub struct VaultDelReq {
     owner: String,
     vault: String,

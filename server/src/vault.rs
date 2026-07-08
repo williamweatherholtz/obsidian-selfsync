@@ -348,6 +348,17 @@ impl Vault {
         Ok(())
     }
 
+    // Deliberate operator history prune (tombstonePrune / D0019): drop tombstones below `floor` and
+    // raise the deletion-history floor to it. Clamps floor to [current floor, current version] so it's
+    // monotonic and never claims completeness beyond what exists. Returns the count pruned. Reclaims
+    // tombstone space; a client left below the raised floor reconciles conservatively (the horizon).
+    pub fn prune_history(&mut self, requested_floor: u64) -> std::io::Result<usize> {
+        let floor = requested_floor.clamp(self.history_floor, self.version);
+        let n = self.index.prune_tombstones(floor)?;
+        self.history_floor = floor;
+        Ok(n)
+    }
+
     pub fn has_chunk(&self, hash: &str) -> bool { self.store.has(hash) }
     pub fn put_chunk(&self, hash: &str, bytes: &[u8]) -> std::io::Result<()> {
         self.store.put(hash, bytes)?;
@@ -976,6 +987,28 @@ mod tests {
         let mut v = v;
         v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
         assert!(v.has_chunk(&ha));
+    }
+
+    // tombstonePrune (D0019): a deliberate prune drops tombstones below the floor and raises it;
+    // recent tombstones are kept and the floor stays monotonic.
+    #[test]
+    fn prune_history_drops_old_tombstones_and_raises_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let b = b"x"; let h = sha256_hex(b);
+        v.put_chunk(&h, b).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.delete("a.md").unwrap();
+        let after_first = v.version(); // a.md's tombstone is at this version
+        v.put_chunk(&h, b).unwrap();
+        v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.delete("b.md").unwrap();
+        assert_eq!(v.changes(0).deletes.len(), 2);
+        // Prune below (after_first + 1): drops a.md's tombstone, keeps b.md's; floor raised.
+        let n = v.prune_history(after_first + 1).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(v.changes(0).deletes.len(), 1, "only the below-floor tombstone pruned");
+        assert!(v.changes(0).history_floor > after_first, "floor raised by the prune");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
