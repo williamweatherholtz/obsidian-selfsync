@@ -157,14 +157,14 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const cs = s.configSync;
     const g = new SettingGroup(c).setHeading("Obsidian configuration");
     g.addSetting((st) => st.setName("Sync settings, themes & plugins")
-      .setDesc("Notes & attachments always sync. This adds your .obsidian config (settings, themes, plugins) across devices. Community-plugin code is a separate opt-in below (off by default). SelfSync's own login is never synced.")
+      .setDesc("Sync your Obsidian configuration across devices.")
       .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
         cs.enabled = v; await this.plugin.saveSettings(); this.display();
       })));
     if (!cs.enabled) return;
 
-    // The key trust signal — shown whenever config sync is on. A description-only row.
-    g.addSetting((st) => st.setDesc("🔒 SelfSync's own settings (server, login, vault) are never synced — they stay on this device."));
+    // A short trust signal — SelfSync never syncs its own credentials.
+    g.addSetting((st) => st.setDesc("🔒 SelfSync's own login is never synced."));
 
     const cat = (name: string, desc: string, key: "core" | "hotkeys" | "appearance" | "snippets" | "community") =>
       g.addSetting((st) => st.setName(name).setDesc(desc).addToggle((tg) => tg.setValue(cs[key]).onChange(async (v) => {
@@ -174,13 +174,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     cat("Hotkeys", "hotkeys.json", "hotkeys");
     cat("Appearance & themes", "appearance.json, themes/", "appearance");
     cat("CSS snippets", "snippets/", "snippets");
-    cat("Community plugins", "Each plugin's code + settings across devices. Off by default — pushing plugin code (incl. desktop-only plugins to mobile) is riskier.", "community");
+    cat("Community plugins", "Each community plugin's code and settings.", "community");
 
-    if (cs.community) {
-      this.renderPluginChecklist(c, cs);
-    } else {
-      g.addSetting((st) => st.setDesc("Community plugins are NOT syncing — turn on “Community plugins” above to include their code + settings."));
-    }
+    if (cs.community) this.renderPluginChecklist(c, cs);
   }
 
   // Conflicts — how divergence between devices is handled. A sibling section to the config scope:
@@ -191,12 +187,12 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // Surfaced prominently (not auto-resolved) so plugins are never silently deleted or resurrected.
     const conflictGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
     if (conflictGroups.length) {
-      g.addSetting((st) => st.setName(`Config differences (${conflictGroups.length})`).setClass("mod-warning")
-        .setDesc("Settings or plugins differ across your devices. Nothing was deleted or overwritten — choose which version to keep.")
+      g.addSetting((st) => st.setName(`${conflictGroups.length} config differences`).setClass("mod-warning")
+        .setDesc("Choose which version to keep.")
         .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
     }
     g.addSetting((st) => st.setName("Concurrent edits to the same file")
-      .setDesc("When a file changed on two devices: merge the changes automatically, or keep both as a conflict file.")
+      .setDesc("How to resolve a file edited on two devices.")
       .addDropdown((dd) => dd
         .addOption("auto-merge", "Automatically merge")
         .addOption("conflict-file", "Create conflict file")
@@ -207,16 +203,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
     const g = new SettingGroup(c).setHeading("Advanced");
     g.addSetting((st) => st.setName("Show sync status in the editor")
-      .setDesc("Show a sync-status icon in the open note's header. Off by default. Handy on mobile — there's no status bar and the ribbon icon sits in the sidebar drawer, so this is the way to get a visible indicator there.")
+      .setDesc("Show a sync-status icon in the open note's header.")
       .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v))));
     g.addSetting((st) => st.setName("Store password on this device")
-      .setDesc("Keep your password for silent reconnect. Turn off for token-only: the password is removed now and you re-enter it when the session expires (~30 days) or is revoked.")
+      .setDesc("Keep your password on this device for silent reconnect.")
       .addToggle((tg) => tg.setValue(s.storePassword).onChange(async (v) => {
         s.storePassword = v;
         if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
         await this.plugin.saveSettings();
       })));
-    g.addSetting((st) => st.setName("Device name").setDesc("Shown in conflict-copy filenames. Blank = auto (the greyed name is what's used).")
+    g.addSetting((st) => st.setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); })));
     g.addSetting((st) => st.setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
@@ -252,17 +248,16 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .sort((a, b) => (manifests[a].name || a).localeCompare(manifests[b].name || b));
     if (ids.length === 0) return;
     const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
-    const g = new SettingGroup(c).setHeading("Shared community plugins");
+    const g = new SettingGroup(c).setHeading("Synced community plugins");
 
-    // Bulk actions: opt in everything at once (for a full mirror), or clear the set. The count
-    // lives in this row's description (no separate intro line). New plugins stay unshared until added.
-    g.addSetting((st) => st.setName("Share all installed plugins")
-      .setDesc(`Add every currently-installed plugin to the shared set at once (${shared}/${ids.length} shared). Plugins you install LATER still won't share until you add them.`)
-      // "Share none" first, "Share all" second → Share all renders on the RIGHT.
-      .addButton((b) => b.setButtonText("Share none").setWarning().onClick(async () => {
+    // Bulk actions: sync everything at once (for a full mirror), or clear the set.
+    g.addSetting((st) => st.setName("Sync all installed plugins")
+      .setDesc(`${shared} of ${ids.length} plugins synced.`)
+      // "Sync none" first, "Sync all" second → Sync all renders on the RIGHT.
+      .addButton((b) => b.setButtonText("Sync none").setWarning().onClick(async () => {
         cs.pluginAllow = []; await this.plugin.saveSettings(); this.display();
       }))
-      .addButton((b) => b.setButtonText("Share all").onClick(async () => {
+      .addButton((b) => b.setButtonText("Sync all").onClick(async () => {
         cs.pluginAllow = ids.slice(); await this.plugin.saveSettings(); this.display();
       })));
 
