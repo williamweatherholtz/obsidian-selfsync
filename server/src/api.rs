@@ -79,7 +79,11 @@ pub async fn changes(
     ensure_ready(&v)?;
     let resp = v.changes(since);
     drop(v);
-    if !resp.upserts.is_empty() || !resp.deletes.is_empty() {
+    // Log only a GENUINE forward delta (a client catching up from a known point). A `since=0` call
+    // returns the whole manifest and is issued routinely (initial pull + the periodic config re-scan),
+    // so it would spam identical lines even when nothing changed — every actual write is already in
+    // the commit log, so a read doesn't need its own line.
+    if since > 0 && (!resp.upserts.is_empty() || !resp.deletes.is_empty()) {
         eprintln!("[{owner}/{vault} changes by {user}] since={} -> v{} (+{} upserts, {} deletes)",
             since, resp.version, resp.upserts.len(), resp.deletes.len());
     }
