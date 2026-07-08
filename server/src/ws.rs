@@ -79,11 +79,17 @@ pub async fn ws_handler(
     let live = st.ws_conns.fetch_add(1, Ordering::Relaxed) + 1;
     if live > MAX_WS_CONNECTIONS {
         st.ws_conns.fetch_sub(1, Ordering::Relaxed);
-        eprintln!("[ws] connect REJECTED (at capacity: {MAX_WS_CONNECTIONS})");
+        eprintln!("[ws] ERROR: connection refused — server is at capacity ({MAX_WS_CONNECTIONS} connections)");
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
-    eprintln!("[ws] {owner}/{vault} connected (by {user}) [{live}/{MAX_WS_CONNECTIONS}]");
+    // Routine connects are NOT logged. Emit capacity telemetry only: warn once we're at/over 80% of
+    // the cap, and error at 100% (the next client will be refused).
+    if live == MAX_WS_CONNECTIONS {
+        eprintln!("[ws] ERROR: at capacity — {live}/{MAX_WS_CONNECTIONS} connections; further clients will be refused");
+    } else if live >= MAX_WS_CONNECTIONS * 4 / 5 {
+        eprintln!("[ws] WARNING: {live}/{MAX_WS_CONNECTIONS} connections ({}% of capacity)", live * 100 / MAX_WS_CONNECTIONS);
+    }
     let rx = handle.tx.subscribe();
     // Echo back only the non-secret subprotocol so the handshake completes.
     let (st2, o2, v2, u2) = (st.clone(), owner.clone(), vault.clone(), user.clone());
