@@ -5,3 +5,10 @@
 .selfsync-dot {
   margin-right: 6px;
 }
+
+/* Connection fact value: sits in the control area (right), muted, with a gap before any action
+   button that follows it. Label-left / value-right, single line — keeps the rows compact. */
+.selfsync-value {
+  color: var(--text-muted);
+  margin-right: 8px;
+}

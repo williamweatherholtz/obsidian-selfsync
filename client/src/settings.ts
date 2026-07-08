@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, SettingGroup, Notice } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingGroup, Notice } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts } from "./configsync";
 import { statusTitle } from "./wizardsteps";
@@ -59,7 +59,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
-  private statusEl?: HTMLElement;
+  private statusGroup?: SettingGroup;
 
   display(): void {
     const { containerEl } = this; containerEl.empty();
@@ -67,18 +67,19 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const configured = Boolean(s.vaultId && s.serverUrl && s.username);
 
     // Each section is a native SettingGroup — the heading renders OUTSIDE a single card that holds
-    // its rows as flush, divider-separated entries (this is how BRAT/Obsidian group settings, and
-    // how card-styling themes render one cohesive card per section instead of a card per row). The
-    // status + connection facts live in a stable sub-container so they can live-refresh in place.
-    this.statusEl = containerEl.createEl("div");
-    this.refreshStatus();
-    this.plugin.statusListener = () => this.refreshStatus();
+    // its rows as flush, divider-separated entries (how BRAT/Obsidian group settings, and how
+    // card-styling themes render one cohesive card per section). The Connection group is built
+    // directly in containerEl (so it gets the same inter-group spacing as the others) and kept as a
+    // member so status ticks refresh just its rows in place — no whole-tab rebuild that would drop
+    // focus/scroll in the config groups below.
+    this.statusGroup = new SettingGroup(containerEl).setHeading("Connection");
+    this.fillStatus();
+    this.plugin.statusListener = () => this.fillStatus();
     this.plugin.settingsRefresh = () => this.display(); // re-render when the conflict count changes
-    if (!configured) return; // unconfigured: only the status group + Set up button
+    if (!configured) return; // unconfigured: only the Connection group + Set up button
 
     this.renderObsidianConfig(containerEl, s); // what config syncs (scope)
     this.renderConflicts(containerEl, s);       // how divergence is handled (sibling to config)
-    this.renderManage(containerEl);             // transitions: reconfigure / switch / device / disconnect / sign out
     this.renderAdvanced(containerEl, s);
   }
 
@@ -93,26 +94,41 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     return new Date(s.lastSyncedAt).toLocaleTimeString();
   }
 
-  // The "Connection" card: the live status row + the standing connection facts. Live-refreshed by
-  // the plugin's statusListener as the sync state changes. The only non-native touch is the status
-  // dot's colour, which mirrors the ribbon/status-bar indicator so the state colour is consistent.
-  private refreshStatus(): void {
-    const el = this.statusEl;
-    if (!el) return;
-    el.empty();
+  // One connection fact: label on the LEFT (row name), value on the RIGHT (control area), with an
+  // optional management action button after the value — the old "Manage" section folded in here.
+  private factRow(g: SettingGroup, label: string, value: string, extra?: (st: Setting) => void): void {
+    g.addSetting((st) => {
+      st.setName(label);
+      st.controlEl.createSpan({ cls: "selfsync-value", text: value });
+      extra?.(st);
+    });
+  }
+
+  // Fill the Connection card's rows (into the group's listEl, so refresh replaces only these rows).
+  // Facts first; the live status light + connection actions sit at the BOTTOM. The only non-native
+  // touch is the status dot's colour, which mirrors the ribbon/status-bar indicator.
+  private fillStatus(): void {
+    const g = this.statusGroup;
+    if (!g) return;
+    g.listEl.empty();
     const s = this.plugin.settings;
     const configured = Boolean(s.vaultId && s.serverUrl && s.username);
     const phase = this.plugin.statusText(); // FSM Phase
 
     if (!configured) {
-      new SettingGroup(el).addSetting((st) => st.setName("Not set up").setDesc("Sync your notes to your own server.")
+      g.addSetting((st) => st.setName("Not set up").setDesc("Sync your notes to your own server.")
         .addButton((b) => b.setButtonText("Set up SelfSync").setCta().onClick(() => this.plugin.openSetup())));
       return;
     }
 
-    const g = new SettingGroup(el).setHeading("Connection");
-    // Status row: a coloured dot + the phase title as the row name; the current issue as its
-    // description; recovery actions (offline only) in the control area.
+    // Facts (label left, value right) with their management action integrated as a button.
+    this.factRow(g, "Server", s.serverUrl, (st) => st.addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup())));
+    this.factRow(g, "Account", s.username, (st) => st.addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); })));
+    this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,
+      (st) => st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open())));
+    this.factRow(g, "Last synced", this.lastSyncedAgo(s));
+
+    // Live status light at the BOTTOM: coloured dot + phase; issue as desc; connection actions right.
     g.addSetting((st) => {
       st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(phase).color}`);
       st.nameEl.createSpan({ text: statusTitle(phase) });
@@ -124,13 +140,11 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         if (this.plugin.isVaultGone()) {
           st.addButton((b) => b.setButtonText("Re-create vault from this device").setCta().onClick(() => void this.plugin.recreateVault()));
         }
+      } else {
+        st.addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink()));
+        st.addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
       }
     });
-    // Standing connection facts as plain rows (label + value).
-    g.addSetting((st) => st.setName("Server").setDesc(s.serverUrl));
-    g.addSetting((st) => st.setName("Account").setDesc(s.username));
-    g.addSetting((st) => st.setName("Vault").setDesc(s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId));
-    g.addSetting((st) => st.setName("Last synced").setDesc(this.lastSyncedAgo(s)));
   }
 
   private showDeviceLink(): void {
@@ -190,21 +204,6 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         .onChange(async (v) => { s.conflictStrategy = v as NewLiveSyncSettings["conflictStrategy"]; await this.plugin.saveSettings(); })));
   }
 
-  // Manage — the transitions you perform (change wiring, switch vault, link a device, stop syncing).
-  private renderManage(c: HTMLElement): void {
-    const g = new SettingGroup(c).setHeading("Manage");
-    g.addSetting((st) => st.setName("Server & account").setDesc("Change the server URL or the account you sign in with.")
-      .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup())));
-    g.addSetting((st) => st.setName("Switch vault").setDesc("Point this Obsidian vault at a different remote vault (you choose how to combine the data at switch time).")
-      .addButton((b) => b.setButtonText("Switch vault").onClick(() => new SwitchVaultModal(this.app, this.plugin).open())));
-    g.addSetting((st) => st.setName("Add a device").setDesc("Show a link/QR to set SelfSync up on another device.")
-      .addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink())));
-    g.addSetting((st) => st.setName("Disconnect").setDesc("Stop syncing this vault (you stay signed in; local files are kept).")
-      .addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); })));
-    g.addSetting((st) => st.setName("Sign out").setDesc("Stop syncing and forget this device's password (you'll re-enter it next time).")
-      .addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); })));
-  }
-
   private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
     const g = new SettingGroup(c).setHeading("Advanced");
     g.addSetting((st) => st.setName("Show sync status in the editor")
@@ -259,11 +258,12 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // lives in this row's description (no separate intro line). New plugins stay unshared until added.
     g.addSetting((st) => st.setName("Share all installed plugins")
       .setDesc(`Add every currently-installed plugin to the shared set at once (${shared}/${ids.length} shared). Plugins you install LATER still won't share until you add them.`)
-      .addButton((b) => b.setButtonText("Share all").onClick(async () => {
-        cs.pluginAllow = ids.slice(); await this.plugin.saveSettings(); this.display();
-      }))
+      // "Share none" first, "Share all" second → Share all renders on the RIGHT.
       .addButton((b) => b.setButtonText("Share none").setWarning().onClick(async () => {
         cs.pluginAllow = []; await this.plugin.saveSettings(); this.display();
+      }))
+      .addButton((b) => b.setButtonText("Share all").onClick(async () => {
+        cs.pluginAllow = ids.slice(); await this.plugin.saveSettings(); this.display();
       })));
 
     for (const id of ids) {
