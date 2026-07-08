@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // "obsidian" is aliased to test/obsidian-stub.ts (see vitest.config.ts).
 import NewLiveSyncPlugin, { ApiClient } from "../src/main";
 import { VaultIo, SyncApi } from "../src/sync";
-import { FileMeta } from "../src/protocol";
+import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { TFile } from "obsidian";
 
 // In-memory VaultIo (enough for reconcile to run).
@@ -26,7 +26,9 @@ function spyApi() {
   let changesError: string | null = null; // D0021: settable custom error (e.g. an HTTP 404) from changes()
   let changesResp: any = { version: 0, upserts: [], deletes: [] }; // D0019: settable so a test can advance history_floor / rewind version
   let wsOnChanged: (() => void) | null = null;
-  let statusApiVersion: number | undefined;   // undefined = omit apiVersion (legacy server)
+  // Default to the client's version — a real current server ALWAYS advertises api_version, and the
+  // client now fails CLOSED on an absent/mismatched one (R12-PB2). Tests override for the mismatch case.
+  let statusApiVersion: number | undefined = CLIENT_API_VERSION;
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;

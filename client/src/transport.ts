@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
-import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta } from "./protocol";
+import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
 import { SyncApi } from "./sync";
 
 // R11-HIGH: Obsidian's requestUrl has NO timeout, so a half-open/stalled connection (VPN drop,
@@ -93,9 +93,7 @@ export class HttpTransport implements SyncApi {
   async status(): Promise<StatusResponse> {
     const r = await httpReq({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
     if (r.status !== 200) throw new Error(`status: HTTP ${r.status}`);
-    const j = r.json as { status: string; detail: string; version: number; api_version?: number };
-    // Server serializes snake_case `api_version`; expose it as camelCase apiVersion.
-    return { status: j.status, detail: j.detail, version: j.version, apiVersion: j.api_version };
+    return validateStatus(r.json); // validates shape + maps snake_case api_version → apiVersion
   }
 
   async changes(since: number): Promise<ChangesResponse> {

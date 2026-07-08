@@ -24,6 +24,11 @@ export interface NewLiveSyncSettings {
   // Tracked explicitly — NOT derived from filenames — so a user's own note that happens to be named
   // like a conflict copy is never mistaken for one and destroyed by the resolver (critique R9-H1).
   noteConflicts: string[];
+  // A vault-switch resolution awaiting the next reconnect. PERSISTED (R12-CA1) so a restart between
+  // writing the new vaultId and applying the switch replays the chosen mode (download/upload/merge)
+  // — otherwise the reconnect would do a plain MERGE against the OLD vault's stale base, silently
+  // downgrading an authoritative overwrite and mis-merging same-named files.
+  pendingSwitch?: "download" | "upload" | "merge";
   // D0019: the deletion-history floor this device last synced at, per vault (key = `owner/vaultId`).
   // When the server's floor advances past the stored one (a rebuild-from-disk reindex reset the
   // deletion history), the client stays conservative (keep + push) and shows ONE batched notice

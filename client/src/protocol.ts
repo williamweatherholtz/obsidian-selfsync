@@ -37,8 +37,13 @@ function asStr(v: unknown, f: string): string {
   if (typeof v !== "string") throw new Error(`malformed response: ${f} not a string`);
   return v;
 }
+// Every numeric field the client acts on (version, size, delete.version, api_version) is a
+// NON-NEGATIVE INTEGER on the wire. Enforce that, not just finiteness (R12-PB3): a fractional or
+// negative `version` would otherwise become state.version and serialize into `?since=1.5`/`-1`,
+// which the server can't parse → falls back to since=0 → the client re-runs a full whole-vault
+// reconcile on every poll forever (cursor never converges).
 function asNum(v: unknown, f: string): number {
-  if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`malformed response: ${f} not a number`);
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Error(`malformed response: ${f} not a non-negative integer`);
   return v;
 }
 export function validateFileMeta(o: unknown): FileMeta {
@@ -49,6 +54,21 @@ export function validateFileMeta(o: unknown): FileMeta {
     throw new Error("malformed response: FileMeta.chunks not string[]");
   }
   return o as FileMeta;
+}
+// R12-PB5: status() was the one consumed response NOT shape-validated — a garbage `{}` made
+// `status` undefined and mis-fired the "vault damaged, run reindex" path (and fed the version gate
+// an unvalidated object). Validate it and map snake_case api_version → camelCase apiVersion.
+export function validateStatus(o: unknown): StatusResponse {
+  const s = o as Record<string, unknown>;
+  if (!s || typeof s !== "object") throw new Error("malformed response: StatusResponse not an object");
+  asStr(s.status, "status"); asNum(s.version, "version");
+  if (s.api_version !== undefined && s.api_version !== null) asNum(s.api_version, "api_version");
+  return {
+    status: s.status as string,
+    detail: typeof s.detail === "string" ? s.detail : "",
+    version: s.version as number,
+    apiVersion: typeof s.api_version === "number" ? (s.api_version as number) : undefined,
+  };
 }
 export function validateChanges(o: unknown): ChangesResponse {
   const c = o as Record<string, unknown>;

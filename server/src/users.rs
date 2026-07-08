@@ -62,9 +62,7 @@ impl UserStore {
     }
 
     fn save(&self) -> std::io::Result<()> {
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&self.file)?)?;
-        std::fs::rename(tmp, &self.path)
+        crate::atomicfile::atomic_write(&self.path, &serde_json::to_vec(&self.file)?) // fsync-durable (R12-CC2)
     }
 
     pub fn is_empty(&self) -> bool { self.file.users.is_empty() }

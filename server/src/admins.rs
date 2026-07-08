@@ -13,7 +13,10 @@ pub struct AdminStore {
 impl AdminStore {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let set = match std::fs::read(path) {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+            // R12-CC3: fail LOUD on a corrupt .admins.json, like the sibling stores. The old
+            // unwrap_or_default() silently dropped EVERY promoted admin (a stealth privilege
+            // downgrade) and masked the exact corruption the other stores surface.
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!(".admins.json is corrupt: {e}")))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
             Err(e) => return Err(e),
         };
@@ -22,9 +25,7 @@ impl AdminStore {
     pub fn contains(&self, user: &str) -> bool { self.set.contains(user) }
     pub fn list(&self) -> Vec<String> { self.set.iter().cloned().collect() }
     fn persist(&self) -> std::io::Result<()> {
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&self.set)?)?;
-        std::fs::rename(tmp, &self.path) // atomic replace
+        crate::atomicfile::atomic_write(&self.path, &serde_json::to_vec(&self.set)?) // fsync-durable atomic replace (R12-CC2)
     }
     pub fn grant(&mut self, user: &str) -> std::io::Result<()> {
         if self.set.insert(user.to_string()) { self.persist()?; }

@@ -193,6 +193,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private unloading = false;
   private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
   private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
+  private versionNoticeShown = false; // R12-PB6: toast a protocol-version mismatch once, not every retry
   private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
   private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
@@ -512,13 +513,12 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Switching which remote vault this local vault syncs to is a one-time transition, not
   // a persistent setting: the caller (the switch modal) picks the resolution and it is
   // applied ONCE on the next reconnect, then forgotten. `merge` is the safe default union.
-  private pendingSwitchMode?: SwitchMode;
   async switchToVault(name: string, mode: SwitchMode = "merge", owner = "", readOnly = false): Promise<void> {
     this.settings.vaultId = name;
     this.settings.vaultOwner = owner || undefined; // empty = own vault
     this.settings.vaultReadOnly = readOnly;
+    this.settings.pendingSwitch = mode; // persist the resolution WITH the vaultId (atomic) so a restart mid-switch replays it (R12-CA1)
     await this.saveSettings();
-    this.pendingSwitchMode = mode;
     await this.reconnect();
   }
   // Vaults shared WITH this account (owned by others) — offered in the switch modal.
@@ -743,12 +743,18 @@ export default class NewLiveSyncPlugin extends Plugin {
       // Version handshake: refuse to sync against a server on a different protocol/schema version
       // (a self-hoster auto-updates the plugin independently of the server). A clear, actionable
       // message beats an undiagnosable malformed-response retry loop — and the vault is untouched.
-      // (Older servers omit apiVersion → undefined → skip the check, staying backward-compatible.)
-      if (health.apiVersion !== undefined && health.apiVersion !== CLIENT_API_VERSION) {
-        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (v${health.apiVersion}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
-        this.log(this.lastIssue, true);
-        throw new Error(`incompatible protocol: client v${CLIENT_API_VERSION} vs server v${health.apiVersion}`);
+      // R12-PB2: fail CLOSED — an absent apiVersion (a pre-versioning server, or a proxy that strips
+      // the field) means we CAN'T confirm compatibility, so don't sync (was: undefined skipped the
+      // check → failed open, the wrong default for the mixed-version case the gate exists for).
+      if (health.apiVersion !== CLIENT_API_VERSION) {
+        const server = health.apiVersion === undefined ? "an unknown version" : `v${health.apiVersion}`;
+        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${server}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
+        // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
+        this.log(this.lastIssue, !this.versionNoticeShown);
+        this.versionNoticeShown = true;
+        throw new Error(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${server}`);
       }
+      this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
       if (health.status !== "ready") {
         this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
         this.log(this.lastIssue);
@@ -764,8 +770,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       // reconcile — silently DOWNGRADING an authoritative overwrite (download = take-remote, upload =
       // take-local) into a merge that could conflict-copy or resurrect. Leaving it set until success
       // makes the switch resolution durable across a failed attempt (it retries as the switch, not a merge).
-      const switchMode = this.pendingSwitchMode;
-      if (switchMode) { await switchTo(this.deps(), switchMode); this.pendingSwitchMode = undefined; }
+      const switchMode = this.settings.pendingSwitch;
+      if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); }
       else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
       await this.flushConfigReload();
       this.lastConfigScanAt = Date.now(); // this reconcile was config-aware — start the scan window now
@@ -1032,15 +1038,22 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const data = this.migratePersisted((await this.loadData()) ?? {});
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings ?? {});
+    // R12-CA3: a corrupt/truncated data.json (crash mid-save, hand-edit, or a newer-schema file a
+    // rolled-back build can't parse) must NOT brick the plugin. Fall back to defaults + a clear
+    // notice; the synced files on disk are untouched (worst case: an empty base → the next reconcile
+    // re-syncs conservatively, never clobbering). Also harden each field against a non-array/non-object.
+    let data: any = {};
+    try { data = this.migratePersisted((await this.loadData()) ?? {}) ?? {}; }
+    catch (e: any) { this.log(`WARNING: couldn't read saved settings/base (${e?.message ?? e}) — starting from defaults; your synced files are untouched`, true); }
+    const s = (data && typeof data === "object" ? data.settings : undefined) ?? {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, s);
     // Fresh, fully-defaulted configSync object (never share the module constant, and
     // backfill any categories added since this vault last saved).
-    this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(data.settings?.configSync ?? {}) };
+    this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
     // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
-    this.settings.configConflicts = [...(data.settings?.configConflicts ?? [])];
-    this.settings.noteConflicts = [...(data.settings?.noteConflicts ?? [])];
-    this.base = new BaseStore(data.base ?? {});
+    this.settings.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
+    this.settings.noteConflicts = Array.isArray(s.noteConflicts) ? [...s.noteConflicts] : [];
+    this.base = new BaseStore(data.base && typeof data.base === "object" ? data.base : {});
   }
   async saveSettings() { await this.persist(); }
   // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so

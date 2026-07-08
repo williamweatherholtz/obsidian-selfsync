@@ -43,7 +43,8 @@ const SCHEMA: &str = "
         path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL,
         mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_files_version ON files(version);
-    CREATE INDEX IF NOT EXISTS idx_files_fold ON files(fold);
+    -- NOTE: the idx_files_fold index is created in migrate(), NOT here — applying this batch to a
+    -- pre-`fold` DB would otherwise fail creating an index on a column that doesn't exist yet (R12-CC1).
     CREATE TABLE IF NOT EXISTS file_chunks (
         path TEXT NOT NULL, seq INTEGER NOT NULL, chunk TEXT NOT NULL, PRIMARY KEY(path, seq));
     CREATE INDEX IF NOT EXISTS idx_fc_chunk ON file_chunks(chunk);
@@ -53,18 +54,54 @@ const SCHEMA: &str = "
 ";
 
 impl SqliteIndex {
+    // The on-disk table-shape version this binary understands. Bump + add a migrate() step for any
+    // change to the `files`/`file_chunks`/`deletions` columns.
+    const CURRENT_SCHEMA: u64 = 1;
+
     // Open (creating if absent) the per-vault index DB, apply the schema (idempotent), seed the
     // version + history_floor. WAL makes concurrent readers + a single writer crash-safe.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let conn = Connection::open(path).map_err(io)?;
-        conn.execute_batch(SCHEMA).map_err(io)?;
+        conn.execute_batch(SCHEMA).map_err(io)?; // creates tables on a FRESH db; a NO-OP on an existing one
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('version', 1)", []).map_err(io)?;
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('history_floor', 1)", []).map_err(io)?;
-        // Explicit index-schema tag (issueDataMigration): the formal version of the on-disk table
-        // shape, so a future schema change bumps this + runs a migration instead of forcing a
-        // CORRUPT→reindex. 1 = the current schema (meta/files/file_chunks/deletions).
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', 1)", []).map_err(io)?;
+        Self::migrate(&conn)?;
         Ok(SqliteIndex { conn: Mutex::new(conn) })
+    }
+
+    // R12-CC1: a REAL schema-migration seam. `CREATE TABLE IF NOT EXISTS` can only create tables on
+    // a fresh DB — it can NEVER add a column to an existing table — and `schema_version` was written
+    // but never read, so any column added to an existing table silently broke every write (the
+    // shipped `fold` column already proved this). Now: (a) refuse to open a DB from a NEWER binary
+    // (downgrade guard — don't run queries against an unknown shape and corrupt it); (b) run explicit
+    // per-version migrations; (c) stamp the current version. Future changes add an `if v < N { … }` step.
+    fn migrate(conn: &Connection) -> std::io::Result<()> {
+        let v = Self::meta_get(conn, "schema_version").unwrap_or(1);
+        if v > Self::CURRENT_SCHEMA {
+            return Err(io(format!(
+                "this vault's index was written by a NEWER server (schema v{v} > v{}); refusing to open \
+                 with an older binary to avoid corruption — upgrade the server binary", Self::CURRENT_SCHEMA
+            )));
+        }
+        // Heal a pre-`fold` DB (files table created before the fold column existed): it opens fine
+        // but every INSERT / case-collision check referencing `fold` would fail. Add + backfill it.
+        let has_fold: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='fold'", [], |r| r.get(0))
+            .map_err(io)?;
+        if has_fold == 0 {
+            conn.execute_batch(
+                "ALTER TABLE files ADD COLUMN fold TEXT NOT NULL DEFAULT '';\n\
+                 UPDATE files SET fold = lower(path);",
+            ).map_err(io)?;
+        }
+        // Create the fold index here (moved out of SCHEMA) — now that the column is guaranteed to
+        // exist on both a fresh and a just-healed DB. Idempotent on an already-indexed DB.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_fold ON files(fold)", []).map_err(io)?;
+        if v != Self::CURRENT_SCHEMA {
+            conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
+        }
+        Ok(())
     }
 
     fn meta_get(conn: &Connection, key: &str) -> std::io::Result<u64> {
@@ -259,6 +296,36 @@ mod tests {
 
     fn meta(path: &str, hash: &str, ver: u64, chunks: &[&str]) -> FileMeta {
         FileMeta { path: path.into(), hash: hash.into(), size: 4, mtime: 1, version: ver, chunks: chunks.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn migrate_heals_a_pre_fold_index() { // R12-CC1
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        // Simulate a DB created before the `fold` column existed: files table WITHOUT fold.
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL);\n\
+                 INSERT INTO files VALUES ('A.md','h',1,0,1);\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',1),('version',1),('history_floor',1);",
+            ).unwrap();
+        }
+        // Opening must ADD + backfill `fold` (lowercased path), not leave a broken write path.
+        let s = SqliteIndex::open(&p).unwrap();
+        let conn = s.conn.lock().unwrap();
+        let fold: String = conn.query_row("SELECT fold FROM files WHERE path='A.md'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fold, "a.md");
+    }
+
+    #[test]
+    fn refuses_to_open_a_newer_schema_db() { // R12-CC1 downgrade guard
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        drop(SqliteIndex::open(&p).unwrap());
+        { let conn = Connection::open(&p).unwrap(); conn.execute("UPDATE meta SET value=999 WHERE key='schema_version'", []).unwrap(); }
+        assert!(SqliteIndex::open(&p).is_err(), "must refuse a DB written by a newer binary");
     }
 
     #[test]

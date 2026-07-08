@@ -3,6 +3,7 @@ use axum::Router;
 pub mod admin;
 pub mod admin_ui;
 pub mod admins;
+pub mod atomicfile;
 pub mod api;
 pub mod auth;
 pub mod chunkstore;
