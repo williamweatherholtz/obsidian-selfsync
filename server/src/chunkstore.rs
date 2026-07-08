@@ -91,4 +91,55 @@ impl ContentStore {
         }
         Ok(out)
     }
+
+    // SEC#4 runtime orphan GC: reclaim blobs that are NOT in `referenced` (no file cites them) AND
+    // whose on-disk file is OLDER than `older_than`. The age gate is the safety margin: a chunk just
+    // uploaded and about to be committed is younger than the TTL, so it's spared — only genuinely
+    // abandoned uploads (a ReadWrite grantee pushing chunks it never commits) are collected. This
+    // bounds uncommitted-orphan disk at runtime (previously reclaimed only at startup/eviction).
+    // Returns the number reclaimed. Best-effort per file (a remove failure is logged by the caller
+    // via the count delta, never fatal). Safe under the shared read lock: it races no commit (that
+    // holds the write lock) and never touches a referenced chunk.
+    pub fn sweep_orphans(&self, referenced: &std::collections::HashSet<String>, older_than: std::time::Duration) -> std::io::Result<usize> {
+        let mut reclaimed = 0usize;
+        for shard in std::fs::read_dir(&self.root)?.flatten() {
+            if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            for f in std::fs::read_dir(shard.path())?.flatten() {
+                let Some(name) = f.file_name().to_str().map(|s| s.to_string()) else { continue; };
+                if !Self::is_valid_hash(&name) || referenced.contains(&name) { continue; }
+                // Age gate: spare anything modified within the TTL (an in-flight upload). elapsed()
+                // errs only if mtime is in the future → treat as age 0 (spared), never reclaim early.
+                let age = f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                if age.map(|a| a >= older_than).unwrap_or(false) && std::fs::remove_file(f.path()).is_ok() {
+                    reclaimed += 1;
+                }
+            }
+        }
+        Ok(reclaimed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_orphans_reclaims_unreferenced_and_spares_referenced_and_young() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ContentStore::open(dir.path()).unwrap();
+        let a = b"aaa"; let ha = sha256_hex(a);
+        let b = b"bbb"; let hb = sha256_hex(b);
+        s.put(&ha, a).unwrap(); s.put(&hb, b).unwrap();
+        let referenced: std::collections::HashSet<String> = [ha.clone()].into_iter().collect();
+        // older_than = 0 → age gate passes for any file: the referenced chunk is kept, the orphan goes.
+        let n = s.sweep_orphans(&referenced, std::time::Duration::ZERO).unwrap();
+        assert_eq!(n, 1);
+        assert!(s.has(&ha), "referenced chunk kept");
+        assert!(!s.has(&hb), "unreferenced orphan reclaimed");
+        // A fresh orphan is SPARED by a real TTL — an in-flight upload about to be committed survives.
+        let c = b"ccc"; let hc = sha256_hex(c); s.put(&hc, c).unwrap();
+        let n2 = s.sweep_orphans(&referenced, std::time::Duration::from_secs(3600)).unwrap();
+        assert_eq!(n2, 0, "young orphan spared by the TTL");
+        assert!(s.has(&hc));
+    }
 }

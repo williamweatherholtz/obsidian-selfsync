@@ -655,8 +655,13 @@ export default class NewLiveSyncPlugin extends Plugin {
         throw new Error("server vault not ready (reindex needed)");
       }
       // A pending vault switch applies its chosen resolution ONCE, then reverts to normal reconcile.
-      const switchMode = this.pendingSwitchMode; this.pendingSwitchMode = undefined;
-      if (switchMode) await switchTo(this.deps(), switchMode);
+      // CONC#5: clear pendingSwitchMode ONLY AFTER switchTo fully succeeds. Clearing it up-front meant
+      // a mid-switch failure (network drop, throw) left the next reconnect doing a plain merge
+      // reconcile — silently DOWNGRADING an authoritative overwrite (download = take-remote, upload =
+      // take-local) into a merge that could conflict-copy or resurrect. Leaving it set until success
+      // makes the switch resolution durable across a failed attempt (it retries as the switch, not a merge).
+      const switchMode = this.pendingSwitchMode;
+      if (switchMode) { await switchTo(this.deps(), switchMode); this.pendingSwitchMode = undefined; }
       else await reconcileAll(this.deps());
       await this.flushConfigReload();
       this.lastConfigScanAt = Date.now(); // this reconcile was config-aware — start the scan window now

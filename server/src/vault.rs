@@ -11,6 +11,14 @@ use std::path::{Component, Path, PathBuf};
 // bounding the transient per-commit allocation. (SEC-5)
 const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
+// SEC#4 runtime orphan GC: opportunistically reclaim ABANDONED uploads (chunks pushed but never
+// committed) so a ReadWrite grantee can't grow the owner's disk unbounded between restarts (orphans
+// were previously reclaimed only at startup/handle-eviction). Driven by the UPLOAD path (so it fires
+// even when the attacker never commits), gated to at most once per interval, and only reclaims
+// chunks older than the TTL — an in-flight upload about to be committed is younger, so it's spared.
+const ORPHAN_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+const ORPHAN_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
 // Tombstones are retained DURABLY and are NEVER dropped by an arbitrary count cap. A cap was a
 // timing/size crutch: under the tombstone-authoritative delete model (0.10.25), a delete-local
 // requires a real tombstone, so silently dropping the oldest tombstones makes a long-offline
@@ -111,6 +119,9 @@ pub struct Vault {
     // reindex rebuilds from disk (tombstones unrecoverable — history reset). Reported to clients so a
     // below-floor client stays conservative (keep + push + a batched notice), never resurrecting silently.
     history_floor: u64,
+    // SEC#4: wall-clock of the last runtime orphan sweep. Behind a Mutex so the upload path (which
+    // holds only a shared read lock) can gate the sweep without &mut. Interior mutability, not vault state.
+    last_orphan_sweep: std::sync::Mutex<std::time::Instant>,
 }
 
 impl Vault {
@@ -148,8 +159,11 @@ impl Vault {
                 corrupt = true;
             }
         }
-        let mut v = Vault { root: root.to_path_buf(), vault_dir, store, index, corrupt, version, history_floor };
-        if !v.corrupt { v.verify_and_gc(); }
+        let mut v = Vault {
+            root: root.to_path_buf(), vault_dir, store, index, corrupt, version, history_floor,
+            last_orphan_sweep: std::sync::Mutex::new(std::time::Instant::now()),
+        };
+        if !v.corrupt { v.verify_and_gc(); } // startup GC already clears orphans, so the runtime timer starts now
         Ok(v)
     }
 
@@ -335,7 +349,35 @@ impl Vault {
     }
 
     pub fn has_chunk(&self, hash: &str) -> bool { self.store.has(hash) }
-    pub fn put_chunk(&self, hash: &str, bytes: &[u8]) -> std::io::Result<()> { self.store.put(hash, bytes) }
+    pub fn put_chunk(&self, hash: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.store.put(hash, bytes)?;
+        self.maybe_sweep_orphans(); // SEC#4: opportunistic, interval-gated runtime orphan GC
+        Ok(())
+    }
+
+    // SEC#4: reclaim abandoned uploads at runtime, at most once per ORPHAN_SWEEP_INTERVAL. Cheap when
+    // not due (a lock + an elapsed check). Runs under the caller's shared read lock, which excludes
+    // any concurrent commit (that takes the write lock), so the referenced set can't shift mid-sweep;
+    // the TTL spares just-uploaded chunks. A corrupt vault never sweeps — reindex owns its blobs.
+    fn maybe_sweep_orphans(&self) {
+        if self.corrupt { return; }
+        let due = {
+            let Ok(mut last) = self.last_orphan_sweep.lock() else { return; };
+            if last.elapsed() < ORPHAN_SWEEP_INTERVAL { return; }
+            *last = std::time::Instant::now();
+            true
+        };
+        if !due { return; }
+        let referenced: std::collections::HashSet<String> = match self.index.all_referenced_chunks() {
+            Ok(r) => r.into_iter().collect(),
+            Err(e) => { eprintln!("[vault] {}: orphan sweep skipped (index read failed: {e})", self.root.display()); return; }
+        };
+        match self.store.sweep_orphans(&referenced, ORPHAN_TTL) {
+            Ok(n) if n > 0 => eprintln!("[vault] {}: runtime orphan sweep reclaimed {n} abandoned chunk(s)", self.root.display()),
+            Ok(_) => {}
+            Err(e) => eprintln!("[vault] {}: orphan sweep failed: {e}", self.root.display()),
+        }
+    }
     pub fn get_chunk(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> { self.store.get(hash) }
     pub fn missing(&self, hashes: &[String]) -> Vec<String> {
         hashes.iter().filter(|h| !self.store.has(h)).cloned().collect()
@@ -913,6 +955,27 @@ mod tests {
         v.reindex(false).unwrap(); // healthy
         assert_eq!(v.changes(0).history_floor, 1, "healthy reindex must leave the floor at genesis");
         assert!(v.changes(0).deletes.iter().any(|d| d.path == "f.md"), "healthy reindex keeps the tombstone");
+    }
+
+    // SEC#4: an upload triggers the interval-gated runtime orphan sweep, but the TTL spares a
+    // just-uploaded (in-flight) chunk — the sweep must never reclaim a chunk about to be committed.
+    #[test]
+    fn runtime_orphan_sweep_runs_on_upload_but_spares_inflight_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        v.put_chunk(&ha, a).unwrap(); // uploaded, not yet committed → an in-flight orphan
+        // Force the sweep timer "due" so the next upload actually runs maybe_sweep_orphans.
+        *v.last_orphan_sweep.lock().unwrap() = std::time::Instant::now() - std::time::Duration::from_secs(1000);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        v.put_chunk(&hb, b).unwrap(); // triggers the sweep
+        // The ORPHAN_TTL (1h) spares both just-uploaded chunks: an in-flight upload is never reclaimed.
+        assert!(v.has_chunk(&ha), "a just-uploaded (young) orphan must survive the runtime sweep");
+        assert!(v.has_chunk(&hb));
+        // And it commits fine afterward (the sweep didn't disturb the in-flight chunk).
+        let mut v = v;
+        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        assert!(v.has_chunk(&ha));
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
