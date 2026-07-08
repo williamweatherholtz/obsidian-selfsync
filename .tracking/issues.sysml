@@ -6,6 +6,7 @@ package ProjectIssues {
     private import EngineElement::*;
     private import EngineWork::*;
     private import ProjectDelivery::*; // requirementTraceabilityBackfill — the resolver
+    private import ProjectDecision0020::*; // d0020 — the mooting Decision for the accepted inherent/cosmetic findings
 
     // The test-escape retrospective (2026-07-05): "plugin sync doesn't work at all" shipped
     // despite a large test suite. Root cause is two-layered and recorded here so the class is
@@ -161,7 +162,7 @@ package ProjectIssues {
     #Resolves dependency from round2CriticFixes to issueReindexJunkBrick;
     #Resolves dependency from round2CriticFixes to issueWsRevokeLeak;
     #Resolves dependency from round2CriticFixes to issueAdminCreateArgon;
-    #Resolves dependency from residualLowFindings to issuePullTOCTOUResidual;
+    #Resolves dependency from d0020 to issuePullTOCTOUResidual;
 
     // =====================================================================
     // ROUND 3 — a FOURTH fresh 3-lens critique (independent critics) vs the 0.10.18 code,
@@ -200,7 +201,7 @@ package ProjectIssues {
 
     #Resolves dependency from round4CriticFixes to issueNoncanonicalPath;
     #Resolves dependency from round4CriticFixes to issueRemoteDirtyCoverage;
-    #Resolves dependency from residualLowFindings to issueTransientGreenLight;
+    #Resolves dependency from d0020 to issueTransientGreenLight;
 
     // =====================================================================
     // ROUND 5 — the HOLISTIC + completeness + final-adversary round vs 0.10.20, 2026-07-05.
