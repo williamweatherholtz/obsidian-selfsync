@@ -68,7 +68,7 @@ describe.skipIf(!STANDALONE)("config-sync permutation matrix (standalone — set
   describe.skipIf(!canRun)("real two-client tracking per permutation", () => {
     let server: RunningServer; let base = "";
     beforeAll(async () => { server = await startServer(); base = server.base; }, 20000);
-    afterAll(() => { server?.stop(); });
+    afterAll(async () => { await server?.stop(); });
 
     async function writeRaw(root: string, rel: string, body: string) {
       await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });

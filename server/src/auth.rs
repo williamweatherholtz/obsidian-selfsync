@@ -29,12 +29,15 @@ pub async fn login(
     let password = req.password.clone();
     let ok = tokio::task::spawn_blocking(move || crate::users::verify_password(&phc, &password))
         .await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
+    // S5 (R10): login doesn't require safe_name, so strip control chars + cap length before logging —
+    // otherwise a username with embedded CR/LF could forge/split log lines (e.g. inject a fake "-> OK").
+    let uname: String = req.username.chars().filter(|c| !c.is_control()).take(64).collect();
     if present && ok {
         let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
-        log::info!("[login] user='{}' -> OK", req.username);
+        log::info!("[login] user='{uname}' -> OK");
         Ok(Json(LoginResponse { token }))
     } else {
-        log::warn!("[login] user='{}' -> 401", req.username);
+        log::warn!("[login] user='{uname}' -> 401");
         Err(AppError::Unauthorized)
     }
 }

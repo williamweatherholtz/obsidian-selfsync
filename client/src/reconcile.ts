@@ -144,7 +144,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
     const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
     try {
-      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks)) {
+      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size)) {
         d.base.set(path, { hash: rmeta.hash });
         d.onBaseChanged?.();
         return;
@@ -207,7 +207,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
   for (const p of paths) {
-    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp)); }
+    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p)); }
     catch (e) { d.onFileError?.(p, e); } // isolate: one file's failure must never abort the whole sync
   }
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
@@ -262,8 +262,12 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     guardDelete = basePaths.length > 0 && (remoteSet.size === 0
       || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   }
+  // C1 (R10): if the server still has this path (rmeta present), a null local read could yield a
+  // destructive delete-remote — so confirm the file is truly gone (not just unreadable) before
+  // deciding. O(1) exists check, only when the server-has-it precondition holds.
+  const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
   try {
-    await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone);
+    await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone, locallyPresent);
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
@@ -275,7 +279,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   }
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false): Promise<void> {
+async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false, locallyPresent?: boolean): Promise<void> {
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -294,6 +298,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     return;
   }
   const localBytes = await readOrNull(d.io, path);
+  // C1 (R10): a read that FAILS on a file the vault reports PRESENT is a transient error (antivirus
+  // lock, unhydrated OneDrive/Dropbox placeholder, FS hiccup) — NOT a deletion. Left unguarded it
+  // feeds decide() a null local and yields delete-remote (which has no tombstone/bulk-delete guard),
+  // propagating a phantom deletion to every peer. Skip the path this pass instead; the per-file
+  // handler logs it and the next reconcile retries. Only relevant for a previously-synced file.
+  if (localBytes === null && d.base.get(path) && locallyPresent) {
+    throw new Error(`'${path}' is present but couldn't be read right now — skipping (won't be treated as deleted)`);
+  }
   const localHash = localBytes ? await sha256hex(localBytes) : null;
   const baseEntry = d.base.get(path) ?? null;
   const action = decide(
@@ -415,11 +427,15 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
       const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
       await d.io.write(copy, liveLocal);
+      // C4 (R10): register the conflict NOW — the copy is on disk and preserved. pushFile below can
+      // throw (network), and if onConflict fired only after it, the copy would never reach the
+      // "needs review" list (the resolver would never surface it). The copy still pushes later via
+      // its own create event; this just guarantees it's tracked.
+      d.onConflict?.(path, copy);
       await d.io.write(path, remoteBytes);
       const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
       d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
       setBase(d, path, remoteBytes, rmeta!.hash);
-      d.onConflict?.(path, copy);
       return;
     }
   }

@@ -30,7 +30,13 @@ pub struct SqliteIndex {
 
 const SCHEMA: &str = "
     PRAGMA journal_mode=WAL;
-    PRAGMA synchronous=NORMAL;
+    -- FULL (not NORMAL): fsync the WAL on every commit so an acked write survives power loss. The
+    -- index is the authority (a committed file is 'durable' only if its index row is), and a
+    -- self-hosted server runs on consumer hardware where power loss is real. (R10-D1)
+    PRAGMA synchronous=FULL;
+    -- Wait up to 5s for a competing writer instead of erroring immediately with SQLITE_BUSY — two
+    -- requests can race to open/reindex the same cold vault through separate connections. (R10-D2)
+    PRAGMA busy_timeout=5000;
     PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS files (

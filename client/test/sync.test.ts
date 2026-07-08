@@ -109,10 +109,25 @@ describe("chunk sync engine", () => {
         };
       },
     } as unknown as VaultIo;
-    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs);
+    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs, 9); // "111223333" = 9 bytes
     expect(ok).toBe(true);
     expect(closed).toBe(true);
     expect(dec(written)).toBe("111223333");
+  });
+
+  it("streamFileToDisk REJECTS a reassembly whose size ≠ the declared file size (C2)", async () => {
+    // A truncated/extra-chunk manifest (e.g. a server index restore mismatched a chunk list to a
+    // file hash): each chunk is individually authentic, so per-chunk checks pass, but the whole
+    // reassembly is the wrong length. Must abort before close — never write it / launder its hash.
+    const good = enc("payload"); const h = await sha256hex(good);
+    const api = { async getChunk() { return good; } } as unknown as SyncApi;
+    let aborted = false, closed = false;
+    const io = {
+      async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
+      async appendWrite() { return { append: async () => {}, close: async () => { closed = true; }, abort: async () => { aborted = true; } }; },
+    } as unknown as VaultIo;
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [h], good.length + 5)).rejects.toThrow(/expected/);
+    expect(aborted).toBe(true); expect(closed).toBe(false);
   });
 
   it("streamFileToDisk REJECTS a chunk whose content doesn't match its hash (DI-2)", async () => {
@@ -127,14 +142,14 @@ describe("chunk sync engine", () => {
         return { append: async () => {}, close: async () => {}, abort: async () => { aborted = true; } };
       },
     } as unknown as VaultIo;
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash])).rejects.toThrow(/content verification/);
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash], good.length)).rejects.toThrow(/content verification/);
     expect(aborted).toBe(true);
   });
 
   it("streamFileToDisk returns false when the io can't stream (mobile fallback)", async () => {
     const api = { async getChunk() { return enc("x"); } } as unknown as SyncApi;
     const io = { async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {} } as unknown as VaultIo;
-    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"])).toBe(false);
+    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"], 1)).toBe(false);
   });
 
   it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {

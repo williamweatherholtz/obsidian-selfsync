@@ -75,10 +75,10 @@ pub async fn changes(
 ) -> Result<Json<ChangesResponse>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let since = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let v = rlock(&h.vault)?;
-    ensure_ready(&v)?;
-    let resp = v.changes(since);
-    drop(v);
+    // R10-D3: offload the SQLite read to the blocking pool. A changes(0) full-manifest scan (issued
+    // on every initial pull + periodic re-scan) must not run inline on an async worker — it holds the
+    // per-vault mutex and stalls every other connection multiplexed on that worker.
+    let resp = blocking(move || { let v = rlock(&h.vault)?; ensure_ready(&v)?; Ok(v.changes(since)) }).await?;
     // Log only a GENUINE forward delta (a client catching up from a known point). A `since=0` call
     // returns the whole manifest and is issued routinely (initial pull + the periodic config re-scan),
     // so it would spam identical lines even when nothing changed — every actual write is already in
@@ -98,9 +98,7 @@ pub async fn file_meta(
 ) -> Result<Json<FileMeta>, AppError> {
     let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
-    let v = rlock(&h.vault)?;
-    ensure_ready(&v)?;
-    v.file_meta(&path).map(Json).ok_or(AppError::NotFound)
+    blocking(move || { let v = rlock(&h.vault)?; ensure_ready(&v)?; v.file_meta(&path).map(Json).ok_or(AppError::NotFound) }).await // R10-D3: off the async worker
 }
 
 // Run a blocking closure (filesystem IO / hashing) on the blocking thread pool so it never
@@ -226,13 +224,15 @@ pub async fn status(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
-    let v = rlock(&h.vault)?;
-    let (status, detail) = if v.is_corrupt() {
-        ("error".to_string(), "index corrupt; run reindex".to_string())
-    } else {
-        ("ready".to_string(), String::new())
-    };
-    Ok(Json(StatusResponse { status, detail, version: v.version(), api_version: crate::protocol::API_VERSION }))
+    blocking(move || { // R10-D3: SQLite read off the async worker
+        let v = rlock(&h.vault)?;
+        let (status, detail) = if v.is_corrupt() {
+            ("error".to_string(), "index corrupt; run reindex".to_string())
+        } else {
+            ("ready".to_string(), String::new())
+        };
+        Ok(Json(StatusResponse { status, detail, version: v.version(), api_version: crate::protocol::API_VERSION }))
+    }).await
 }
 
 // reindex — operator repair (rebuild the manifest from materialized files). Registered

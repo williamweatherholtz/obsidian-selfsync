@@ -14,6 +14,10 @@ export interface VaultIo {
   read(path: string): Promise<Uint8Array>;
   write(path: string, bytes: Uint8Array): Promise<void>;
   remove(path: string): Promise<void>;
+  // O(1) presence check — distinguishes "genuinely absent" from "read failed" so a transient read
+  // error on a present file isn't mistaken for a deletion (reconcile C1). Optional: an io without it
+  // just forgoes that guard on the single-path event route.
+  exists?(path: string): Promise<boolean>;
   // Optional streamed writer for large-file reassembly. Undefined ⇒ not supported on this
   // platform (caller buffers the whole file instead). Present on desktop; absent on mobile.
   appendWrite?(path: string): Promise<AppendHandle>;
@@ -93,16 +97,25 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
 // instead of buffering + concatenating the whole file. Returns false if the io can't stream
 // (mobile) so the caller falls back to the buffered path. Chunks are appended in list order,
 // so reassembly is correct. A mid-stream failure aborts (discards the partial) and rethrows.
-export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[]): Promise<boolean> {
+export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[], expectedSize: number): Promise<boolean> {
   if (!io.appendWrite) return false;
   const h = await io.appendWrite(path);
   try {
+    let written = 0;
     for (const hash of chunks) {
       // DI-2/DI-R2#1: getVerifiedChunk verifies a freshly-fetched chunk before caching, and a
       // cache hit is authentic by construction — so a streamed file is never assembled from an
       // unverified (possibly bit-rotted) blob, even one another file cached earlier.
       const b = await getVerifiedChunk(api, cache, hash);
-      await h.append(b);
+      await h.append(b); written += b.length;
+    }
+    // C2 (R10): the buffered path hashes the whole reassembly against the declared file hash; the
+    // streamed path can't (no incremental hash), but it MUST still reject a chunk list that doesn't
+    // reassemble to the declared size — a truncated/extra-chunk manifest (e.g. after a server index
+    // restore mismatched a chunk list to a file hash) would otherwise be written to disk and its
+    // (wrong) declared hash laundered into base, then re-served to every device. Reject before close.
+    if (written !== expectedSize) {
+      throw new Error(`streamed reassembly of '${path}' is ${written} bytes, expected ${expectedSize} — not applying (bad chunk manifest?)`);
     }
     await h.close();
     return true;

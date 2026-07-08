@@ -120,6 +120,7 @@ export class FsVaultIo implements VaultIo {
     return m;
   }
   async read(p: string): Promise<Uint8Array> { return new Uint8Array(await fs.readFile(this.abs(p))); }
+  async exists(p: string): Promise<boolean> { return fs.access(this.abs(p)).then(() => true, () => false); }
   async write(p: string, bytes: Uint8Array): Promise<void> { await fs.mkdir(path.dirname(this.abs(p)), { recursive: true }); await fs.writeFile(this.abs(p), bytes); }
   async remove(p: string): Promise<void> { await fs.rm(this.abs(p), { force: true }); }
   // Streamed write (mirrors ObsidianVaultIo's desktop Node-fs path): append to a temp file, then rename.

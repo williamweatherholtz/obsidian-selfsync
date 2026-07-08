@@ -603,6 +603,23 @@ describe("originalOfConflictCopy — derive the pending-conflict set from filena
   });
 });
 
+describe("C1: a present-but-unreadable file is never propagated as a deletion", () => {
+  it("a transient local read error on a synced file does NOT delete it on the server", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "hello");                 // server has it, unchanged (R === B)
+    const io = fakeIo({ "n.md": "hello" });                // and it's present locally (list() sees it)
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("hello")), text: "hello" }); // previously synced
+    // Simulate an antivirus/cloud-placeholder read failure while list() still reports the file present.
+    const badIo = { ...io, read: async (p: string) => { if (p === "n.md") throw new Error("EBUSY"); return io.read(p); } };
+    const errs: string[] = [];
+    await reconcileAll(deps(api, badIo as any, { base, onFileError: (p) => errs.push(p) }));
+    // Must be SKIPPED, not deleted: the server still has the file (no phantom delete-remote to peers).
+    expect((await api.changes(0)).upserts.some((m) => m.path === "n.md")).toBe(true);
+    expect(errs).toContain("n.md");
+  });
+});
+
 describe("conflict handling: merge where clean, else conflict copy + device name", () => {
   it("cleanly-mergeable concurrent edits are auto-merged (no copy)", async () => {
     const { api } = fakeServer();

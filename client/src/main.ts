@@ -96,6 +96,9 @@ class ObsidianVaultIo implements VaultIo {
   async read(path: string): Promise<Uint8Array> {
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
   }
+  async exists(path: string): Promise<boolean> {
+    return this.plugin.app.vault.adapter.exists(normalizePath(path));
+  }
   async write(path: string, bytes: Uint8Array): Promise<void> {
     if (!this.passes(path)) {
       // A synced config file this device hasn't opted into — dropped by design. Log it so

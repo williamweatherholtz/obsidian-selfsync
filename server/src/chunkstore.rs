@@ -59,7 +59,15 @@ impl ContentStore {
         // identical content — never a torn blob.
         let n = self.tmp_seq.fetch_add(1, Ordering::Relaxed);
         let tmp = p.with_extension(format!("tmp.{n}"));
-        std::fs::write(&tmp, bytes)?;
+        // fsync the blob before publishing it: a referenced chunk must survive power loss, since the
+        // index (fsync'd on commit) will point at it. Without this, an acked commit could reference a
+        // chunk whose bytes never reached disk → an unrecoverable missing-chunk on reboot. (R10-D1)
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(bytes)?;
+            f.sync_all()?;
+        }
         std::fs::rename(tmp, p)
     }
     pub fn get(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> {

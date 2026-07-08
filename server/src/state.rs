@@ -67,8 +67,16 @@ impl AppState {
         let mut users = UserStore::open(&cfg.data_root.join(".users.json"))?;
         // Back-compat bootstrap: seed the configured account + its default vault
         // on a fresh store so existing single-user setups keep working.
-        if users.is_empty() && !cfg.user.is_empty() && safe_name(&cfg.user) {
-            users.register(&cfg.user, &cfg.password)?;
+        if !cfg.user.is_empty() && safe_name(&cfg.user) {
+            if users.is_empty() {
+                users.register(&cfg.user, &cfg.password)?;
+            } else {
+                // S1 (R10): keep SYNC_PASSWORD authoritative for the bootstrap admin on EVERY boot so
+                // the admin password can actually be ROTATED (change the env + restart). Previously it
+                // seeded only a fresh store, so a rotation silently no-op'd and a compromised password
+                // stayed valid. No-op if the account was deleted (never resurrected).
+                users.set_password(&cfg.user, &cfg.password)?;
+            }
         }
         let shares = ShareStore::open(&cfg.data_root.join(".shares.json"))?;
         // Seed the registration policy from the env config on FIRST run only; after that

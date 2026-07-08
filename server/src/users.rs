@@ -104,6 +104,20 @@ impl UserStore {
         self.save()
     }
 
+    // S1 (R10): (re)set an EXISTING user's password. Used to keep the bootstrap admin's stored hash
+    // in sync with SYNC_PASSWORD on every boot so the admin password can be ROTATED (change env +
+    // restart). No-op if the user doesn't exist — a deleted account is never resurrected.
+    pub fn set_password(&mut self, user: &str, password: &str) -> std::io::Result<()> {
+        if !self.file.users.contains_key(user) { return Ok(()); }
+        let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| std::io::Error::other(format!("hash: {e}")))?
+            .to_string();
+        self.file.users.insert(user.to_string(), hash);
+        self.save()
+    }
+
     // Return (user_exists, PHC-to-verify-against). Absent users yield a dummy hash so the caller
     // does the SAME argon2 work either way — no timing oracle on which usernames are valid. (SEC-2)
     pub fn phc_for(&self, user: &str) -> (bool, String) {
