@@ -73,7 +73,12 @@ async fn admin_creates_and_lists_users() {
     let admin = login(&base, "admin").await;
     assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"charlie","password":"pw"})).await, 200);
     let (_s, users) = get(&base, "/api/admin/users", &admin).await;
-    assert!(users.as_array().unwrap().iter().any(|u| u == "charlie"));
+    // users_list now returns objects {username, is_admin, is_bootstrap} (D0021).
+    let charlie = users.as_array().unwrap().iter().find(|u| u["username"] == "charlie").unwrap();
+    assert_eq!(charlie["is_admin"], serde_json::json!(false)); // a freshly-created account is not admin
+    let admin_row = users.as_array().unwrap().iter().find(|u| u["username"] == "admin").unwrap();
+    assert_eq!(admin_row["is_admin"], serde_json::json!(true)); // the bootstrap account is admin
+    assert_eq!(admin_row["is_bootstrap"], serde_json::json!(true));
 }
 
 #[tokio::test]
