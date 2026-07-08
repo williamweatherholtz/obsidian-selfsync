@@ -121,7 +121,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     // Facts (label left, value right) with their management action integrated as a button.
     this.factRow(g, "Server", s.serverUrl, (st) => st.addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup())));
-    this.factRow(g, "Account", s.username, (st) => st.addButton((b) => b.setButtonText("Sign out").setWarning().onClick(async () => { await this.plugin.signOut(); this.display(); })));
+    this.factRow(g, "Account", s.username, (st) => st.addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); })));
     this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,
       (st) => st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open())));
     this.factRow(g, "Last synced", this.lastSyncedAgo(s));
@@ -140,7 +140,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         }
       } else {
         st.addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink()));
-        st.addButton((b) => b.setButtonText("Disconnect").setWarning().onClick(async () => { await this.plugin.disconnect(); this.display(); }));
+        st.addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); }));
       }
     });
   }
@@ -251,7 +251,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Sync all installed plugins")
       .setDesc(`${shared} of ${ids.length} plugins synced.`)
       // "Sync none" first, "Sync all" second → Sync all renders on the RIGHT.
-      .addButton((b) => b.setButtonText("Sync none").setWarning().onClick(async () => {
+      .addButton((b) => b.setButtonText("Sync none").onClick(async () => {
         cs.pluginAllow = []; await this.plugin.saveSettings(); this.display();
       }))
       .addButton((b) => b.setButtonText("Sync all").onClick(async () => {

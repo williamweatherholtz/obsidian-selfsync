@@ -48,7 +48,7 @@ export class SetupWizardModal extends Modal {
     new Setting(c).setName("Server URL")
       .addText((t) => { serverInput = t.inputEl; t.setPlaceholder("https://sync.example.com").setValue(this.s.server)
         .onChange((v) => { this.s.server = v.trim(); this.s.serverOk = false; this.serverMsg = ""; }); })
-      .addButton((b) => b.setButtonText(this.s.serverOk ? "Reachable ✓" : "Test").setDisabled(!this.s.server).onClick(() => void this.doTest()));
+      .addButton((b) => b.setButtonText(this.s.serverOk ? "Reachable ✓" : "Test").onClick(() => void this.doTest()));
     onEnter(serverInput, () => { if (this.s.server) void this.doTest(); });
     if (this.serverMsg) {
       c.createEl("p", { text: this.serverMsg })
@@ -69,7 +69,7 @@ export class SetupWizardModal extends Modal {
       new Setting(c).setName("Username").addText((t) => { usernameInput = t.inputEl; t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }); });
       new Setting(c).setName("Password").addText((t) => { passwordInput = t.inputEl; t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
       new Setting(c).addButton((b) => b.setButtonText(this.s.mode === "login" ? "Log in" : "Create & log in").setCta()
-        .setDisabled(!canLogIn(this.s)).onClick(() => void this.doLogin()));
+        .onClick(() => void this.doLogin()));
       onEnter(usernameInput, () => passwordInput?.focus());
       onEnter(passwordInput, () => { if (canLogIn(this.s)) void this.doLogin(); });
     }
@@ -91,7 +91,7 @@ export class SetupWizardModal extends Modal {
     }
 
     // ── Finish ──
-    new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().setDisabled(!canFinish(this.s)).onClick(() => void this.finish()));
+    new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().onClick(() => void this.finish()));
 
     // Focus the next field to fill: the first blank of server → username → password before login,
     // then the create-vault box after. Deferred a tick so it wins over the modal's default focus.
@@ -120,6 +120,7 @@ export class SetupWizardModal extends Modal {
   }
 
   private async doTest() {
+    if (!this.s.server) { new Notice("SelfSync: enter a server URL first"); return; }
     this.s.serverOk = await HttpTransport.testConnection(this.s.server);
     this.serverMsg = this.s.serverOk
       ? "Reachable ✓"
@@ -130,6 +131,7 @@ export class SetupWizardModal extends Modal {
   }
 
   private async doLogin() {
+    if (!canLogIn(this.s)) { new Notice("SelfSync: enter the server, username, and password"); return; }
     try {
       if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password);
       this.token = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
@@ -152,6 +154,7 @@ export class SetupWizardModal extends Modal {
   }
 
   private async finish() {
+    if (!this.s.loggedIn) { new Notice("SelfSync: log in first, then choose a vault"); return; }
     try {
       let vault = this.s.chosenVault;
       if (this.s.newVault) {
