@@ -19,7 +19,7 @@ const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 // defaults to the caller on the legacy own-vault routes (/api/v/:vault/…). The isolation
 // invariant is enforced here: no access without ownership or a matching grant (403);
 // reads accept any grant, writes require read-write. 404 if the vault can't be opened.
-fn scoped(
+async fn scoped(
     st: &AppState, pp: &HashMap<String, String>, user: &str, access: Access,
 ) -> Result<(String, String, VaultHandle), AppError> {
     let vault = pp.get("vault").cloned().ok_or_else(|| AppError::BadRequest("missing vault".into()))?;
@@ -33,7 +33,14 @@ fn scoped(
     if !st.vault_exists(&owner, &vault) {
         return Err(AppError::NotFound);
     }
-    let h = st.vault(&owner, &vault).map_err(|_| AppError::NotFound)?;
+    // Open on the BLOCKING pool, never the async worker: a COLD open now auto-reindexes (D0022) —
+    // a whole-vault directory walk + rehash — so doing it inline on a tokio worker would pin that
+    // worker for the duration and, across several cold opens, stall the runtime (both ports).
+    // A warm open is just a map lookup, so this is cheap in the common case. (critique-R8 concurrency H1.)
+    let (st2, o2, v2) = (st.clone(), owner.clone(), vault.clone());
+    let h = tokio::task::spawn_blocking(move || st2.vault(&o2, &v2))
+        .await.map_err(|e| AppError::Internal(format!("vault open join failed: {e}")))?
+        .map_err(|_| AppError::NotFound)?;
     Ok((owner, vault, h))
 }
 
@@ -66,7 +73,7 @@ pub async fn changes(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<ChangesResponse>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Read)?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let since = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     let v = rlock(&h.vault)?;
     ensure_ready(&v)?;
@@ -85,7 +92,7 @@ pub async fn file_meta(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<FileMeta>, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
     let v = rlock(&h.vault)?;
     ensure_ready(&v)?;
@@ -114,7 +121,7 @@ pub async fn chunks_missing(
     if req.hashes.len() > MAX_MISSING_HASHES {
         return Err(AppError::BadRequest("too many hashes in one request".into()));
     }
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let missing = blocking(move || {
         let v = rlock(&h.vault)?;
         ensure_ready(&v)?;
@@ -127,7 +134,7 @@ pub async fn put_chunk(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Write)?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let hash = pp.get("hash").cloned().ok_or_else(|| AppError::BadRequest("missing hash".into()))?;
     // A CDC chunk is bounded (~64 KiB); reject anything wildly larger so a client
     // can't store giant blobs to defeat chunking / fill disk.
@@ -147,7 +154,7 @@ pub async fn get_chunk(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let hash = pp.get("hash").cloned().ok_or_else(|| AppError::BadRequest("missing hash".into()))?;
     let result = blocking(move || {
         rlock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))
@@ -162,7 +169,7 @@ pub async fn commit(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,
 ) -> Result<Json<FileMeta>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let tx = h.tx.clone();
     let (o, vlt, u, p) = (owner.clone(), vault.clone(), user.clone(), req.path.clone());
     // commit does journal + mirror IO under the write lock — run it on the blocking pool.
@@ -189,7 +196,7 @@ pub async fn delete_file(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Deletion>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
     let tx = h.tx.clone();
     let p = path.clone();
@@ -209,7 +216,7 @@ pub async fn delete_file(
 pub async fn status(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read)?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
     let v = rlock(&h.vault)?;
     let (status, detail) = if v.is_corrupt() {
         ("error".to_string(), "index corrupt; run reindex".to_string())
@@ -224,7 +231,7 @@ pub async fn status(
 pub async fn reindex(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write)?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let tx = h.tx.clone();
     // reindex walks the whole vault dir + rehashes — always on the blocking pool.
     let version = blocking(move || {

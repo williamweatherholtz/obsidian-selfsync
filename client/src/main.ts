@@ -675,6 +675,10 @@ export default class NewLiveSyncPlugin extends Plugin {
         this.log(this.lastIssue);
         throw new Error("server vault not ready (reindex needed)");
       }
+      // Connection is now established (token + health OK). Flip the indicator from "Connecting…" to
+      // "Syncing…" before the initial reconcile — which is the bulk of the time and was showing
+      // "Connecting…" for its whole duration (critique/field bug). The engine settles to idle after.
+      this.engine.markReconciling();
       // A pending vault switch applies its chosen resolution ONCE, then reverts to normal reconcile.
       // CONC#5: clear pendingSwitchMode ONLY AFTER switchTo fully succeeds. Clearing it up-front meant
       // a mid-switch failure (network drop, throw) left the next reconnect doing a plain merge
@@ -683,7 +687,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       // makes the switch resolution durable across a failed attempt (it retries as the switch, not a merge).
       const switchMode = this.pendingSwitchMode;
       if (switchMode) { await switchTo(this.deps(), switchMode); this.pendingSwitchMode = undefined; }
-      else await reconcileAll(this.deps());
+      else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
       await this.flushConfigReload();
       this.lastConfigScanAt = Date.now(); // this reconcile was config-aware — start the scan window now
       this.spinUpWs();
@@ -776,49 +780,78 @@ export default class NewLiveSyncPlugin extends Plugin {
       && Date.now() - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
     if (forceConfigScan) this.lastConfigScanAt = Date.now();
     const delta = await this.api.changes(this.state.version);
-    // Short-circuit when nothing changed AND the version matches (no config scan due).
-    if (!forceConfigScan && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) return;
+    // D0019 (critique-R8): detect a server DELETION-HISTORY RESET from the PERSISTED per-vault floor +
+    // last-version (both survive a restart, unlike the ephemeral state.version). A reset routes to the
+    // FULL reconcile so every local file is visited + kept-and-collected, and noteHistory notifies.
+    const reset = this.historyResetDetected(delta.version, delta.history_floor);
+    // Short-circuit an idle poll (nothing changed AND no reset) — but still RECORD the floor/version
+    // first (noteHistory), so an idle vault tracks them and a LATER reset stays detectable (a pure
+    // tombstone-prune bumps the floor without any delta). No reconcile ran, so nothing was kept.
+    if (!forceConfigScan && !reset && delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version) {
+      this.noteHistory(delta.version, delta.history_floor, []);
+      return;
+    }
     const before = this.state.version;
-    // D0019: detect a server DELETION-HISTORY RESET — its history_floor advanced past the floor this
-    // device last synced at (a rebuild-from-disk reindex reset the tombstones), OR the version rewound
-    // below our cursor (the mass-loss signature). Either way an absent-without-tombstone file is
-    // AMBIGUOUS (a pruned deletion vs a never-synced file); we stay conservative (keep + push, which
-    // reconcileOne already does) and collect those files for ONE batched review notice.
-    const floorKey = this.historyFloorKey();
-    const floors = (this.settings.historyFloors ??= {});
-    const storedFloor = floors[floorKey];
-    const floor = delta.history_floor;
-    const historyReset =
-      (storedFloor !== undefined && floor !== undefined && floor > storedFloor) // deletion history reset upstream
-      || delta.version < this.state.version;                                    // version rewind (mass-loss)
     const kept: string[] = [];
     const d = this.deps();
-    if (historyReset) d.onKeptAbsent = (p) => kept.push(p);
-    // RS-3: a normal forward remote delta is reconciled INCREMENTALLY — only the changed paths, not
-    // a re-hash of the entire vault. The FULL reconcile is reserved for (a) the periodic config scan
-    // (local .obsidian edits fire no vault event + don't bump the version, so only a full pass sees
-    // them) and (b) a history reset (version rewind OR floor advance): only the whole-manifest pass
-    // visits every local file to restore-on-absence + carries the bulk-delete guard, and it's what
-    // surfaces the kept-absent files a reset must report.
-    if (forceConfigScan || historyReset) await reconcileAll(d);
+    d.onKeptAbsent = (p) => kept.push(p); // always collect; noteHistory decides whether to notify
+    // RS-3: a normal forward delta reconciles INCREMENTALLY. The FULL reconcile is reserved for the
+    // periodic config scan and a HISTORY RESET (only the whole-manifest pass visits every local file
+    // to restore-on-absence + carries the bulk-delete guard + surfaces the kept files a reset reports).
+    if (forceConfigScan || reset) await reconcileAll(d);
     else await reconcileDelta(d, delta);
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
-    // D0019: advance the stored floor (also sets the baseline on a vault's first sync) — persist only
-    // on change, so this isn't a per-poll write. Then, if the reset kept files, surface ONE batched
-    // notice (the full list goes to the sync log); the files are already kept + re-uploaded either way.
-    if (floor !== undefined && floors[floorKey] !== floor) { floors[floorKey] = floor; void this.saveSettings(); }
-    if (historyReset && kept.length > 0) {
-      this.log(`server deletion history was reset — kept ${kept.length} local file(s) absent from the server: ${kept.slice(0, 50).join(", ")}${kept.length > 50 ? ` …(+${kept.length - 50} more)` : ""}`);
-      new Notice(`SelfSync: the server's deletion history was reset. ${kept.length} file(s) on this device weren't on the server and were kept + re-uploaded. If any were deleted on another device, delete them here (full list in the sync log).`, 15000);
-    }
+    this.noteHistory(this.state.version, delta.history_floor, kept);
     this.settings.lastSyncedAt = Date.now();
   }
 
-  // Per-vault key for the persisted deletion-history floor (D0019). Owner-qualified so a shared
-  // vault and an own vault of the same name never share a floor.
+  // Full reconcile with D0019 reset detection wired in — used by the CONNECT path (the initial
+  // reconcile). CRITICAL (critique-R8 DI-H1): the connect reconcile is what actually resurrects
+  // absent-without-tombstone files after a server reset, so detection+notify MUST run here, not only
+  // on later polls (by the time a poll runs, the files are already re-pushed and nothing is "kept").
+  private async reconcileFull(): Promise<void> {
+    const kept: string[] = [];
+    const d = this.deps();
+    d.onKeptAbsent = (p) => kept.push(p);
+    const resp = await reconcileAll(d);
+    this.noteHistory(resp.version, resp.history_floor, kept);
+  }
+
+  // Per-vault key for the persisted history floor + last-version (D0019). Owner-qualified so a shared
+  // vault and an own vault of the same name never share state.
   private historyFloorKey(): string {
     return `${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`;
+  }
+
+  // Is this (version, floor) a deletion-history RESET vs what this device last synced? True if the
+  // floor advanced past the stored floor (corrupt reindex / tombstone prune) OR the version rewound
+  // below the stored last-version (a restore to an older snapshot). Both stores are persisted, so this
+  // holds across a restart. Read-only (does not update the stores — noteHistory does that).
+  private historyResetDetected(version: number, floor: number | undefined): boolean {
+    const key = this.historyFloorKey();
+    const sf = (this.settings.historyFloors ?? {})[key];
+    const sv = (this.settings.lastVersions ?? {})[key];
+    return (sf !== undefined && floor !== undefined && floor > sf)
+        || (sv !== undefined && version < sv);
+  }
+
+  // Record the per-vault floor + last-version (persist only on change), and if a reset was detected
+  // AND files were kept-and-pushed because absent-without-tombstone, surface ONE batched notice. Runs
+  // after EVERY reconcile (connect + poll) and on the idle short-circuit (with empty `kept`).
+  private noteHistory(version: number, floor: number | undefined, kept: string[]): void {
+    const reset = kept.length > 0 && this.historyResetDetected(version, floor);
+    const key = this.historyFloorKey();
+    const floors = (this.settings.historyFloors ??= {});
+    const versions = (this.settings.lastVersions ??= {});
+    let changed = false;
+    if (floor !== undefined && floors[key] !== floor) { floors[key] = floor; changed = true; }
+    if (versions[key] !== version) { versions[key] = version; changed = true; }
+    if (changed) void this.saveSettings();
+    if (reset) {
+      this.log(`server deletion history was reset — kept ${kept.length} local file(s) absent from the server: ${kept.slice(0, 50).join(", ")}${kept.length > 50 ? ` …(+${kept.length - 50} more)` : ""}`);
+      new Notice(`SelfSync: the server's deletion history was reset. ${kept.length} file(s) on this device weren't on the server and were kept + re-uploaded. If any were deleted on another device, delete them here (full list in the sync log).`, 15000);
+    }
   }
 
   // A "raw" adapter event for a hidden `.obsidian/` file (desktop). Filter to config paths we

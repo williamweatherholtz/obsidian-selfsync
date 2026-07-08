@@ -254,9 +254,15 @@ impl Vault {
         // which can be stale after a best-effort mirror-write failure. Only a genuinely-corrupt index
         // forces a rebuild from disk bytes.
         let was_corrupt = self.corrupt;
-        // The current manifest as a path->meta map (empty when the DB was corrupt/blank).
+        // The current manifest (empty when the DB was corrupt/blank). Also note whether the index
+        // still HOLDS tombstones: replace_files preserves the deletions table, so a rebuild that keeps
+        // them (e.g. a dangling-chunk auto-repair on an otherwise-intact index) must NOT raise the
+        // history floor — the deletion history is still complete. Only a rebuild where tombstones were
+        // genuinely LOST (an empty/quarantined index) resets history. (critique-R8 DI-M3.)
+        let old = self.index.changes(0)?;
+        let had_tombstones = !old.deletes.is_empty();
         let old_files: HashMap<String, FileMeta> =
-            self.index.changes(0)?.upserts.into_iter().map(|m| (m.path.clone(), m)).collect();
+            old.upserts.into_iter().map(|m| (m.path.clone(), m)).collect();
         let old_refs: Vec<String> = self.index.all_referenced_chunks()?;
         let mut new_files: Vec<FileMeta> = Vec::new();
         let mut new_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -346,10 +352,12 @@ impl Vault {
         // no longer references — so a GC'd blob is never still cited by the live index.
         self.index.replace_files(&new_files, max_version)?;
         self.version = max_version;
-        // D0019: a rebuild-from-disk (was_corrupt) reindex cannot recover tombstones — the deletion
-        // history is reset here, so raise the floor to the current version. A HEALTHY reindex keeps
-        // tombstones (replace_files preserves the deletions table), so its floor is left untouched.
-        if was_corrupt {
+        // D0019 + critique-R8 DI-M3: raise the floor ONLY when tombstones were genuinely lost — a
+        // rebuild-from-disk of an empty/quarantined index (no tombstones to preserve). A rebuild that
+        // PRESERVED tombstones (a dangling-chunk auto-repair on an intact index — was_corrupt set by
+        // verify_and_gc, but deletions kept) leaves the floor alone: history is still complete, so a
+        // spurious floor bump (→ false client "history reset" notices + keep-push churn) is avoided.
+        if was_corrupt && !had_tombstones {
             self.index.set_history_floor(max_version)?;
             self.history_floor = max_version;
         }
@@ -1020,6 +1028,30 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(v.changes(0).deletes.len(), 1, "only the below-floor tombstone pruned");
         assert!(v.changes(0).history_floor > after_first, "floor raised by the prune");
+    }
+
+    // critique-R8 DI-M3: a dangling-chunk auto-repair on an index that STILL HOLDS tombstones must
+    // recover from the mirror, PRESERVE the tombstones, and NOT raise the history floor (no reset).
+    #[test]
+    fn dangling_ref_repair_preserves_tombstones_without_raising_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        {
+            let mut v = Vault::open(dir.path()).unwrap();
+            v.put_chunk(&ha, a).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.put_chunk(&hb, b).unwrap();
+            v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+            v.delete("a.md").unwrap(); // a real tombstone; a.md's chunk is GC'd (unshared)
+        }
+        // Break b.md's chunk (dangling ref) but leave its mirror file on disk as the rebuild source.
+        std::fs::remove_file(dir.path().join(".chunks").join(&hb[0..2]).join(&hb)).unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        assert!(!v.is_corrupt(), "dangling ref auto-recovers from the mirror");
+        assert_eq!(v.changes(0).history_floor, 1, "tombstones preserved → floor must NOT bump");
+        assert!(v.changes(0).deletes.iter().any(|d| d.path == "a.md"), "a.md tombstone preserved");
+        assert!(v.changes(0).upserts.iter().any(|m| m.path == "b.md"), "b.md recovered from the mirror");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS

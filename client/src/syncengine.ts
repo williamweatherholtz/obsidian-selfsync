@@ -63,6 +63,12 @@ export class SyncEngine {
 
   getState(): EngineState { return this.state; }
   phase(): Phase { return engineStateToPhase(this.state); }
+
+  // Called by the connect EFFECT once the connection is established (token + health OK) but BEFORE the
+  // initial reconcile, so the initial sync shows "Syncing…" not "Connecting…" (the connect effect does
+  // the full initial reconcile, which is the bulk of the time). Only upgrades the `connecting` phase;
+  // never overrides offline/unloading/idle.
+  markReconciling(): void { if (this.state === "connecting") this.setState("reconciling"); }
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 

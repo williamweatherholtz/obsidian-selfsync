@@ -16,16 +16,26 @@ services:
     restart: unless-stopped
     environment:
       DATA_ROOT: /data
-      BIND_ADDR: 0.0.0.0:8080          # plain HTTP/WS — private, behind Caddy
+      BIND_ADDR: 0.0.0.0:8080          # sync/login — plain HTTP/WS, private, behind Caddy
+      # ADMIN surface (/admin + /api/admin/*) on a SEPARATE port, bound to all interfaces INSIDE the
+      # container (0.0.0.0) so Docker can publish it — but published ONLY to the host loopback below,
+      # so it's reachable at http://localhost:8091/admin ON THE HOST (or an SSH tunnel), never from
+      # the LAN/internet and never through Caddy. This keeps account management off the public port.
+      # (Set ADMIN_BIND_ADDR=merge to instead serve /admin on the public port behind Caddy.)
+      ADMIN_BIND_ADDR: 0.0.0.0:8091
       SYNC_USER: ${SYNC_USER:?set SYNC_USER in .env}
       SYNC_PASSWORD: ${SYNC_PASSWORD:?set a STRONG SYNC_PASSWORD in .env}
       REGISTRATION: closed             # invite-only by default; open it from /admin if you must
     volumes:
       - selfsync-data:/data            # accounts, ACL, chunks, and each vault's real files
     expose:
-      - "8080"                         # inter-container ONLY — not published to the host
-    # NOTE: no `ports:` here on purpose. Publishing :8080 would expose plain HTTP to the
-    # internet, bypassing TLS. Reach the server only through Caddy (below).
+      - "8080"                         # sync port: inter-container ONLY — not published to the host
+    ports:
+      - "127.0.0.1:8091:8091"          # admin port: published to the HOST LOOPBACK only (localhost),
+                                       # NOT 0.0.0.0 — so it's reachable on the host but not the LAN/internet
+    # NOTE: the sync port has no host `ports:` on purpose — publishing :8080 would expose plain HTTP
+    # to the internet, bypassing TLS. Reach sync only through Caddy (below); reach admin at
+    # http://localhost:8091/admin on this host.
 
   caddy:
     image: caddy:2

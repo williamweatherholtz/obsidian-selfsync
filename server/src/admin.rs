@@ -226,13 +226,16 @@ pub async fn users_list(
     Ok(Json(out))
 }
 
-// Grantee autocomplete (D0021): the username list for share typeahead + fuzzy match. Authenticated
-// (not admin-only) so a non-admin OWNER managing their own vault's shares can autocomplete — safe
-// because the admin surface is private by default (the split). In merge mode this rides the public
-// port, an accepted consequence of the operator's explicit opt-out.
+// Grantee autocomplete (D0021): the username list for share typeahead + fuzzy match. SERVER-ADMIN
+// only (critique R8 security): a full account-table dump must not be reachable by any authenticated
+// user — in MERGE mode /api/admin/* rides the public port, so an ungated list would be an
+// enumeration oracle worse than the per-name check the rest of the system de-oracles. The common
+// operator IS the admin, so autocomplete still works for them; a non-admin owner falls back to
+// typing the grantee (the server still verifies existence on share_create).
 pub async fn usernames(
-    AuthToken(_user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<String>>, AppError> {
+    require_admin(&st, &user)?;
     Ok(Json(lock(&st.users)?.usernames()))
 }
 

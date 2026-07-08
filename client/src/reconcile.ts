@@ -184,7 +184,9 @@ async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Arr
   return bytes;
 }
 
-export async function reconcileAll(d: ReconcileDeps): Promise<void> {
+// Returns the ChangesResponse it fetched (version + history_floor) so the caller can run the D0019
+// reset detection on the CONNECT path too, not just the poll path.
+export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
   for (const f of resp.upserts) remote.set(f.path, f);
@@ -213,6 +215,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<void> {
   // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
   // reconcile indefinitely. Assigning lets the incremental poll path converge again. (CONC-R2#3)
   d.state.version = resp.version;
+  return resp;
 }
 
 // Incremental remote reconcile (RS-3): reconcile ONLY the paths the server reports changed since

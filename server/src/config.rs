@@ -17,14 +17,20 @@ pub struct Config {
     pub invite_code: String,  // shared secret required when registration == "invite"
 }
 
+// The port from a "host:port" (or "[ipv6]:port") bind string.
+fn port_of(addr: &str) -> Option<u16> {
+    addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+}
+
 // Derive the safe default admin address from the public bind: localhost on the public port + 1.
-// Falls back to 127.0.0.1:8081 if the public port can't be parsed. Localhost-only so it's reachable
-// only from the host (or an explicit SSH/VPN tunnel), never off-box by default.
-fn default_admin_addr(bind_addr: &str) -> String {
-    let port = bind_addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
-    match port {
-        Some(p) if p < u16::MAX => format!("127.0.0.1:{}", p + 1),
-        _ => "127.0.0.1:8081".to_string(),
+// Returns None (=> MERGE) when the public port is EPHEMERAL (0) or unparseable — a split can't derive
+// a stable admin port there (e.g. a test/dynamic :0 bind would otherwise try to bind port 1 and fail).
+// Localhost-only so it's reachable only from the host / an explicit tunnel, never off-box by default.
+fn default_admin_bind(bind_addr: &str) -> Option<String> {
+    match port_of(bind_addr) {
+        Some(0) => None, // ephemeral public port → merge (no stable admin port to derive)
+        Some(p) if p < u16::MAX => Some(format!("127.0.0.1:{}", p + 1)),
+        _ => Some("127.0.0.1:8081".to_string()),
     }
 }
 
@@ -35,9 +41,13 @@ impl Config {
         // ADMIN_BIND_ADDR: unset ⇒ safe default split (localhost:port+1); "merge" (or == bind_addr) ⇒
         // opt-out to one port; any other value ⇒ split at that explicit address.
         let admin_bind = match std::env::var("ADMIN_BIND_ADDR").ok().as_deref() {
-            None | Some("") => Some(default_admin_addr(&bind_addr)),
+            None | Some("") => default_admin_bind(&bind_addr),
             Some("merge") => None,
-            Some(a) if a == bind_addr => None, // same address as public ⇒ merge (can't bind twice)
+            // Same PORT as the public bind ⇒ MERGE — two listeners on one port can't coexist even on
+            // different interface strings (0.0.0.0:8080 vs 127.0.0.1:8080), so this would otherwise
+            // fail the second bind and refuse to start. Compare ports, not full strings. (An exotic
+            // genuinely-distinct-NIC same-port split is not supported; use different ports.)
+            Some(a) if port_of(a).is_some() && port_of(a) == port_of(&bind_addr) => None,
             Some(a) => Some(a.to_string()),
         };
         Config {

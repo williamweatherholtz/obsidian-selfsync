@@ -49,6 +49,25 @@ describe("SyncEngine — serial run-to-completion", () => {
     expect(h.e.getState()).toBe("idle");
   });
 
+  it("shows Syncing (not Connecting) once the connection is established during the initial reconcile", async () => {
+    const h = harness();
+    const g = h.block("connect");                 // hold connect in-flight (models the long initial reconcile inside it)
+    h.e.enqueue({ kind: "connect" });
+    await tick();
+    expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // before the connection is established
+    h.e.markReconciling();                        // connect effect signals: connected, now reconciling
+    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // the initial sync shows Syncing, not Connecting
+    g.resolve(); await tick();
+    expect(h.e.getState()).toBe("idle");          // settles once connect returns
+  });
+
+  it("markReconciling is a no-op unless connecting", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick(); // now idle
+    h.e.markReconciling();
+    expect(h.e.getState()).toBe("idle");            // not upgraded from a non-connecting state
+  });
+
   it("runs exactly one effect at a time — a poke during a reconcile waits, never overlaps (CONC-R3#3)", async () => {
     const h = harness();
     h.e.enqueue({ kind: "connect" }); await tick();

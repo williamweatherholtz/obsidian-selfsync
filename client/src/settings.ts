@@ -27,6 +27,12 @@ export interface NewLiveSyncSettings {
   // instead of silently resurrecting. Persisted (state.version is ephemeral) so it works across
   // sessions — the common case is the server being reindexed while this device was offline.
   historyFloors?: Record<string, number>;
+  // D0019 / critique-R8: the last server version this device synced at, per vault (key = `owner/vaultId`).
+  // Persisted (state.version is ephemeral, reset each session) so a version REWIND that happened while
+  // this device was offline (a restore to an older snapshot) is still detected as a history reset —
+  // the in-memory rewind check alone is dead across a restart. Same fresh-per-instance handling as
+  // historyFloors (omitted from DEFAULT_SETTINGS, lazily `??= {}`).
+  lastVersions?: Record<string, number>;
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`

@@ -46,7 +46,12 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         .route("/health", get(|| async {
             axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION }))
         }))
-        .route("/api/login", post(auth::login));
+        .route("/api/login", post(auth::login))
+        // Owner self-service vault delete is SHARED on both surfaces: its only UI trigger is the admin
+        // page (which serves on the PRIVATE admin port in the default split), but it's owner-scoped +
+        // authenticated so it's safe on the public surface too. (Was public-only → 404'd from the
+        // admin page in split mode — critique R8 correctness.)
+        .route("/api/vault", axum::routing::delete(api::delete_own_vault));
     if include_public {
         r = r
             .route("/api/register", post(auth::register))
@@ -71,9 +76,6 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             .route("/api/u/:owner/:vault/commit", post(api::commit))
             .route("/api/u/:owner/:vault/status", get(api::status))
             .route("/api/u/:owner/:vault/file", axum::routing::delete(api::delete_file))
-            // Owner self-service vault delete (D0021) — an owner deletes their OWN vault; distinct
-            // from the admin any-vault delete. On the public surface (owner-scoped, authenticated).
-            .route("/api/vault", axum::routing::delete(api::delete_own_vault))
             .route("/api/ws", get(ws::ws_handler));
     }
     if include_admin {
