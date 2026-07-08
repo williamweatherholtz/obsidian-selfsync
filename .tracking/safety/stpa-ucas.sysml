@@ -448,13 +448,12 @@ package ProjectStpaAnalysis {
         :>> triggeringEvent = "opening the change-notification channel";
         :>> safeState = "the token cannot be harvested from logs and replayed";
         :>> safetyFunction = "REALIZED: WS token via Sec-WebSocket-Protocol, not the URL (SEC-1)."; }
-    // OPEN safety requirements — derived constraint not yet fully realized (tracked deferred issues).
     part sr19 : SafetyRequirement { :>> id = "c0f1a5cc-d313-4a10-9b20-a1b2c3d4d313"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
-        :>> title = "SR-19: bound per-vault uncommitted storage (OPEN)";
+        :>> title = "SR-19: bound per-vault uncommitted storage";
         :>> statement = "Bound the uncommitted/orphan chunk bytes a principal can accumulate per vault, so a writer cannot exhaust the owner's disk (availability).";
         :>> triggeringEvent = "a read-write grantee PUTs many chunks that never commit";
         :>> safeState = "storage bounded; other tenants unaffected";
-        :>> safetyFunction = "OPEN: per-vault byte quota / runtime orphan GC — issueOrphanChunkQuota (deferred; today reclaimed only at startup)."; }
+        :>> safetyFunction = "REALIZED: runtime orphan GC (SEC#4, round1DeferredHardening 0.10.32) — ContentStore::sweep_orphans reclaims unreferenced chunks older than a TTL, upload-driven + interval-gated, bounding abandoned-upload disk at RUNTIME (was startup/eviction-only). issueOrphanChunkQuota resolved. (All 19 STPA safety requirements are now realized by shipped work.)"; }
 
     #Satisfies dependency from sr1 to sc1;   #Mitigates dependency from sr1 to uca1;  #Mitigates dependency from sr1 to uca2;
     #Satisfies dependency from sr2 to sc2;   #Mitigates dependency from sr2 to uca4;
