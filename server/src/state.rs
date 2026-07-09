@@ -183,8 +183,11 @@ impl AppState {
         // Drop this vault's share grants FIRST (R17). Otherwise a grant lingers invisibly (my_vaults
         // only lists existing vaults) and silently REACTIVATES if the owner later recreates a vault of
         // the same name — re-exposing new content to a prior grantee. Account-delete already purges
-        // grants (purge_user); vault-delete must too.
-        if let Ok(mut s) = self.shares.lock() { s.purge_vault(owner, vault)?; }
+        // grants (purge_user); vault-delete must too. FAIL LOUD on a poisoned lock (R18): skipping the
+        // purge but still removing the dir + returning Ok would silently reopen the reactivation
+        // window — so propagate the error and DON'T remove the dir (no half-state), matching every
+        // other shares access.
+        self.shares.lock().map_err(|_| std::io::Error::other("shares lock poisoned"))?.purge_vault(owner, vault)?;
         if let Ok(mut map) = self.ns.lock() { map.remove(&(owner.to_string(), vault.to_string())); }
         let dir = self.ns_dir(owner, vault);
         if dir.exists() { std::fs::remove_dir_all(&dir)?; }

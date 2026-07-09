@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -60,8 +60,12 @@ class ObsidianVaultIo implements VaultIo {
 
   // Stream a file to disk via Node fs: append to a temp file, fsync, then atomically rename.
   private async openAppend(path: string): Promise<AppendHandle> {
-    const noop: AppendHandle = { append: async () => {}, close: async () => {}, abort: async () => {} };
-    if (!this.passes(path)) return noop; // excluded paths are never written locally
+    // An excluded path should never reach the writer (reconcile's accepts() gates it with the same
+    // shouldSync as passes()). If it ever does, FAIL LOUD (R18): a silent no-op handle would let
+    // streamFileToDisk's hash — computed from the FETCHED bytes, not what was persisted — pass, set
+    // base for a file that was never written to disk, and then delete-remote it fleet-wide on the next
+    // reconcile. Throwing is isolated per-file (onFileError); a silent no-op is a latent data-loss trap.
+    if (!this.passes(path)) throw new Error(`refusing to stream-write an excluded path: '${path}'`);
     const req = (window as unknown as { require: (m: string) => any }).require;
     const fs = req("fs");
     const nodePath = req("path");
@@ -204,6 +208,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   private backoff = 3000;
   private unloading = false;
   private skipNotified = new Set<string>(); // paths we've already warned are too large (notice once)
+  // R18 bounded-retry state (persists across reconcile passes): per-path consecutive pull-failure
+  // budget, and the set of paths we've already surfaced as "server copy corrupt" (notice once).
+  private pullRetries = new Map<string, { version: number; count: number }>();
+  private pullExhaustedNotified = new Set<string>();
   private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
   private versionNoticeShown = false; // R12-PB6: toast a protocol-version mismatch once, not every retry
   private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
@@ -717,6 +725,12 @@ export default class NewLiveSyncPlugin extends Plugin {
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
+      retryBudget: this.pullRetries, // R18: bound re-download of a permanently-corrupt server file
+      onPullExhausted: (p) => {
+        if (this.pullExhaustedNotified.has(p)) return; // once per path per session
+        this.pullExhaustedNotified.add(p);
+        this.log(`'${p}' can't be downloaded — the server's copy failed its integrity check ${MAX_PULL_RETRIES} times (corrupt / bit-rotted). It needs a server reindex; other files keep syncing.`, true);
+      },
       onSkip: (p, bytes) => {
         if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
         this.skipNotified.add(p);

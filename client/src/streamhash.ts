@@ -23,8 +23,10 @@ export class Sha256 {
   private bufLen = 0;
   private total = 0; // total bytes fed (exact up to 2^53, ample for any file)
   private w = new Int32Array(64);
+  private done = false; // hexDigest() consumes the state (appends padding) — reuse is a bug, not silent
 
   update(data: Uint8Array): void {
+    if (this.done) throw new Error("Sha256: update() after hexDigest() — this hasher is finalized");
     this.total += data.length;
     let off = 0;
     if (this.bufLen > 0) {
@@ -38,6 +40,7 @@ export class Sha256 {
   }
 
   hexDigest(): string {
+    if (this.done) throw new Error("Sha256: hexDigest() called twice — finalize once");
     const bitLen = this.total * 8;
     // Padding: 0x80, then zeros, then the 64-bit big-endian bit length. One or two final blocks.
     const padLen = this.bufLen < 56 ? 56 - this.bufLen : 120 - this.bufLen;
@@ -50,6 +53,7 @@ export class Sha256 {
     dv.setUint32(padLen, hi, false);
     dv.setUint32(padLen + 4, lo, false);
     this.update(tail); // never recurses into padding (tail is plain data); flushes final block(s)
+    this.done = true;  // now finalized: any further update()/hexDigest() throws rather than mis-hash
     let out = "";
     for (let i = 0; i < 8; i++) out += (this.h[i] >>> 0).toString(16).padStart(8, "0");
     return out;

@@ -283,6 +283,12 @@ impl Vault {
         // genuinely LOST (an empty/quarantined index) resets history. (critique-R8 DI-M3.)
         let old = self.index.changes(0)?;
         let had_tombstones = !old.deletes.is_empty();
+        // R18: paths the index has a TOMBSTONE for. A disk file whose path is tombstoned but has NO
+        // live index entry is a GHOST — a delete whose best-effort mirror removal failed. On a HEALTHY
+        // reindex the tombstones are trustworthy, so such a ghost must NOT be re-ingested (that would
+        // resurrect a genuine deletion fleet-wide); it's dropped below. (Skipped when was_corrupt — a
+        // corrupt index's deletions are as untrustworthy as everything else, so disk is truth there.)
+        let tombstoned: std::collections::HashSet<String> = old.deletes.iter().map(|d| d.path.clone()).collect();
         let old_files: HashMap<String, FileMeta> =
             old.upserts.into_iter().map(|m| (m.path.clone(), m)).collect();
         let old_refs: Vec<String> = self.index.all_referenced_chunks()?;
@@ -352,6 +358,15 @@ impl Vault {
             new_files.push(meta);
         }
         for (rel, abs) in rels {
+            // R18: a disk file that is TOMBSTONED but has no live index entry is a ghost left by a
+            // delete whose mirror removal failed. Re-ingesting it would resurrect the deletion (the
+            // preserved tombstone + a fresh upsert would BOTH appear in changes(0), and clients pull it
+            // back). On a healthy reindex the deletion is authoritative — drop the stale mirror, don't
+            // re-ingest. (Only when NOT was_corrupt: a corrupt index's tombstones aren't trustworthy.)
+            if !was_corrupt && tombstoned.contains(&rel) && !old_files.contains_key(&rel) {
+                let _ = std::fs::remove_file(&abs);
+                continue;
+            }
             // Round-6 DI (prefer authoritative store): on a HEALTHY reindex, if the current index
             // already maps this path and all its chunks are present in the store, keep that entry
             // VERBATIM (content + version + real chunk list) instead of re-hashing the mirror — which
@@ -589,13 +604,15 @@ impl Vault {
 
     pub fn changes(&self, since: u64) -> ChangesResponse {
         self.index.changes(since).unwrap_or_else(|e| {
-            // A read error at this point is exceptional (the DB opened + passed verify). Return an
-            // EMPTY delta at the cached version rather than fabricating a manifest: under the
-            // tombstone-authoritative delete model, empty upserts/deletes can NOT trigger a
-            // client-side mass-delete (only a tombstone deletes), so this is a safe transient — the
-            // client simply retries on its next poll.
-            log::warn!("[vault] {}: changes({since}) read failed: {e}; returning empty delta (client retries)", self.root.display());
-            ChangesResponse { version: self.version, upserts: Vec::new(), deletes: Vec::new(), history_floor: self.history_floor }
+            // A read error here is exceptional (the DB opened + passed verify). Return an empty delta
+            // at the CLIENT'S OWN cursor (`since`), NOT self.version (R18): reporting the current
+            // version with empty changes would make the incremental client advance its cursor to
+            // `version` and LEAPFROG the real commits between `since` and now — they'd only reappear on
+            // the 15-min full scan. Echoing `since` reads as "no change" (delta.version == cursor), so
+            // the client holds its cursor and simply retries on the next poll. Tombstone-authoritative
+            // delete means empty upserts/deletes still can't trigger a mass-delete.
+            log::warn!("[vault] {}: changes({since}) read failed: {e}; echoing the client's cursor so it retries (no leapfrog)", self.root.display());
+            ChangesResponse { version: since, upserts: Vec::new(), deletes: Vec::new(), history_floor: self.history_floor }
         })
     }
 }
@@ -1137,6 +1154,29 @@ mod tests {
         let ch = v.changes(0);
         assert!(ch.upserts.iter().all(|m| m.path != "a.md"), "corrupt file dropped on force, never materialized");
         assert!(ch.upserts.iter().any(|m| m.path == "b.md"), "the healthy file is recovered");
+    }
+
+    #[test]
+    fn reindex_does_not_resurrect_a_tombstoned_ghost_mirror() { // R18
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        let mut v = Vault::open(dir.path()).unwrap();
+        v.put_chunk(&ha, a).unwrap();
+        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).ok(); // keep the vault non-empty
+        v.put_chunk(&hb, b).unwrap();
+        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "gone.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.delete("gone.md").unwrap(); // tombstone; mirror removed
+        // Simulate a FAILED mirror removal: the deleted file's mirror is left on disk (a ghost).
+        std::fs::write(dir.path().join("vault").join("gone.md"), a).unwrap();
+        // A HEALTHY reindex must NOT re-ingest the tombstoned ghost (that would resurrect the deletion).
+        v.reindex(false).unwrap();
+        let ch = v.changes(0);
+        assert!(ch.upserts.iter().all(|m| m.path != "gone.md"), "tombstoned ghost must NOT be resurrected");
+        assert!(ch.deletes.iter().any(|d| d.path == "gone.md"), "the tombstone is preserved");
+        assert!(!dir.path().join("vault").join("gone.md").exists(), "the stale ghost mirror is removed");
+        assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the live file is retained");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS

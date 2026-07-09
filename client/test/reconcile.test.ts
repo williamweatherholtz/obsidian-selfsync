@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES } from "../src/reconcile";
+import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -901,6 +901,28 @@ describe("R14 sync-correctness fixes", () => {
     const delta = await api.changes(1);
     await reconcileDelta(deps(api, io, { state, accepts: () => true }), delta);
     expect(state.version).toBe(delta.version); // no failures → cursor advances to the server version
+  });
+
+  it("R18: a permanently-failing pull stops pinning the cursor after MAX_PULL_RETRIES + fires onPullExhausted", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "keep.md", "anchor");
+    const io = fakeIo({});
+    const state = { version: 0 };
+    const budget = new Map<string, { version: number; count: number }>();
+    const exhausted: string[] = [];
+    const d = deps(api, io, { state, retryBudget: budget, onPullExhausted: (p) => exhausted.push(p), onFileError: () => {} });
+    await reconcileAll(d); // keep.md syncs; cursor advances to the server version
+    // Add a file whose download will ALWAYS fail (simulate a corrupt server copy).
+    await serverPut(api, "bad.md", "payload");
+    const badV = (await api.changes(0)).upserts.find((m) => m.path === "bad.md")!.version;
+    (api as any).getChunk = async () => { throw new Error("corrupt chunk fetch"); };
+    // Poll repeatedly. Under budget the cursor is HELD below bad.md; once exhausted it advances past.
+    for (let i = 0; i < MAX_PULL_RETRIES; i++) {
+      await reconcileDelta(d, await api.changes(state.version));
+    }
+    expect(exhausted).toContain("bad.md");                 // gave up after MAX_PULL_RETRIES failures
+    expect((io as any).m.has("bad.md")).toBe(false);        // never applied (corrupt)
+    expect(state.version).toBeGreaterThanOrEqual(badV);     // cursor advanced PAST it (no longer re-downloaded every poll)
   });
 
   it("sync#2: reconcileLocalConfig isolates a per-file error instead of flapping the engine offline", async () => {

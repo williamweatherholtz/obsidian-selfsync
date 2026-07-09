@@ -56,6 +56,24 @@ export const STREAM_MIN_BYTES = 8 * 1024 * 1024; // 8 MiB
 // mobile. Within a file, chunk transfer is separately parallel (TRANSFER_CONCURRENCY). (Finding 1)
 export const FILE_CONCURRENCY = 4;
 
+// After this many CONSECUTIVE failed pulls of the same (path, server-version), stop holding the poll
+// cursor open for it — a genuinely-corrupt server copy would otherwise re-download every poll forever
+// (R18). It's still re-attempted by the slow full scan and immediately re-tried when the server
+// commits a NEW version for the path.
+export const MAX_PULL_RETRIES = 5;
+
+// Decide whether to HOLD the poll cursor for a file whose pull just failed. Returns true while the
+// file is under its retry budget (hold → retried next poll); false once exhausted (let the cursor
+// advance past it, and fire onPullExhausted once). A new server version for the path resets the count.
+function holdForRetry(d: ReconcileDeps, path: string, version: number): boolean {
+  if (!d.retryBudget) return true; // no budget wired → unbounded hold (pre-R18)
+  const cur = d.retryBudget.get(path);
+  const count = cur && cur.version === version ? cur.count + 1 : 1;
+  d.retryBudget.set(path, { version, count });
+  if (count >= MAX_PULL_RETRIES) { d.onPullExhausted?.(path); return false; }
+  return true;
+}
+
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
   device: string;
@@ -92,6 +110,15 @@ export interface ReconcileDeps {
   // never-synced file — so main batches them into ONE notice for the user to review, instead of
   // silently resurrecting them. Purely observational: it never changes the keep-and-push behavior.
   onKeptAbsent?: (path: string) => void;
+  // Bounded-retry budget for a remote file whose pull keeps FAILING (R18): a genuinely-corrupt server
+  // copy (bad manifest / bit-rot) fails its integrity check every time, and the cursor-hold (R14
+  // sync#1) would otherwise re-download it on EVERY poll forever. Keyed by path → {version, count} of
+  // CONSECUTIVE failures at that server version; after MAX_PULL_RETRIES the cursor is allowed to
+  // advance past it (stop re-pulling) and onPullExhausted fires once. A NEW version for the path (the
+  // server re-committed → likely fixed) resets the count; a success clears it. In-memory, plugin-owned
+  // so it persists across passes. Absent ⇒ unbounded hold (the pre-R18 behavior).
+  retryBudget?: Map<string, { version: number; count: number }>;
+  onPullExhausted?: (path: string) => void; // a file's server copy failed to download MAX times — surface it
 }
 
 // The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
@@ -274,15 +301,18 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
   // errors stay isolated (one bad file never aborts the pass).
   await mapPool(paths, FILE_CONCURRENCY, async (p) => {
-    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)); }
+    try {
+      await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p));
+      d.retryBudget?.delete(p); // reconciled cleanly → reset any failure budget for this path (R18)
+    }
     catch (e) {
       d.onFileError?.(p, e);
       // Hold the cursor below a failed change so it's retried next poll (R14 sync#1). Cover a failed
-      // TOMBSTONE (delete-local) path too, not just upserts (R15 sync#2) — else a transient io.remove
-      // failure lets the cursor advance past the tombstone, and the delete lingers until the 15-min
-      // full scan (reconcileDelta already does this via its versionOf; keep reconcileAll symmetric).
+      // TOMBSTONE (delete-local) path too (R15 sync#2). But once a file has failed MAX_PULL_RETRIES
+      // times at the same version, STOP holding (R18) — a corrupt server copy would otherwise
+      // re-download every poll forever; let the cursor advance past it (the full scan still retries it).
       const rv = remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version;
-      if (rv !== undefined) failedRemote.push(rv);
+      if (rv !== undefined && holdForRetry(d, p, rv)) failedRemote.push(rv);
     }
   });
   const minFailedRemote = failedRemote.length ? Math.min(...failedRemote) : Infinity;
@@ -316,11 +346,14 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   await mapPool([...new Set<string>([...remote.keys(), ...tombstoned])], FILE_CONCURRENCY, async (p) => {
-    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp)); }
+    try {
+      await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp));
+      d.retryBudget?.delete(p); // applied cleanly → reset any failure budget (R18)
+    }
     catch (e) {
       d.onFileError?.(p, e);
       const v = versionOf(p);
-      if (v !== undefined) failed.push(v);
+      if (v !== undefined && holdForRetry(d, p, v)) failed.push(v); // stop pinning a permanently-failing file (R18)
     }
   });
   // Assign, not max (rewind convergence) — but hold the cursor below the earliest change that FAILED
@@ -612,6 +645,7 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   // switch; the caller drives OFFLINE, retries the connect, retries the entire switch, and hits the
   // same failure: an infinite backoff loop where the vault never finishes switching. Per-file
   // isolation lets the switch complete and skips only the offending file.
+  const failedRemote: number[] = []; // server versions whose adopt FAILED this switch (R18)
   if (mode === "download") {
     for (const [p, meta] of remote) {
       // DI-6: adopt each remote file via applyPull, which STREAMS a large file straight to disk
@@ -619,7 +653,8 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       // uses. Only a large file we CAN'T stream (no appendWrite) is size-gated + skipped.
       const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
       if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
-      try { await applyPull(d, p, meta); } catch (e) { d.onFileError?.(p, e); }
+      try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
+      catch (e) { d.onFileError?.(p, e); if (holdForRetry(d, p, meta.version)) failedRemote.push(meta.version); }
     }
     for (const [p, info] of local) {            // drop local files the target lacks
       if (!accepted(p) || remote.has(p)) continue;
@@ -639,5 +674,11 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } } // remote is already accepts-filtered above
     }
   }
-  d.state.version = resp.version; // assign, not max — see CONC-R2#3 note in reconcileAll
+  // Assign, not max (CONC-R2#3) — but HOLD the cursor below any remote file whose adopt FAILED this
+  // switch (R18). switchTo cleared base above, so if we advanced past a transiently-failed download,
+  // the delta poll would never re-see it and the next full scan (local present, base null, remote
+  // present) would decide conflict-copy — a spurious "(conflict …)" file over what the user chose to
+  // simply download. Holding the cursor makes the next poll re-adopt it cleanly.
+  const minFailed = failedRemote.length ? Math.min(...failedRemote) : Infinity;
+  d.state.version = Number.isFinite(minFailed) ? Math.min(resp.version, minFailed - 1) : resp.version;
 }
