@@ -115,4 +115,4 @@ client-side end-to-end encryption yet; it is tracked and deferred (see the trust
 
 ## License
 
-_A license has not been chosen yet._ Until one is added, no usage rights are granted by default.
+[MIT](LICENSE) © William Weatherholtz.

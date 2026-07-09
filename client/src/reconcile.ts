@@ -1,4 +1,4 @@
-import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk } from "./sync";
+import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk, mapPool } from "./sync";
 import { sha256hex } from "./chunker";
 import { BaseStore, conflictCopyName } from "./base";
 import { isMergeable, merge3 } from "./merge";
@@ -47,6 +47,14 @@ export const BULK_DELETE_RATIO = 0.5;  // >= half of base missing from a non-emp
 // supports it — which also lets it bypass the buffered size gate. Uploads still buffer
 // (chunking reads the whole local file), so they stay gated.
 export const STREAM_MIN_BYTES = 8 * 1024 * 1024; // 8 MiB
+
+// How many files a whole-vault / delta reconcile processes concurrently (perf: the file loop was
+// strictly sequential, so an initial sync of N notes cost ~N × 3 serial round-trips — minutes on a
+// WAN). Each file is independent; JS is single-threaded so the shared base/cache/state mutations
+// don't race (state.version is set once AFTER the pass, and pushFile deliberately never touches it).
+// Kept MODEST so at most this many files buffer at once (per-file size gate bounds each) — safe on
+// mobile. Within a file, chunk transfer is separately parallel (TRANSFER_CONCURRENCY). (Finding 1)
+export const FILE_CONCURRENCY = 4;
 
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
@@ -258,16 +266,19 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
-  const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
-  let minFailedRemote = Infinity; // earliest server version whose PULL failed this pass (R14 sync#1)
-  for (const p of paths) {
+  const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
+  const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
+  // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
+  // errors stay isolated (one bad file never aborts the pass).
+  await mapPool(paths, FILE_CONCURRENCY, async (p) => {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)); }
     catch (e) {
-      d.onFileError?.(p, e); // isolate: one file's failure must never abort the whole sync
+      d.onFileError?.(p, e);
       const rv = remote.get(p)?.version;
-      if (rv !== undefined && rv < minFailedRemote) minFailedRemote = rv;
+      if (rv !== undefined) failedRemote.push(rv);
     }
-  }
+  });
+  const minFailedRemote = failedRemote.length ? Math.min(...failedRemote) : Infinity;
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
   // us consistent with it). ASSIGN, not max: if the server REWOUND (reindex/restore, V_s < V_c),
   // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
@@ -296,17 +307,18 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
   const guardBulkDelete = baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO;
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
-  let minFailed = Infinity; // earliest change version that failed to apply this pass (R14 sync#1)
-  for (const p of new Set<string>([...remote.keys(), ...tombstoned])) {
+  const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
+  await mapPool([...new Set<string>([...remote.keys(), ...tombstoned])], FILE_CONCURRENCY, async (p) => {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp)); }
     catch (e) {
       d.onFileError?.(p, e);
       const v = versionOf(p);
-      if (v !== undefined && v < minFailed) minFailed = v;
+      if (v !== undefined) failed.push(v);
     }
-  }
+  });
   // Assign, not max (rewind convergence) — but hold the cursor below the earliest change that FAILED
   // this pass so it's retried on the next poll, not dropped until the 15-min full scan (R14 sync#1).
+  const minFailed = failed.length ? Math.min(...failed) : Infinity;
   d.state.version = Number.isFinite(minFailed) ? Math.min(delta.version, minFailed - 1) : delta.version;
 }
 

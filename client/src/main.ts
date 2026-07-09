@@ -35,6 +35,12 @@ const MOBILE_MAX_SYNC_BYTES = 50 * 1024 * 1024;
 // slower full pass instead of a costly full re-hash every config tick. 15 min balances safety vs
 // battery. (A reconnect also does a full pass; this covers a device that stays connected for hours.)
 const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
+// Poll cadence (perf, Finding 3a): the WebSocket delivers remote changes INSTANTLY, so while it's
+// healthy the poll is only a liveness backstop and runs slowly (spare the mobile radio — 4s was
+// ~900 needless wakeups/hour). It upshifts to the fast cadence the moment the WS drops/closes so a
+// WS-less client still converges quickly.
+const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
+const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
 // Coalesce the burst of "raw" events a single config change emits before reconciling.
 const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
@@ -849,10 +855,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws = ws ?? undefined;
     if (!ws) { this.log("ws not available — polling fallback active"); return null; }
     let opened = false;
-    ws.addEventListener("open", () => { opened = true; this.log("ws channel open (instant sync)"); });
-    ws.addEventListener("error", () => this.log("ws unavailable — polling fallback active"));
+    ws.addEventListener("open", () => {
+      opened = true; this.log("ws channel open (instant sync)");
+      this.startPolling(POLL_IDLE_MS); // WS live → downshift the poll to a slow liveness backstop (Finding 3a)
+    });
+    ws.addEventListener("error", () => { this.log("ws unavailable — polling fallback active"); this.startPolling(POLL_ACTIVE_MS); });
     ws.addEventListener("close", () => {
       if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
+      this.startPolling(POLL_ACTIVE_MS); // WS dropped → upshift the poll until it's back (or connect restarts it)
       if (opened) {
         // R11-#7: delay the WS re-dial so a server that flaps the socket (accept-then-drop) can't be
         // hammered with reconnects many times a second (rews had no backoff). A normal one-off drop
@@ -886,9 +896,9 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // The 4s safety-net poll is now just an event SOURCE: it enqueues {remote}; the engine serializes
   // it and doReconcileAll does the cheap incremental check, so an idle poll stays one tiny request.
-  private startPolling(): void {
+  private startPolling(intervalMs: number = POLL_ACTIVE_MS): void {
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
-    this.pollTimer = window.setInterval(() => this.engine.enqueue({ kind: "remote" }), 4000);
+    this.pollTimer = window.setInterval(() => this.engine.enqueue({ kind: "remote" }), intervalMs);
   }
 
   // EFFECT: reconcile against the server (a remote poke or a poll tick). Cheap incremental check
