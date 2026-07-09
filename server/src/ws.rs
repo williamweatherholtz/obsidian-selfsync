@@ -56,6 +56,16 @@ pub async fn ws_handler(
     // owner defaults to the caller (own vault); a shared vault names its owner. Subscribing
     // to change notifications is a read — gate it by the ACL, same as the read routes.
     let owner = q.get("owner").cloned().unwrap_or_else(|| user.clone());
+    // Reject a malformed owner/vault BEFORE any log line interpolates them. A non-safe_name
+    // value can never satisfy authorized()/vault_exists() anyway (store keys are safe_name),
+    // so this only rejects requests that would 403/404 regardless — but it also closes the
+    // log-injection surface the R20 safe_rel_path fix left open on this handler: the query
+    // params are attacker-controlled and were logged raw on the reject paths below, so a
+    // CR/LF/ANSI payload could forge operator-log lines. Fixed string, no interpolation.
+    if !crate::users::safe_name(&owner) || !crate::users::safe_name(&vault) {
+        log::warn!("[ws] connect REJECTED (malformed owner/vault)");
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
     let allowed = match lock(&st.shares) {
         Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
         Err(_) => { log::warn!("[ws] connect REJECTED (shares store unavailable)"); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }

@@ -650,6 +650,11 @@ fn is_junk(name: &str) -> bool {
         // it here keeps reindex from ingesting it as a phantom file that would propagate fleet-wide, and
         // makes safe_rel_path reject the suffix so a commit can't mint such an index key either.
         || name.ends_with(".selfsync-tmp")
+        // R21: the SYMMETRIC client-side temp. The plugin streams a download into `<name>.selfsync-part`
+        // then renames; a crash mid-download orphans a VISIBLE (non-dotfile) partial in the vault, which
+        // the client would otherwise push and the server accept as a real note (torn content, fleet-wide).
+        // Reject it on the server too so a stale/buggy client can never mint such an index key.
+        || name.ends_with(".selfsync-part")
 }
 
 // Recursively collect every file under `dir` as (forward-slash rel path, abs path), relative to
@@ -1242,6 +1247,7 @@ mod tests {
         assert!(safe_rel_path("\u{1b}[31mred.md").is_none(), "ANSI ESC rejected");
         assert!(safe_rel_path("x\u{0}.md").is_none(), "NUL rejected");
         assert!(safe_rel_path(".ghost.md.selfsync-tmp").is_none(), "R20: a mirror atomic-write temp name is rejected");
+        assert!(safe_rel_path("notes/big.md.selfsync-part").is_none(), "R21: a client streamed-download temp name is rejected");
         assert!(safe_rel_path("notes/sub/real name (1).md").is_some(), "a normal path is still accepted");
     }
 
@@ -1254,9 +1260,12 @@ mod tests {
         v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
         // Simulate a crash between write_mirror's fsync and its rename: a complete-content temp is left.
         std::fs::write(dir.path().join("vault").join(".keep.md.selfsync-tmp"), b"leftover").unwrap();
+        // R21: and a crash mid client-download leaves a VISIBLE .selfsync-part partial.
+        std::fs::write(dir.path().join("vault").join("keep.md.selfsync-part"), b"partial").unwrap();
         v.reindex(false).unwrap();
         let ch = v.changes(0);
         assert!(ch.upserts.iter().all(|m| !m.path.contains("selfsync-tmp")), "leftover mirror temp must NOT be ingested as a phantom file");
+        assert!(ch.upserts.iter().all(|m| !m.path.contains("selfsync-part")), "R21: leftover client download temp must NOT be ingested");
         assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the real file is kept");
     }
 

@@ -14,6 +14,18 @@ describe("shouldSync — notes always sync", () => {
   });
 });
 
+describe("shouldSync — crash-orphan atomic-write temps never sync (R21)", () => {
+  it("rejects a leftover .selfsync-part partial download, as a note or under .obsidian", () => {
+    for (const sel of [DEFAULT_CONFIG_SYNC, on({ community: true })]) {
+      expect(shouldSync("notes/big.md.selfsync-part", sel, SELF)).toBe(false);
+      expect(shouldSync("attachment.pdf.selfsync-part", sel, SELF)).toBe(false);
+      expect(shouldSync(".obsidian/plugins/x/main.js.selfsync-part", sel, SELF)).toBe(false);
+      // the server's mirror temp suffix too, for symmetry
+      expect(shouldSync("notes/big.md.selfsync-tmp", sel, SELF)).toBe(false);
+    }
+  });
+});
+
 describe("shouldSync — master switch", () => {
   it("config sync OFF means nothing under .obsidian syncs", () => {
     expect(shouldSync(".obsidian/app.json", DEFAULT_CONFIG_SYNC, SELF)).toBe(false);
