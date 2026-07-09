@@ -48,6 +48,12 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
         match c {
             Component::Normal(seg) => {
                 let s = seg.to_str()?; // reject non-UTF-8 segments
+                // R20: reject ASCII control characters (incl. \n, \r, \t, NUL, ANSI ESC). A real note
+                // filename never contains them, and admitting them let an authenticated writer forge or
+                // spoof audit-log lines — the path is logged verbatim on commit/delete — and smuggle
+                // terminal escapes into an operator's log viewer (the analogous username path is already
+                // control-stripped in auth.rs; this brings the file path to parity + tightens the on-disk name).
+                if s.bytes().any(|b| b.is_ascii_control()) { return None; }
                 // SEC-R3#1: reject a name Windows silently strips a trailing '.' or space from (or
                 // that is all dots) — the index key ("evil.md.") would then differ from the on-disk
                 // name ("evil.md"), re-opening the reindex-brick (DI-4) AND evading the reserved
@@ -639,6 +645,11 @@ impl Vault {
 // get re-ingested by reindex). `.obsidian` config is NOT junk.
 fn is_junk(name: &str) -> bool {
     matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini" | ".git")
+        // R20: a leftover write_mirror atomic-write temp (a crash between its fsync and the rename
+        // leaves a complete-content `.<name>.selfsync-tmp` in vault/). It's never a real note; excluding
+        // it here keeps reindex from ingesting it as a phantom file that would propagate fleet-wide, and
+        // makes safe_rel_path reject the suffix so a commit can't mint such an index key either.
+        || name.ends_with(".selfsync-tmp")
 }
 
 // Recursively collect every file under `dir` as (forward-slash rel path, abs path), relative to
@@ -1221,6 +1232,32 @@ mod tests {
         assert!(ch.deletes.iter().any(|d| d.path == "gone.md"), "tombstone preserved");
         assert!(!dir.path().join("vault").join("gone.md").exists(), "ghost mirror removed");
         assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the intact file is recovered");
+    }
+
+    #[test]
+    fn safe_rel_path_rejects_control_chars() { // R20 log-injection / audit-forgery
+        assert!(safe_rel_path("a\nb.md").is_none(), "newline rejected");
+        assert!(safe_rel_path("a\r\n[login] user='x' -> OK.md").is_none(), "CRLF log-forge rejected");
+        assert!(safe_rel_path("a\tb.md").is_none(), "tab rejected");
+        assert!(safe_rel_path("\u{1b}[31mred.md").is_none(), "ANSI ESC rejected");
+        assert!(safe_rel_path("x\u{0}.md").is_none(), "NUL rejected");
+        assert!(safe_rel_path(".ghost.md.selfsync-tmp").is_none(), "R20: a mirror atomic-write temp name is rejected");
+        assert!(safe_rel_path("notes/sub/real name (1).md").is_some(), "a normal path is still accepted");
+    }
+
+    #[test]
+    fn reindex_ignores_leftover_mirror_temp_files() { // R20 crash-safety
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let mut v = Vault::open(dir.path()).unwrap();
+        v.put_chunk(&ha, a).unwrap();
+        v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        // Simulate a crash between write_mirror's fsync and its rename: a complete-content temp is left.
+        std::fs::write(dir.path().join("vault").join(".keep.md.selfsync-tmp"), b"leftover").unwrap();
+        v.reindex(false).unwrap();
+        let ch = v.changes(0);
+        assert!(ch.upserts.iter().all(|m| !m.path.contains("selfsync-tmp")), "leftover mirror temp must NOT be ingested as a phantom file");
+        assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the real file is kept");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS

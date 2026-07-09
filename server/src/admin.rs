@@ -183,15 +183,18 @@ pub async fn prune_history(
     if !st.vault_exists(&req.owner, &req.vault) {
         return Err(AppError::NotFound);
     }
-    let h = st.vault(&req.owner, &req.vault).map_err(|_| AppError::NotFound)?;
+    // Open the handle INSIDE spawn_blocking (R20, parity with reindex) — a cold open auto-reindexes
+    // (whole-dir walk), which must not run on the async worker shared with public sync.
+    let st2 = st.clone();
     let (owner, vault, floor) = (req.owner.clone(), req.vault.clone(), req.floor);
     let (pruned, version) = tokio::task::spawn_blocking(move || -> Result<(usize, u64), AppError> {
+        let h = st2.vault(&owner, &vault).map_err(|_| AppError::NotFound)?;
         let mut v = crate::error::wlock(&h.vault)?;
         let target = floor.unwrap_or_else(|| v.version()); // default: prune all current tombstones
         let n = v.prune_history(target).map_err(|e| AppError::Internal(e.to_string()))?;
         Ok((n, v.version()))
     }).await.map_err(|e| AppError::Internal(format!("prune join failed: {e}")))??;
-    log::info!("[{owner}/{vault} prune-history by admin {user}] pruned {pruned} tombstone(s)");
+    log::info!("[{}/{} prune-history by admin {user}] pruned {pruned} tombstone(s)", req.owner, req.vault);
     Ok(Json(serde_json::json!({ "pruned": pruned, "version": version })))
 }
 

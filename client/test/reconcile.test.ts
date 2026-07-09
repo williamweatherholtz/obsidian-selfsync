@@ -925,6 +925,23 @@ describe("R14 sync-correctness fixes", () => {
     expect(state.version).toBeGreaterThanOrEqual(badV);     // cursor advanced PAST it (no longer re-downloaded every poll)
   });
 
+  it("R20: switchTo(upload) does NOT restore old base for a failed push (local preserved, never silently overwritten)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "shared.md", "TARGET"); // the target vault already holds shared.md, different content
+    await serverPut(api, "keep.md", "k");
+    const io = fakeIo({ "shared.md": "LOCAL-WINS", "keep.md": "k" });
+    const base = new BaseStore();
+    base.set("shared.md", { hash: await sha256hex(enc("OLD")) }); // stale OLD-vault base
+    const realCommit = api.commit.bind(api);
+    (api as any).commit = async (req: any) => { if (req.path === "shared.md") throw new Error("push failed"); return realCommit(req); };
+    const errs: string[] = [];
+    await switchTo(deps(api, io, { base, onFileError: (p) => errs.push(p) }), "upload");
+    expect(errs).toContain("shared.md");
+    // Base must NOT be restored to the old-vault entry — leaving it null makes the retry conflict-COPY
+    // (preserving LOCAL), never decide()=pull that would silently overwrite local with the target's copy.
+    expect(base.get("shared.md")).toBeUndefined();
+  });
+
   it("sync#2: reconcileLocalConfig isolates a per-file error instead of flapping the engine offline", async () => {
     const { api } = fakeServer();
     await serverPut(api, ".obsidian/app.json", "cfg");

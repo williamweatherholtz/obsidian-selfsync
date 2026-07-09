@@ -628,6 +628,7 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   // is data-safe (never a silent delete) and mode-correct for the common in-sync case.
   const oldBase = new Map(d.base.paths().map((p) => [p, d.base.get(p)!]));
   for (const p of d.base.paths()) d.base.delete(p); // no common ancestor across vaults
+  d.retryBudget?.clear(); // R20: the OLD vault's per-path failure counts are meaningless against the target
   d.onBaseChanged?.();
   // R13-SF4: defense-in-depth — never push/delete on the server for a read-only share, even if a
   // caller (or a fail-open `perm` from the server) asked for an upload. The UI already blocks this.
@@ -680,8 +681,13 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
         const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
         setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
       } catch (e) {
+        // R20: do NOT restore the old-vault base on a failed UPLOAD push (the R19 restore did — it was
+        // right for download but WRONG here). With base restored, if the target already holds this path
+        // with different content, the next full scan sees L==base, R!=base → decide()=pull → the target
+        // SILENTLY overwrites the local file the user chose (via upload) to keep, with no conflict copy.
+        // Leaving base null makes the retry conflict-COPY instead: the local content is preserved (as a
+        // copy) rather than lost — the data-safe pre-R19 behavior. (Download keeps its restore below.)
         d.onFileError?.(p, e);
-        const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → don't demote local to a conflict-copy on a transient push failure
       }
     }
     for (const p of remote.keys()) {            // drop remote files this vault lacks
