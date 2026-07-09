@@ -87,9 +87,16 @@ export class SwitchVaultModal extends Modal {
   // Switch to a vault shared BY someone else. Read-only shares can only be downloaded
   // (we can't push); read-write shares use the same resolution prompt as an own vault.
   private async selectShared(ref: SharedVaultRef) {
-    this.target = ref.vault; this.targetOwner = ref.owner; this.targetReadOnly = ref.perm === "read";
+    // SF3: fail CLOSED on the permission — writable ONLY if the server explicitly says "readWrite".
+    // A missing/unknown value (server bug, version skew, MITM) must be treated as read-only, never
+    // silently writable.
+    this.target = ref.vault; this.targetOwner = ref.owner; this.targetReadOnly = ref.perm !== "readWrite";
     try {
-      if (this.targetReadOnly || !(await this.plugin.hasLocalData())) { await this.applySwitch("download"); return; }
+      // SF1: only auto-download when there's NOTHING local to lose. If the device has content, ALWAYS
+      // prompt — never silently mirror-delete. (Previously a read-only share short-circuited to
+      // download, which PERMANENTLY deleted local-only notes on a flow — viewing a shared vault —
+      // where the user expects zero destruction.)
+      if (!(await this.plugin.hasLocalData())) { await this.applySwitch("download"); return; }
       this.renderResolve();
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`);
@@ -114,9 +121,12 @@ export class SwitchVaultModal extends Modal {
       .setDesc("Replace this vault with the target's content. Local files that aren't on the target are removed.")
       .addButton((b) => b.setButtonText("Download").setWarning().onClick(() => void this.applySwitch("download")));
 
-    new Setting(c).setName(`Upload — overwrite '${this.target}'`)
-      .setDesc("Replace the target with this vault's content. Target files that aren't in this vault are removed.")
-      .addButton((b) => b.setButtonText("Upload").setWarning().onClick(() => void this.applySwitch("upload")));
+    // Upload isn't possible on a read-only share (we can't push) — omit it there.
+    if (!this.targetReadOnly) {
+      new Setting(c).setName(`Upload — overwrite '${this.target}'`)
+        .setDesc("Replace the target with this vault's content. Target files that aren't in this vault are removed.")
+        .addButton((b) => b.setButtonText("Upload").setWarning().onClick(() => void this.applySwitch("upload")));
+    }
 
     new Setting(c).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
   }

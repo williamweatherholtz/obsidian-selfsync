@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcileDelta, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES } from "../src/reconcile";
+import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -493,6 +493,49 @@ describe("config sync: additive + adjudicated (never auto-delete, never resurrec
     await reconcileAll(deps(api, io, { onFileError: (p) => errs.push(p) }));
     expect(errs).toContain("bad.md");
     expect(dec((io as any).m.get("good.md")!)).toBe("ok"); // the other file still synced
+  });
+});
+
+// R13: the frequent tick runs a CONFIG-ONLY re-hash (cheap) instead of a whole-vault reconcile.
+// It must push local config edits/removals (which fire no reliable vault event) WITHOUT touching notes.
+describe("reconcileLocalConfig (config-only scan, R13)", () => {
+  const CP = ".obsidian/app.json";
+
+  it("pushes a LOCAL config edit and leaves NOTES untouched", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, "OLD");
+    await serverPut(api, "note.md", "NOTE");
+    const io = fakeIo({ [CP]: "NEW-LOCAL", "note.md": "NOTE-CHANGED-LOCALLY" });
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc("OLD")), text: "OLD" });
+    base.set("note.md", { hash: await sha256hex(enc("NOTE")), text: "NOTE" });
+    await reconcileLocalConfig(deps(api, io, { base, accepts: () => true }));
+    const after = await api.changes(0);
+    const cfg = after.upserts.find((m) => m.path === CP)!;
+    const note = after.upserts.find((m) => m.path === "note.md")!;
+    expect(cfg.hash).toBe(await sha256hex(enc("NEW-LOCAL"))); // config edit pushed
+    expect(note.hash).toBe(await sha256hex(enc("NOTE")));      // a locally-changed NOTE is NOT touched by the config-only scan
+  });
+
+  it("propagates a LOCAL config removal (base present, file gone)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, CP, "cfg");
+    const io = fakeIo({}); // config file removed locally (no vault event on mobile)
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc("cfg")), text: "cfg" }); // we HELD it → evidenced removal
+    await reconcileLocalConfig(deps(api, io, { base, accepts: () => true }));
+    expect(files.has(CP)).toBe(false); // auto-remove propagated to the server
+  });
+
+  it("is a NO-OP when config is unchanged vs base (no spurious push)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, CP, "same");
+    const before = (await api.changes(0)).version;
+    const io = fakeIo({ [CP]: "same" });
+    const base = new BaseStore();
+    base.set(CP, { hash: await sha256hex(enc("same")), text: "same" });
+    await reconcileLocalConfig(deps(api, io, { base, accepts: () => true }));
+    expect((await api.changes(0)).version).toBe(before); // nothing committed
   });
 });
 

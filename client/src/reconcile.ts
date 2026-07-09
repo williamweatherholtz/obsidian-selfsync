@@ -122,10 +122,21 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // Returns the conflict-copy path it wrote (so a caller whose subsequent write FAILS can remove the
 // now-orphaned copy), or null if no race was detected. The copy name is tagged with the CURRENT
 // content's hash — never a stale pre-fetch hash — so the tag always matches the copy's bytes.
+// Sentinel: a raced pull of a CONFIG path was routed to adjudication instead of a note copy — the
+// caller must NOT overwrite the raced local edit (R13-CR1). Not a real path (leading NUL).
+const CONFIG_RACE_MARKER = " config-race";
 async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<string | null> {
   const cur = await readOrNull(d.io, path);
   const curHash = cur ? await sha256hex(cur) : null;
   if (curHash !== expectLocalHash && cur) {
+    if (isConfig(path)) {
+      // A local `.obsidian/` file was rewritten (by its own plugin) DURING this clean pull → a genuine
+      // config divergence. Config uses ADJUDICATION, never note-style copies: a stray `(conflict …).json`
+      // would be pushed as junk config AND the resolver can't surface it. Record it + tell the caller
+      // to leave the raced local edit in place for the user to adjudicate. (R13-CR1)
+      d.onConfigConflict?.(path, "local edit raced a pull");
+      return CONFIG_RACE_MARKER;
+    }
     const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
     await d.io.write(copy, cur);
     d.onConflict?.(path, copy);
@@ -143,6 +154,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     // renames atomically, so there's no post-fetch/pre-write seam to insert it into). The narrow
     // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
     const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
+    if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite the local edit
     try {
       if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size)) {
         d.base.set(path, { hash: rmeta.hash });
@@ -165,9 +177,33 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
   }
   const bytes = await fetchVerified(d, rmeta);
   // Buffered path: check AFTER the fetch (catches a save that landed during the multi-chunk fetch).
-  if (guardRace) await conflictCopyIfRaced(d, path, expectLocalHash);
+  if (guardRace && (await conflictCopyIfRaced(d, path, expectLocalHash)) === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite
   await d.io.write(path, bytes);
   setBase(d, path, bytes, rmeta.hash);
+}
+
+// R13: cheap periodic pass — re-hash ONLY `.obsidian/` config files (small + few) to catch a LOCAL
+// config edit/removal that fired no reliable event (esp. mobile, which lacks the `raw` watcher),
+// WITHOUT re-hashing the whole vault. Remote config changes arrive via the delta; a missed local
+// NOTE edit is caught by the slower whole-vault scan (doReconcileAll's forceFullScan), not here.
+export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
+  const local = await d.io.list();
+  const candidates = new Set<string>();
+  for (const p of local.keys()) if (isConfig(p)) candidates.add(p);
+  for (const p of d.base.paths()) if (isConfig(p)) candidates.add(p); // catch a LOCAL removal (base present, file gone)
+  for (const p of candidates) {
+    if (d.accepts && !d.accepts(p)) continue;
+    const cur = await readOrNull(d.io, p);
+    const curHash = cur ? await sha256hex(cur) : null;
+    if (curHash === (d.base.get(p)?.hash ?? null)) continue; // unchanged vs base → nothing to do
+    try {
+      const rmeta = await d.api.fileMeta(p);
+      await reconcileOne(d, p, rmeta ?? undefined, false, cur?.length ?? 0, () => false, local.has(p));
+    } catch (e) {
+      if (e instanceof CommitConflictError) { d.onFileError?.(p, e); continue; }
+      throw e;
+    }
+  }
 }
 
 // Fetch a remote file's chunks and VERIFY the reassembly hashes to the claimed value before it's
@@ -476,6 +512,9 @@ export type SwitchMode =
 export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void> {
   for (const p of d.base.paths()) d.base.delete(p); // no common ancestor across vaults
   d.onBaseChanged?.();
+  // R13-SF4: defense-in-depth — never push/delete on the server for a read-only share, even if a
+  // caller (or a fail-open `perm` from the server) asked for an upload. The UI already blocks this.
+  if (mode === "upload" && d.readOnly) throw new Error("refusing to upload to a read-only shared vault");
   if (mode === "merge") { await reconcileAll(d); return; }
 
   const max = d.maxSyncBytes ?? DEFAULT_MAX_SYNC_BYTES;

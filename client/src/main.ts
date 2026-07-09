@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
-import { reconcileAll, reconcileDelta, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -30,6 +30,11 @@ const CONFIG_SCAN_INTERVAL_MS = 120_000;
 // below the desktop ceiling so a mid-size attachment can't OOM-crash the app; bigger files sync on
 // desktop and the peer's copy is never endangered (skipped, not deleted). (R11-#2)
 const MOBILE_MAX_SYNC_BYTES = 50 * 1024 * 1024;
+// Whole-vault re-hash cadence (R13): the config scan above is now CONFIG-ONLY (cheap), so a LOCAL
+// note edit whose vault event was dropped (external/cloud write, missed event) is caught by this
+// slower full pass instead of a costly full re-hash every config tick. 15 min balances safety vs
+// battery. (A reconnect also does a full pass; this covers a device that stays connected for hours.)
+const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 // Coalesce the burst of "raw" events a single config change emits before reconciling.
 const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
@@ -185,7 +190,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private logs: string[] = [];
   private reconnectTimer?: number;
   private pollTimer?: number;
-  private lastConfigScanAt = 0; // wall-clock ms of the last forced full config-aware reconcile (see doReconcileAll)
+  private lastConfigScanAt = 0; // wall-clock ms of the last CONFIG-ONLY scan (see doReconcileAll)
+  private lastFullScanAt = 0;   // wall-clock ms of the last WHOLE-VAULT reconcile (note-drift safety net)
   private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
   private rawDebounce?: number;               // debounce timer for the raw-event burst
   private recentSelfWrites = new Map<string, number>(); // config path -> when WE wrote it, to ignore the echo
@@ -774,7 +780,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); }
       else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
       await this.flushConfigReload();
-      this.lastConfigScanAt = Date.now(); // this reconcile was config-aware — start the scan window now
+      this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
       this.spinUpWs();
       this.startPolling();
       this.backoff = 3000;
@@ -865,12 +871,14 @@ export default class NewLiveSyncPlugin extends Plugin {
   // mid-reconcile is just another queued {remote} the engine runs next — CONC-R3#3/R4#1 for free.)
   private async doReconcileAll(): Promise<void> {
     if (!this.api) throw new Error("not connected");
-    // Local CONFIG edits fire no TFile event and don't bump the server version, and mobile has no
-    // `raw` watcher — so force a full (config-aware) reconcile at most every CONFIG_SCAN_INTERVAL_MS
-    // (wall-clock) as the mobile fallback + safety net. Desktop also gets the live `raw` path.
-    const forceConfigScan = this.settings.configSync.enabled
-      && Date.now() - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
-    if (forceConfigScan) this.lastConfigScanAt = Date.now();
+    // Local CONFIG edits fire no reliable event (mobile has no `raw` watcher) → a CONFIG-ONLY re-hash
+    // runs at most every CONFIG_SCAN_INTERVAL_MS (cheap: only `.obsidian/` files). A missed local NOTE
+    // edit is caught by a WHOLE-VAULT pass on the slower FULL_SCAN_INTERVAL_MS cadence. (R13)
+    const now = Date.now();
+    const forceConfigScan = this.settings.configSync.enabled && now - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
+    const forceFullScan = now - this.lastFullScanAt >= FULL_SCAN_INTERVAL_MS;
+    if (forceConfigScan) this.lastConfigScanAt = now;
+    if (forceFullScan) this.lastFullScanAt = now;
     const delta = await this.api.changes(this.state.version);
     // D0019 (critique-R8): detect a server DELETION-HISTORY RESET from the PERSISTED per-vault floor +
     // last-version (both survive a restart, unlike the ephemeral state.version). A reset routes to the
@@ -880,7 +888,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // first (noteHistory), so an idle vault tracks them and a LATER reset stays detectable (a pure
     // tombstone-prune bumps the floor without any delta). No reconcile ran, so nothing was kept.
     const noChange = delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version;
-    if (!forceConfigScan && !reset && noChange) {
+    if (!forceConfigScan && !forceFullScan && !reset && noChange) {
       this.noteHistory(delta.version, delta.history_floor, []);
       return;
     }
@@ -898,11 +906,16 @@ export default class NewLiveSyncPlugin extends Plugin {
       const prevOnBaseChanged = d.onBaseChanged;
       d.onBaseChanged = () => { this.engine.beginReconcile(); prevOnBaseChanged?.(); };
     }
-    // RS-3: a normal forward delta reconciles INCREMENTALLY. The FULL reconcile is reserved for the
-    // periodic config scan and a HISTORY RESET (only the whole-manifest pass visits every local file
-    // to restore-on-absence + carries the bulk-delete guard + surfaces the kept files a reset reports).
-    if (forceConfigScan || reset) await reconcileAll(d);
-    else await reconcileDelta(d, delta);
+    // Whole-vault reconcile on a history RESET or the slow full-scan cadence — the only pass that
+    // visits every local file (catches a LOCAL note edit whose event was dropped) + carries the
+    // bulk-delete guard. Otherwise: the incremental delta (remote changes) + a cheap CONFIG-ONLY
+    // re-hash on the frequent config tick (local config edits, which fire no reliable event). (R13)
+    if (forceFullScan || reset) {
+      await reconcileAll(d);
+    } else {
+      await reconcileDelta(d, delta);
+      if (forceConfigScan) await reconcileLocalConfig(d);
+    }
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
@@ -1050,6 +1063,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Fresh, fully-defaulted configSync object (never share the module constant, and
     // backfill any categories added since this vault last saved).
     this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
+    this.settings.configSync.pluginAllow = [...(s.configSync?.pluginAllow ?? [])]; // fresh array (CS2): never alias DEFAULT_CONFIG_SYNC's
     // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
     this.settings.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
     this.settings.noteConflicts = Array.isArray(s.noteConflicts) ? [...s.noteConflicts] : [];
