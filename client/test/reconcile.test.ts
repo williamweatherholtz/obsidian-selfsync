@@ -809,3 +809,47 @@ describe("RS-4 base-text cap", () => {
     expect(base.get("large.md")?.hash).toBeTruthy();       // still tracked (conflict-copies on divergence)
   });
 });
+
+// R14: the incremental delta/config-scan paths must not silently strand a transiently-failed file
+// (below the cursor → not retried until the 15-min full scan) or flap the whole engine offline.
+describe("R14 sync-correctness fixes", () => {
+  it("sync#1: a failed remote pull holds the delta cursor below its version so it's retried", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "A"); // server version 2
+    await serverPut(api, "b.md", "B"); // server version 3
+    const io = fakeIo({});
+    const origWrite = (io as any).write.bind(io);
+    (io as any).write = async (p: string, b: Uint8Array) => { if (p === "a.md") throw new Error("disk full"); return origWrite(p, b); };
+    const state = { version: 1 };
+    const delta = await api.changes(1); // upserts a.md(v2)+b.md(v3), delta.version=3
+    const errs: string[] = [];
+    await reconcileDelta(deps(api, io, { state, accepts: () => true, onFileError: (p) => errs.push(p) }), delta);
+    expect(errs).toContain("a.md");
+    expect(state.version).toBe(1);         // held below a.md's failed version (2), NOT advanced to 3
+    expect((io as any).m.has("b.md")).toBe(true); // the healthy sibling still applied (isolation)
+  });
+
+  it("sync#1: a clean delta still advances the cursor fully (no regression)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "A");
+    await serverPut(api, "b.md", "B");
+    const io = fakeIo({});
+    const state = { version: 1 };
+    const delta = await api.changes(1);
+    await reconcileDelta(deps(api, io, { state, accepts: () => true }), delta);
+    expect(state.version).toBe(delta.version); // no failures → cursor advances to the server version
+  });
+
+  it("sync#2: reconcileLocalConfig isolates a per-file error instead of flapping the engine offline", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, ".obsidian/app.json", "cfg");
+    const io = fakeIo({ ".obsidian/app.json": "local-edit" });
+    const base = new BaseStore();
+    base.set(".obsidian/app.json", { hash: await sha256hex(enc("cfg")), text: "cfg" });
+    (api as any).fileMeta = async () => { throw new Error("HTTP 500"); }; // transient error reconciling this file
+    const errs: string[] = [];
+    // Pre-fix this threw out of reconcileLocalConfig → doReconcileAll → engine offline. Now isolated.
+    await reconcileLocalConfig(deps(api, io, { base, accepts: () => true, onFileError: (p) => errs.push(p) }));
+    expect(errs).toContain(".obsidian/app.json");
+  });
+});

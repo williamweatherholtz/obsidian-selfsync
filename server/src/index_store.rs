@@ -79,7 +79,12 @@ impl SqliteIndex {
     fn migrate(conn: &Connection) -> std::io::Result<()> {
         let v = Self::meta_get(conn, "schema_version").unwrap_or(1);
         if v > Self::CURRENT_SCHEMA {
-            return Err(io(format!(
+            // R14-DI1: use a DISTINCT ErrorKind (Unsupported) so Vault::open can tell "newer schema —
+            // refuse to open" apart from "corrupt DB — quarantine + rebuild". These need opposite
+            // handling: a downgrade must be a HARD refusal (the DB is intact and authoritative — a
+            // rebuild-from-disk here would destroy tombstones + rewind the version epoch, exactly the
+            // damage this guard exists to prevent), NOT quarantine. SQLite/other failures stay Other.
+            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, format!(
                 "this vault's index was written by a NEWER server (schema v{v} > v{}); refusing to open \
                  with an older binary to avoid corruption — upgrade the server binary", Self::CURRENT_SCHEMA
             )));
@@ -325,7 +330,9 @@ mod tests {
         let p = dir.path().join("i.db");
         drop(SqliteIndex::open(&p).unwrap());
         { let conn = Connection::open(&p).unwrap(); conn.execute("UPDATE meta SET value=999 WHERE key='schema_version'", []).unwrap(); }
-        assert!(SqliteIndex::open(&p).is_err(), "must refuse a DB written by a newer binary");
+        let err = match SqliteIndex::open(&p) { Ok(_) => panic!("must refuse a DB written by a newer binary"), Err(e) => e };
+        // R14-DI1: the downgrade error MUST be a distinct kind so Vault::open can refuse (not quarantine).
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 
     #[test]

@@ -171,14 +171,28 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     // streamFileToDisk returned false → fall back to the buffered path. The racing-edit copy (if any)
     // is already made above, so DON'T re-check/re-copy here (that produced a duplicate copy).
     const bytes = await fetchVerified(d, rmeta);
-    await d.io.write(path, bytes);
+    try {
+      await d.io.write(path, bytes);
+    } catch (e) {
+      if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } } // R14 sync#4
+      throw e;
+    }
     setBase(d, path, bytes, rmeta.hash);
     return;
   }
   const bytes = await fetchVerified(d, rmeta);
   // Buffered path: check AFTER the fetch (catches a save that landed during the multi-chunk fetch).
-  if (guardRace && (await conflictCopyIfRaced(d, path, expectLocalHash)) === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite
-  await d.io.write(path, bytes);
+  const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
+  if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite
+  try {
+    await d.io.write(path, bytes);
+  } catch (e) {
+    // Orphan cleanup, matching the streamed path (R14 sync#4): the write failed and nothing was
+    // overwritten, so a racing-edit conflict copy is just a redundant duplicate of the unchanged
+    // local file — remove it before propagating, so we don't surface a spurious conflict.
+    if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } }
+    throw e;
+  }
   setBase(d, path, bytes, rmeta.hash);
 }
 
@@ -200,8 +214,11 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
       const rmeta = await d.api.fileMeta(p);
       await reconcileOne(d, p, rmeta ?? undefined, false, cur?.length ?? 0, () => false, local.has(p));
     } catch (e) {
-      if (e instanceof CommitConflictError) { d.onFileError?.(p, e); continue; }
-      throw e;
+      // Isolate EVERY per-file error (R14 sync#2), matching reconcileAll/reconcileDelta — not only
+      // CommitConflictError. A momentarily-unreadable config file (AV lock, cloud-drive placeholder)
+      // throws the "present but couldn't be read" guard, and re-throwing it here escaped to
+      // doReconcileAll → drove the whole engine offline + forced a full re-hash every ~120s.
+      d.onFileError?.(p, e);
     }
   }
 }
@@ -242,15 +259,24 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
+  let minFailedRemote = Infinity; // earliest server version whose PULL failed this pass (R14 sync#1)
   for (const p of paths) {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p)); }
-    catch (e) { d.onFileError?.(p, e); } // isolate: one file's failure must never abort the whole sync
+    catch (e) {
+      d.onFileError?.(p, e); // isolate: one file's failure must never abort the whole sync
+      const rv = remote.get(p)?.version;
+      if (rv !== undefined && rv < minFailedRemote) minFailedRemote = rv;
+    }
   }
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
   // us consistent with it). ASSIGN, not max: if the server REWOUND (reindex/restore, V_s < V_c),
   // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
   // reconcile indefinitely. Assigning lets the incremental poll path converge again. (CONC-R2#3)
-  d.state.version = resp.version;
+  // But NEVER advance past a remote file whose pull FAILED this pass (R14 sync#1): a transient error
+  // (chunk 500 / momentary orphan-sweep) would otherwise drop that file below the cursor, so it never
+  // reappears in a future changes(since) delta and stays stale until the 15-min full scan. Hold the
+  // cursor just below the earliest failure so the next incremental poll re-fetches + retries it.
+  d.state.version = Number.isFinite(minFailedRemote) ? Math.min(resp.version, minFailedRemote - 1) : resp.version;
   return resp;
 }
 
@@ -269,11 +295,19 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const baseSet = new Set(d.base.paths().filter((p) => !d.accepts || d.accepts(p)));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
   const guardBulkDelete = baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO;
+  const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
+  let minFailed = Infinity; // earliest change version that failed to apply this pass (R14 sync#1)
   for (const p of new Set<string>([...remote.keys(), ...tombstoned])) {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp)); }
-    catch (e) { d.onFileError?.(p, e); }
+    catch (e) {
+      d.onFileError?.(p, e);
+      const v = versionOf(p);
+      if (v !== undefined && v < minFailed) minFailed = v;
+    }
   }
-  d.state.version = delta.version; // assign, not max (rewind convergence) — same as reconcileAll
+  // Assign, not max (rewind convergence) — but hold the cursor below the earliest change that FAILED
+  // this pass so it's retried on the next poll, not dropped until the 15-min full scan (R14 sync#1).
+  d.state.version = Number.isFinite(minFailed) ? Math.min(delta.version, minFailed - 1) : delta.version;
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {

@@ -93,8 +93,21 @@ fn write_mirror(abs: &Path, body: &[u8]) -> std::io::Result<()> {
     if let Some(p) = abs.parent() { std::fs::create_dir_all(p)?; }
     let name = abs.file_name().and_then(|s| s.to_str()).unwrap_or("f");
     let tmp = abs.with_file_name(format!(".{name}.selfsync-tmp"));
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, abs)
+    // R14-DI4: fsync the temp contents + parent dir before/after rename, matching atomic_write + the
+    // chunk store. The index + chunk store are authoritative, so a torn mirror is normally harmless —
+    // but if the index is ALSO lost, reindex rebuilds from this mirror (see reindex's disk-rebuild
+    // path), and a power-loss-torn/zero-length mirror file would then be ingested as authoritative.
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(body)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, abs)?;
+    if let Some(dir) = abs.parent() {
+        if let Ok(d) = std::fs::File::open(dir) { let _ = d.sync_all(); }
+    }
+    Ok(())
 }
 
 pub struct Vault {
@@ -138,6 +151,15 @@ impl Vault {
         // corrupt-JSON "open in ERROR, require reindex" behavior.
         let (index, mut corrupt) = match SqliteIndex::open(&db_path) {
             Ok(idx) => (idx, false),
+            // R14-DI1: a NEWER-schema DB (downgrade guard, ErrorKind::Unsupported) is INTACT and
+            // authoritative — refuse HARD, never quarantine. Quarantining here would open a fresh
+            // empty index and reindex-from-disk, permanently destroying tombstones + rewinding the
+            // version epoch (→ fleet-wide resurrection) and dropping any file whose mirror write had
+            // failed. The safe recovery is "restore the correct (newer) binary", so surface the error.
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                log::error!("[vault] {}: {e}", root.display());
+                return Err(e);
+            }
             Err(e) => {
                 log::error!("[vault] {} index DB is CORRUPT ({e}); quarantining + opening in ERROR state — run reindex", root.display());
                 Self::quarantine_db(&db_path);
@@ -278,10 +300,27 @@ impl Vault {
         // WHOLE-vault repair, escapable only by shelling in.
         let mut recovered: Vec<String> = Vec::new();
         let mut lost: Vec<String> = Vec::new();
+        // R14-DI2: reassemble AND verify the recorded hash here, not just "chunks exist". A
+        // present-but-bit-rotted chunk would otherwise be re-materialized onto the mirror and kept in
+        // the rebuilt index as "recovered" — laundering corruption into authoritative state (the index
+        // hash would no longer match the on-disk bytes, and a later disk-rebuild would ingest it). A
+        // file that reassembles to the wrong hash is unrecoverable, exactly like one whose chunks are
+        // gone → route it to `lost` so the existing DI-4 abort-unless-force guard governs it. The
+        // verified body is cached so the materialization loop below doesn't re-fetch/re-hash.
+        let mut recovered_bodies: HashMap<String, Vec<u8>> = HashMap::new();
         for (k, meta) in &old_files {
             if present.contains(k.as_str()) { continue; }
-            if !meta.chunks.is_empty() && meta.chunks.iter().all(|h| self.store.has(h)) { recovered.push(k.clone()); }
-            else { lost.push(k.clone()); }
+            let mut body = Vec::new();
+            let mut have_all = !meta.chunks.is_empty();
+            for h in &meta.chunks {
+                match self.store.get(h)? { Some(c) => body.extend_from_slice(&c), None => { have_all = false; break; } }
+            }
+            if have_all && sha256_hex(&body) == meta.hash {
+                recovered.push(k.clone());
+                recovered_bodies.insert(k.clone(), body);
+            } else {
+                lost.push(k.clone());
+            }
         }
         if !lost.is_empty() && !force {
             lost.sort();
@@ -302,11 +341,8 @@ impl Vault {
         // then — nothing to recover, and the full disk rebuild below proceeds.
         for k in &recovered {
             let meta = old_files.get(k).expect("recovered key present").clone();
-            let mut body = Vec::new();
-            for h in &meta.chunks {
-                let c = self.store.get(h)?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("missing chunk {h}")))?;
-                body.extend_from_slice(&c);
-            }
+            // Body was reassembled + hash-verified during classification (R14-DI2) and cached.
+            let body = recovered_bodies.remove(k).expect("recovered body cached");
             if let Some(rel) = safe_rel_path(k) {
                 if let Err(e) = write_mirror(&self.vault_dir.join(&rel), &body) {
                     log::warn!("[reindex] could not re-materialize '{k}': {e} (content remains in the chunk store)");
@@ -1052,6 +1088,51 @@ mod tests {
         assert_eq!(v.changes(0).history_floor, 1, "tombstones preserved → floor must NOT bump");
         assert!(v.changes(0).deletes.iter().any(|d| d.path == "a.md"), "a.md tombstone preserved");
         assert!(v.changes(0).upserts.iter().any(|m| m.path == "b.md"), "b.md recovered from the mirror");
+    }
+
+    #[test]
+    fn newer_schema_db_refuses_to_open_and_is_not_quarantined() { // R14-DI1 (release-blocker)
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        {
+            let mut v = Vault::open(dir.path()).unwrap();
+            v.put_chunk(&ha, a).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.delete("a.md").unwrap(); // a tombstone a destructive rebuild-from-disk would erase
+        }
+        // Simulate an index written by a NEWER server binary (higher schema_version).
+        let db = dir.path().join(".sync-index.db");
+        { let conn = rusqlite::Connection::open(&db).unwrap(); conn.execute("UPDATE meta SET value=999 WHERE key='schema_version'", []).unwrap(); }
+        // An OLDER binary must REFUSE hard, NOT quarantine + rebuild — quarantining opens a fresh empty
+        // index and reindexes from disk, permanently destroying the tombstone + rewinding the version.
+        let err = match Vault::open(dir.path()) { Ok(_) => panic!("must refuse a newer-schema DB"), Err(e) => e };
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(!dir.path().join(".sync-index.db.corrupt").exists(), "an intact newer DB must NOT be quarantined");
+        assert!(db.exists(), "the authoritative index is left untouched for the correct binary");
+    }
+
+    #[test]
+    fn reindex_routes_a_bitrotted_recovered_file_to_lost_not_corruption() { // R14-DI2
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        let mut v = Vault::open(dir.path()).unwrap();
+        v.put_chunk(&ha, a).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.put_chunk(&hb, b).unwrap();
+        v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+        // a.md: remove its mirror (→ reindex must recover from the store) and BIT-ROT its chunk in place
+        // (same filename, so it's still "present", but reassembles to the wrong hash).
+        std::fs::remove_file(dir.path().join("vault").join("a.md")).unwrap();
+        std::fs::write(dir.path().join(".chunks").join(&ha[0..2]).join(&ha), b"XXXX").unwrap();
+        // A file that reassembles to the wrong hash is unrecoverable → routed to `lost`, so a
+        // non-force reindex ABORTS rather than laundering corruption onto disk + into the index.
+        assert!(v.reindex(false).is_err(), "a bit-rotted recovered file must abort reindex, not be materialized");
+        // With force it's dropped (content is genuinely gone); the healthy file still recovers.
+        v.reindex(true).unwrap();
+        let ch = v.changes(0);
+        assert!(ch.upserts.iter().all(|m| m.path != "a.md"), "corrupt file dropped on force, never materialized");
+        assert!(ch.upserts.iter().any(|m| m.path == "b.md"), "the healthy file is recovered");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
