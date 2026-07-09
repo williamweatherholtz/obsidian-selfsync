@@ -138,18 +138,22 @@ pub async fn reindex(
     if !st.vault_exists(&req.owner, &req.vault) {
         return Err(AppError::NotFound);
     }
-    let h = st.vault(&req.owner, &req.vault).map_err(|_| AppError::NotFound)?;
-    let tx = h.tx.clone();
+    // Open the handle INSIDE spawn_blocking (R19 LOW): a cold open runs verify_and_gc / auto-reindex
+    // (a whole-dir walk + rehash), which must not run on the async worker shared with public sync.
+    let st2 = st.clone();
     let (owner, vault, force) = (req.owner.clone(), req.vault.clone(), req.force);
     let version = tokio::task::spawn_blocking(move || -> Result<u64, AppError> {
+        let h = st2.vault(&owner, &vault).map_err(|_| AppError::NotFound)?;
         let mut v = crate::error::wlock(&h.vault)?;
         // A forced reindex that still can't complete is a genuine BadRequest (unsafe/colliding
         // names on disk), not an internal error; surface the message so the operator can act.
         v.reindex(force).map_err(|e| if force { AppError::BadRequest(e.to_string()) } else { AppError::Internal(e.to_string()) })?;
-        Ok(v.version())
+        let version = v.version();
+        drop(v);
+        let _ = h.tx.send(version); // broadcast the rebuilt version so connected clients re-sync
+        Ok(version)
     }).await.map_err(|e| AppError::Internal(format!("reindex join failed: {e}")))??;
-    log::info!("[{owner}/{vault} reindex by admin {user}] rebuilt manifest -> v{version}");
-    let _ = tx.send(version);
+    log::info!("[{}/{} reindex by admin {user}] rebuilt manifest -> v{version}", req.owner, req.vault);
     Ok(Json(crate::protocol::StatusResponse {
         status: "ready".to_string(), detail: String::new(), version,
         api_version: crate::protocol::API_VERSION,

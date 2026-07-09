@@ -187,10 +187,17 @@ pub async fn commit(
                 log::debug!("[{o}/{vlt} commit by {u}] {p} -> 409 stale version (client re-reconciles)");
                 AppError::Conflict(e.to_string())
             }
-            // A genuine bad/failed commit — this one is an error worth surfacing.
-            _ => {
-                log::error!("[{o}/{vlt} commit by {u}] {p} -> error ({e})");
+            // Client-actionable VALIDATION failures (bad chunk manifest: hash/size mismatch, oversize,
+            // bad path) — safe + useful to return verbatim; they're content-level, never paths.
+            std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
+                log::warn!("[{o}/{vlt} commit by {u}] {p} -> rejected ({e})");
                 AppError::BadRequest(e.to_string())
+            }
+            // Anything else is an UNEXPECTED internal/IO error — log it, return a generic 500 (R19
+            // LOW: never surface the raw io/DB message to the client, per SEC-6).
+            _ => {
+                log::error!("[{o}/{vlt} commit by {u}] {p} -> internal error ({e})");
+                AppError::Internal(e.to_string())
             }
         })
     }).await?;
@@ -210,7 +217,7 @@ pub async fn delete_file(
     let d = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.delete(&p).map_err(|e| AppError::BadRequest(e.to_string()))
+        v.delete(&p).map_err(|e| AppError::Internal(e.to_string())) // a delete failure is internal (R19 LOW): log + generic 500, don't leak the raw io/DB message
     }).await?;
     match d {
         Some(d) => { log::info!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = tx.send(d.version); Ok(Json(d)) }

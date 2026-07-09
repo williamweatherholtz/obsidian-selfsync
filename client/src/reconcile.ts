@@ -620,6 +620,13 @@ export type SwitchMode =
 // same-path divergence — no data lost). io.list() is already selective-sync-filtered,
 // so a switch only ever touches syncable files, never SelfSync's own config.
 export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void> {
+  // Snapshot the pre-switch base before clearing it (R19). A file whose authoritative adopt FAILS
+  // below (transient chunk error) would otherwise be left with a NULL base, and the next generic
+  // reconcile — with local present + base null + remote present — would CONFLICT-COPY it, contradicting
+  // the chosen mode (spurious copy on download; local demoted under remote on upload). Restoring its
+  // pre-switch base on failure lets the retry re-adopt it via the normal decide() path instead, which
+  // is data-safe (never a silent delete) and mode-correct for the common in-sync case.
+  const oldBase = new Map(d.base.paths().map((p) => [p, d.base.get(p)!]));
   for (const p of d.base.paths()) d.base.delete(p); // no common ancestor across vaults
   d.onBaseChanged?.();
   // R13-SF4: defense-in-depth — never push/delete on the server for a read-only share, even if a
@@ -654,7 +661,11 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
       if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
       try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
-      catch (e) { d.onFileError?.(p, e); if (holdForRetry(d, p, meta.version)) failedRemote.push(meta.version); }
+      catch (e) {
+        d.onFileError?.(p, e);
+        const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → clean re-adopt, not a conflict-copy
+        if (holdForRetry(d, p, meta.version)) failedRemote.push(meta.version);
+      }
     }
     for (const [p, info] of local) {            // drop local files the target lacks
       if (!accepted(p) || remote.has(p)) continue;
@@ -668,17 +679,19 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       try {
         const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
         setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
-      } catch (e) { d.onFileError?.(p, e); }
+      } catch (e) {
+        d.onFileError?.(p, e);
+        const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → don't demote local to a conflict-copy on a transient push failure
+      }
     }
     for (const p of remote.keys()) {            // drop remote files this vault lacks
       if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } } // remote is already accepts-filtered above
     }
   }
   // Assign, not max (CONC-R2#3) — but HOLD the cursor below any remote file whose adopt FAILED this
-  // switch (R18). switchTo cleared base above, so if we advanced past a transiently-failed download,
-  // the delta poll would never re-see it and the next full scan (local present, base null, remote
-  // present) would decide conflict-copy — a spurious "(conflict …)" file over what the user chose to
-  // simply download. Holding the cursor makes the next poll re-adopt it cleanly.
+  // switch (R18), so the next delta poll re-visits it. Combined with the R19 pre-switch-base RESTORE
+  // above (a failed file keeps its old base, not null), the retry re-adopts it via the normal
+  // decide() path rather than producing a spurious conflict copy that contradicts the chosen mode.
   const minFailed = failedRemote.length ? Math.min(...failedRemote) : Infinity;
   d.state.version = Number.isFinite(minFailed) ? Math.min(resp.version, minFailed - 1) : resp.version;
 }

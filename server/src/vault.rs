@@ -125,6 +125,12 @@ pub struct Vault {
     // blank index would advertise an empty vault and our hash-based reconcile could read that as
     // "delete everything".
     corrupt: bool,
+    // R19: set when `corrupt` was raised ONLY because of a dangling chunk reference on an otherwise
+    // INTACT index (all file rows + tombstones present) — as opposed to an unreadable/empty index.
+    // The auto-repair reindex then treats the index as TRUSTWORTHY (was_corrupt=false): it keeps the
+    // R18 tombstone ghost-skip and the prefer-store guard active, so a dangling-ref repair can't
+    // resurrect a tombstoned ghost or revert an intact file to a stale mirror. Reset each reindex.
+    dangling_recovery: bool,
     // Current version, cached in lockstep with the index on every mutation, so version() is a field
     // read (hot /status path) rather than a DB round-trip.
     version: u64,
@@ -182,7 +188,7 @@ impl Vault {
             }
         }
         let mut v = Vault {
-            root: root.to_path_buf(), vault_dir, store, index, corrupt, version, history_floor,
+            root: root.to_path_buf(), vault_dir, store, index, corrupt, dangling_recovery: false, version, history_floor,
             last_orphan_sweep: std::sync::Mutex::new(std::time::Instant::now()),
         };
         if !v.corrupt { v.verify_and_gc(); } // startup GC already clears orphans, so the runtime timer starts now
@@ -240,6 +246,9 @@ impl Vault {
                 self.root.display(), missing.len(), missing[0]
             );
             self.corrupt = true;
+            self.dangling_recovery = true; // R19: the index ITSELF is intact (rows + tombstones present) —
+            // only a chunk blob is gone. Mark this so the auto-repair reindex TRUSTS the index (keeps the
+            // ghost-skip + prefer-store guards) instead of rebuilding blindly from disk.
             return; // don't GC a vault we're about to rebuild
         }
         match self.store.list_hashes() {
@@ -275,7 +284,13 @@ impl Vault {
         // trustworthy and the chunk store is AUTHORITATIVE — prefer it over the bind-mount mirror,
         // which can be stale after a best-effort mirror-write failure. Only a genuinely-corrupt index
         // forces a rebuild from disk bytes.
-        let was_corrupt = self.corrupt;
+        // R19: a DANGLING-chunk auto-repair is NOT a true corruption — the index (rows + tombstones)
+        // is intact, only a blob is missing. Treat it as a healthy reindex so the tombstone ghost-skip
+        // and the prefer-store guard stay active (otherwise a dangling repair could resurrect a
+        // tombstoned ghost or rebuild an intact file from a stale mirror). Only an UNREADABLE/empty
+        // index (dangling_recovery == false) forces the blind rebuild-from-disk.
+        let was_corrupt = self.corrupt && !self.dangling_recovery;
+        self.dangling_recovery = false; // one-shot: consumed by this reindex
         // The current manifest (empty when the DB was corrupt/blank). Also note whether the index
         // still HOLDS tombstones: replace_files preserves the deletions table, so a rebuild that keeps
         // them (e.g. a dangling-chunk auto-repair on an otherwise-intact index) must NOT raise the
@@ -363,7 +378,10 @@ impl Vault {
             // preserved tombstone + a fresh upsert would BOTH appear in changes(0), and clients pull it
             // back). On a healthy reindex the deletion is authoritative — drop the stale mirror, don't
             // re-ingest. (Only when NOT was_corrupt: a corrupt index's tombstones aren't trustworthy.)
-            if !was_corrupt && tombstoned.contains(&rel) && !old_files.contains_key(&rel) {
+            // (No !was_corrupt guard — R19: for a genuinely-unreadable index `tombstoned` is empty, so
+            // this is inert there anyway; keying purely on the tombstone makes it fire for a dangling
+            // auto-repair too, closing the resurrection-via-auto-repair path.)
+            if tombstoned.contains(&rel) && !old_files.contains_key(&rel) {
                 let _ = std::fs::remove_file(&abs);
                 continue;
             }
@@ -1177,6 +1195,32 @@ mod tests {
         assert!(ch.deletes.iter().any(|d| d.path == "gone.md"), "the tombstone is preserved");
         assert!(!dir.path().join("vault").join("gone.md").exists(), "the stale ghost mirror is removed");
         assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the live file is retained");
+    }
+
+    #[test]
+    fn auto_repair_on_open_does_not_resurrect_a_tombstoned_ghost() { // R19 (dangling-repair path)
+        let dir = tempfile::tempdir().unwrap();
+        let a = b"aaaa"; let ha = sha256_hex(a);
+        let b = b"bbbb"; let hb = sha256_hex(b);
+        {
+            let mut v = Vault::open(dir.path()).unwrap();
+            v.put_chunk(&ha, a).unwrap();
+            v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.put_chunk(&hb, b).unwrap();
+            v.commit(CommitRequest { path: "gone.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+            v.delete("gone.md").unwrap(); // tombstone; mirror removed
+            std::fs::write(dir.path().join("vault").join("gone.md"), b).unwrap(); // ghost: failed mirror removal
+        }
+        // Independently cause a DANGLING chunk ref (keep.md's blob vanishes) so open() auto-repairs via
+        // reindex — the path that previously (R18 gated on !was_corrupt) resurrected the ghost.
+        std::fs::remove_file(dir.path().join(".chunks").join(&ha[0..2]).join(&ha)).unwrap();
+        let v = Vault::open(dir.path()).unwrap(); // verify_and_gc → dangling → auto-repair reindex
+        assert!(!v.is_corrupt(), "auto-repaired");
+        let ch = v.changes(0);
+        assert!(ch.upserts.iter().all(|m| m.path != "gone.md"), "R19: dangling auto-repair must NOT resurrect the tombstoned ghost");
+        assert!(ch.deletes.iter().any(|d| d.path == "gone.md"), "tombstone preserved");
+        assert!(!dir.path().join("vault").join("gone.md").exists(), "ghost mirror removed");
+        assert!(ch.upserts.iter().any(|m| m.path == "keep.md"), "the intact file is recovered");
     }
 
     // Round-6 DI: the reindex path-conflict guard (pure, so testable on a case-insensitive dev FS
