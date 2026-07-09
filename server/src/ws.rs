@@ -94,13 +94,14 @@ pub async fn ws_handler(
     let rx = handle.tx.subscribe();
     // Echo back only the non-secret subprotocol so the handshake completes.
     let (st2, o2, v2, u2) = (st.clone(), owner.clone(), vault.clone(), user.clone());
+    let tok = token.unwrap_or_default(); // resolved above; re-checked periodically to honor revocation
     ws.protocols([WS_SUBPROTOCOL])
-        .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard, st2, o2, v2, u2).await })
+        .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard, st2, o2, v2, u2, tok).await })
 }
 
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
 // drop the socket if the peer misses two consecutive pings (dead/half-open connection).
-async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard, st: AppState, owner: String, vault: String, user: String) {
+async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard, st: AppState, owner: String, vault: String, user: String, token: String) {
     let mut ping = tokio::time::interval(WS_PING_INTERVAL);
     // Delay (not the default Burst): if a busy change stream starves the ping branch for a full
     // interval, we DON'T fire two ticks back-to-back — which could see awaiting_pong still true
@@ -139,6 +140,12 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
             },
             _ = ping.tick() => {
                 if awaiting_pong { break; } // no Pong since the last ping -> peer is gone
+                // R15 sec#3: re-validate the session token on each ping so a REVOKED session (password
+                // change / logout-all, which calls TokenStore::revoke_user) or an expired token tears
+                // down its live socket within one ping interval — otherwise the socket kept leaking
+                // change/version metadata after HTTP reads with the same token began 401ing.
+                let token_ok = match lock(&st.tokens) { Ok(mut g) => g.resolve(&token).as_deref() == Some(user.as_str()), Err(_) => false };
+                if !token_ok { break; }
                 if socket.send(Message::Ping(Vec::new())).await.is_err() { break; }
                 awaiting_pong = true;
             }

@@ -827,6 +827,19 @@ describe("R14 perf: scan-skip cache", () => {
     expect(reads).toBe(0);
   });
 
+  it("R15 DI#1: a scan-hit never delete-locals on an ASSUMED hash (masked edit + server tombstone keeps the file)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "AAA");
+    await api.deleteFile("n.md");                 // server TOMBSTONES it → rmeta now absent for n.md
+    const io = fakeIo({ "n.md": "BBB" });          // locally EDITED to same-LENGTH content (size+mtime match the stamp)
+    const base = new BaseStore();
+    base.set("n.md", { hash: await sha256hex(enc("AAA")), size: 3, mtime: 0 }); // stamped as in-sync at "AAA"
+    await reconcileAll(deps(api, io, { base }));
+    // scan-skip is gated on rmeta PRESENT, so a tombstoned path is READ (not assumed) → local != base
+    // → edit-wins-keep-local preserves + re-pushes it. It must NOT be silently delete-local'd.
+    expect(dec(await io.read("n.md"))).toBe("BBB");
+  });
+
   it("a CHANGED file (different size) is still re-read and re-synced", async () => {
     const { api } = fakeServer();
     await serverPut(api, "a.md", "v1");

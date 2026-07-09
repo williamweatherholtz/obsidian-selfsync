@@ -68,7 +68,7 @@ pub struct ShareReq {
     grantee: String,
     perm: Perm,
 }
-// Grant a share on one of the caller's OWN vaults to an existing account.
+// Grant a share on one of the caller's OWN vaults to another account.
 pub async fn share_create(
     AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<ShareReq>,
 ) -> Result<StatusCode, AppError> {
@@ -82,9 +82,12 @@ pub async fn share_create(
     if req.grantee == user {
         return Err(AppError::BadRequest("cannot share a vault with its owner".into()));
     }
-    if !lock(&st.users)?.exists(&req.grantee) {
-        return Err(AppError::BadRequest("no such account".into()));
-    }
+    // R15 sec#2: DON'T reveal whether the grantee account exists. A per-name exists()→400 vs 200
+    // difference is a username-enumeration oracle — and this endpoint now serves on the PUBLIC port
+    // (owner self-service sharing), so any authenticated user could enumerate the whole user base one
+    // guess at a time, defeating the deliberate de-oracling of login/register (SEC-MED-1). Record the
+    // grant for any well-formed name; it's inert until an account with that name exists, then it
+    // activates. (Owners can pre-share by name; a typo just creates a harmless dormant grant.)
     lock(&st.shares)?
         .grant(&user, &req.vault, &req.grantee, req.perm)
         .map_err(|e| AppError::Internal(e.to_string()))?;

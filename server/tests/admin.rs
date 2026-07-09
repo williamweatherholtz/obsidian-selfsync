@@ -150,6 +150,27 @@ async fn password_change_revokes_all_other_sessions_and_reissues(/* R14 sec#2 */
 }
 
 #[tokio::test]
+async fn bootstrap_admin_password_change_is_refused(/* R15 sec#1 */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    // The bootstrap SYNC_USER's password is re-applied from SYNC_PASSWORD on every boot, so a
+    // self-service change would silently revert on restart — a false remediation. It's refused.
+    assert_eq!(send(&base, "POST", "/api/password", &admin, json!({"current":"admin","new_password":"newpw"})).await, 400);
+    // …and the original password still works (nothing was changed).
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"admin","password":"admin"})).send().await.unwrap().status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn share_create_does_not_reveal_grantee_existence(/* R15 sec#2 */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await; // owns "default"; "bob" exists, "ghost-user" does not
+    // Sharing to a NON-EXISTENT account returns the SAME 200 as sharing to a real one — no
+    // username-enumeration oracle on the public surface; the grant is dormant until the name registers.
+    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"ghost-user","perm":"read"})).await, 200);
+    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"bob","perm":"read"})).await, 200);
+}
+
+#[tokio::test]
 async fn owner_share_endpoints_reachable_on_public_surface_but_not_account_admin(/* R14 sec#4 */) {
     let base = spawn_public().await;
     let bob = login(&base, "bob").await;

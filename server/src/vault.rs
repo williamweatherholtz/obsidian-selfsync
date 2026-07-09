@@ -557,16 +557,17 @@ impl Vault {
                         }
                     }
                 }
-                // De-referenced chunk blobs are NOT removed eagerly here — that raced a concurrent
-                // commit of the SAME content under a new path (a rename/move), where `missing()` saw
-                // the chunk present, this delete then removed it, and the new file's commit 404'd on a
-                // now-missing chunk (a moved file lost for a cycle; the file-level reconcile
-                // concurrency made the interleaving likely). The interval-gated orphan sweep reclaims
-                // them instead — it uses the CURRENT index reference set (so a re-referenced chunk is
-                // never swept) and a TTL (sparing just-uploaded chunks), and can't fire in the
-                // sub-second delete→commit window. Truly-orphaned chunks are reclaimed on the next
-                // sweep / at startup. (research #3 rename-safety)
-                self.maybe_sweep_orphans();
+                // De-referenced chunk blobs are NOT removed here, and we DELIBERATELY do NOT trigger an
+                // orphan sweep from delete either (R15 sync#1/DI#2). Eager removal — or a sweep running
+                // synchronously under this write lock — raced a concurrent commit of the SAME content
+                // under a NEW path (a rename): the file-level reconcile concurrency pushes the delete
+                // and the create in one pass, and because the write lock serializes them, a due sweep
+                // fired inside this delete would reclaim the shared old chunks BEFORE the create's
+                // re-referencing commit ran → commit 404 → the renamed file vanished fleet-wide until
+                // the 15-min full scan. Reclamation is left to the UPLOAD-path + STARTUP sweeps, which
+                // re-read the reference set AFTER in-flight commits have drained, so a re-referenced
+                // chunk is never reclaimed. Truly-orphaned chunks are bounded (reclaimed next commit /
+                // at startup). (research #3 rename-safety)
                 Ok(Some(d))
             }
         }

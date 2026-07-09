@@ -274,7 +274,11 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)); }
     catch (e) {
       d.onFileError?.(p, e);
-      const rv = remote.get(p)?.version;
+      // Hold the cursor below a failed change so it's retried next poll (R14 sync#1). Cover a failed
+      // TOMBSTONE (delete-local) path too, not just upserts (R15 sync#2) — else a transient io.remove
+      // failure lets the cursor advance past the tombstone, and the delete lingers until the 15-min
+      // full scan (reconcileDelta already does this via its versionOf; keep reconcileAll symmetric).
+      const rv = remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version;
       if (rv !== undefined) failedRemote.push(rv);
     }
   });
@@ -383,13 +387,15 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   // SCAN-SKIP (Finding 2): if the file is present and its (size, mtime) are UNCHANGED since we last
   // confirmed it equals `base`, its content is still `base.hash` — skip the read + SHA-256 entirely.
   // This turns each whole-vault pass from O(vault bytes) into O(changed files) (the recurring 15-min
-  // full-reconcile re-hash was a real battery/CPU drain on large/mobile vaults). Safe because on an
-  // unchanged local file decide() only yields in-sync / pull / delete-local — none need the local
-  // bytes (pull re-reads internally; the delete/clear-base branches require a genuinely ABSENT local,
-  // which a stat-matched present file is not). A real edit updates mtime AND fires a vault event →
-  // reconcilePath (which always reads), so this only weakens the missed-event backstop for the
-  // pathological same-size-same-mtime edit — the standard rsync/Syncthing trade-off.
-  const scanHit = !!(locallyPresent && baseEntry && localStat
+  // full-reconcile re-hash was a real battery/CPU drain on large/mobile vaults). Turns each pass from
+  // O(vault bytes) into O(changed files). GATED ON rmeta PRESENT (R15 DI#1): the only branch that acts
+  // DESTRUCTIVELY on the assumed hash without a live re-read is delete-local (io.remove), and decide()
+  // yields delete-local only when the REMOTE is absent (rmeta undefined). Requiring rmeta present means
+  // a scan-hit can reach only in-sync or pull — both safe on an assumed hash (pull re-reads live via
+  // conflictCopyIfRaced and conflict-copies a masked edit rather than clobbering it). A real edit
+  // updates mtime AND fires a vault event → reconcilePath (always reads), so this only weakens the
+  // missed-event backstop for a same-size-AND-same-mtime edit — the standard rsync/Syncthing residual.
+  const scanHit = !!(locallyPresent && rmeta && baseEntry && localStat
     && baseEntry.size === localStat.size && baseEntry.mtime === localStat.mtime);
   let localBytes: Uint8Array | null;
   let localHash: string | null;

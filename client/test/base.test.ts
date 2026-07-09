@@ -13,6 +13,20 @@ describe("BaseStore", () => {
     b2.delete("a.md");
     expect(b2.get("a.md")).toBeUndefined();
   });
+
+  it("R15 sync#3: the (size,mtime) scan-skip hint is NOT persisted by toJSON (session-only)", () => {
+    const b = new BaseStore();
+    b.set("a.md", { hash: "h1", text: "hi" });
+    b.stampStat("a.md", 123, 456);
+    // In-memory the hint is present (drives the in-session scan-skip)…
+    expect(b.get("a.md")).toMatchObject({ size: 123, mtime: 456 });
+    // …but toJSON (what persists to data.json) carries only hash + text, so a stale stamp can't
+    // survive a restart and weaken the missed-event backstop.
+    const j = b.toJSON()["a.md"] as Record<string, unknown>;
+    expect(j).toEqual({ hash: "h1", text: "hi" });
+    expect(j.size).toBeUndefined();
+    expect(j.mtime).toBeUndefined();
+  });
 });
 
 describe("conflictCopyName", () => {

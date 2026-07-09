@@ -24,7 +24,14 @@ export class BaseStore {
     const e = this.m.get(path);
     if (e) { e.size = size; e.mtime = mtime; }
   }
-  toJSON(): Record<string, BaseEntry> { return Object.fromEntries(this.m); }
+  // Persist hash + text only — NOT the (size, mtime) scan-skip hint (R15 sync#3). The hint is a
+  // session-only optimization: dropping it here means a fresh start re-hashes every file once (the
+  // connect reconcile does that anyway) and re-stamps in memory, so the missed-event backstop is
+  // fully restored on restart rather than weakened by a stale persisted stamp — while the recurring
+  // in-session 15-min re-hash (the actual perf win) is still eliminated.
+  toJSON(): Record<string, { hash: string; text?: string }> {
+    return Object.fromEntries([...this.m].map(([p, e]) => [p, e.text !== undefined ? { hash: e.hash, text: e.text } : { hash: e.hash }]));
+  }
 }
 
 function pad(n: number, w = 2): string { return n.toString().padStart(w, "0"); }

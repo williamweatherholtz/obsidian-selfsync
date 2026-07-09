@@ -97,6 +97,16 @@ pub async fn change_password(
     if req.new_password.is_empty() {
         return Err(AppError::BadRequest("new password must not be empty".into()));
     }
+    // R15 sec#1: the bootstrap admin's password is re-asserted from SYNC_PASSWORD on EVERY boot
+    // (state.rs — a deliberate env-rotation feature), so a self-service change here would be silently
+    // reverted on the next restart — a FALSE remediation for the most-privileged account. Refuse it
+    // and point the operator at the real lever: rotate SYNC_PASSWORD in the environment + restart.
+    if user == st.cfg.user {
+        return Err(AppError::BadRequest(
+            "This is the bootstrap admin account — its password is controlled by SYNC_PASSWORD and \
+             re-applied on every restart. To change it, update SYNC_PASSWORD in the server \
+             environment and restart the server.".into()));
+    }
     // Verify the CURRENT password — memory-hard argon2 offloaded to a blocking thread bounded by the
     // auth permit pool, same DoS reasoning as login. The account always exists (the token resolved).
     let (present, phc) = { lock(&st.users)?.phc_for(&user) };
