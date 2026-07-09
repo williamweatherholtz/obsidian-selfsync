@@ -36,14 +36,23 @@ fn now() -> u64 {
 
 impl TokenStore {
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file: TokensFile = match std::fs::read(path) {
+        let mut file: TokensFile = match std::fs::read(path) {
             Ok(b) => serde_json::from_slice(&b).map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!(".tokens.json is corrupt ({e})"))
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => TokensFile::default(),
             Err(e) => return Err(e),
         };
-        Ok(TokenStore { path: path.to_path_buf(), file })
+        // R22 LOW: sweep expired tokens on load. Without this the store grows monotonically —
+        // an expired token hash is only ever pruned when THAT exact token is presented again
+        // (resolve), which never happens after a client re-logs-in, so it lingers in RAM and in
+        // .tokens.json across restarts forever. Bounded, honest (never resurrects a live token).
+        let mut store = TokenStore { path: path.to_path_buf(), file: TokensFile::default() };
+        let before = file.tokens.len();
+        file.tokens.retain(|_, r| r.expires_at > now());
+        store.file = file;
+        if store.file.tokens.len() != before { let _ = store.save(); }
+        Ok(store)
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -116,6 +125,23 @@ mod tests {
         assert_eq!(s.resolve(&a1), None);
         assert_eq!(s.resolve(&a2), None);
         assert_eq!(s.resolve(&b).as_deref(), Some("bob")); // bob unaffected
+    }
+
+    #[test]
+    fn open_sweeps_expired_tokens_but_keeps_live_ones() { // R22 LOW: unbounded leak guard
+        let dir = tempdir().unwrap();
+        let p = dir.path().join(".tokens.json");
+        let live = {
+            let mut s = TokenStore::open(&p).unwrap();
+            s.issue_ttl("alice", 0).unwrap();      // expired the instant it's written
+            s.issue("bob").unwrap()                // live (30-day TTL)
+        };
+        // Reopen: the expired token must be pruned from the file, the live one preserved.
+        let mut s = TokenStore::open(&p).unwrap();
+        assert_eq!(s.resolve(&live).as_deref(), Some("bob"), "live token survives the sweep");
+        // Only ONE record remains on disk (the live one) — the expired hash was swept, not left to leak.
+        let reopened = TokenStore::open(&p).unwrap();
+        assert_eq!(reopened.file.tokens.len(), 1, "expired token swept on load, not accumulated");
     }
 
     #[test]

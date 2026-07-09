@@ -173,7 +173,13 @@ pub async fn commit(
 ) -> Result<Json<FileMeta>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let tx = h.tx.clone();
-    let (o, vlt, u, p) = (owner.clone(), vault.clone(), user.clone(), req.path.clone());
+    // `p` is for LOG lines only (the real path travels in `req`, moved into commit below). Strip
+    // control chars here: on a bad-path rejection commit logs `p` verbatim, so an unsanitized raw
+    // path would let a writer forge audit-log lines / smuggle ANSI escapes (R21 closed this on the
+    // WS handler and the success path; R22 closes it on the commit REJECT path — the R20 tightening
+    // relocated the injection here rather than eliminating it).
+    let p: String = req.path.chars().filter(|c| !c.is_control()).take(256).collect();
+    let (o, vlt, u) = (owner.clone(), vault.clone(), user.clone());
     // commit does journal + mirror IO under the write lock — run it on the blocking pool.
     let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;

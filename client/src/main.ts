@@ -77,7 +77,17 @@ class ObsidianVaultIo implements VaultIo {
     const fh = await fs.promises.open(tmp, "w");
     return {
       append: async (bytes: Uint8Array) => { await fh.write(bytes); },
-      close: async () => { await fh.sync(); await fh.close(); await fs.promises.rename(tmp, abs); this.plugin.onConfigWritten(path); },
+      close: async () => {
+        await fh.sync(); await fh.close(); await fs.promises.rename(tmp, abs);
+        // Fsync the PARENT DIRECTORY so the rename's directory entry is durable, not just the file
+        // contents (R22-DI: the server's atomic_write/write_mirror already do this). Without it, a
+        // power loss can land the persisted base map (data.json) on disk while the rename is still in
+        // the page cache — on reboot the note is absent but base==remote, so decide() yields an
+        // UNGUARDED delete-remote that propagates the loss fleet-wide. Best-effort: opening a dir as a
+        // file works on Unix; on Windows/mobile it throws harmlessly (rename durability differs there).
+        try { const d = await fs.promises.open(nodePath.dirname(abs)); await d.sync(); await d.close(); } catch { /* dir fsync unsupported here */ }
+        this.plugin.onConfigWritten(path);
+      },
       abort: async () => { try { await fh.close(); } catch { /* already closed */ } try { await fs.promises.rm(tmp, { force: true }); } catch { /* gone */ } },
     };
   }

@@ -277,6 +277,9 @@ pub async fn admin_revoke(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
+    if !safe_name(&name) {
+        return Err(AppError::BadRequest("invalid username".into())); // R22: parity with admin_grant — never log/act on a raw path segment
+    }
     if name == st.cfg.user {
         return Err(AppError::BadRequest("cannot demote the bootstrap admin account".into()));
     }
