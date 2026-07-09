@@ -12,6 +12,7 @@ import { Phase, light } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
+import { isSafeVaultPath } from "./pathsafe";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -66,6 +67,9 @@ class ObsidianVaultIo implements VaultIo {
     // base for a file that was never written to disk, and then delete-remote it fleet-wide on the next
     // reconcile. Throwing is isolated per-file (onFileError); a silent no-op is a latent data-loss trap.
     if (!this.passes(path)) throw new Error(`refusing to stream-write an excluded path: '${path}'`);
+    // R23 SEC: reject a server-supplied path that could escape the vault (traversal/absolute). Fail
+    // loud (per-file isolated via onFileError) rather than write outside the vault via unsandboxed fs.
+    if (!isSafeVaultPath(path)) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
     const req = (window as unknown as { require: (m: string) => any }).require;
     const fs = req("fs");
     const nodePath = req("path");
@@ -135,6 +139,8 @@ class ObsidianVaultIo implements VaultIo {
     return this.plugin.app.vault.adapter.exists(normalizePath(path));
   }
   async write(path: string, bytes: Uint8Array): Promise<void> {
+    // R23 SEC: reject a traversing/absolute server-supplied path before touching the FS (see openAppend).
+    if (!isSafeVaultPath(path)) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
     if (!this.passes(path)) {
       // A synced config file this device hasn't opted into — dropped by design. Log it so
       // "plugins aren't syncing" is diagnosable: enable the matching category on THIS device.
@@ -146,9 +152,34 @@ class ObsidianVaultIo implements VaultIo {
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await this.plugin.app.vault.adapter.writeBinary(p, buf);
+    // R23-DI: fsync the note (and its parent dir) BEFORE returning so it is durable before the caller
+    // records base + persists data.json. Round 8 gave the ≥8 MiB STREAMED path this guarantee; the
+    // buffered path (all small notes / config / conflict copies on desktop) lacked it, leaving the same
+    // window: base persisted while the note sits in the page cache → on crash the note is absent but
+    // base==remote → unguarded delete-remote fleet-wide. Best-effort, desktop-only (Obsidian's adapter
+    // and mobile expose no fsync — mobile remains a documented residual).
+    await this.fsyncDurable(p);
     this.plugin.onConfigWritten(path); // best-effort live-reload of the affected surface
   }
+  // Desktop-only best-effort fsync of a vault-relative file + its parent directory, mirroring the
+  // server's atomic_write/write_mirror durability bar. No-op (silently) on mobile / when Node fs is
+  // unavailable, and swallows errors — the file content is already written; this only upgrades its
+  // durability, so a failure here must never abort the write.
+  private async fsyncDurable(relPath: string): Promise<void> {
+    const require = (window as unknown as { require?: (m: string) => any }).require;
+    if (!Platform.isDesktop || !require) return;
+    try {
+      const fs = require("fs"); const nodePath = require("path");
+      const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
+      const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
+      const abs = nodePath.join(base, relPath);
+      try { const fh = await fs.promises.open(abs, "r+"); await fh.sync(); await fh.close(); } catch { /* content already written; fsync is best-effort */ }
+      try { const d = await fs.promises.open(nodePath.dirname(abs)); await d.sync(); await d.close(); } catch { /* dir fsync unsupported here */ }
+    } catch { /* Node fs unavailable — mobile fallback, documented residual */ }
+  }
   async remove(path: string): Promise<void> {
+    // R23 SEC: never let a traversing server-supplied path drive a local delete outside the vault.
+    if (!isSafeVaultPath(path)) throw new Error(`refusing to remove an unsafe/traversing path: '${path}'`);
     if (!this.passes(path)) return;
     this.plugin.markConfigSelfWrite(path); // suppress the "raw" echo of our own removal
     const p = normalizePath(path);

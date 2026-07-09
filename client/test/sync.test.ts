@@ -61,6 +61,28 @@ describe("chunk sync engine", () => {
     expect(puts).toBe(0); // all chunks already on the server
   });
 
+  it("pushFile batches the missing() query under the server's 10k-hash cap (R23)", async () => {
+    const { api, chunks } = fakeServer();
+    // A file large enough to chunk into >5000 pieces (avg ~16 KiB/chunk) forces the missing() query to
+    // split. Fill ~110 MiB with a deterministic xorshift32 PRNG so content-defined boundaries land
+    // uniformly (an LCG low byte is too low-entropy → few huge chunks; all-zero bytes even worse).
+    const N = 110 * 1024 * 1024;
+    const buf = new Uint8Array(N);
+    let s = 0x9e3779b9 >>> 0;
+    for (let i = 0; i < N; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; s >>>= 0; buf[i] = s & 0xff; }
+    const io = fakeIo(); io.m.set("big.bin", buf);
+    const cs = await chunk(buf);
+    expect(cs.length).toBeGreaterThan(5000);        // precondition: the query genuinely had to split
+    // Spy: record every missing() batch size + total hashes queried.
+    let maxBatch = 0; let totalSeen = 0;
+    const orig = api.missing.bind(api);
+    api.missing = async (hashes) => { maxBatch = Math.max(maxBatch, hashes.length); totalSeen += hashes.length; return orig(hashes); };
+    await pushFile(api, io, { version: 0 }, new Map(), "big.bin");
+    expect(maxBatch).toBeLessThanOrEqual(10000);    // no single call exceeds the server cap → no HTTP 400
+    expect(totalSeen).toBe(cs.length);              // every chunk queried exactly once, none dropped
+    for (const c of cs) expect(chunks.has(c.hash)).toBe(true); // and all uploaded
+  }, 120000);
+
   it("fetchFileBytes reassembles a file from its chunk list", async () => {
     const { api } = fakeServer();
     const ioA = fakeIo({ "n.md": "the quick brown fox" });

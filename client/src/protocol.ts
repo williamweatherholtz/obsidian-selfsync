@@ -79,5 +79,9 @@ export function validateChanges(o: unknown): ChangesResponse {
   }
   c.upserts.forEach(validateFileMeta);
   c.deletes.forEach((d) => { const x = d as Record<string, unknown>; asStr(x?.path, "delete.path"); asNum(x?.version, "delete.version"); });
+  // history_floor drives the deletion-history-reset path (keep-and-push); type-check it too (R23 LOW)
+  // so a malformed/hostile value can't coerce through the `>` comparison — PROTO-3 validates the
+  // shape of EVERY server field the client acts on, and this was the one that slipped through.
+  if (c.history_floor !== undefined && c.history_floor !== null) asNum(c.history_floor, "history_floor");
   return o as ChangesResponse;
 }

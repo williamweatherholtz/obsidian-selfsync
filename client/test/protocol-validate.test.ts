@@ -35,4 +35,10 @@ describe("response-shape validation (PROTO-3)", () => {
     expect(() => validateChanges({ version: 1, upserts: [{ ...goodMeta, chunks: [1] }], deletes: [] })).toThrow(/chunks/);
     expect(() => validateChanges({ version: 1, upserts: [], deletes: [{ path: "b.md" }] })).toThrow(/delete\.version/);
   });
+
+  it("type-checks the optional history_floor field (R23): accepts absent/number, rejects a non-number", () => {
+    expect(validateChanges({ version: 1, upserts: [], deletes: [] })).toBeTruthy();                       // absent OK
+    expect(validateChanges({ version: 1, upserts: [], deletes: [], history_floor: 3 })).toBeTruthy();     // number OK
+    expect(() => validateChanges({ version: 1, upserts: [], deletes: [], history_floor: "999" })).toThrow(/history_floor/);
+  });
 });

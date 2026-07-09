@@ -40,6 +40,9 @@ export type ChunkCache = Map<string, Uint8Array>;
 // 2048 files ≈ 2048 whole files, not ~128 MiB — a mobile OOM). We copy each chunk
 // (`slice`) so only its ~64 KiB is retained; evict oldest (Map is insertion-ordered).
 const MAX_CACHE_ENTRIES = 512; // ~32 MiB worst case (64 KiB max chunk) — bounded for mobile WebView RAM (R11-#10)
+// Stay comfortably under the server's MAX_MISSING_HASHES=10000 per-request cap when querying which
+// chunks the server lacks (R23): a very large file can exceed 10k chunks, so we slice the query.
+const MISSING_BATCH = 5000;
 function cachePut(cache: ChunkCache, hash: string, bytes: Uint8Array): void {
   if (cache.has(hash)) return;
   if (cache.size >= MAX_CACHE_ENTRIES) {
@@ -157,7 +160,15 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   const chunks = await chunk(bytes);
   for (const c of chunks) cachePut(cache, c.hash, c.bytes);
   const hashes = chunks.map((c) => c.hash);
-  const missing = new Set(await api.missing(hashes));
+  // Batch the missing() query under the server's per-request hash cap (MAX_MISSING_HASHES=10000).
+  // A file in the ~160–200 MiB band chunks into >10k pieces at the ~16 KiB average chunk size, so a
+  // single unbatched call would 400 and the file — under the 200 MiB size gate, so NOT skipped —
+  // would silently never sync (R23 MEDIUM). Union the per-batch results. (commit's own hash list
+  // stays a single call: ~0.8 MiB at 11.5k hashes, well under the 16 MiB body limit.)
+  const missing = new Set<string>();
+  for (let i = 0; i < hashes.length; i += MISSING_BATCH) {
+    for (const h of await api.missing(hashes.slice(i, i + MISSING_BATCH))) missing.add(h);
+  }
   const toPush = chunks.filter((c) => missing.has(c.hash));
   await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => api.putChunk(c.hash, c.bytes));
   const fileHash = await sha256hex(bytes);
