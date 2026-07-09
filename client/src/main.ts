@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
-import { HttpTransport, SharedVaultRef } from "./transport";
+import { HttpTransport, SharedVaultRef, SharePerm, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, resolveConfigConflict } from "./reconcile";
@@ -531,6 +531,27 @@ export default class NewLiveSyncPlugin extends Plugin {
   async listSharedVaults(): Promise<SharedVaultRef[]> {
     return this.withAuth((t) => HttpTransport.listShared(this.settings.serverUrl, t));
   }
+
+  // Self-service password change (R14 sec#2). On success the server revokes every session and
+  // returns a FRESH token; persist it (+ the new stored password, if we keep one) so this device
+  // stays logged in while every OTHER session (incl. a leaked one) is invalidated at once.
+  async changePassword(current: string, newPassword: string): Promise<void> {
+    const fresh = await HttpTransport.changePassword(this.settings.serverUrl, await this.acquireToken(), current, newPassword);
+    this.settings.authToken = fresh;
+    if (this.settings.storePassword) this.settings.password = newPassword;
+    await this.saveSettings();
+  }
+  // Owner-scoped share management (R14 sec#4): the caller's own vaults + who each is shared with,
+  // and grant/revoke — all reachable on the public port now (was admin-router-only).
+  async myVaultShares(): Promise<VaultShares[]> {
+    return this.withAuth((t) => HttpTransport.myVaults(this.settings.serverUrl, t));
+  }
+  async shareVault(vault: string, grantee: string, perm: SharePerm): Promise<void> {
+    await this.withAuth((t) => HttpTransport.shareCreate(this.settings.serverUrl, t, vault, grantee, perm));
+  }
+  async unshareVault(vault: string, grantee: string): Promise<void> {
+    await this.withAuth((t) => HttpTransport.shareDelete(this.settings.serverUrl, t, vault, grantee));
+  }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
   async hasLocalData(): Promise<boolean> {
@@ -563,7 +584,13 @@ export default class NewLiveSyncPlugin extends Plugin {
     const touchedCore = paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p));
 
     if (pluginIds.size > 0) {
-      new Notice("SelfSync: synced community-plugin changes are NOT auto-enabled (plugins are code). Reload Obsidian to apply — only if you trust the source.");
+      // R14 sec#1: NAME the plugins whose executable code changed via sync, so the user makes an
+      // INFORMED trust decision instead of dismissing a generic notice. On a shared vault a peer (or
+      // the owner of a vault shared to you) can push code for a plugin you already trust; seeing
+      // exactly which plugin's code changed — and that it's executable and unapplied until reload —
+      // is the barrier before you reload it into Obsidian's un-CSP'd renderer.
+      const names = [...pluginIds].sort().join(", ");
+      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT applied until you reload Obsidian, and you should reload ONLY if you trust the source of these changes.`, 15000);
     } else if (touchedCss || touchedCore) {
       new Notice("SelfSync: some synced settings (appearance / core) will apply after you reload Obsidian.");
     } else {

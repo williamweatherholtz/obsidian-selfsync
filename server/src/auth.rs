@@ -1,5 +1,5 @@
 use crate::error::{lock, AppError};
-use crate::protocol::{LoginRequest, LoginResponse, RegisterRequest};
+use crate::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse, RegisterRequest};
 use crate::state::AppState;
 use crate::users::safe_name;
 use axum::extract::{FromRequestParts, State};
@@ -81,6 +81,49 @@ pub async fn register(
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AppError::Conflict("user exists".into())),
         Err(_) => Err(AppError::BadRequest("could not register".into())),
     }
+}
+
+// Authenticated self-service password change (R14 sec#2). Verify the CURRENT password, set the new
+// one, then REVOKE every session for the user and issue ONE fresh token for this device — so a user
+// whose token/password leaked can self-remediate (previously only an admin account-delete could).
+pub async fn change_password(
+    AuthToken(user): AuthToken,
+    State(st): State<AppState>,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<Json<LoginResponse>, AppError> {
+    if req.current.len() > MAX_PASSWORD_LEN || req.new_password.len() > MAX_PASSWORD_LEN {
+        return Err(AppError::BadRequest("password too long".into()));
+    }
+    if req.new_password.is_empty() {
+        return Err(AppError::BadRequest("new password must not be empty".into()));
+    }
+    // Verify the CURRENT password — memory-hard argon2 offloaded to a blocking thread bounded by the
+    // auth permit pool, same DoS reasoning as login. The account always exists (the token resolved).
+    let (present, phc) = { lock(&st.users)?.phc_for(&user) };
+    let permit = st.auth_slots.clone().acquire_owned().await.map_err(|_| AppError::Unavailable("auth busy".into()))?;
+    let current = req.current.clone();
+    let ok = tokio::task::spawn_blocking(move || { let _permit = permit; crate::users::verify_password(&phc, &current) })
+        .await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
+    if !(present && ok) {
+        log::warn!("[password] user='{user}' -> 401 (wrong current password)");
+        return Err(AppError::Unauthorized);
+    }
+    // Hash + store the new password (offloaded, users lock taken inside the closure — like register).
+    let permit = st.auth_slots.clone().acquire_owned().await.map_err(|_| AppError::Unavailable("auth busy".into()))?;
+    let users = st.users.clone();
+    let (u, np) = (user.clone(), req.new_password.clone());
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
+        g.set_password(&u, &np)
+    }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?
+      .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Revoke ALL sessions (incl. the caller's current token + any leaked one elsewhere), then issue
+    // one fresh token for THIS device so the caller stays logged in.
+    lock(&st.tokens)?.revoke_user(&user).map_err(|e| AppError::Internal(e.to_string()))?;
+    let token = lock(&st.tokens)?.issue(&user).map_err(|e| AppError::Internal(e.to_string()))?;
+    log::info!("[password] user='{user}' changed password; all sessions revoked + one re-issued");
+    Ok(Json(LoginResponse { token }))
 }
 
 // Resolves a bearer token to the authenticated username.

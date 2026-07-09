@@ -18,7 +18,10 @@ function httpReq(params: RequestUrlParam): Promise<RequestUrlResponse> {
 }
 
 // A vault shared WITH the current account (owned by someone else on the server).
-export type SharedVaultRef = { owner: string; vault: string; perm: "read" | "readWrite" };
+export type SharePerm = "read" | "readWrite";
+export type SharedVaultRef = { owner: string; vault: string; perm: SharePerm };
+// One of the caller's OWN vaults + who it's shared with (owner-scoped share management, sec#4).
+export type VaultShares = { vault: string; grants: { grantee: string; perm: SharePerm }[] };
 
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
 // Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
@@ -74,6 +77,41 @@ export class HttpTransport implements SyncApi {
     const r = await httpReq({ url: `${baseUrl}/api/shared`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
     if (r.status !== 200) throw new Error(`shared: HTTP ${r.status}`);
     return r.json as SharedVaultRef[];
+  }
+
+  // Self-service password change (R14 sec#2): verifies `current`, sets `newPassword`, REVOKES all
+  // other sessions server-side, and returns a FRESH token for this device (the old token is now dead).
+  static async changePassword(baseUrl: string, token: string, current: string, newPassword: string): Promise<string> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/password`, method: "POST", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ current, new_password: newPassword }), throw: false,
+    });
+    if (r.status === 401) throw new Error("current password is incorrect");
+    if (r.status !== 200) throw new Error(`change password: HTTP ${r.status}`);
+    return (r.json as { token: string }).token;
+  }
+
+  // Owner-scoped share management (R14 sec#4). Reachable on the public port now that the endpoints
+  // are on the shared surface, so a user can manage THEIR OWN shares from the plugin (was admin-only).
+  static async myVaults(baseUrl: string, token: string): Promise<VaultShares[]> {
+    const r = await httpReq({ url: `${baseUrl}/api/admin/vaults`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+    if (r.status !== 200) throw new Error(`my vaults: HTTP ${r.status}`);
+    return r.json as VaultShares[];
+  }
+  static async shareCreate(baseUrl: string, token: string, vault: string, grantee: string, perm: SharePerm): Promise<void> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/admin/shares`, method: "POST", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, grantee, perm }), throw: false,
+    });
+    if (r.status !== 200) throw new Error((r.json as { error?: string })?.error ?? `share: HTTP ${r.status}`);
+  }
+  static async shareDelete(baseUrl: string, token: string, vault: string, grantee: string): Promise<void> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/admin/shares`, method: "DELETE", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, grantee }), throw: false,
+    });
+    if (r.status !== 200) throw new Error(`unshare: HTTP ${r.status}`);
   }
 
   private auth() { return { authorization: `Bearer ${this.token}` }; }

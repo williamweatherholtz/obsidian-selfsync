@@ -49,6 +49,15 @@ pub struct LoginResponse {
     pub token: String,
 }
 
+// Authenticated self-service password change. On success the server RE-ISSUES a fresh token
+// (returned as a LoginResponse) and REVOKES every other session for the user — so a leaked
+// credential/token can be self-remediated without an admin. (R14 sec#2)
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ChangePasswordRequest {
+    pub current: String,
+    pub new_password: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CommitRequest {
     pub path: String,

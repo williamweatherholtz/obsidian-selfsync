@@ -5,6 +5,7 @@ import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
+import { ChangePasswordModal, ShareManageModal } from "./accountui";
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -131,9 +132,15 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     // Facts (label left, value right) with their management action integrated as a button.
     this.factRow(g, "Server", s.serverUrl, (st) => st.addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup())));
-    this.factRow(g, "Account", s.username, (st) => st.addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); })));
+    this.factRow(g, "Account", s.username, (st) => st
+      .addButton((b) => b.setButtonText("Change password").onClick(() => new ChangePasswordModal(this.app, this.plugin).open()))
+      .addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); })));
     this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,
-      (st) => st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open())));
+      (st) => {
+        // Sharing only applies to a vault you OWN (not one shared TO you).
+        if (!s.vaultOwner) st.addButton((b) => b.setButtonText("Share").onClick(() => new ShareManageModal(this.app, this.plugin).open()));
+        st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
+      });
     this.factRow(g, "Last synced", this.lastSyncedAgo(s));
 
     // Live status light at the BOTTOM: coloured dot + phase; issue as desc; connection actions right.

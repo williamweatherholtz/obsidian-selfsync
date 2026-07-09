@@ -48,11 +48,22 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION }))
         }))
         .route("/api/login", post(auth::login))
+        // Authenticated self-service password change (revokes all sessions). Shared on both surfaces:
+        // owner-scoped + AuthToken-gated, so it's safe on the public port and reachable in split mode. (R14 sec#2)
+        .route("/api/password", post(auth::change_password))
         // Owner self-service vault delete is SHARED on both surfaces: its only UI trigger is the admin
         // page (which serves on the PRIVATE admin port in the default split), but it's owner-scoped +
         // authenticated so it's safe on the public surface too. (Was public-only → 404'd from the
         // admin page in split mode — critique R8 correctness.)
-        .route("/api/vault", axum::routing::delete(api::delete_own_vault));
+        .route("/api/vault", axum::routing::delete(api::delete_own_vault))
+        // R14 sec#4: owner-scoped share management, SHARED on both surfaces. These are AuthToken-gated
+        // + owner-scoped (NOT require_admin), but lived only on the admin router → unreachable in the
+        // default split (admin binds to localhost), so a remote user could never manage their OWN
+        // shares. Serving them on the public port fixes that; `usernames` (require_admin + an
+        // enumeration surface) and all account-admin endpoints stay private below.
+        .route("/api/admin/me", get(admin::me))
+        .route("/api/admin/vaults", get(admin::my_vaults))
+        .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete));
     if include_public {
         r = r
             .route("/api/register", post(auth::register))
@@ -82,12 +93,10 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
     if include_admin {
         r = r
             .route("/admin", get(admin_ui::page)) // web management UI (wraps /api/admin/*)
-            // Management API (authority behind the web admin UI). Owner-scoped share management
-            // for any account; account/registration/invite management for the server-admin.
-            .route("/api/admin/me", get(admin::me))
-            .route("/api/admin/vaults", get(admin::my_vaults))
+            // Management API (authority behind the web admin UI). Account/registration/invite
+            // management for the server-admin. (Owner-scoped me/vaults/shares moved to the shared
+            // base above so they're reachable on the public port in split mode — R14 sec#4.)
             .route("/api/admin/usernames", get(admin::usernames)) // grantee autocomplete (private surface)
-            .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
             .route("/api/admin/reindex", post(admin::reindex))
             .route("/api/admin/vault", axum::routing::delete(admin::vault_delete)) // per-vault delete (RC-4)
             .route("/api/admin/prune-history", post(admin::prune_history)) // deliberate tombstone prune (tombstonePrune/D0019)

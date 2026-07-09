@@ -32,9 +32,13 @@ async fn admin_split_isolates_surfaces() {
     // /health on both surfaces.
     assert_eq!(status(public.clone(), "/health").await, 200);
     assert_eq!(status(admin.clone(), "/health").await, 200);
-    // Admin API: UNROUTED on public (404) vs routed-but-unauthed on admin (401).
-    assert_eq!(status(public.clone(), "/api/admin/me").await, 404, "admin API must not exist on the public port");
-    assert_eq!(status(admin.clone(), "/api/admin/me").await, 401, "admin API exists on the admin port (needs auth)");
+    // ACCOUNT-ADMIN API (require_admin): UNROUTED on public (404) vs routed-but-unauthed on admin (401).
+    assert_eq!(status(public.clone(), "/api/admin/users").await, 404, "account-admin API must not exist on the public port");
+    assert_eq!(status(admin.clone(), "/api/admin/users").await, 401, "account-admin API exists on the admin port (needs auth)");
+    // R14 sec#4: OWNER-scoped share management is now SHARED on both surfaces (401 unauthed on each),
+    // so a user can manage their own shares over the public port in split mode.
+    assert_eq!(status(public.clone(), "/api/admin/me").await, 401, "owner-scoped share API is reachable on the public port (needs auth)");
+    assert_eq!(status(admin.clone(), "/api/admin/me").await, 401, "owner-scoped share API also on the admin port (needs auth)");
     // Sync API: routed-but-unauthed on public (401) vs UNROUTED on admin (404).
     assert_eq!(status(public.clone(), "/api/vaults").await, 401, "sync API exists on the public port (needs auth)");
     assert_eq!(status(admin.clone(), "/api/vaults").await, 404, "sync API must not exist on the admin port");

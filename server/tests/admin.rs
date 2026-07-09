@@ -1,5 +1,5 @@
 // HTTP tests for the /api/admin/* management API (Phase 1, slice 4).
-use new_livesync_server::{app, AppState};
+use new_livesync_server::{app, public_app, AppState};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -11,6 +11,18 @@ async fn spawn() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
+    format!("http://{addr}")
+}
+
+// Same fixture, but bound to the PUBLIC-only router (the default-split public port).
+async fn spawn_public() -> String {
+    let dir = tempdir().unwrap();
+    let root = Box::leak(Box::new(dir)).path().to_path_buf();
+    let state = AppState::for_test(&root);
+    state.users.lock().unwrap().register("bob", "pw").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, public_app(state)).await.unwrap(); });
     format!("http://{addr}")
 }
 
@@ -112,4 +124,39 @@ async fn admin_sets_registration_and_issues_working_invite() {
     let token = inv["token"].as_str().unwrap();
     let reg = reqwest::Client::new().post(format!("{base}/api/register")).json(&json!({"username":"dave","password":"pw","invite":token})).send().await.unwrap();
     assert_eq!(reg.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn password_change_revokes_all_other_sessions_and_reissues(/* R14 sec#2 */) {
+    let base = spawn().await;
+    let t1 = login(&base, "bob").await; // session 1 (the one we'll change from)
+    let t2 = login(&base, "bob").await; // session 2 (a "leaked"/other device)
+    // Both tokens work against an authed owner-scoped endpoint.
+    assert_eq!(get(&base, "/api/admin/me", &t1).await.0, 200);
+    assert_eq!(get(&base, "/api/admin/me", &t2).await.0, 200);
+    // Wrong current password is rejected.
+    assert_eq!(send(&base, "POST", "/api/password", &t1, json!({"current":"wrong","new_password":"pw2"})).await, 401);
+    // Correct change returns a fresh token and revokes ALL prior sessions.
+    let r = reqwest::Client::new().post(format!("{base}/api/password")).bearer_auth(&t1)
+        .json(&json!({"current":"pw","new_password":"pw2"})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let t3 = r.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    assert_eq!(get(&base, "/api/admin/me", &t1).await.0, 401, "old session 1 revoked");
+    assert_eq!(get(&base, "/api/admin/me", &t2).await.0, 401, "old session 2 revoked");
+    assert_eq!(get(&base, "/api/admin/me", &t3).await.0, 200, "the re-issued token works");
+    // The new password logs in; the old one no longer does.
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw2"})).send().await.unwrap().status().as_u16(), 200);
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"})).send().await.unwrap().status().as_u16(), 401);
+}
+
+#[tokio::test]
+async fn owner_share_endpoints_reachable_on_public_surface_but_not_account_admin(/* R14 sec#4 */) {
+    let base = spawn_public().await;
+    let bob = login(&base, "bob").await;
+    // Owner-scoped share management IS reachable on the public port (was admin-router-only → 404).
+    assert_eq!(get(&base, "/api/admin/vaults", &bob).await.0, 200);
+    assert_eq!(get(&base, "/api/admin/me", &bob).await.0, 200);
+    // Account-admin endpoints stay OFF the public surface (404, not exposed).
+    assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 404);
+    assert_eq!(get(&base, "/api/admin/usernames", &bob).await.0, 404);
 }
