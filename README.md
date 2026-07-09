@@ -1,45 +1,66 @@
 # SelfSync
 
-A self-hosted sync for [Obsidian](https://obsidian.md): run one small server on
-infrastructure you control and keep your notes, attachments, and optionally your
-settings and plugins in step across every device — desktop and mobile.
+Self-hosted sync for [Obsidian](https://obsidian.md). Keep your notes on a server you own,
+in step across every device — desktop and mobile — without a subscription and without a
+database to babysit.
 
-It's built to feel like official Obsidian Sync, without the subscription and without the
-operational weight of CouchDB-based alternatives: a **single Rust binary** you run as one
-container, a **guided in-app setup**, real files on disk, and content-addressed
-de-duplicated storage.
-
-> **No end-to-end encryption yet.** Your notes are encrypted in transit by your TLS and
-> stored as real files on **your** server — so run it on infrastructure you trust. See the
+> **No end-to-end encryption yet.** Your notes travel encrypted in transit by your TLS and
+> rest as real files on **your** server, so run it on infrastructure you trust. See the
 > [trust model](docs/deployment.md#trust-model-stated-plainly).
 
-## Features
+## The idea
 
-- **Full vault sync** — notes and attachments, any file type, byte-exact including binaries.
-- **Fast, deduplicated transfer** — content-addressed chunks: an unchanged or duplicated
-  file uploads nothing; only changed chunks move.
-- **Automatic conflict handling** — divergent Markdown is 3-way merged; anything that can't
-  be merged is kept side-by-side as a clearly-named conflict copy, so nothing is ever lost,
-  and surfaced in the plugin for one-click resolution.
-- **Optional settings & plugin sync** — opt in per category — core settings, hotkeys,
-  appearance, snippets — and per community plugin via an allowlist. SelfSync **never** syncs
-  its own folder, so one device's server credentials never overwrite another's.
-- **Vault sharing** — grant another account read-only or read-write access to a vault you
-  own, straight from the plugin.
-- **Mobile-friendly** — works on iOS and Android; streams large files instead of buffering them.
-- **Multi-device onboarding** — set up the first device with a guided wizard, then add more
-  with a shareable setup link that never carries your password.
+You write in Obsidian across a laptop, a desktop, and a phone, and you want one vault that
+follows you everywhere — on hardware you control, not someone else's cloud. The usual
+self-hosted answer, obsidian-livesync, is powerful but hard to live with: a CouchDB to
+operate, dozens of cryptic toggles to misconfigure, and its best conflict-merge locked behind
+sponsorship.
 
-## How it works
+SelfSync is the alternative. One small Rust server — a single container, its own storage, no
+external database — and a lean plugin with a guided setup. Storage is content-addressed and
+de-duplicated, conflict merge is real and free for everyone, and your data stays as plain
+files you can read on disk.
 
-```
- Obsidian + SelfSync plugin  ──HTTPS/WSS──►  Caddy, TLS  ──►  SelfSync server  ──►  your data volume
- desktop & mobile                                            one Rust binary       real files + chunks
-```
+## What using it is like
 
-The plugin watches your vault and reconciles changes against the server; the server keeps a
-per-vault SQLite index in WAL mode and a de-duplicated chunk store, and materializes every
-file on disk so your data is never locked inside a proprietary database.
+**You set it up once, then again on each device in a minute.** The first time you enable the
+plugin, a wizard walks you through it: point it at your server, sign in or create an account,
+pick or create a vault, and sync starts. To bring on a second device you copy a setup link —
+server and username only, never your password — paste it on the new device, and your vault
+downloads. Adopting an empty device is automatic; a device that already has notes asks once
+whether to download, upload, or merge.
+
+**Then it just keeps working.** An edit on one device appears on the others in about a second
+over a live channel; anything you change while offline reconciles the moment you reconnect.
+Large files stream to disk instead of loading whole into memory, and on a phone a single
+indicator tells you the sync state at a glance — no fiddling, no status bar to hunt for.
+
+**Nothing you write is ever lost.** Edit the same note in two places and SelfSync merges the
+non-conflicting changes automatically; when two versions genuinely collide, or the file is
+binary, it keeps both as a clearly-named conflict copy and flags it for a one-click choice —
+it never picks a winner behind your back. Deletion is just as careful: a file is removed
+locally only when the server truly recorded a deletion, never because a wrong, fresh, or
+half-restored server merely lacks it. Point a full vault at an empty server by mistake and it
+restores your files rather than wiping them.
+
+**Your whole setup travels, not just the notes.** Turn on settings sync per category and per
+community plugin, and your app settings, hotkeys, theme, snippets, and chosen plugins appear
+on your other devices. It's additive and adjudicated: a device that opts out of a category is
+never touched, one device never silently overwrites another's configuration, and when two
+devices genuinely disagree about the same setting you decide which wins. SelfSync's own folder
+— which holds this device's server address and login — is never synced, so no device can
+overwrite another's connection or leak a credential into the vault.
+
+**Share a vault when you want to.** Grant another account on your server read-only or
+read-write access to a vault you own, straight from the plugin. A read-only guest can pull but
+never push; a read-write collaborator gets the same conflict-safety you do; and a share never
+exposes your other vaults or your login.
+
+**And you run the whole thing.** The server is one container with its own storage and no DBMS
+to maintain. An admin page — private by default, reachable only from the host — lets you
+create accounts, manage shares, and keep registration closed or open it with single-use
+invites. Everything persists to your own filesystem, durably and self-healing, with nothing
+external to provision.
 
 ## Quick start
 
@@ -73,27 +94,9 @@ Obsidian **1.11.0+**:
 
 ### 3. Set up
 
-On first enable, SelfSync opens a guided wizard: enter your server URL such as
-`https://sync.example.com`, sign in, and pick or create a vault. That's it — your vault
-starts syncing.
-
-To add another device, open **Add a device** in SelfSync's settings for a setup link — server
-and username only, never your password — then paste it into the new device's wizard.
-
-## Managing your account
-
-All from the plugin's settings tab:
-
-- **Sharing** — **Share** on your vault lists who has access and lets you grant or revoke
-  read-only or read-write access by username.
-- **Change password** — rotates your password and signs out every other device, so a leaked
-  password or token is self-remediable with no admin needed.
-- **Settings & plugin sync** — the **Obsidian configuration** section opts categories and
-  individual community plugins in or out.
-
-Server-owner tasks — creating accounts, opening registration, issuing invite tokens, deleting
-accounts — live on the private `/admin` page, by default bound to localhost only. See the
-[hardening checklist](docs/deployment.md#public-exposure-hardening-checklist).
+On first enable, the wizard opens: enter your server URL such as `https://sync.example.com`,
+sign in, and pick or create a vault. Then open **Add a device** in settings to get the setup
+link for your next device.
 
 ## Server configuration
 
