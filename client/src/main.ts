@@ -509,6 +509,13 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.disconnect();
   }
 
+  // Layered connection diagnosis for the settings "Diagnose" button — names the first broken link
+  // (unreachable / version / auth / vault / degraded) so a silent offline gets an actionable reason.
+  // Uses the CURRENT stored token as-is (no forced re-login) so it reflects the real session state.
+  async diagnoseConnection() {
+    return HttpTransport.diagnose(this.settings.serverUrl, this.settings.authToken, this.settings.vaultId, this.settings.vaultOwner || undefined);
+  }
+
   // A shareable setup link for another device (server + username only, never password).
   addDeviceLink(): string {
     return encodeSetupLink({ server: this.settings.serverUrl, user: this.settings.username, vault: this.settings.vaultId });

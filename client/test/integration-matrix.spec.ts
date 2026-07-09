@@ -194,6 +194,38 @@ describe.skipIf(!canRun)("integration matrix: offline/reconnect × ops × scale 
     clean(a, b);
   }, 30000);
 
+  // ── 3b. RENAME / MOVE (research issue #3: renames must not lose content or duplicate) ──
+  it("rename: a file moved to a new path converges — old gone, new present, content intact, no duplicate", async () => {
+    const [a, b] = await pair("rename");
+    await a.io.write("keep.md", enc("anchor"));
+    await a.io.write("old-name.md", enc("the content"));
+    await reconnect(a); await reconnect(b);
+    expect(dec(await b.io.read("old-name.md"))).toBe("the content");
+    // Obsidian rename = remove old + create new. Content-addressed chunks persist, so the new path
+    // dedups them (no re-upload, no content loss); the old path propagates as a tombstone.
+    await a.io.remove("old-name.md");
+    await a.io.write("new-name.md", enc("the content"));
+    await reconnect(a); await poll(b);
+    expect(await exists(path.join(b.root, "old-name.md"))).toBe(false);   // old path gone
+    expect(dec(await b.io.read("new-name.md"))).toBe("the content");       // new path, content intact
+    expect([...(await b.io.list()).keys()].sort()).toEqual(["keep.md", "new-name.md"]); // no duplicate
+  });
+
+  it("folder rename: every file under it moves, none lost (the LiveSync content-loss case)", async () => {
+    const [a, b] = await pair("folder-rename");
+    await a.io.write("keep.md", enc("anchor"));
+    for (const n of ["a.md", "b.md", "sub/c.md"]) await a.io.write(`Old/${n}`, enc(`body ${n}`));
+    await reconnect(a); await reconnect(b);
+    expect(dec(await b.io.read("Old/sub/c.md"))).toBe("body sub/c.md");
+    // Rename the folder = move each file from Old/ to New/.
+    for (const n of ["a.md", "b.md", "sub/c.md"]) { await a.io.remove(`Old/${n}`); await a.io.write(`New/${n}`, enc(`body ${n}`)); }
+    await reconnect(a); await poll(b);
+    for (const n of ["a.md", "b.md", "sub/c.md"]) {
+      expect(await exists(path.join(b.root, "Old", ...n.split("/")))).toBe(false); // old tree gone
+      expect(dec(await b.io.read(`New/${n}`))).toBe(`body ${n}`);                   // all content preserved under New/
+    }
+  });
+
   // ── 4. SCALE extremes ────────────────────────────────────────────────────────────────
   it("scale: 500 files across nested dirs sync (delta), count matches", async () => {
     const [a, b] = await pair("scale500");

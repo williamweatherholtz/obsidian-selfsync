@@ -170,11 +170,36 @@ fn vault_commit_dedup_delete_gc() {
     assert!(v.missing(std::slice::from_ref(&h1)).is_empty());
     let body2 = c1.clone();
     v.commit(CommitRequest{ path:"f2.bin".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
-    // delete f1: c2 now unreferenced -> GC'd; c1 still referenced by f2 -> kept
+    // delete f1: c2 now UNREFERENCED, c1 still referenced by f2. Blob reclamation is DEFERRED (not
+    // eager on delete — that raced a concurrent same-content commit on a rename, R#3); the file is
+    // removed and c1 kept immediately, and the orphaned c2 is reclaimed by the sweep / startup GC.
     v.delete("f1.bin").unwrap();
-    assert!(!v.has_chunk(&h2), "c2 should be GC'd");
     assert!(v.has_chunk(&h1), "c1 still referenced by f2");
     assert!(!dir.path().join("vault/f1.bin").exists());
+    drop(v);
+    let v = Vault::open(dir.path()).unwrap(); // startup verify_and_gc reclaims the now-orphaned c2
+    assert!(!v.has_chunk(&h2), "c2 (unreferenced) reclaimed by startup GC");
+    assert!(v.has_chunk(&h1), "c1 still referenced by f2");
+}
+
+#[test]
+fn delete_defers_chunk_gc_so_a_concurrent_rename_commit_survives() { // research #3 rename-safety
+    use new_livesync_server::vault::Vault;
+    use new_livesync_server::hash::sha256_hex;
+    use new_livesync_server::protocol::CommitRequest;
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    let c = b"shared body".to_vec(); let h = sha256_hex(&c);
+    v.put_chunk(&h, &c).unwrap();
+    v.commit(CommitRequest{ path:"Old.md".into(), hash: sha256_hex(&c), size: c.len() as u64, mtime:1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+    // Rename = the NEW path's missing() sees the chunk present (Old still holds it)…
+    assert!(v.missing(std::slice::from_ref(&h)).is_empty());
+    // …then the OLD path is deleted, dereferencing that chunk…
+    v.delete("Old.md").unwrap();
+    // …and the chunk MUST still be on disk, so the new path's commit (no re-upload) can't 404.
+    assert!(v.has_chunk(&h), "delete must not eagerly GC a chunk a concurrent rename commit still needs");
+    v.commit(CommitRequest{ path:"New.md".into(), hash: sha256_hex(&c), size: c.len() as u64, mtime:1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+    assert_eq!(std::fs::read(dir.path().join("vault/New.md")).unwrap(), c, "the moved file is present + intact");
 }
 
 #[test]

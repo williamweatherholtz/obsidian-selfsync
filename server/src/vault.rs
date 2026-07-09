@@ -545,10 +545,10 @@ impl Vault {
         let new_version = self.version + 1;
         match self.index.delete(path, new_version)? {
             None => Ok(None), // absent (or a bad name that isn't an index key) → nothing to delete
-            Some((d, dereferenced)) => {
+            Some((d, _dereferenced)) => {
                 self.version = new_version;
-                // Durable; now remove the materialized file + de-referenced blobs (best-effort). Only
-                // when the name has a valid rel path (a legacy invalid-name key has no on-disk target).
+                // Durable; now remove the materialized file. Only when the name has a valid rel path (a
+                // legacy invalid-name key has no on-disk target).
                 if let Some(rel) = rel {
                     let abs = self.vault_dir.join(rel);
                     if abs.exists() {
@@ -557,7 +557,16 @@ impl Vault {
                         }
                     }
                 }
-                self.remove_blobs(&dereferenced);
+                // De-referenced chunk blobs are NOT removed eagerly here — that raced a concurrent
+                // commit of the SAME content under a new path (a rename/move), where `missing()` saw
+                // the chunk present, this delete then removed it, and the new file's commit 404'd on a
+                // now-missing chunk (a moved file lost for a cycle; the file-level reconcile
+                // concurrency made the interleaving likely). The interval-gated orphan sweep reclaims
+                // them instead — it uses the CURRENT index reference set (so a re-referenced chunk is
+                // never swept) and a TTL (sparing just-uploaded chunks), and can't fire in the
+                // sub-second delete→commit window. Truly-orphaned chunks are reclaimed on the next
+                // sweep / at startup. (research #3 rename-safety)
+                self.maybe_sweep_orphans();
                 Ok(Some(d))
             }
         }
