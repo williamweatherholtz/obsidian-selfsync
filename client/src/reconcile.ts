@@ -261,7 +261,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const paths = new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()]);
   let minFailedRemote = Infinity; // earliest server version whose PULL failed this pass (R14 sync#1)
   for (const p of paths) {
-    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p)); }
+    try { await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)); }
     catch (e) {
       d.onFileError?.(p, e); // isolate: one file's failure must never abort the whole sync
       const rv = remote.get(p)?.version;
@@ -349,7 +349,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   }
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false, locallyPresent?: boolean): Promise<void> {
+async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false, locallyPresent?: boolean, localStat?: { size: number; mtime: number }): Promise<void> {
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -367,17 +367,35 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     d.onSkip?.(path, Math.max(localSize, remoteSize));
     return;
   }
-  const localBytes = await readOrNull(d.io, path);
-  // C1 (R10): a read that FAILS on a file the vault reports PRESENT is a transient error (antivirus
-  // lock, unhydrated OneDrive/Dropbox placeholder, FS hiccup) — NOT a deletion. Left unguarded it
-  // feeds decide() a null local and yields delete-remote (which has no tombstone/bulk-delete guard),
-  // propagating a phantom deletion to every peer. Skip the path this pass instead; the per-file
-  // handler logs it and the next reconcile retries. Only relevant for a previously-synced file.
-  if (localBytes === null && d.base.get(path) && locallyPresent) {
-    throw new Error(`'${path}' is present but couldn't be read right now — skipping (won't be treated as deleted)`);
-  }
-  const localHash = localBytes ? await sha256hex(localBytes) : null;
   const baseEntry = d.base.get(path) ?? null;
+  // SCAN-SKIP (Finding 2): if the file is present and its (size, mtime) are UNCHANGED since we last
+  // confirmed it equals `base`, its content is still `base.hash` — skip the read + SHA-256 entirely.
+  // This turns each whole-vault pass from O(vault bytes) into O(changed files) (the recurring 15-min
+  // full-reconcile re-hash was a real battery/CPU drain on large/mobile vaults). Safe because on an
+  // unchanged local file decide() only yields in-sync / pull / delete-local — none need the local
+  // bytes (pull re-reads internally; the delete/clear-base branches require a genuinely ABSENT local,
+  // which a stat-matched present file is not). A real edit updates mtime AND fires a vault event →
+  // reconcilePath (which always reads), so this only weakens the missed-event backstop for the
+  // pathological same-size-same-mtime edit — the standard rsync/Syncthing trade-off.
+  const scanHit = !!(locallyPresent && baseEntry && localStat
+    && baseEntry.size === localStat.size && baseEntry.mtime === localStat.mtime);
+  let localBytes: Uint8Array | null;
+  let localHash: string | null;
+  if (scanHit) {
+    localBytes = null;              // present + unchanged → content is baseEntry.hash; not read
+    localHash = baseEntry!.hash;
+  } else {
+    localBytes = await readOrNull(d.io, path);
+    // C1 (R10): a read that FAILS on a file the vault reports PRESENT is a transient error (antivirus
+    // lock, unhydrated OneDrive/Dropbox placeholder, FS hiccup) — NOT a deletion. Left unguarded it
+    // feeds decide() a null local and yields delete-remote (which has no tombstone/bulk-delete guard),
+    // propagating a phantom deletion to every peer. Skip the path this pass instead; the per-file
+    // handler logs it and the next reconcile retries. Only relevant for a previously-synced file.
+    if (localBytes === null && baseEntry && locallyPresent) {
+      throw new Error(`'${path}' is present but couldn't be read right now — skipping (won't be treated as deleted)`);
+    }
+    localHash = localBytes ? await sha256hex(localBytes) : null;
+  }
   const action = decide(
     localHash ? { hash: localHash } : null,
     baseEntry ? { hash: baseEntry.hash } : null,
@@ -403,7 +421,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   }
   switch (action) {
     case "in-sync":
-      if (localBytes && rmeta) setBase(d, path, localBytes, rmeta.hash);
+      if (localBytes && rmeta) {
+        setBase(d, path, localBytes, rmeta.hash);
+        if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint (Finding 2)
+      }
       // Both sides absent but base still present: clear the stale base. Otherwise recreating the
       // file with content equal to the old base hash would read as delete-local and wipe it.
       else if (!localBytes && !rmeta && baseEntry) { d.base.delete(path); d.onBaseChanged?.(); }
@@ -415,6 +436,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // per-file skip → the next reconcile decides merge instead of a silent lost-update overwrite.
       const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path, rmeta?.version ?? 0);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
+      if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file is unchanged on disk → cache the hint
       return;
     }
     case "pull":

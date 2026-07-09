@@ -1,4 +1,10 @@
-export interface BaseEntry { hash: string; text?: string }
+// `size`/`mtime` are an OPTIONAL scan-skip hint (perf, Finding 2): the file's on-disk
+// (size, mtime) at the last time we confirmed it equals this base. A whole-vault reconcile
+// can then skip the read+SHA-256 for a file whose (size, mtime) are unchanged — the standard
+// rsync/Syncthing scan optimization. They're a hint only: absent/stale ⇒ fall back to hashing,
+// so correctness never depends on them, and a real local edit is caught by the event path
+// (reconcilePath always reads) regardless.
+export interface BaseEntry { hash: string; text?: string; size?: number; mtime?: number }
 
 // The per-file "base" = the last-synced state (common ancestor for merges).
 // Persisted across restart via the plugin's saveData; `text` is kept only for
@@ -12,6 +18,12 @@ export class BaseStore {
   set(path: string, entry: BaseEntry): void { this.m.set(path, entry); }
   delete(path: string): void { this.m.delete(path); }
   paths(): string[] { return [...this.m.keys()]; }
+  // Record the on-disk (size, mtime) of a file we've just confirmed equals its base, so the next
+  // whole-vault pass can skip re-hashing it. In-memory only (no persist) — an optimization hint.
+  stampStat(path: string, size: number, mtime: number): void {
+    const e = this.m.get(path);
+    if (e) { e.size = size; e.mtime = mtime; }
+  }
   toJSON(): Record<string, BaseEntry> { return Object.fromEntries(this.m); }
 }
 

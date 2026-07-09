@@ -810,6 +810,41 @@ describe("RS-4 base-text cap", () => {
   });
 });
 
+// R14 perf (Finding 2): a whole-vault reconcile must NOT re-read + re-hash a file whose (size,mtime)
+// are unchanged since it was last confirmed in-sync — the scan-skip cache.
+describe("R14 perf: scan-skip cache", () => {
+  it("a second whole-vault pass does NOT re-read an unchanged file", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "content A");
+    const io = fakeIo({ "a.md": "content A" });
+    const base = new BaseStore();
+    const d = deps(api, io, { base });
+    await reconcileAll(d); // first pass: reads + hashes + stamps (size,mtime) into base
+    let reads = 0;
+    const orig = (io as any).read.bind(io);
+    (io as any).read = async (p: string) => { reads++; return orig(p); };
+    await reconcileAll(d); // second pass: (size,mtime) unchanged → scan-skip, no read
+    expect(reads).toBe(0);
+  });
+
+  it("a CHANGED file (different size) is still re-read and re-synced", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "v1");
+    const io = fakeIo({ "a.md": "v1" });
+    const base = new BaseStore();
+    const d = deps(api, io, { base });
+    await reconcileAll(d);
+    await io.write("a.md", enc("v2-longer")); // size + mtime differ from the stamped hint
+    let reads = 0;
+    const orig = (io as any).read.bind(io);
+    (io as any).read = async (p: string) => { reads++; return orig(p); };
+    await reconcileAll(d);
+    expect(reads).toBeGreaterThan(0);                          // cache MISS → re-read
+    expect((await api.changes(0)).upserts.find((m) => m.path === "a.md")!.hash)
+      .toBe(await sha256hex(enc("v2-longer")));                 // and the change was pushed
+  });
+});
+
 // R14: the incremental delta/config-scan paths must not silently strand a transiently-failed file
 // (below the cursor → not retried until the 15-min full scan) or flap the whole engine offline.
 describe("R14 sync-correctness fixes", () => {

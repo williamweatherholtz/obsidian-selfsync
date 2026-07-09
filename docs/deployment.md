@@ -39,6 +39,9 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
 - **Keep registration closed.** It defaults to closed (invite-only). Create accounts, open
   registration, or issue **single-use invite tokens** from the `/admin` page. Open registration
   lets anyone who can reach the server create an account — only do it deliberately.
+- **Owner tasks don't need the admin page.** Managing your OWN vaults' shares and changing your
+  own password are done from the plugin over the public port (owner-scoped, authenticated) — the
+  private `/admin` page is only for server-owner tasks (accounts, registration, invites, deletes).
 - **Sessions are safe by construction:** tokens are hashed at rest, expire after 30 days, and
   are revoked when you delete an account (from `/admin`). Deleting an account also removes its
   shares.
