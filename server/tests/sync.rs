@@ -248,12 +248,18 @@ fn vault_recommit_same_path_keeps_shared_chunks() {
     // re-commit SAME path with a list that still uses h1 but drops h2: [h1]
     let body2 = c1.clone();
     v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:2, chunks: vec![h1.clone()], expected_version: None }).unwrap();
-    // h1 is still referenced by the new version -> MUST survive; h2 no longer referenced -> GC'd
+    // h1 is still referenced by the new version -> MUST survive; h2 is now UNREFERENCED. Blob
+    // reclamation is DEFERRED (touched, not eagerly removed — R16 rename/dedup-safety), so h2 still
+    // lingers on disk right after the commit and is reclaimed by the sweep / startup GC.
     assert!(v.has_chunk(&h1), "shared chunk h1 must survive the re-commit");
-    assert!(!v.has_chunk(&h2), "dropped chunk h2 should be GC'd");
     // and re-committing the identical content again keeps h1 alive (incr-before-decr on full overlap)
     v.commit(CommitRequest{ path:"p.md".into(), hash: sha256_hex(&body2), size: body2.len() as u64, mtime:3, chunks: vec![h1.clone()], expected_version: None }).unwrap();
     assert!(v.has_chunk(&h1), "h1 must survive an identical-content re-commit (incr-before-decr)");
+    // Startup GC reclaims the now-orphaned h2 (deferred reclamation).
+    drop(v);
+    let v = Vault::open(dir.path()).unwrap();
+    assert!(v.has_chunk(&h1), "h1 still referenced after reopen");
+    assert!(!v.has_chunk(&h2), "dropped chunk h2 reclaimed by startup GC");
 }
 
 #[tokio::test]

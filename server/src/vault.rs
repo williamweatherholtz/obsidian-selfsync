@@ -528,9 +528,14 @@ impl Vault {
         if let Err(e) = write_mirror(&abs, &body) {
             log::warn!("[commit] bind-mount mirror write failed for '{}': {e} (content is durable in the chunk store)", req.path);
         }
-        // Index is durable; NOW drop de-referenced blobs. A failure here is a recoverable orphan
-        // (startup GC reclaims it), never corruption.
-        self.remove_blobs(&dereferenced);
+        // Index is durable. De-referenced blobs (chunks the OLD version cited that this version drops)
+        // are TOUCHED, not removed eagerly (R16) — the same rename/dedup TOCTOU as the delete path:
+        // with file-level concurrency, file A editing away chunk Y while file B concurrently adds Y via
+        // dedup could have this commit remove Y between B's missing()=present and B's commit → 404.
+        // Touching bumps Y's mtime so the sweep's TTL measures age-since-orphaned; a chunk still (about
+        // to be) referenced is young + spared, a genuine orphan is reclaimed later. Startup GC + the
+        // upload-path sweep do the actual reclamation.
+        for h in &dereferenced { self.store.touch(h); }
         Ok(meta)
     }
 
@@ -545,7 +550,7 @@ impl Vault {
         let new_version = self.version + 1;
         match self.index.delete(path, new_version)? {
             None => Ok(None), // absent (or a bad name that isn't an index key) → nothing to delete
-            Some((d, _dereferenced)) => {
+            Some((d, dereferenced)) => {
                 self.version = new_version;
                 // Durable; now remove the materialized file. Only when the name has a valid rel path (a
                 // legacy invalid-name key has no on-disk target).
@@ -557,28 +562,17 @@ impl Vault {
                         }
                     }
                 }
-                // De-referenced chunk blobs are NOT removed here, and we DELIBERATELY do NOT trigger an
-                // orphan sweep from delete either (R15 sync#1/DI#2). Eager removal — or a sweep running
-                // synchronously under this write lock — raced a concurrent commit of the SAME content
-                // under a NEW path (a rename): the file-level reconcile concurrency pushes the delete
-                // and the create in one pass, and because the write lock serializes them, a due sweep
-                // fired inside this delete would reclaim the shared old chunks BEFORE the create's
-                // re-referencing commit ran → commit 404 → the renamed file vanished fleet-wide until
-                // the 15-min full scan. Reclamation is left to the UPLOAD-path + STARTUP sweeps, which
-                // re-read the reference set AFTER in-flight commits have drained, so a re-referenced
-                // chunk is never reclaimed. Truly-orphaned chunks are bounded (reclaimed next commit /
-                // at startup). (research #3 rename-safety)
+                // De-referenced chunk blobs are NOT removed eagerly (R15 sync#1/DI#2 + R16). Eager
+                // removal raced a concurrent commit of the SAME content under a NEW path (a rename):
+                // file-level reconcile concurrency pushes the delete + the create in one pass, and the
+                // create's `missing()` sees the chunk present → skips upload → but the delete removed
+                // it → the create's commit 404s → the moved file vanishes fleet-wide until the full
+                // scan. We instead TOUCH the de-referenced chunks (bump mtime = "orphaned now") so the
+                // orphan sweep's TTL measures age-since-orphaned: a chunk a concurrent rename is about
+                // to re-reference is young and spared; a genuinely-abandoned chunk is reclaimed TTL
+                // later by the upload-path / startup sweep. Touch never removes → no new race.
+                for h in &dereferenced { self.store.touch(h); }
                 Ok(Some(d))
-            }
-        }
-    }
-
-    // Best-effort physical blob removal, called only after a durable persist. A failure leaves a
-    // reclaimable orphan (logged), never a dangling reference.
-    fn remove_blobs(&self, hashes: &[String]) {
-        for h in hashes {
-            if let Err(e) = self.store.remove(h) {
-                log::warn!("[vault] chunk {h} de-referenced but not removed ({e}); will be reclaimed at next startup");
             }
         }
     }

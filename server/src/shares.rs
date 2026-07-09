@@ -33,6 +33,12 @@ struct SharesFile {
     grants: Vec<Grant>,
 }
 
+// Cap the grants a single owner may hold, so no authenticated user can inflate the global
+// .shares.json into an unbounded ACL that's linearly scanned under the global shares Mutex on every
+// vault request + WS check — degrading EVERY tenant (R16 MEDIUM-1, a regression of dropping the
+// grantee-existence check for de-oracling). Far above any real sharing need; an UPSERT never counts.
+pub const MAX_GRANTS_PER_OWNER: usize = 1000;
+
 pub struct ShareStore {
     path: PathBuf,
     file: SharesFile,
@@ -102,6 +108,11 @@ impl ShareStore {
         } else {
             Ok(())
         }
+    }
+
+    // How many grants this owner currently holds across all their vaults (for the per-owner cap).
+    pub fn owner_grant_count(&self, owner: &str) -> usize {
+        self.file.grants.iter().filter(|g| g.owner == owner).count()
     }
 
     // Grants on one owner's vault (for the owner's share-management view).
@@ -213,6 +224,17 @@ mod tests {
         s.grant("carol", "docs", "bob", Perm::ReadWrite).unwrap();
         s.grant("alice", "notes", "dave", Perm::Read).unwrap();
         assert_eq!(s.shared_with("bob").len(), 2);
+    }
+
+    #[test]
+    fn owner_grant_count_counts_distinct_grants_not_upserts() { // R16 MEDIUM-1 (per-owner cap basis)
+        let (_d, mut s) = store();
+        s.grant("alice", "notes", "bob", Perm::Read).unwrap();
+        s.grant("alice", "docs", "carol", Perm::Read).unwrap();
+        assert_eq!(s.owner_grant_count("alice"), 2);
+        s.grant("alice", "notes", "bob", Perm::ReadWrite).unwrap(); // upsert of an existing grant — NOT new
+        assert_eq!(s.owner_grant_count("alice"), 2, "an upsert must not inflate the count");
+        assert_eq!(s.owner_grant_count("carol"), 0, "scoped to the owner");
     }
 
     #[test]

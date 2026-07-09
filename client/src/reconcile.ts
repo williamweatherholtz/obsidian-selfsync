@@ -165,6 +165,19 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite the local edit
     try {
       if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size)) {
+        // R16 HIGH: streamFileToDisk verifies each CHUNK + the total SIZE, but NOT the whole-file
+        // hash. A size-preserving bad chunk MANIFEST (reordered/substituted chunks from a corrupt
+        // server index / bit-rot in file_chunks.seq) would write wrong bytes and then record the
+        // DECLARED hash into base → the next full scan sees local!=base==remote → PUSH → the corrupt
+        // bytes overwrite the server as authoritative and propagate fleet-wide (silent corruption).
+        // Verify the reassembled file against rmeta.hash before trusting it (parity with the buffered
+        // path's fetchVerified). Streaming is desktop-only + size-bounded so the re-hash is fine; it's
+        // gated on localSize===0 (a fresh download), so removing a bad result loses no prior local copy.
+        const got = await sha256hex(await d.io.read(path));
+        if (got !== rmeta.hash) {
+          try { await d.io.remove(path); } catch { /* best-effort */ }
+          throw new Error(`streamed integrity check failed for '${path}': got ${got.slice(0, 12)}, expected ${rmeta.hash.slice(0, 12)} — not applying (corrupt manifest?)`);
+        }
         d.base.set(path, { hash: rmeta.hash });
         d.onBaseChanged?.();
         return;

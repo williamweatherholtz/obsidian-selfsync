@@ -301,6 +301,21 @@ describe("streamed reassembly of large downloads (B9 Part B)", () => {
     expect(dec((io as any).m.get("big.bin")!)).toBe(big);
   });
 
+  it("R16 HIGH: a streamed download whose reassembly ≠ the declared hash is REJECTED, not laundered", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "big.bin", big);
+    // Corrupt server MANIFEST: the declared file hash no longer matches its (valid, content-addressed)
+    // chunks — the size-preserving case the per-chunk + total-size checks can't catch.
+    files.get("big.bin")!.hash = "0".repeat(64);
+    const io = fakeIo({});
+    const base = new BaseStore();
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { base, onFileError: (p) => errs.push(p) }));
+    expect(errs).toContain("big.bin");                 // integrity failure surfaced + isolated
+    expect((io as any).m.has("big.bin")).toBe(false);   // corrupt download REMOVED, not left on disk
+    expect(base.get("big.bin")).toBeUndefined();        // NOT laundered into base → never re-pushed as authoritative
+  });
+
   it("a large download bypasses the size gate when streaming; without streaming it's skipped", async () => {
     // WITH streaming (appendWrite present) + a low gate → streamed, not skipped
     {

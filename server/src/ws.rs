@@ -99,6 +99,22 @@ pub async fn ws_handler(
         .on_upgrade(move |socket: WebSocket| async move { serve_socket(socket, rx, guard, st2, o2, v2, u2, tok).await })
 }
 
+// Is this live socket still allowed to receive change notifications? Two independent checks:
+// the bearer token still resolves to this user (honors expiry + revoke_user from a password
+// change / logout-all) AND the share ACL still authorizes a read (honors a revoked share). Either
+// failing tears the socket down, so "revoke my sessions" and "unshare" both take effect promptly.
+fn session_alive(st: &AppState, owner: &str, vault: &str, user: &str, token: &str) -> bool {
+    let token_ok = match lock(&st.tokens) {
+        Ok(mut g) => g.resolve(token).as_deref() == Some(user), // &mut: resolve prunes an expired token
+        Err(_) => false,
+    };
+    if !token_ok { return false; }
+    match lock(&st.shares) {
+        Ok(g) => g.authorized(owner, vault, user, crate::shares::Access::Read),
+        Err(_) => false,
+    }
+}
+
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
 // drop the socket if the peer misses two consecutive pings (dead/half-open connection).
 async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard, st: AppState, owner: String, vault: String, user: String, token: String) {
@@ -113,39 +129,29 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(version) => {
-                    // SEC-R2#3: re-check the ACL before forwarding — a share revoked AFTER connect
-                    // must stop this socket leaking change/version metadata (HTTP reads already
-                    // re-authorize per request; the long-lived WS did not until now).
-                    let still_ok = match lock(&st.shares) {
-                        Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
-                        Err(_) => false,
-                    };
-                    if !still_ok { break; }
+                    // Re-check the SESSION before forwarding — token still valid (revocation, R16 LOW-1)
+                    // AND the share ACL still authorizes (SEC-R2#3). A share revoked or a session killed
+                    // (password change / logout-all) AFTER connect must stop this socket leaking
+                    // change/version metadata (HTTP reads already re-authorize per request).
+                    if !session_alive(&st, &owner, &vault, &user, &token) { break; }
                     let msg = format!("{{\"type\":\"changed\",\"version\":{version}}}");
                     if socket.send(Message::Text(msg)).await.is_err() { break; }
                 }
                 // Client fell behind the 256-deep channel: don't drop the socket — nudge
-                // a full incremental catch-up (the client re-polls changes(since)). CONC-R3#2:
-                // re-check the ACL here too (same as the Ok arm) so a revoked-but-lagging grantee
-                // stops getting activity nudges instead of leaking until its next non-lagged recv.
+                // a full incremental catch-up (the client re-polls changes(since)). Re-check the
+                // session here too (same as the Ok arm) so a revoked grantee / killed session stops
+                // getting activity nudges instead of leaking until its next non-lagged recv.
                 Err(RecvError::Lagged(_)) => {
-                    let still_ok = match lock(&st.shares) {
-                        Ok(g) => g.authorized(&owner, &vault, &user, crate::shares::Access::Read),
-                        Err(_) => false,
-                    };
-                    if !still_ok { break; }
+                    if !session_alive(&st, &owner, &vault, &user, &token) { break; }
                     if socket.send(Message::Text("{\"type\":\"changed\"}".into())).await.is_err() { break; }
                 }
                 Err(RecvError::Closed) => break,
             },
             _ = ping.tick() => {
                 if awaiting_pong { break; } // no Pong since the last ping -> peer is gone
-                // R15 sec#3: re-validate the session token on each ping so a REVOKED session (password
-                // change / logout-all, which calls TokenStore::revoke_user) or an expired token tears
-                // down its live socket within one ping interval — otherwise the socket kept leaking
-                // change/version metadata after HTTP reads with the same token began 401ing.
-                let token_ok = match lock(&st.tokens) { Ok(mut g) => g.resolve(&token).as_deref() == Some(user.as_str()), Err(_) => false };
-                if !token_ok { break; }
+                // R15 sec#3: also re-validate the session on each ping — catches a revocation during a
+                // quiet period (no notifications flowing) so an idle revoked socket still tears down.
+                if !session_alive(&st, &owner, &vault, &user, &token) { break; }
                 if socket.send(Message::Ping(Vec::new())).await.is_err() { break; }
                 awaiting_pong = true;
             }

@@ -88,9 +88,15 @@ pub async fn share_create(
     // guess at a time, defeating the deliberate de-oracling of login/register (SEC-MED-1). Record the
     // grant for any well-formed name; it's inert until an account with that name exists, then it
     // activates. (Owners can pre-share by name; a typo just creates a harmless dormant grant.)
-    lock(&st.shares)?
-        .grant(&user, &req.vault, &req.grantee, req.perm)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    // R16 MEDIUM-1: but bound it — a per-owner grant CAP (checked atomically under the same lock as
+    // the grant, so no TOCTOU) keeps a malicious user from inflating the globally-scanned .shares.json
+    // now that any well-formed name is accepted. An upsert of an existing grantee is always allowed.
+    let mut g = lock(&st.shares)?;
+    let is_upsert = g.permission(&user, &req.vault, &req.grantee).is_some();
+    if !is_upsert && g.owner_grant_count(&user) >= crate::shares::MAX_GRANTS_PER_OWNER {
+        return Err(AppError::BadRequest("you've reached the maximum number of shares for this account".into()));
+    }
+    g.grant(&user, &req.vault, &req.grantee, req.perm).map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(StatusCode::OK)
 }
 

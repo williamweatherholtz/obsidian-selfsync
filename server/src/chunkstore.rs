@@ -85,6 +85,19 @@ impl ContentStore {
         Ok(())
     }
 
+    // Bump a blob's mtime to NOW. Called when a chunk is DE-REFERENCED (delete / commit-overwrite) so
+    // the orphan sweep's TTL measures age-since-ORPHANED, not age-since-upload. Without this, a chunk
+    // uploaded long ago but only just de-referenced looks instantly reclaimable, and a CONCURRENT
+    // rename/dedup commit re-referencing it can be 404'd when the upload-path sweep reclaims it in the
+    // gap. Touching can only ever keep a chunk alive longer — never removes it — so it introduces no
+    // race; a genuinely-abandoned chunk is still reclaimed TTL after it was orphaned. Best-effort. (R16)
+    pub fn touch(&self, hash: &str) {
+        if !Self::is_valid_hash(hash) { return; }
+        if let Ok(f) = std::fs::File::options().write(true).open(self.path_for(hash)) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+    }
+
     // Every blob hash currently on disk (walks the 2-char shard dirs). Used by the
     // startup consistency check + orphan GC. Ignores stray .tmp/non-hash files.
     pub fn list_hashes(&self) -> std::io::Result<Vec<String>> {
