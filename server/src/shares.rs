@@ -130,6 +130,16 @@ impl ShareStore {
         self.file.grants.iter().filter(|g| g.grantee == user).cloned().collect()
     }
 
+    // Drop every grant on a specific (owner, vault) — used when the vault is DELETED (R17), so a
+    // grant can't linger invisibly (my_vaults only lists existing vaults) and silently REACTIVATE
+    // if the owner later recreates a vault with the same name, re-exposing new content to a prior
+    // grantee. Mirror of purge_user's account-delete cleanup.
+    pub fn purge_vault(&mut self, owner: &str, vault: &str) -> std::io::Result<()> {
+        let before = self.file.grants.len();
+        self.file.grants.retain(|g| !(g.owner == owner && g.vault == vault));
+        if self.file.grants.len() != before { self.save() } else { Ok(()) }
+    }
+
     // Drop every grant referencing a user (as owner or grantee) — used when an account
     // is removed so no dangling grants remain.
     pub fn purge_user(&mut self, user: &str) -> std::io::Result<()> {
@@ -235,6 +245,16 @@ mod tests {
         s.grant("alice", "notes", "bob", Perm::ReadWrite).unwrap(); // upsert of an existing grant — NOT new
         assert_eq!(s.owner_grant_count("alice"), 2, "an upsert must not inflate the count");
         assert_eq!(s.owner_grant_count("carol"), 0, "scoped to the owner");
+    }
+
+    #[test]
+    fn purge_vault_drops_only_that_vaults_grants() { // R17 (stale-grant reactivation)
+        let (_d, mut s) = store();
+        s.grant("alice", "notes", "bob", Perm::Read).unwrap();
+        s.grant("alice", "docs", "bob", Perm::ReadWrite).unwrap();
+        s.purge_vault("alice", "notes").unwrap();
+        assert_eq!(s.permission("alice", "notes", "bob"), None, "the deleted vault's grant is dropped");
+        assert_eq!(s.permission("alice", "docs", "bob"), Some(Perm::ReadWrite), "other vaults' grants are kept");
     }
 
     #[test]

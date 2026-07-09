@@ -1,5 +1,6 @@
 import { ChangesResponse, CommitRequest, FileMeta } from "./protocol";
 import { chunk, sha256hex } from "./chunker";
+import { Sha256 } from "./streamhash";
 
 // A streamed, sequential-append write to one file — lets a large file be reassembled to
 // disk without ever holding it whole in memory. Close finalizes (atomic rename); abort
@@ -97,25 +98,32 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
 // instead of buffering + concatenating the whole file. Returns false if the io can't stream
 // (mobile) so the caller falls back to the buffered path. Chunks are appended in list order,
 // so reassembly is correct. A mid-stream failure aborts (discards the partial) and rethrows.
-export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[], expectedSize: number): Promise<boolean> {
+export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[], expectedSize: number, expectedHash: string): Promise<boolean> {
   if (!io.appendWrite) return false;
   const h = await io.appendWrite(path);
   try {
     let written = 0;
+    const hasher = new Sha256();
     for (const hash of chunks) {
       // DI-2/DI-R2#1: getVerifiedChunk verifies a freshly-fetched chunk before caching, and a
       // cache hit is authentic by construction — so a streamed file is never assembled from an
       // unverified (possibly bit-rotted) blob, even one another file cached earlier.
       const b = await getVerifiedChunk(api, cache, hash);
-      await h.append(b); written += b.length;
+      await h.append(b); written += b.length; hasher.update(b);
     }
-    // C2 (R10): the buffered path hashes the whole reassembly against the declared file hash; the
-    // streamed path can't (no incremental hash), but it MUST still reject a chunk list that doesn't
-    // reassemble to the declared size — a truncated/extra-chunk manifest (e.g. after a server index
-    // restore mismatched a chunk list to a file hash) would otherwise be written to disk and its
-    // (wrong) declared hash laundered into base, then re-served to every device. Reject before close.
+    // Reject a chunk list that doesn't reassemble to the declared SIZE (truncated/extra chunk)…
     if (written !== expectedSize) {
       throw new Error(`streamed reassembly of '${path}' is ${written} bytes, expected ${expectedSize} — not applying (bad chunk manifest?)`);
+    }
+    // …AND to the declared whole-file HASH. Verifying the INCREMENTALLY-computed hash BEFORE the
+    // atomic rename (R17) means a size-preserving bad manifest (reordered/substituted chunks from a
+    // corrupt server index) never overwrites `path`, so it can't destroy a racing local write or its
+    // conflict copy and can't launder wrong bytes into base + re-push them (the round-2 post-write
+    // re-read regressed exactly this). Incremental hashing also keeps the streamed path's memory
+    // guarantee (~one chunk in RAM), so it still works for files larger than a single buffer.
+    const got = hasher.hexDigest();
+    if (got !== expectedHash) {
+      throw new Error(`streamed reassembly of '${path}' failed the whole-file hash (got ${got.slice(0, 12)}, expected ${expectedHash.slice(0, 12)}) — not applying (bad chunk manifest?)`);
     }
     await h.close();
     return true;

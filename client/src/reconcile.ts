@@ -164,20 +164,10 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
     if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite the local edit
     try {
-      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size)) {
-        // R16 HIGH: streamFileToDisk verifies each CHUNK + the total SIZE, but NOT the whole-file
-        // hash. A size-preserving bad chunk MANIFEST (reordered/substituted chunks from a corrupt
-        // server index / bit-rot in file_chunks.seq) would write wrong bytes and then record the
-        // DECLARED hash into base → the next full scan sees local!=base==remote → PUSH → the corrupt
-        // bytes overwrite the server as authoritative and propagate fleet-wide (silent corruption).
-        // Verify the reassembled file against rmeta.hash before trusting it (parity with the buffered
-        // path's fetchVerified). Streaming is desktop-only + size-bounded so the re-hash is fine; it's
-        // gated on localSize===0 (a fresh download), so removing a bad result loses no prior local copy.
-        const got = await sha256hex(await d.io.read(path));
-        if (got !== rmeta.hash) {
-          try { await d.io.remove(path); } catch { /* best-effort */ }
-          throw new Error(`streamed integrity check failed for '${path}': got ${got.slice(0, 12)}, expected ${rmeta.hash.slice(0, 12)} — not applying (corrupt manifest?)`);
-        }
+      // streamFileToDisk now verifies the whole-file hash INCREMENTALLY, BEFORE its atomic rename
+      // (R17), so a bad manifest aborts without ever overwriting `path` — no post-write re-read (which
+      // regressed racing-write/conflict-copy safety) and no full-file re-buffer.
+      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size, rmeta.hash)) {
         d.base.set(path, { hash: rmeta.hash });
         d.onBaseChanged?.();
         return;
@@ -617,6 +607,11 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   for (const f of resp.upserts) if (accepted(f.path)) remote.set(f.path, f);
   const local = await d.io.list();
 
+  // R17 MEDIUM-2: isolate EACH file op (matching reconcileAll/reconcileDelta). Without this, one bad
+  // file — e.g. a large file whose server manifest fails the whole-file hash — throws out of the whole
+  // switch; the caller drives OFFLINE, retries the connect, retries the entire switch, and hits the
+  // same failure: an infinite backoff loop where the vault never finishes switching. Per-file
+  // isolation lets the switch complete and skips only the offending file.
   if (mode === "download") {
     for (const [p, meta] of remote) {
       // DI-6: adopt each remote file via applyPull, which STREAMS a large file straight to disk
@@ -624,22 +619,24 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       // uses. Only a large file we CAN'T stream (no appendWrite) is size-gated + skipped.
       const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
       if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
-      await applyPull(d, p, meta);
+      try { await applyPull(d, p, meta); } catch (e) { d.onFileError?.(p, e); }
     }
     for (const [p, info] of local) {            // drop local files the target lacks
       if (!accepted(p) || remote.has(p)) continue;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
-      await d.io.remove(p);
+      try { await d.io.remove(p); } catch (e) { d.onFileError?.(p, e); }
     }
   } else { // upload
     for (const [p, info] of local) {
       if (!accepted(p)) continue;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
-      setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
+      try {
+        const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
+        setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
+      } catch (e) { d.onFileError?.(p, e); }
     }
     for (const p of remote.keys()) {            // drop remote files this vault lacks
-      if (!local.has(p)) await d.api.deleteFile(p); // remote is already accepts-filtered above
+      if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } } // remote is already accepts-filtered above
     }
   }
   d.state.version = resp.version; // assign, not max — see CONC-R2#3 note in reconcileAll

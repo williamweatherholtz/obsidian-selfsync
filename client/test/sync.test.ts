@@ -109,10 +109,30 @@ describe("chunk sync engine", () => {
         };
       },
     } as unknown as VaultIo;
-    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs, 9); // "111223333" = 9 bytes
+    const fileHash = await sha256hex(enc("111223333"));
+    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs, 9, fileHash); // "111223333" = 9 bytes
     expect(ok).toBe(true);
     expect(closed).toBe(true);
     expect(dec(written)).toBe("111223333");
+  });
+
+  it("streamFileToDisk REJECTS a size-preserving bad manifest (whole-file hash mismatch, R17) — never renames", async () => {
+    // Reordered chunks: each chunk is authentic and the TOTAL size matches, but the reassembly hashes
+    // wrong. Must abort BEFORE close (the rename), so `path` is never overwritten — no laundering, and
+    // a racing local write / conflict copy at that path survives.
+    const parts = [enc("AAAA"), enc("BBBB")];
+    const hs = await Promise.all(parts.map((p) => sha256hex(p)));
+    const store: Record<string, Uint8Array> = {}; hs.forEach((h, i) => (store[h] = parts[i]));
+    const api = { async getChunk(h: string) { return store[h]; } } as unknown as SyncApi;
+    let aborted = false, closed = false;
+    const io = {
+      async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
+      async appendWrite() { return { append: async () => {}, close: async () => { closed = true; }, abort: async () => { aborted = true; } }; },
+    } as unknown as VaultIo;
+    const declared = await sha256hex(enc("AAAABBBB"));   // correct order
+    const reordered = [hs[1], hs[0]];                     // server manifest reversed → "BBBBAAAA", same size
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", reordered, 8, declared)).rejects.toThrow(/whole-file hash/);
+    expect(aborted).toBe(true); expect(closed).toBe(false); // aborted before the rename → path untouched
   });
 
   it("streamFileToDisk REJECTS a reassembly whose size ≠ the declared file size (C2)", async () => {
@@ -126,7 +146,7 @@ describe("chunk sync engine", () => {
       async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
       async appendWrite() { return { append: async () => {}, close: async () => { closed = true; }, abort: async () => { aborted = true; } }; },
     } as unknown as VaultIo;
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [h], good.length + 5)).rejects.toThrow(/expected/);
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [h], good.length + 5, "0".repeat(64))).rejects.toThrow(/expected/);
     expect(aborted).toBe(true); expect(closed).toBe(false);
   });
 
@@ -142,14 +162,14 @@ describe("chunk sync engine", () => {
         return { append: async () => {}, close: async () => {}, abort: async () => { aborted = true; } };
       },
     } as unknown as VaultIo;
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash], good.length)).rejects.toThrow(/content verification/);
+    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash], good.length, "0".repeat(64))).rejects.toThrow(/content verification/);
     expect(aborted).toBe(true);
   });
 
   it("streamFileToDisk returns false when the io can't stream (mobile fallback)", async () => {
     const api = { async getChunk() { return enc("x"); } } as unknown as SyncApi;
     const io = { async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {} } as unknown as VaultIo;
-    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"], 1)).toBe(false);
+    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"], 1, "0".repeat(64))).toBe(false);
   });
 
   it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {

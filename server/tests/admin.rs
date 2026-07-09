@@ -161,6 +161,19 @@ async fn bootstrap_admin_password_change_is_refused(/* R15 sec#1 */) {
 }
 
 #[tokio::test]
+async fn deleting_a_vault_purges_its_share_grants(/* R17: no stale-grant reactivation */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await; // owns the bootstrap "default" vault
+    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"bob","perm":"read"})).await, 200);
+    let bob = login(&base, "bob").await;
+    assert!(!get(&base, "/api/shared", &bob).await.1.as_array().unwrap().is_empty(), "bob sees the shared vault");
+    // Deleting the vault must also drop its grant, so recreating a vault of the same name later
+    // doesn't silently re-grant bob.
+    assert_eq!(send(&base, "DELETE", "/api/admin/vault", &admin, json!({"owner":"admin","vault":"default"})).await, 200);
+    assert!(get(&base, "/api/shared", &bob).await.1.as_array().unwrap().is_empty(), "grant purged with the vault");
+}
+
+#[tokio::test]
 async fn share_create_does_not_reveal_grantee_existence(/* R15 sec#2 */) {
     let base = spawn().await;
     let admin = login(&base, "admin").await; // owns "default"; "bob" exists, "ghost-user" does not

@@ -109,10 +109,13 @@ fn session_alive(st: &AppState, owner: &str, vault: &str, user: &str, token: &st
         Err(_) => false,
     };
     if !token_ok { return false; }
-    match lock(&st.shares) {
+    let acl_ok = match lock(&st.shares) {
         Ok(g) => g.authorized(owner, vault, user, crate::shares::Access::Read),
         Err(_) => false,
-    }
+    };
+    // Also re-assert the vault still EXISTS (R17 LOW): a socket subscribed to a since-deleted vault
+    // should tear down promptly rather than ping forever against a dead subscription.
+    acl_ok && st.vault_exists(owner, vault)
 }
 
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
