@@ -1,12 +1,13 @@
 // =====================================================================
-// ProjectCompliance — NIST SP 800-171 rev2 / CMMC Level 2 as a GOVERNING STANDARD we implement and
-// check against (adopted per Decision D0023). The 110 controls are tracked SystemRequirements
-// (kind=security, the control number is the id-title), each `satisfy`-linked to the regulatory
-// compliance Need. DISPOSITION per control: met (SelfSync code satisfies it -> a #Verify Test now),
-// partial (software half met + operator attests the rest), operator (operator is the verifier;
-// PENDING attestation), poam (open Issue). Statements are PARAPHRASED summaries of 800-171 rev2,
-// not verbatim. Compliance status is COMPUTED: a control with no #Verify is a gap in the coverage/
-// orphans views. GENERATED from scratchpad/gen_nist.py (authoring aid); the .sysml is the truth.
+// ProjectCompliance — NIST SP 800-171 rev2 / CMMC Level 2 adopted as our CYBERSECURITY FRAMEWORK: a
+// strong, comprehensive control set we hold OURSELVES to (an internal engineering choice to be secure
+// and to measure our posture systematically), NOT an externally-mandated regulatory obligation. The
+// 110 controls are tracked SystemRequirements (kind=security), each `satisfy`-linked to the framework
+// Need. DISPOSITION per control: met (SelfSync code satisfies it -> a #Verify Test now), partial
+// (software half met + operator attests the rest), operator (operator is the verifier; PENDING
+// attestation), poam (open Issue). Statements are PARAPHRASED summaries of 800-171 rev2, not verbatim.
+// Posture is COMPUTED: a control with no #Verify is a gap in the coverage/orphans views. GENERATED
+// from scratchpad/gen_nist.py (authoring aid); the .sysml is the truth.
 // =====================================================================
 package ProjectCompliance {
     private import EngineElement::*;
@@ -14,12 +15,12 @@ package ProjectCompliance {
     private import EngineNeeds::*;
     private import EngineVerification::*;
 
-    requirement nComply800171 : Need {
+    requirement nSecurityFramework : Need {
         :>> id = "c0f1a5cc-8f00-4a10-9b20-a1b2c3d48f00";
-        :>> title = "Comply with NIST SP 800-171 rev2 / CMMC Level 2";
-        :>> source = NeedSource::regulatory;
+        :>> title = "Adopt a strong cybersecurity framework (NIST SP 800-171 rev2 / CMMC Level 2)";
+        :>> source = NeedSource::internal;
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
-        :>> statement = "The system and its operation shall satisfy the 110 security requirements of NIST SP 800-171 rev2 (CMMC Level 2), each tracked as a control requirement with a disposition and, where met, a verifying test.";
+        :>> statement = "SelfSync shall hold itself to a strong, comprehensive cybersecurity framework — NIST SP 800-171 rev2 (CMMC Level 2) — as a self-imposed engineering standard, tracking all 110 controls as requirements so the security posture is measured systematically and continuously (each control carries a disposition and, where met, a verifying test), rather than assessed ad hoc.";
         :>> priority = Priority::must;
     }
 
@@ -809,116 +810,116 @@ package ProjectCompliance {
     }
 
     // ---- satisfy: each control satisfies the compliance Need (tier-satisfaction: 110 SRs) ----
-    satisfy nComply800171 by sr_3_1_1;
-    satisfy nComply800171 by sr_3_1_2;
-    satisfy nComply800171 by sr_3_1_3;
-    satisfy nComply800171 by sr_3_1_4;
-    satisfy nComply800171 by sr_3_1_5;
-    satisfy nComply800171 by sr_3_1_6;
-    satisfy nComply800171 by sr_3_1_7;
-    satisfy nComply800171 by sr_3_1_8;
-    satisfy nComply800171 by sr_3_1_9;
-    satisfy nComply800171 by sr_3_1_10;
-    satisfy nComply800171 by sr_3_1_11;
-    satisfy nComply800171 by sr_3_1_12;
-    satisfy nComply800171 by sr_3_1_13;
-    satisfy nComply800171 by sr_3_1_14;
-    satisfy nComply800171 by sr_3_1_15;
-    satisfy nComply800171 by sr_3_1_16;
-    satisfy nComply800171 by sr_3_1_17;
-    satisfy nComply800171 by sr_3_1_18;
-    satisfy nComply800171 by sr_3_1_19;
-    satisfy nComply800171 by sr_3_1_20;
-    satisfy nComply800171 by sr_3_1_21;
-    satisfy nComply800171 by sr_3_1_22;
-    satisfy nComply800171 by sr_3_2_1;
-    satisfy nComply800171 by sr_3_2_2;
-    satisfy nComply800171 by sr_3_2_3;
-    satisfy nComply800171 by sr_3_3_1;
-    satisfy nComply800171 by sr_3_3_2;
-    satisfy nComply800171 by sr_3_3_3;
-    satisfy nComply800171 by sr_3_3_4;
-    satisfy nComply800171 by sr_3_3_5;
-    satisfy nComply800171 by sr_3_3_6;
-    satisfy nComply800171 by sr_3_3_7;
-    satisfy nComply800171 by sr_3_3_8;
-    satisfy nComply800171 by sr_3_3_9;
-    satisfy nComply800171 by sr_3_4_1;
-    satisfy nComply800171 by sr_3_4_2;
-    satisfy nComply800171 by sr_3_4_3;
-    satisfy nComply800171 by sr_3_4_4;
-    satisfy nComply800171 by sr_3_4_5;
-    satisfy nComply800171 by sr_3_4_6;
-    satisfy nComply800171 by sr_3_4_7;
-    satisfy nComply800171 by sr_3_4_8;
-    satisfy nComply800171 by sr_3_4_9;
-    satisfy nComply800171 by sr_3_5_1;
-    satisfy nComply800171 by sr_3_5_2;
-    satisfy nComply800171 by sr_3_5_3;
-    satisfy nComply800171 by sr_3_5_4;
-    satisfy nComply800171 by sr_3_5_5;
-    satisfy nComply800171 by sr_3_5_6;
-    satisfy nComply800171 by sr_3_5_7;
-    satisfy nComply800171 by sr_3_5_8;
-    satisfy nComply800171 by sr_3_5_9;
-    satisfy nComply800171 by sr_3_5_10;
-    satisfy nComply800171 by sr_3_5_11;
-    satisfy nComply800171 by sr_3_6_1;
-    satisfy nComply800171 by sr_3_6_2;
-    satisfy nComply800171 by sr_3_6_3;
-    satisfy nComply800171 by sr_3_7_1;
-    satisfy nComply800171 by sr_3_7_2;
-    satisfy nComply800171 by sr_3_7_3;
-    satisfy nComply800171 by sr_3_7_4;
-    satisfy nComply800171 by sr_3_7_5;
-    satisfy nComply800171 by sr_3_7_6;
-    satisfy nComply800171 by sr_3_8_1;
-    satisfy nComply800171 by sr_3_8_2;
-    satisfy nComply800171 by sr_3_8_3;
-    satisfy nComply800171 by sr_3_8_4;
-    satisfy nComply800171 by sr_3_8_5;
-    satisfy nComply800171 by sr_3_8_6;
-    satisfy nComply800171 by sr_3_8_7;
-    satisfy nComply800171 by sr_3_8_8;
-    satisfy nComply800171 by sr_3_8_9;
-    satisfy nComply800171 by sr_3_9_1;
-    satisfy nComply800171 by sr_3_9_2;
-    satisfy nComply800171 by sr_3_10_1;
-    satisfy nComply800171 by sr_3_10_2;
-    satisfy nComply800171 by sr_3_10_3;
-    satisfy nComply800171 by sr_3_10_4;
-    satisfy nComply800171 by sr_3_10_5;
-    satisfy nComply800171 by sr_3_10_6;
-    satisfy nComply800171 by sr_3_11_1;
-    satisfy nComply800171 by sr_3_11_2;
-    satisfy nComply800171 by sr_3_11_3;
-    satisfy nComply800171 by sr_3_12_1;
-    satisfy nComply800171 by sr_3_12_2;
-    satisfy nComply800171 by sr_3_12_3;
-    satisfy nComply800171 by sr_3_12_4;
-    satisfy nComply800171 by sr_3_13_1;
-    satisfy nComply800171 by sr_3_13_2;
-    satisfy nComply800171 by sr_3_13_3;
-    satisfy nComply800171 by sr_3_13_4;
-    satisfy nComply800171 by sr_3_13_5;
-    satisfy nComply800171 by sr_3_13_6;
-    satisfy nComply800171 by sr_3_13_7;
-    satisfy nComply800171 by sr_3_13_8;
-    satisfy nComply800171 by sr_3_13_9;
-    satisfy nComply800171 by sr_3_13_10;
-    satisfy nComply800171 by sr_3_13_11;
-    satisfy nComply800171 by sr_3_13_12;
-    satisfy nComply800171 by sr_3_13_13;
-    satisfy nComply800171 by sr_3_13_14;
-    satisfy nComply800171 by sr_3_13_15;
-    satisfy nComply800171 by sr_3_13_16;
-    satisfy nComply800171 by sr_3_14_1;
-    satisfy nComply800171 by sr_3_14_2;
-    satisfy nComply800171 by sr_3_14_3;
-    satisfy nComply800171 by sr_3_14_4;
-    satisfy nComply800171 by sr_3_14_5;
-    satisfy nComply800171 by sr_3_14_6;
-    satisfy nComply800171 by sr_3_14_7;
+    satisfy nSecurityFramework by sr_3_1_1;
+    satisfy nSecurityFramework by sr_3_1_2;
+    satisfy nSecurityFramework by sr_3_1_3;
+    satisfy nSecurityFramework by sr_3_1_4;
+    satisfy nSecurityFramework by sr_3_1_5;
+    satisfy nSecurityFramework by sr_3_1_6;
+    satisfy nSecurityFramework by sr_3_1_7;
+    satisfy nSecurityFramework by sr_3_1_8;
+    satisfy nSecurityFramework by sr_3_1_9;
+    satisfy nSecurityFramework by sr_3_1_10;
+    satisfy nSecurityFramework by sr_3_1_11;
+    satisfy nSecurityFramework by sr_3_1_12;
+    satisfy nSecurityFramework by sr_3_1_13;
+    satisfy nSecurityFramework by sr_3_1_14;
+    satisfy nSecurityFramework by sr_3_1_15;
+    satisfy nSecurityFramework by sr_3_1_16;
+    satisfy nSecurityFramework by sr_3_1_17;
+    satisfy nSecurityFramework by sr_3_1_18;
+    satisfy nSecurityFramework by sr_3_1_19;
+    satisfy nSecurityFramework by sr_3_1_20;
+    satisfy nSecurityFramework by sr_3_1_21;
+    satisfy nSecurityFramework by sr_3_1_22;
+    satisfy nSecurityFramework by sr_3_2_1;
+    satisfy nSecurityFramework by sr_3_2_2;
+    satisfy nSecurityFramework by sr_3_2_3;
+    satisfy nSecurityFramework by sr_3_3_1;
+    satisfy nSecurityFramework by sr_3_3_2;
+    satisfy nSecurityFramework by sr_3_3_3;
+    satisfy nSecurityFramework by sr_3_3_4;
+    satisfy nSecurityFramework by sr_3_3_5;
+    satisfy nSecurityFramework by sr_3_3_6;
+    satisfy nSecurityFramework by sr_3_3_7;
+    satisfy nSecurityFramework by sr_3_3_8;
+    satisfy nSecurityFramework by sr_3_3_9;
+    satisfy nSecurityFramework by sr_3_4_1;
+    satisfy nSecurityFramework by sr_3_4_2;
+    satisfy nSecurityFramework by sr_3_4_3;
+    satisfy nSecurityFramework by sr_3_4_4;
+    satisfy nSecurityFramework by sr_3_4_5;
+    satisfy nSecurityFramework by sr_3_4_6;
+    satisfy nSecurityFramework by sr_3_4_7;
+    satisfy nSecurityFramework by sr_3_4_8;
+    satisfy nSecurityFramework by sr_3_4_9;
+    satisfy nSecurityFramework by sr_3_5_1;
+    satisfy nSecurityFramework by sr_3_5_2;
+    satisfy nSecurityFramework by sr_3_5_3;
+    satisfy nSecurityFramework by sr_3_5_4;
+    satisfy nSecurityFramework by sr_3_5_5;
+    satisfy nSecurityFramework by sr_3_5_6;
+    satisfy nSecurityFramework by sr_3_5_7;
+    satisfy nSecurityFramework by sr_3_5_8;
+    satisfy nSecurityFramework by sr_3_5_9;
+    satisfy nSecurityFramework by sr_3_5_10;
+    satisfy nSecurityFramework by sr_3_5_11;
+    satisfy nSecurityFramework by sr_3_6_1;
+    satisfy nSecurityFramework by sr_3_6_2;
+    satisfy nSecurityFramework by sr_3_6_3;
+    satisfy nSecurityFramework by sr_3_7_1;
+    satisfy nSecurityFramework by sr_3_7_2;
+    satisfy nSecurityFramework by sr_3_7_3;
+    satisfy nSecurityFramework by sr_3_7_4;
+    satisfy nSecurityFramework by sr_3_7_5;
+    satisfy nSecurityFramework by sr_3_7_6;
+    satisfy nSecurityFramework by sr_3_8_1;
+    satisfy nSecurityFramework by sr_3_8_2;
+    satisfy nSecurityFramework by sr_3_8_3;
+    satisfy nSecurityFramework by sr_3_8_4;
+    satisfy nSecurityFramework by sr_3_8_5;
+    satisfy nSecurityFramework by sr_3_8_6;
+    satisfy nSecurityFramework by sr_3_8_7;
+    satisfy nSecurityFramework by sr_3_8_8;
+    satisfy nSecurityFramework by sr_3_8_9;
+    satisfy nSecurityFramework by sr_3_9_1;
+    satisfy nSecurityFramework by sr_3_9_2;
+    satisfy nSecurityFramework by sr_3_10_1;
+    satisfy nSecurityFramework by sr_3_10_2;
+    satisfy nSecurityFramework by sr_3_10_3;
+    satisfy nSecurityFramework by sr_3_10_4;
+    satisfy nSecurityFramework by sr_3_10_5;
+    satisfy nSecurityFramework by sr_3_10_6;
+    satisfy nSecurityFramework by sr_3_11_1;
+    satisfy nSecurityFramework by sr_3_11_2;
+    satisfy nSecurityFramework by sr_3_11_3;
+    satisfy nSecurityFramework by sr_3_12_1;
+    satisfy nSecurityFramework by sr_3_12_2;
+    satisfy nSecurityFramework by sr_3_12_3;
+    satisfy nSecurityFramework by sr_3_12_4;
+    satisfy nSecurityFramework by sr_3_13_1;
+    satisfy nSecurityFramework by sr_3_13_2;
+    satisfy nSecurityFramework by sr_3_13_3;
+    satisfy nSecurityFramework by sr_3_13_4;
+    satisfy nSecurityFramework by sr_3_13_5;
+    satisfy nSecurityFramework by sr_3_13_6;
+    satisfy nSecurityFramework by sr_3_13_7;
+    satisfy nSecurityFramework by sr_3_13_8;
+    satisfy nSecurityFramework by sr_3_13_9;
+    satisfy nSecurityFramework by sr_3_13_10;
+    satisfy nSecurityFramework by sr_3_13_11;
+    satisfy nSecurityFramework by sr_3_13_12;
+    satisfy nSecurityFramework by sr_3_13_13;
+    satisfy nSecurityFramework by sr_3_13_14;
+    satisfy nSecurityFramework by sr_3_13_15;
+    satisfy nSecurityFramework by sr_3_13_16;
+    satisfy nSecurityFramework by sr_3_14_1;
+    satisfy nSecurityFramework by sr_3_14_2;
+    satisfy nSecurityFramework by sr_3_14_3;
+    satisfy nSecurityFramework by sr_3_14_4;
+    satisfy nSecurityFramework by sr_3_14_5;
+    satisfy nSecurityFramework by sr_3_14_6;
+    satisfy nSecurityFramework by sr_3_14_7;
 
     // ---- #Verify Tests for MET / PARTIAL controls (self-evidencing inspection of the cited code). ----
     // operator controls carry NO passing verification yet (PENDING the operator's attestation); poam

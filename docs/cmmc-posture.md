@@ -1,9 +1,11 @@
 # SelfSync — CMMC Level 2 technical-controls posture
 
-> **The 110 controls are now tracked in the model.** All 110 NIST SP 800-171 rev2 controls are authored
+> **The 110 controls are now tracked in the model.** We adopt NIST SP 800-171 rev2 / CMMC L2 as our
+> **cybersecurity framework** — a strong control set we hold ourselves to by choice (an internal
+> engineering standard), not an externally-mandated regulatory obligation. All 110 controls are authored
 > as security `SystemRequirement`s in `.tracking/compliance/nist-800-171.sysml`, each `satisfy`-linked to
-> the regulatory compliance `Need` `nComply800171`, so compliance status is **computed** — not just this
-> hand-written table. Disposition: **32 met** (software-verified now, each with a `#Verify` inspection
+> the framework `Need` `nSecurityFramework` (`source = internal`), so posture is **computed** — not just
+> this hand-written table. Disposition: **32 met** (software-verified now, each with a `#Verify` inspection
 > Test), **21 partial** (software half met + operator attests), **52 operator-attested** (the operator is
 > the verifier — *pending* sign-off, deliberately not fabricated), **5 POA&M** (open `issueCmmc*` Issues).
 > Check it any time: `keel coverage` / `keel tier-satisfaction` (which controls are verified vs uncovered)
