@@ -208,6 +208,7 @@ impl AppState {
             password: "admin".into(),
             registration: "open".into(),
             invite_code: String::new(),
+            login_banner: String::new(),
         };
         let st = AppState::new(cfg).unwrap();
         // Tests exercise the sync routes against a `vault` namespace; provision it here (the

@@ -124,12 +124,7 @@ pub async fn user_set_password(
     if name == st.cfg.user {
         return Err(AppError::BadRequest("the bootstrap admin's password is controlled by SYNC_PASSWORD — change it in the server environment and restart".into()));
     }
-    if req.password.len() > crate::auth::MAX_PASSWORD_LEN {
-        return Err(AppError::BadRequest("password too long".into()));
-    }
-    if req.password.len() < crate::auth::MIN_PASSWORD_LEN {
-        return Err(AppError::BadRequest(format!("password too short (minimum {} characters)", crate::auth::MIN_PASSWORD_LEN)));
-    }
+    crate::auth::validate_password_policy(&req.password)?; // IA.3.5.7
     if !lock(&st.users)?.exists(&name) { return Err(AppError::NotFound); }
     let permit = crate::auth::acquire_auth(&st).await?;
     let users = st.users.clone();
@@ -394,15 +389,9 @@ pub async fn users_create(
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
-    // SEC-R2#4: same argon2 DoS protection as the public register path — cap the password length
-    // and run the memory-hard hash on a blocking thread bounded by the auth permit pool, instead
-    // of hashing an uncapped password synchronously on an async worker.
-    if req.password.len() > crate::auth::MAX_PASSWORD_LEN {
-        return Err(AppError::BadRequest("password too long".into()));
-    }
-    if req.password.len() < crate::auth::MIN_PASSWORD_LEN {
-        return Err(AppError::BadRequest(format!("password too short (minimum {} characters)", crate::auth::MIN_PASSWORD_LEN)));
-    }
+    // SEC-R2#4: same argon2 DoS protection as the public register path (offloaded, permit-bounded)
+    // plus the shared password policy (IA.3.5.7).
+    crate::auth::validate_password_policy(&req.password)?;
     let permit = crate::auth::acquire_auth(&st).await?;
     let users = st.users.clone();
     let (u, p) = (req.username.clone(), req.password.clone());

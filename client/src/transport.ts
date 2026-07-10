@@ -35,7 +35,15 @@ export type VaultShares = { vault: string; grants: { grantee: string; perm: Shar
 // someone else → /api/u/{owner}/{vault}/… (owner given). Account ops are static.
 export class HttpTransport implements SyncApi {
   // `owner` empty ⇒ your own vault (legacy /api/v route); set ⇒ a shared vault.
-  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "") {}
+  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "") {
+    // SEC-CMMC (SC.3.13.8, defense-in-depth): refuse the WHOLE data channel over cleartext http:// to a
+    // remote host, not just login/register. Login already blocks establishing such a session, so this
+    // only fires if a cleartext-remote baseUrl were somehow persisted — then every sync op refuses too,
+    // rather than transmitting the bearer token + note content in the clear. Loopback http is allowed.
+    if (isInsecureRemote(baseUrl)) {
+      throw new Error("Refusing to sync over an unencrypted http:// connection to a remote server — use an https:// address.");
+    }
+  }
 
   // Lightweight reachability probe for the setup wizard's "Test connection" button.
   // Hits the unauthenticated /health endpoint; true iff the server answers 200 "ok".
@@ -45,6 +53,18 @@ export class HttpTransport implements SyncApi {
       return r.status === 200;
     } catch {
       return false;
+    }
+  }
+
+  // AC.3.1.9: the server's pre-auth system-use/consent banner (empty if none). The setup wizard shows
+  // this before the user signs in. Best-effort; returns "" on any error.
+  static async fetchBanner(baseUrl: string): Promise<string> {
+    try {
+      const r = await httpReq({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
+      const b = (r.json as { banner?: unknown })?.banner;
+      return typeof b === "string" ? b : "";
+    } catch {
+      return "";
     }
   }
 

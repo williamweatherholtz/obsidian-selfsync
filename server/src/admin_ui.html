@@ -85,10 +85,16 @@ async function login(username, password) {
 }
 function signOut() { token = ""; me = null; sessionStorage.removeItem("selfsync_admin_token"); render(); }
 
-function loginView() {
+async function loginView() {
   $("who").textContent = "";
-  $("app").innerHTML = `
-    <div class="panel" style="max-width:380px;margin-top:28px;">
+  // AC.3.1.9: show the operator's system-use / consent banner (if configured) BEFORE credential entry.
+  let banner = "";
+  try { const h = await (await fetch("/health")).json(); banner = (h && typeof h.banner === "string") ? h.banner : ""; } catch { /* offline; skip */ }
+  const bannerHtml = banner
+    ? `<div class="panel" style="max-width:380px;margin-top:28px;border-color:var(--warn)"><div class="muted" style="white-space:pre-wrap;color:var(--ink)">${esc(banner)}</div></div>`
+    : "";
+  $("app").innerHTML = bannerHtml + `
+    <div class="panel" style="max-width:380px;margin-top:12px;">
       <h2 style="margin-top:0">Sign in</h2>
       <div class="row"><input id="u" placeholder="username" autofocus /></div>
       <div class="row" style="margin-top:8px"><input id="p" type="password" placeholder="password" /></div>

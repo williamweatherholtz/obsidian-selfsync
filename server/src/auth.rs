@@ -17,6 +17,34 @@ pub const MAX_PASSWORD_LEN: usize = 1024;
 // modest floor; real strength is still the user's responsibility.
 pub const MIN_PASSWORD_LEN: usize = 8;
 
+// SEC-CMMC (IA.3.5.7 — minimum password complexity when new passwords are created). Applied on EVERY
+// password-setting path (register / admin create / self change / admin reset), never on login (so it
+// can't lock out an existing account). Modern, NIST-800-63B-aligned rule: enforce LENGTH, and accept
+// either a passphrase (>= 15 chars, no composition rule — length is the strength) OR >= 2 distinct
+// character classes for shorter passwords. Rejects the trivially-weak (single class, e.g. "password")
+// without imposing the dated "1 upper + 1 digit + 1 symbol" burden. Returns a clear, actionable message.
+pub fn validate_password_policy(pw: &str) -> Result<(), AppError> {
+    if pw.len() > MAX_PASSWORD_LEN {
+        return Err(AppError::BadRequest("password too long".into()));
+    }
+    if pw.len() < MIN_PASSWORD_LEN {
+        return Err(AppError::BadRequest(format!("password too short (minimum {MIN_PASSWORD_LEN} characters)")));
+    }
+    if pw.chars().count() >= 15 {
+        return Ok(()); // a long passphrase needs no composition rule (NIST 800-63B)
+    }
+    let mut classes = 0;
+    if pw.chars().any(|c| c.is_ascii_lowercase()) { classes += 1; }
+    if pw.chars().any(|c| c.is_ascii_uppercase()) { classes += 1; }
+    if pw.chars().any(|c| c.is_ascii_digit()) { classes += 1; }
+    if pw.chars().any(|c| !c.is_ascii_alphanumeric()) { classes += 1; }
+    if classes < 2 {
+        return Err(AppError::BadRequest(
+            "password too simple — use at least two of: lowercase, uppercase, digits, symbols (or a passphrase of 15+ characters)".into()));
+    }
+    Ok(())
+}
+
 // SEC-AUTH: acquire an argon2 permit with a bounded wait. The bare `acquire_owned().await` never times
 // out (it only errors if the semaphore is closed), so an unauthenticated /api/login flood could pile up
 // unbounded pending tasks behind the 8 permits and stall ALL logins indefinitely. Fast-fail with 503
@@ -81,12 +109,7 @@ pub async fn register(
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
-    if req.password.len() > MAX_PASSWORD_LEN {
-        return Err(AppError::BadRequest("password too long".into()));
-    }
-    if req.password.len() < MIN_PASSWORD_LEN {
-        return Err(AppError::BadRequest(format!("password too short (minimum {MIN_PASSWORD_LEN} characters)")));
-    }
+    validate_password_policy(&req.password)?; // IA.3.5.7 complexity/length
     // Registration/invite gate FIRST — before any existence check — so a closed server returns a
     // UNIFORM 403 whether or not the account exists. (Previously the exists() 409 fired before this
     // gate, giving an unauthenticated caller a 409-vs-403 username-enumeration oracle. SEC-MED-1.)
@@ -135,12 +158,10 @@ pub async fn change_password(
     ClientIp(ip): ClientIp,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
-    if req.current.len() > MAX_PASSWORD_LEN || req.new_password.len() > MAX_PASSWORD_LEN {
+    if req.current.len() > MAX_PASSWORD_LEN {
         return Err(AppError::BadRequest("password too long".into()));
     }
-    if req.new_password.is_empty() {
-        return Err(AppError::BadRequest("new password must not be empty".into()));
-    }
+    validate_password_policy(&req.new_password)?; // IA.3.5.7 complexity/length on the NEW password
     // R15 sec#1: the bootstrap admin's password is re-asserted from SYNC_PASSWORD on EVERY boot
     // (state.rs — a deliberate env-rotation feature), so a self-service change here would be silently
     // reverted on the next restart — a FALSE remediation for the most-privileged account. Refuse it
@@ -203,6 +224,27 @@ pub async fn logout(
     lock(&st.tokens)?.revoke(token).map_err(|e| AppError::Internal(e.to_string()))?;
     audit(action::LOGOUT, &actor, &actor, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::validate_password_policy;
+    #[test]
+    fn enforces_length_and_complexity() {
+        // too short
+        assert!(validate_password_policy("Ab1").is_err());
+        assert!(validate_password_policy("").is_err());
+        // long enough but single character class -> rejected
+        assert!(validate_password_policy("password").is_err());
+        assert!(validate_password_policy("aaaaaaaa").is_err());
+        // two classes at >= 8 -> ok
+        assert!(validate_password_policy("vaultpw12").is_ok());   // lower+digit
+        assert!(validate_password_policy("Charliepw1").is_ok());  // lower+upper+digit
+        // long passphrase (>=15) needs no composition rule
+        assert!(validate_password_policy("correcthorsebattery").is_ok());
+        // absurdly long -> rejected
+        assert!(validate_password_policy(&"a".repeat(2000)).is_err());
+    }
 }
 
 // Resolves a bearer token to the authenticated username.

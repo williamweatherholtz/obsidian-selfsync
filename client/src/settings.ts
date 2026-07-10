@@ -58,7 +58,10 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   editorStatus: false,
   vaultOwner: undefined,
   vaultReadOnly: false,
-  storePassword: true,
+  // SEC-CMMC (IA.3.5.10): default to TOKEN-ONLY — do NOT persist the plaintext password on the device.
+  // The revocable bearer token is stored instead; the user re-enters the password only when the session
+  // expires. A user can opt back into stored-password for silent re-login, accepting the at-rest exposure.
+  storePassword: false,
   configConflicts: [],
   noteConflicts: [],
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS

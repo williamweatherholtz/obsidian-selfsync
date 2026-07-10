@@ -15,6 +15,10 @@ pub struct Config {
     pub password: String,
     pub registration: String, // "open" | "invite" | "closed"
     pub invite_code: String,  // shared secret required when registration == "invite"
+    // SEC-CMMC (AC.3.1.9 — system-use notification / consent banner). Shown to a user BEFORE they
+    // authenticate. Empty ⇒ no banner. Set SYNC_LOGIN_BANNER to the operator's authorized-use notice
+    // (e.g. a DoD standard consent banner for a CUI system). Surfaced by /health and rendered pre-auth.
+    pub login_banner: String,
 }
 
 // The port from a "host:port" (or "[ipv6]:port") bind string.
@@ -59,6 +63,7 @@ impl Config {
             password: env("SYNC_PASSWORD", "admin"),
             registration: env("REGISTRATION", "closed"),
             invite_code: env("INVITE_CODE", ""),
+            login_banner: env("SYNC_LOGIN_BANNER", ""),
         }
     }
 }

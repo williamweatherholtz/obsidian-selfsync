@@ -122,11 +122,15 @@ export class SetupWizardModal extends Modal {
   private async doTest() {
     if (!this.s.server) { new Notice("SelfSync: enter a server URL first"); return; }
     this.s.serverOk = await HttpTransport.testConnection(this.s.server);
-    this.serverMsg = this.s.serverOk
-      ? "Reachable ✓"
-      : (/\/\/(127\.0\.0\.1|localhost)/.test(this.s.server)
-          ? "Couldn't reach that server. Note: on a phone, 127.0.0.1/localhost is the phone itself — use the server's LAN IP or https address."
-          : "Couldn't reach that server. Check the URL and that the server is running.");
+    if (this.s.serverOk) {
+      // AC.3.1.9: surface the server's system-use/consent banner (if any) before the user signs in.
+      const banner = await HttpTransport.fetchBanner(this.s.server);
+      this.serverMsg = banner ? `Reachable ✓\n\n${banner}` : "Reachable ✓";
+    } else {
+      this.serverMsg = /\/\/(127\.0\.0\.1|localhost)/.test(this.s.server)
+        ? "Couldn't reach that server. Note: on a phone, 127.0.0.1/localhost is the phone itself — use the server's LAN IP or https address."
+        : "Couldn't reach that server. Check the URL and that the server is running.";
+    }
     this.render();
   }
 

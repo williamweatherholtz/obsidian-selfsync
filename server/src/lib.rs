@@ -46,8 +46,10 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
     // Shared on every surface: unauthenticated liveness + version handshake (apiVersion is stable
     // camelCase wire contract) and /api/login (the admin page authenticates here too).
     let mut r = Router::new()
-        .route("/health", get(|| async {
-            axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION }))
+        .route("/health", get(|axum::extract::State(st): axum::extract::State<AppState>| async move {
+            // AC.3.1.9: expose the pre-auth system-use banner (empty ⇒ none) so the client/admin page can
+            // show it before credentials are entered. Unauthenticated, like the rest of /health.
+            axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION, "banner": st.cfg.login_banner }))
         }))
         .route("/api/login", post(auth::login))
         // SEC-AUTH: server-side single-session logout (revokes the presented token). Token-gated by

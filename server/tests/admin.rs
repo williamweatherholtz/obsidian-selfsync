@@ -83,7 +83,7 @@ async fn non_admin_cannot_manage_server() {
 async fn admin_creates_and_lists_users() {
     let base = spawn().await;
     let admin = login(&base, "admin").await;
-    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"charlie","password":"charliepw"})).await, 200);
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"charlie","password":"Charliepw1"})).await, 200);
     let (_s, users) = get(&base, "/api/admin/users", &admin).await;
     // users_list now returns objects {username, is_admin, is_bootstrap} (D0021).
     let charlie = users.as_array().unwrap().iter().find(|u| u["username"] == "charlie").unwrap();
@@ -135,17 +135,17 @@ async fn password_change_revokes_all_other_sessions_and_reissues(/* R14 sec#2 */
     assert_eq!(get(&base, "/api/admin/me", &t1).await.0, 200);
     assert_eq!(get(&base, "/api/admin/me", &t2).await.0, 200);
     // Wrong current password is rejected.
-    assert_eq!(send(&base, "POST", "/api/password", &t1, json!({"current":"wrong","new_password":"pw2"})).await, 401);
+    assert_eq!(send(&base, "POST", "/api/password", &t1, json!({"current":"wrong","new_password":"NewPass12"})).await, 401);
     // Correct change returns a fresh token and revokes ALL prior sessions.
     let r = reqwest::Client::new().post(format!("{base}/api/password")).bearer_auth(&t1)
-        .json(&json!({"current":"pw","new_password":"pw2"})).send().await.unwrap();
+        .json(&json!({"current":"pw","new_password":"NewPass12"})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let t3 = r.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
     assert_eq!(get(&base, "/api/admin/me", &t1).await.0, 401, "old session 1 revoked");
     assert_eq!(get(&base, "/api/admin/me", &t2).await.0, 401, "old session 2 revoked");
     assert_eq!(get(&base, "/api/admin/me", &t3).await.0, 200, "the re-issued token works");
     // The new password logs in; the old one no longer does.
-    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw2"})).send().await.unwrap().status().as_u16(), 200);
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"NewPass12"})).send().await.unwrap().status().as_u16(), 200);
     assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"})).send().await.unwrap().status().as_u16(), 401);
 }
 
@@ -155,7 +155,7 @@ async fn bootstrap_admin_password_change_is_refused(/* R15 sec#1 */) {
     let admin = login(&base, "admin").await;
     // The bootstrap SYNC_USER's password is re-applied from SYNC_PASSWORD on every boot, so a
     // self-service change would silently revert on restart — a false remediation. It's refused.
-    assert_eq!(send(&base, "POST", "/api/password", &admin, json!({"current":"admin","new_password":"newpw"})).await, 400);
+    assert_eq!(send(&base, "POST", "/api/password", &admin, json!({"current":"admin","new_password":"NewPass12"})).await, 400);
     // …and the original password still works (nothing was changed).
     assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"admin","password":"admin"})).send().await.unwrap().status().as_u16(), 200);
 }
