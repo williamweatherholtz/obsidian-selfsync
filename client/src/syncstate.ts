@@ -36,12 +36,18 @@ export function transition(s: Phase, e: SyncEvent): Phase {
 
 export interface LightSpec { color: string; label: string; tip: string }
 
-// The status light is a pure function of the phase.
-export function light(phase: Phase, detail = ""): LightSpec {
+// The status light is a pure function of the phase AND whether the realtime (WebSocket) channel is
+// currently up. `realtime` matters only when otherwise idle: if the socket dropped but polling still
+// succeeds, the data IS current, but the light must NOT claim full "instant sync" health — it says so
+// truthfully instead of showing a green "Fully synced" over a dead socket (the status/transport
+// dual-truth). Defaults to true so callers that don't track it (and tests) keep the prior behavior.
+export function light(phase: Phase, detail = "", realtime = true): LightSpec {
   switch (phase) {
     // Colors are Obsidian CSS variables (resolved against the active theme), not
     // hardcoded hex — so the indicator matches light/dark and custom themes.
-    case "idle":       return { color: "var(--color-green)", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` };
+    case "idle":       return realtime
+      ? { color: "var(--color-green)", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` }
+      : { color: "var(--color-yellow)", label: "SelfSync", tip: `Synced — realtime reconnecting, polling${detail ? " (" + detail + ")" : ""}` };
     case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: "Syncing…" };
     case "connecting": return { color: "var(--color-yellow)", label: "SelfSync", tip: "Connecting…" };
     case "offline":    return { color: "var(--color-red)", label: "SelfSync", tip: "Offline — retrying" };

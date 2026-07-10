@@ -83,9 +83,47 @@ async function login(username, password, totp) {
   if (totp) body.totp = totp;
   const r = await api("POST", "/api/login", body);
   token = r.token; sessionStorage.setItem("selfsync_admin_token", token);
+  // IA.3.5.9: an admin-created / password-reset account is flagged must-change. Its token is valid ONLY
+  // for /api/password until a new password is set, so booting the dashboard would 403 and bounce with no
+  // explanation. Present the forced-change form instead.
+  if (r.must_change_password) { mustChangeView(); return; }
   await boot();
 }
-function signOut() { token = ""; me = null; sessionStorage.removeItem("selfsync_admin_token"); render(); }
+
+// IA.3.5.9: the forced-password-change screen — the one thing a must-change account's token can do.
+function mustChangeView() {
+  $("who").textContent = "";
+  $("app").innerHTML = `
+    <div class="panel" style="max-width:380px;margin-top:28px;">
+      <h2 style="margin-top:0">Set a new password</h2>
+      <div class="muted" style="font-size:13px;margin-bottom:8px">This account requires a new password before you can continue.</div>
+      <div class="row"><input id="cpc" type="password" placeholder="current (temporary) password" style="flex:1" autofocus /></div>
+      <div class="row" style="margin-top:8px"><input id="cpn" type="password" placeholder="new password" style="flex:1" /></div>
+      <div class="row" style="margin-top:8px"><input id="cpn2" type="password" placeholder="confirm new password" style="flex:1" /></div>
+      <div class="row" style="margin-top:12px"><button id="cpgo">Set password &amp; continue</button></div>
+    </div>`;
+  const submit = async () => {
+    const cur = $("cpc").value, nw = $("cpn").value, nw2 = $("cpn2").value;
+    if (nw !== nw2) { setMsg("The new passwords don't match.", "err"); return; }
+    try {
+      setMsg("");
+      const r = await api("POST", "/api/password", { current: cur, new_password: nw });
+      // Success re-issues a fresh token and revokes all other sessions; the must-change flag is cleared.
+      token = r.token; sessionStorage.setItem("selfsync_admin_token", token);
+      setMsg("Password updated.", "ok");
+      await boot();
+    } catch (e) { setMsg("Couldn't set password: " + e.message, "err"); }
+  };
+  $("cpgo").onclick = submit;
+  $("cpn2").onkeydown = (e) => { if (e.key === "Enter") submit(); };
+}
+async function signOut() {
+  // Revoke the session SERVER-SIDE (POST /api/logout), not just locally — otherwise the bearer token
+  // stays valid for its full 30-day TTL and a "sign out" on a shared/lost device ends nothing.
+  // Best-effort: clear local state regardless of the network result so the UI always returns to login.
+  try { if (token) await api("POST", "/api/logout"); } catch { /* revoke is best-effort */ }
+  token = ""; me = null; sessionStorage.removeItem("selfsync_admin_token"); render();
+}
 
 async function loginView() {
   $("who").textContent = "";
@@ -141,7 +179,7 @@ async function dashboard() {
 }
 
 // IA.3.5.3: self-service TOTP MFA for THIS account — enable (with recovery codes) or disable.
-async function renderMfa() {
+async function renderMfa(appendHtml) {
   const box = $("mfa");
   let st;
   try { st = await api("GET", "/api/mfa/status"); } catch (e) { box.innerHTML = `<div class="msg err">Couldn't load MFA status.</div>`; return; }
@@ -151,7 +189,7 @@ async function renderMfa() {
       <div class="row" style="margin-top:8px">
         <input id="mfaoff" inputmode="numeric" placeholder="current code to disable" style="flex:1;min-width:160px" />
         <button class="danger" id="mfadis">Disable MFA</button>
-      </div>`;
+      </div>` + (appendHtml || "");
     $("mfadis").onclick = async () => {
       const code = $("mfaoff").value.trim();
       if (!code) { setMsg("Enter your current authenticator (or recovery) code to disable MFA.", "err"); return; }
@@ -178,7 +216,10 @@ async function renderMfa() {
           try {
             const r = await api("POST", "/api/mfa/confirm", { code });
             const list = (r.recovery_codes || []).map(c => `<div class="token" style="border-style:solid">${esc(c)}</div>`).join("");
-            $("mfacodes").innerHTML = `<div class="msg ok" style="margin-top:10px">MFA enabled. SAVE these one-time recovery codes now — they're shown once and let you sign in if you lose your authenticator:</div>${list}`;
+            // Re-read status so the panel reflects the now-ENABLED truth (not the stale enroll view),
+            // while KEEPING the one-time recovery codes visible (they're shown exactly once).
+            const codesHtml = `<div class="msg ok" style="margin-top:10px">MFA enabled. SAVE these one-time recovery codes now — they're shown once and let you sign in if you lose your authenticator:</div>${list}`;
+            await renderMfa(codesHtml);
             setMsg("MFA enabled — save your recovery codes.", "ok");
           } catch (e) { setMsg("Confirm failed: " + e.message, "err"); }
         };
@@ -213,7 +254,10 @@ async function renderVaults() {
       : `<tr><td colspan="3" class="empty">Not shared.</td></tr>`;
     // Reindex is shown only when the vault isn't healthy (vaults auto-repair on access, so a manual
     // reindex is a rare, signal-driven action — not an always-present button inviting cargo-cult clicks).
-    const repairBtn = v.status === "ready" ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
+    // Repair is offered ONLY for a genuinely degraded vault. "ready" needs none; "missing" has no data
+    // to repair (the reindex endpoint 404s on it), so its chip says "no data yet" and shows no button —
+    // the chip and the action agree.
+    const repairBtn = (v.status === "ready" || v.status === "missing") ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
     h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)} ${healthChip(v.status)}
         <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button>
         ${repairBtn}</div>
@@ -331,23 +375,33 @@ async function renderUsers() {
 // force option for unrecoverable entries) + Delete. Server-admin only (any owner).
 function renderOwnerVaults(name, vaults, cell) {
   if (!vaults.length) { cell.innerHTML = `<div class="empty">No vaults.</div>`; return; }
+  // Status-driven Repair (matches the own-vaults panel): only a genuinely degraded vault gets a Repair
+  // button + force option. "ready" needs none; "missing" has nothing to repair (reindex 404s on it).
+  const repairable = (s) => s !== "ready" && s !== "missing";
   cell.innerHTML = vaults.map(v => `<div class="row" style="margin:5px 0">
       <span class="vault" style="flex:1;min-width:120px">${esc(v.vault)} ${healthChip(v.status)}</span>
-      <label class="inline"><input type="checkbox" class="ovforce" /> force</label>
-      <button class="ovreindex">Repair</button>
+      ${repairable(v.status) ? `<label class="inline"><input type="checkbox" class="ovforce" /> force</label>
+      <button class="ovreindex">Repair</button>` : ""}
       <button class="danger ovdel">Delete vault</button>
     </div>`).join("");
+  // Re-fetch + re-render this sub-row so an action's result is reflected: a repaired vault's health
+  // chip updates, a deleted vault's row disappears (no stale "dual truth" left on screen).
+  const reload = async () => {
+    try { const vs = await api("GET", "/api/admin/users/" + encodeURIComponent(name) + "/vaults"); renderOwnerVaults(name, vs, cell); }
+    catch (e) { cell.innerHTML = `<span class="msg err">Couldn't reload vaults: ${esc(e.message)}</span>`; }
+  };
   cell.querySelectorAll(".row").forEach((rowEl, i) => {
     const vault = vaults[i].vault;
-    rowEl.querySelector(".ovreindex").onclick = async () => {
+    const rb = rowEl.querySelector(".ovreindex");
+    if (rb) rb.onclick = async () => {
       const force = rowEl.querySelector(".ovforce").checked;
       if (!confirm(`Repair "${name}/${vault}"${force ? " (force — drops unrecoverable entries)" : ""}?`)) return;
-      try { const r = await api("POST", "/api/admin/reindex", { owner: name, vault, force }); setMsg(`Repaired ${name}/${vault} — now at v${r.version}.`, "ok"); }
+      try { const r = await api("POST", "/api/admin/reindex", { owner: name, vault, force }); setMsg(`Repaired ${name}/${vault} — now at v${r.version}.`, "ok"); await reload(); }
       catch (e) { setMsg(`Repair failed: ${e.message}${force ? "" : " — try 'force' if entries are unrecoverable."}`, "err"); }
     };
     rowEl.querySelector(".ovdel").onclick = async () => {
       if (!confirm(`DELETE vault "${name}/${vault}"? This removes all of its data on the server and cannot be undone.`)) return;
-      try { await api("DELETE", "/api/admin/vault", { owner: name, vault }); setMsg(`Deleted ${name}/${vault}.`, "ok"); }
+      try { await api("DELETE", "/api/admin/vault", { owner: name, vault }); setMsg(`Deleted ${name}/${vault}.`, "ok"); await reload(); }
       catch (e) { setMsg(`Delete failed: ${e.message}`, "err"); }
     };
   });

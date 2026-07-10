@@ -193,6 +193,18 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("P2: applying a config-sync change kicks an immediate reconcile (not a ~2-min wait)", async () => {
+    // The bug was that a config toggle only persisted, so it looked inert until the next config-scan
+    // tick. applyConfigSyncChange() must force a scan NOW: a reconcile (changes()) runs right away.
+    const { p, api } = await bootPlugin(true, { settings: { configSync: { enabled: true } } });
+    const before = api.__calls.changes?.length ?? 0;
+    p.settings.configSync.core = true;      // as flipping a category toggle would
+    await p.applyConfigSyncChange();
+    await flush();
+    expect(api.__calls.changes?.length ?? 0).toBeGreaterThan(before);
+    p.onunload();
+  });
+
   it("unload projects the light off", async () => {
     const { p } = await bootPlugin();
     p.onunload();

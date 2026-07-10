@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canLogIn, canFinish, statusTitle, isValidVaultName, WizardState } from "../src/wizardsteps";
+import { canLogIn, canFinish, statusTitle, isValidVaultName, wizardCredentials, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -35,6 +35,19 @@ describe("isValidVaultName", () => {
     expect(isValidVaultName("a/b")).toBe(false);
     expect(isValidVaultName("has space")).toBe(false);
     expect(isValidVaultName("x".repeat(65))).toBe(false);
+  });
+});
+
+describe("wizardCredentials (P1: token-only-at-rest)", () => {
+  const loggedIn: WizardState = { ...base, server: "https://s", username: "u", password: "secret", loggedIn: true };
+  it("does NOT persist the plaintext password by default (token-only)", () => {
+    const c = wizardCredentials(loggedIn, "notes", "tok-123", false);
+    expect(c.password).toBe("");            // the fix: never written unless opted in
+    expect(c.authToken).toBe("tok-123");    // the session token is what's kept
+    expect(c).toMatchObject({ serverUrl: "https://s", username: "u", vaultId: "notes" });
+  });
+  it("persists the password only when the user opted into storing it", () => {
+    expect(wizardCredentials(loggedIn, "notes", "tok-123", true).password).toBe("secret");
   });
 });
 

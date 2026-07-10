@@ -269,6 +269,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   private reconnectTimer?: number;
   private pollTimer?: number;
   private lastConfigScanAt = 0; // wall-clock ms of the last CONFIG-ONLY scan (see doReconcileAll)
+  private realtimeConnected = false; // is the change-notification WebSocket currently OPEN? Drives the
+  // status light's realtime-vs-polling distinction (syncstate.light) so green "Fully synced" never
+  // shows over a dead socket. Polling still keeps data current when this is false.
   private lastFullScanAt = 0;   // wall-clock ms of the last WHOLE-VAULT reconcile (note-drift safety net)
   private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
   private rawDebounce?: number;               // debounce timer for the raw-event burst
@@ -694,9 +697,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // the one platform indicator, any opt-in editor indicators, and (if the settings tab is
   // open) its live status card — all from a single source of truth, never diverging.
   private renderLight(phase: Phase) {
-    const spec = light(phase, `v${this.state.version}`);
-    // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users).
-    const glyph = phase === "idle" ? "check"
+    const spec = light(phase, `v${this.state.version}`, this.realtimeConnected);
+    // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). When idle
+    // but the realtime socket is down (polling fallback), show the "reconnecting" glyph, not the check.
+    const glyph = phase === "idle" ? (this.realtimeConnected ? "check" : "refresh-cw")
       : phase === "offline" ? "alert-triangle"
       : phase === "off" ? "circle-slash"
       : "refresh-cw"; // connecting / syncing
@@ -743,6 +747,18 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.editorViews = new WeakSet();
   }
   statusText() { return this.engine.phase(); }
+
+  // Applying a config-sync change (master/category/per-plugin toggle) must take effect NOW — otherwise
+  // the switch looks inert for up to CONFIG_SCAN_INTERVAL_MS (~2 min), which is exactly the "I flipped
+  // it and nothing happened" complaint. Persist, then (if connected) force a CONFIG scan on the next
+  // reconcile and kick one immediately, so a newly-enabled category/plugin syncs right away (and a
+  // newly-disabled one stops being pushed). If not connected, it applies on the next connect.
+  async applyConfigSyncChange(): Promise<void> {
+    await this.saveSettings();
+    if (!this.api) return;
+    this.lastConfigScanAt = 0; // force the config-only re-hash on the coming reconcile (doReconcileAll)
+    this.engine.enqueue({ kind: "remote" });
+  }
 
   // ---- reconcile deps ----
   // The name used when the Device name field is left blank. Prefer a friendly label over
@@ -934,6 +950,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
     this.ws?.close(); this.ws = undefined;
+    this.realtimeConnected = false; // torn down → no realtime channel
   }
 
   // Open the change-notification WebSocket and route its lifecycle through the ONE engine queue:
@@ -950,11 +967,13 @@ export default class NewLiveSyncPlugin extends Plugin {
     let opened = false;
     ws.addEventListener("open", () => {
       opened = true; this.log("ws channel open (instant sync)");
+      this.realtimeConnected = true; this.renderLight(this.engine.phase()); // light → true realtime health
       this.startPolling(POLL_IDLE_MS); // WS live → downshift the poll to a slow liveness backstop (Finding 3a)
     });
-    ws.addEventListener("error", () => { this.log("ws unavailable — polling fallback active"); this.startPolling(POLL_ACTIVE_MS); });
+    ws.addEventListener("error", () => { this.log("ws unavailable — polling fallback active"); this.realtimeConnected = false; this.renderLight(this.engine.phase()); this.startPolling(POLL_ACTIVE_MS); });
     ws.addEventListener("close", () => {
       if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
+      this.realtimeConnected = false; this.renderLight(this.engine.phase()); // socket down → light stops claiming instant sync
       this.startPolling(POLL_ACTIVE_MS); // WS dropped → upshift the poll until it's back (or connect restarts it)
       if (opened) {
         // R11-#7: delay the WS re-dial so a server that flaps the socket (accept-then-drop) can't be
@@ -1049,7 +1068,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
-    this.settings.lastSyncedAt = Date.now();
+    this.settings.lastSyncedAt = Date.now(); void this.saveSettings(); // persist so "Last synced" survives a restart (the onBaseChanged snapshot ran earlier in this pass)
   }
 
   // Full reconcile with D0019 reset detection wired in — used by the CONNECT path (the initial

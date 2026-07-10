@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
-import { WizardState, canLogIn, canFinish, isValidVaultName } from "./wizardsteps";
+import { WizardState, canLogIn, canFinish, isValidVaultName, wizardCredentials } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
 // Guided first-run setup, all in ONE pane: Server → Account → Vault, revealed progressively.
@@ -167,8 +167,14 @@ export class SetupWizardModal extends Modal {
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       const st = this.plugin.settings;
-      st.serverUrl = this.s.server; st.username = this.s.username; st.password = this.s.password;
-      st.vaultId = vault; st.authToken = this.token;
+      // Token-only-at-rest is the default (st.storePassword === false): we already hold a session token,
+      // so the plaintext password must NOT be written to data.json. wizardCredentials() decides this
+      // (pure + unit-tested). Setting authToken means the connect path uses the token and never runs
+      // freshLogin — the only other place that clears the password — so clearing it here is what
+      // actually honors the contract.
+      const cred = wizardCredentials(this.s, vault, this.token, st.storePassword);
+      st.serverUrl = cred.serverUrl; st.username = cred.username; st.password = cred.password;
+      st.vaultId = cred.vaultId; st.authToken = cred.authToken;
       await this.plugin.saveSettings();
       new Notice(`SelfSync: now syncing '${vault}'`);
       this.close();

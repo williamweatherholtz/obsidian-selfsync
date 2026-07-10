@@ -191,7 +191,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Sync settings, themes & plugins")
       .setDesc("Sync your Obsidian configuration across devices.")
       .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
-        cs.enabled = v; await this.plugin.saveSettings(); this.display();
+        cs.enabled = v; await this.plugin.applyConfigSyncChange(); this.display();
       })));
     if (!cs.enabled) return;
 
@@ -200,7 +200,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     const cat = (name: string, desc: string, key: "core" | "hotkeys" | "appearance" | "snippets" | "community") =>
       g.addSetting((st) => st.setName(name).setDesc(desc).addToggle((tg) => tg.setValue(cs[key]).onChange(async (v) => {
-        cs[key] = v; await this.plugin.saveSettings(); if (key === "community") this.display();
+        cs[key] = v; await this.plugin.applyConfigSyncChange(); if (key === "community") this.display();
       })));
     cat("Core settings", "app.json, core-plugins.json", "core");
     cat("Hotkeys", "hotkeys.json", "hotkeys");
@@ -286,10 +286,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .setDesc(`${shared} of ${ids.length} plugins synced.`)
       // "Sync none" first, "Sync all" second → Sync all renders on the RIGHT.
       .addButton((b) => b.setButtonText("Sync none").onClick(async () => {
-        cs.pluginAllow = []; await this.plugin.saveSettings(); this.display();
+        cs.pluginAllow = []; await this.plugin.applyConfigSyncChange(); this.display();
       }))
       .addButton((b) => b.setButtonText("Sync all").onClick(async () => {
-        cs.pluginAllow = ids.slice(); await this.plugin.saveSettings(); this.display();
+        cs.pluginAllow = ids.slice(); await this.plugin.applyConfigSyncChange(); this.display();
       })));
 
     for (const id of ids) {
@@ -298,7 +298,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
           const set = new Set(cs.pluginAllow);
           if (v) set.add(id); else set.delete(id);
           cs.pluginAllow = [...set];
-          await this.plugin.saveSettings();
+          await this.plugin.applyConfigSyncChange();
         })));
     }
   }

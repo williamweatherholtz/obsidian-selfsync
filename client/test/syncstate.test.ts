@@ -44,6 +44,24 @@ describe("light is a pure function of phase", () => {
     }
   });
   it("offline is red", () => expect(light("offline").color).toBe("var(--color-red)"));
+
+  // P4 (status/transport dual-truth guard): when idle but the realtime WS is DOWN, the light must not
+  // claim full green "Fully synced" — it reflects the polling-fallback truth instead.
+  it("idle with realtime DOWN is not green and says it's polling", () => {
+    const up = light("idle", "v5", true);
+    expect(up.color).toBe("var(--color-green)");
+    expect(up.tip).toContain("Fully synced");
+    const down = light("idle", "v5", false);
+    expect(down.color).not.toBe("var(--color-green)");
+    expect(down.tip.toLowerCase()).toContain("polling");
+  });
+  it("realtime defaults to up (prior behavior) when the flag is omitted", () => {
+    expect(light("idle").color).toBe("var(--color-green)");
+  });
+  it("the realtime flag only affects idle (syncing/offline are unchanged)", () => {
+    expect(light("syncing", "", false).color).toBe(light("syncing", "", true).color);
+    expect(light("offline", "", false).color).toBe("var(--color-red)");
+  });
 });
 
 describe("SyncMachine fires onChange only on real transitions", () => {

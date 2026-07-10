@@ -31,6 +31,21 @@ export function canFinish(s: WizardState): boolean {
   return s.loggedIn && Boolean(s.chosenVault || s.newVault.trim());
 }
 
+// What the wizard's "Start syncing" persists into settings. Extracted as a pure function so the
+// token-only-at-rest rule is unit-tested (real behavior), not buried in the modal's finish():
+// with a session token already in hand, the plaintext password is written ONLY if the user opted
+// into storing it — otherwise it must never touch data.json (default token-only).
+export interface PersistedCredentials { serverUrl: string; username: string; password: string; vaultId: string; authToken: string; }
+export function wizardCredentials(s: WizardState, vault: string, token: string, storePassword: boolean): PersistedCredentials {
+  return {
+    serverUrl: s.server,
+    username: s.username,
+    password: storePassword ? s.password : "",
+    vaultId: vault,
+    authToken: token,
+  };
+}
+
 // The status-card headline for a connection phase. Identity (account, remote vault)
 // and last-synced live under the Connection section, NOT the card — so this is just
 // the state title. The unconfigured "Not set up" case is handled by the renderer.

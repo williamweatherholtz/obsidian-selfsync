@@ -44,10 +44,20 @@ export class NodeTransport implements SyncApi {
   }
   // Admin helpers (server-admin token) for cross-user sharing tests.
   static async createUser(base: string, adminToken: string, username: string, password: string): Promise<void> {
+    // An admin-created account is flagged must-change (IA.3.5.9): its token is rejected on every route
+    // but change-password/logout until it sets its own password. So create it with a TEMPORARY password
+    // and immediately perform the forced change to the requested one — exactly what a real client does —
+    // leaving a ready-to-use account. (Doing the create-then-use directly would 403 "password change required".)
+    const temp = `Temp-${password}-1`;
     const r = await fetch(`${base}/api/admin/users`, {
-      method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ username, password }),
+      method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ username, password: temp }),
     });
     if (!r.ok) throw new Error(`createUser ${r.status}`);
+    const tempTok = await this.login(base, username, temp);
+    const cp = await fetch(`${base}/api/password`, {
+      method: "POST", headers: { authorization: `Bearer ${tempTok}`, "content-type": "application/json" }, body: JSON.stringify({ current: temp, new_password: password }),
+    });
+    if (!cp.ok) throw new Error(`createUser forced-change ${cp.status}`);
   }
   // A vault owner grants a share on their own vault (owner-scoped; any owner may call).
   static async grant(base: string, ownerToken: string, vault: string, grantee: string, perm: "read" | "readWrite"): Promise<void> {

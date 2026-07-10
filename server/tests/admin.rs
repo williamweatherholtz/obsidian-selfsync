@@ -348,3 +348,95 @@ async fn register_rejects_a_too_short_password(/* SEC-AUTH min-length */) {
         .send().await.unwrap().status().as_u16();
     assert_eq!(s, 400, "a <8-char password is rejected before the registration gate");
 }
+
+// ---- UI functional-guard tests (2026-07 admin-UI e2e audit). Each guards the SERVER behavior a fixed
+// admin-page control depends on, so a regression in a control's *effect* fails here. ----
+
+// POST returning (status, body) — send() drops the body, and these assert on it. No auth header when
+// the token is empty (e.g. /api/login), so it isn't sent a malformed "Bearer ".
+async fn post_json(base: &str, path: &str, token: &str, body: Value) -> (u16, Value) {
+    let mut rb = reqwest::Client::new().post(format!("{base}{path}")).json(&body);
+    if !token.is_empty() { rb = rb.bearer_auth(token); }
+    let r = rb.send().await.unwrap();
+    let s = r.status().as_u16();
+    (s, r.json::<Value>().await.unwrap_or(Value::Null))
+}
+
+// A3 (admin login must handle must_change): an admin-created account is flagged must-change; its token
+// is rejected on every route but change-password until it sets a new password — then it's fully usable.
+// This is the exact contract the admin page's forced-change screen relies on.
+#[tokio::test]
+async fn must_change_account_is_blocked_until_password_set_then_works() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"dana","password":"Temp1234"})).await, 200);
+    // login SUCCEEDS and signals must_change_password …
+    let (ls, lv) = post_json(&base, "/api/login", "", json!({"username":"dana","password":"Temp1234"})).await;
+    assert_eq!(ls, 200);
+    assert_eq!(lv["must_change_password"], json!(true), "an admin-created account is flagged must-change");
+    let dtok = lv["token"].as_str().unwrap().to_string();
+    // … but that token is rejected on a normal route (403 password-change-required) …
+    assert_eq!(get(&base, "/api/admin/me", &dtok).await.0, 403, "a must-change token is blocked until the password is set");
+    // … the forced change clears the flag and returns a fresh token …
+    let (cs, cv) = post_json(&base, "/api/password", &dtok, json!({"current":"Temp1234","new_password":"Newpass12"})).await;
+    assert_eq!(cs, 200);
+    let ntok = cv["token"].as_str().unwrap().to_string();
+    assert_eq!(get(&base, "/api/admin/me", &ntok).await.0, 200, "after the change the account is fully usable");
+    // … and the temp password no longer logs in (it was replaced).
+    assert_eq!(post_json(&base, "/api/login", "", json!({"username":"dana","password":"Temp1234"})).await.0, 401);
+}
+
+// admin grant/revoke (was UNCOVERED): promoting an account opens admin routes; revoking closes them.
+#[tokio::test]
+async fn admin_grant_and_revoke_toggles_admin_access() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let bob = login(&base, "bob").await;
+    assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 403, "a non-admin can't reach admin routes");
+    assert_eq!(send(&base, "POST", "/api/admin/users/bob/admin", &admin, Value::Null).await, 200);
+    assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 200, "a promoted account reaches admin routes");
+    assert_eq!(send(&base, "DELETE", "/api/admin/users/bob/admin", &admin, Value::Null).await, 200);
+    assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 403, "a revoked account is blocked again");
+}
+
+// user delete (was UNCOVERED): a deleted account can no longer authenticate.
+#[tokio::test]
+async fn admin_deletes_an_account() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"eve","password":"Temp1234"})).await, 200);
+    assert_eq!(post_json(&base, "/api/login", "", json!({"username":"eve","password":"Temp1234"})).await.0, 200);
+    assert_eq!(send(&base, "DELETE", "/api/admin/users/eve", &admin, Value::Null).await, 200);
+    assert_eq!(post_json(&base, "/api/login", "", json!({"username":"eve","password":"Temp1234"})).await.0, 401, "a deleted account cannot log in");
+}
+
+// admin Repair + Prune-history HTTP endpoints (were UNCOVERED at the HTTP layer) — the admin repair
+// control and the tombstone-prune control. A healthy reindex is a valid no-op that reports the version.
+#[tokio::test]
+async fn admin_reindex_and_prune_history_http_ok() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let (rs, rv) = post_json(&base, "/api/admin/reindex", &admin, json!({"owner":"admin","vault":"default","force":false})).await;
+    assert_eq!(rs, 200, "repairing a healthy vault is a valid no-op");
+    assert!(rv["version"].is_number(), "reindex reports the vault version");
+    assert_eq!(post_json(&base, "/api/admin/prune-history", &admin, json!({"owner":"admin","vault":"default"})).await.0, 200);
+    let bob = login(&base, "bob").await;
+    assert_eq!(post_json(&base, "/api/admin/reindex", &bob, json!({"owner":"admin","vault":"default"})).await.0, 403, "a non-admin can't repair");
+}
+
+// Invite list + delete (were UNCOVERED): a created invite is listed, then gone after delete.
+#[tokio::test]
+async fn admin_invite_list_and_delete() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    assert_eq!(send(&base, "PUT", "/api/admin/registration", &admin, json!({"mode":"closed"})).await, 200);
+    assert_eq!(post_json(&base, "/api/admin/invites", &admin, json!({"label":"for dana"})).await.0, 200);
+    let (ls, lv) = get(&base, "/api/admin/invites", &admin).await;
+    assert_eq!(ls, 200);
+    let arr = lv.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "the created invite is listed");
+    let id = arr[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(send(&base, "DELETE", &format!("/api/admin/invites/{id}"), &admin, Value::Null).await, 200);
+    let (_s, lv2) = get(&base, "/api/admin/invites", &admin).await;
+    assert_eq!(lv2.as_array().unwrap().len(), 0, "the deleted invite is gone");
+}
