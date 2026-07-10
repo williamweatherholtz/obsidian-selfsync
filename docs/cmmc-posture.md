@@ -1,5 +1,15 @@
 # SelfSync — CMMC Level 2 technical-controls posture
 
+> **The 110 controls are now tracked in the model.** All 110 NIST SP 800-171 rev2 controls are authored
+> as security `SystemRequirement`s in `.tracking/compliance/nist-800-171.sysml`, each `satisfy`-linked to
+> the regulatory compliance `Need` `nComply800171`, so compliance status is **computed** — not just this
+> hand-written table. Disposition: **32 met** (software-verified now, each with a `#Verify` inspection
+> Test), **21 partial** (software half met + operator attests), **52 operator-attested** (the operator is
+> the verifier — *pending* sign-off, deliberately not fabricated), **5 POA&M** (open `issueCmmc*` Issues).
+> Check it any time: `keel coverage` / `keel tier-satisfaction` (which controls are verified vs uncovered)
+> and `keel open-issues` (the POA&M gaps). This markdown is the human-readable companion to that model.
+
+
 > **Scope & honesty note.** CMMC 2.0 Level 2 = the 110 practices of NIST SP 800-171 rev2 across 14
 > families. **Most are organizational** (policy, training, physical, personnel, incident-response plans,
 > media handling) and are satisfied by the *operator's* System Security Plan (SSP), never by application

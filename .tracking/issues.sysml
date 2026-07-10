@@ -372,4 +372,19 @@ package ProjectIssues {
     part issueChangesOnAsyncWorker : Issue { :>> id = "c0f1a5cc-9c02-4a10-9b20-a1b2c3d49c02"; :>> title = "Full-manifest changes(since=0) scans SQLite under the read lock on the async worker"; :>> createdAt = "2026-07-08"; :>> createdBy = "wweatherholtz"; :>> description = "Conc-R8 M2 (MED): the changes handler holds rlock(vault) and runs SqliteIndex::changes on the async worker; for since=0 (first sync / full reconcile) that's a whole-files-table scan blocking a runtime worker for its duration (the write ops correctly use spawn_blocking; this read path does not). No deadlock (no await under the guard). Fix: offload the full-manifest read to the blocking pool. Lower-impact cousin of the now-fixed cold-open-on-worker (Conc-H1)."; :>> discoveredInField = false; :>> relatedTask = "serverConcurrencyResidual"; :>> severity = Severity::Medium; }
     #Resolves dependency from serverConcurrencyResidual to issueDoubleOpenRace;
     #Resolves dependency from serverConcurrencyResidual to issueChangesOnAsyncWorker;
+
+    // ---- CMMC / NIST SP 800-171 rev2 POA&M: the 5 code-addressable compliance gaps surfaced by
+    // modeling the 110 controls (see .tracking/compliance/nist-800-171.sysml + docs/cmmc-posture.md).
+    // Triaged (accounted-for) via the open cmmcComplianceBacklog action; honestly OPEN (planned work /
+    // operator decision), not resolved. ----
+    part issueCmmcMfa : Issue { :>> id = "c0f1a5cc-a001-4a10-9b20-a1b2c3d4a001"; :>> title = "3.5.3: No multifactor authentication (IA)"; :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz"; :>> description = "No multifactor authentication (IA.3.5.3). Plan: TOTP + recovery codes; interim VPN/mTLS/SSO proxy."; :>> discoveredInField = false; :>> relatedTask = "cmmcComplianceBacklog"; :>> severity = Severity::Medium; }
+    part issueCmmcPwReuse : Issue { :>> id = "c0f1a5cc-a002-4a10-9b20-a1b2c3d4a002"; :>> title = "3.5.8: No password-reuse history (IA)"; :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz"; :>> description = "No password-reuse history (IA.3.5.8). Plan: retain last-N argon2 hashes, reject on change."; :>> discoveredInField = false; :>> relatedTask = "cmmcComplianceBacklog"; :>> severity = Severity::Medium; }
+    part issueCmmcForcedChange : Issue { :>> id = "c0f1a5cc-a003-4a10-9b20-a1b2c3d4a003"; :>> title = "3.5.9: No forced-change-on-reset (IA)"; :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz"; :>> description = "No forced-change-on-reset (IA.3.5.9). Plan: must_change flag + server enforcement."; :>> discoveredInField = false; :>> relatedTask = "cmmcComplianceBacklog"; :>> severity = Severity::Medium; }
+    part issueCmmcFips : Issue { :>> id = "c0f1a5cc-a004-4a10-9b20-a1b2c3d4a004"; :>> title = "3.13.11: Crypto is not FIPS-validated (SC)"; :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz"; :>> description = "Crypto is not FIPS-validated (SC.3.13.11). Decision: FIPS provider if genuine CUI is stored."; :>> discoveredInField = false; :>> relatedTask = "cmmcComplianceBacklog"; :>> severity = Severity::Medium; }
+    part issueCmmcAtRest : Issue { :>> id = "c0f1a5cc-a005-4a10-9b20-a1b2c3d4a005"; :>> title = "3.13.16: CUI at rest is plaintext (SC)"; :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz"; :>> description = "CUI at rest is plaintext (SC.3.13.16). Near-term: operator volume encryption; E2EE deferred."; :>> discoveredInField = false; :>> relatedTask = "cmmcComplianceBacklog"; :>> severity = Severity::Medium; }
+    #Resolves dependency from cmmcComplianceBacklog to issueCmmcMfa;
+    #Resolves dependency from cmmcComplianceBacklog to issueCmmcPwReuse;
+    #Resolves dependency from cmmcComplianceBacklog to issueCmmcForcedChange;
+    #Resolves dependency from cmmcComplianceBacklog to issueCmmcFips;
+    #Resolves dependency from cmmcComplianceBacklog to issueCmmcAtRest;
 }
