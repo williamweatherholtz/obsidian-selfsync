@@ -90,9 +90,10 @@ pub async fn login(
     if present && ok {
         lock(&st.login_throttle)?.success(&req.username); // clear the failure counter on success
         let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
+        let must_change_password = lock(&st.users)?.must_change(&req.username); // IA.3.5.9 signal to the client
         log::info!("[login] user='{uname}' -> OK");
         audit(action::LOGIN, &uname, &uname, outcome::SUCCESS, &ip);
-        Ok(Json(LoginResponse { token }))
+        Ok(Json(LoginResponse { token, must_change_password }))
     } else {
         lock(&st.login_throttle)?.fail(&req.username); // count the failure toward the lockout threshold
         log::warn!("[login] user='{uname}' -> 401");
@@ -153,11 +154,18 @@ pub async fn register(
 // one, then REVOKE every session for the user and issue ONE fresh token for this device — so a user
 // whose token/password leaked can self-remediate (previously only an admin account-delete could).
 pub async fn change_password(
-    AuthToken(user): AuthToken,
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    // Resolve the token MANUALLY (not via the AuthToken extractor) so a must-change account — which
+    // AuthToken rejects everywhere else (IA.3.5.9) — can still reach the one endpoint that clears the
+    // flag. Security is unaffected: we verify the CURRENT password below regardless.
+    let token = headers.get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok()).and_then(|s| s.strip_prefix("Bearer "))
+        .ok_or(AppError::Unauthorized)?.to_string();
+    let user = lock(&st.tokens)?.resolve(&token).ok_or(AppError::Unauthorized)?;
     if req.current.len() > MAX_PASSWORD_LEN {
         return Err(AppError::BadRequest("password too long".into()));
     }
@@ -184,16 +192,25 @@ pub async fn change_password(
         audit(action::PASSWORD_CHANGE, &user, &user, outcome::FAILURE, &ip);
         return Err(AppError::Unauthorized);
     }
-    // Hash + store the new password (offloaded, users lock taken inside the closure — like register).
+    // Reject reuse (IA.3.5.8), then rotate (records the old hash into history) — both under the users
+    // lock on the blocking pool (argon2 verifies + hash). Returns false iff the new password matches the
+    // current or a recent one.
     let permit = acquire_auth(&st).await?;
     let users = st.users.clone();
     let (u, np) = (user.clone(), req.new_password.clone());
-    tokio::task::spawn_blocking(move || {
+    let accepted = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
         let _permit = permit;
         let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
-        g.set_password(&u, &np)
+        if g.is_password_reused(&u, &np) { return Ok(false); }
+        g.rotate_password(&u, &np)?;
+        Ok(true)
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?
       .map_err(|e| AppError::Internal(e.to_string()))?;
+    if !accepted {
+        audit(action::PASSWORD_CHANGE, &user, &user, outcome::FAILURE, &ip);
+        return Err(AppError::BadRequest("that password matches a recent one — choose a password you haven't used lately".into()));
+    }
+    let _ = lock(&st.users)?.set_must_change(&user, false); // a successful self-change clears the forced-change flag (IA.3.5.9)
     // Revoke ALL sessions (incl. the caller's current token + any leaked one elsewhere), then issue
     // one fresh token for THIS device so the caller stays logged in.
     lock(&st.tokens)?.revoke_user(&user).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -201,7 +218,7 @@ pub async fn change_password(
     log::info!("[password] user='{user}' changed password; all sessions revoked + one re-issued");
     audit(action::PASSWORD_CHANGE, &user, &user, outcome::SUCCESS, &ip);
     audit(action::SESSION_REVOKE, &user, &user, outcome::SUCCESS, &ip);
-    Ok(Json(LoginResponse { token }))
+    Ok(Json(LoginResponse { token, must_change_password: false }))
 }
 
 // SEC-AUTH (audit): single-session logout — revoke the PRESENTED token server-side. Without this a
@@ -261,7 +278,13 @@ impl FromRequestParts<AppState> for AuthToken {
             .and_then(|s| s.strip_prefix("Bearer "))
             .map(|s| s.to_string())
             .ok_or(AppError::Unauthorized)?;
-        let user = lock(&st.tokens)?.resolve(&token);
-        user.map(AuthToken).ok_or(AppError::Unauthorized)
+        let user = lock(&st.tokens)?.resolve(&token).ok_or(AppError::Unauthorized)?;
+        // IA.3.5.9: an account flagged must-change is blocked on EVERY AuthToken-gated route until it
+        // sets a new password. /api/password and /api/logout resolve the token manually (not via this
+        // extractor), so they remain reachable — the account can remediate but do nothing else.
+        if lock(&st.users)?.must_change(&user) {
+            return Err(AppError::PasswordChangeRequired);
+        }
+        Ok(AuthToken(user))
     }
 }

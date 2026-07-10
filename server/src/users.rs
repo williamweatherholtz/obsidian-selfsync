@@ -38,10 +38,21 @@ pub fn verify_password(phc: &str, password: &str) -> bool {
     Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
 }
 
+// SEC-CMMC (IA.3.5.8): how many previous password hashes to retain + reject on change.
+const PASSWORD_HISTORY: usize = 5;
+
 #[derive(Serialize, Deserialize, Default)]
 struct UsersFile {
-    // username -> argon2id PHC string
+    // username -> argon2id PHC string (current password)
     users: HashMap<String, String>,
+    // IA.3.5.8 password-reuse history: username -> previous PHC strings (most-recent-first, capped at
+    // PASSWORD_HISTORY). #[serde(default)] so a pre-upgrade .users.json loads with empty history.
+    #[serde(default)]
+    prev_hashes: HashMap<String, Vec<String>>,
+    // IA.3.5.9 temporary-password / forced-change: usernames that MUST change their password before the
+    // account can be used for anything but the change itself (set on admin create + admin reset).
+    #[serde(default)]
+    must_change: std::collections::HashSet<String>,
 }
 
 pub struct UserStore {
@@ -79,6 +90,10 @@ impl UserStore {
     // and sessions separately.)
     pub fn remove(&mut self, user: &str) -> std::io::Result<bool> {
         if self.file.users.remove(user).is_some() {
+            // Also drop the reuse history + forced-change flag so a re-created same-name account
+            // starts clean (no inherited password history / stale must-change).
+            self.file.prev_hashes.remove(user);
+            self.file.must_change.remove(user);
             self.save()?;
             Ok(true)
         } else {
@@ -116,6 +131,44 @@ impl UserStore {
         self.save()
     }
 
+    // IA.3.5.8: true if `password` matches the user's CURRENT or any RETAINED previous password —
+    // used by the self-service change path to reject reuse. Runs argon2 verifies (call off the async
+    // worker). Unknown user -> false (no history to match).
+    pub fn is_password_reused(&self, user: &str, password: &str) -> bool {
+        let current = self.file.users.get(user);
+        let prev = self.file.prev_hashes.get(user);
+        current.into_iter().chain(prev.into_iter().flatten())
+            .any(|phc| verify_password(phc, password))
+    }
+
+    // Rotate a user's password: push the CURRENT hash into the reuse history (capped) THEN set the new
+    // one. Used by the user's own change and by an admin reset (so a reset password can't be rotated
+    // back to a recent one). No-op if the user doesn't exist. (Distinct from set_password, which is a
+    // force-overwrite with NO history — used to re-apply the bootstrap admin's SYNC_PASSWORD each boot.)
+    pub fn rotate_password(&mut self, user: &str, password: &str) -> std::io::Result<()> {
+        if !self.file.users.contains_key(user) { return Ok(()); }
+        if let Some(old) = self.file.users.get(user).cloned() {
+            let hist = self.file.prev_hashes.entry(user.to_string()).or_default();
+            hist.insert(0, old);
+            hist.truncate(PASSWORD_HISTORY);
+        }
+        let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| std::io::Error::other(format!("hash: {e}")))?
+            .to_string();
+        self.file.users.insert(user.to_string(), hash);
+        self.save()
+    }
+
+    // IA.3.5.9 forced-change flag.
+    pub fn must_change(&self, user: &str) -> bool { self.file.must_change.contains(user) }
+    pub fn set_must_change(&mut self, user: &str, flag: bool) -> std::io::Result<()> {
+        let changed = if flag { self.file.must_change.insert(user.to_string()) }
+                      else { self.file.must_change.remove(user) };
+        if changed { self.save() } else { Ok(()) }
+    }
+
     // Return (user_exists, PHC-to-verify-against). Absent users yield a dummy hash so the caller
     // does the SAME argon2 work either way — no timing oracle on which usernames are valid. (SEC-2)
     pub fn phc_for(&self, user: &str) -> (bool, String) {
@@ -133,5 +186,52 @@ impl UserStore {
         let Ok(parsed) = PasswordHash::new(phc) else { return false; };
         let ok = Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok();
         present && ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn store() -> (tempfile::TempDir, UserStore) {
+        let d = tempdir().unwrap();
+        let s = UserStore::open(&d.path().join(".users.json")).unwrap();
+        (d, s)
+    }
+
+    #[test]
+    fn reuse_history_rejects_current_and_recent_passwords() { // IA.3.5.8
+        let (_d, mut s) = store();
+        s.register("alice", "Passw0rd-1").unwrap();
+        assert!(s.is_password_reused("alice", "Passw0rd-1"), "the current password is 'reused'");
+        // Rotate through a few; each becomes history.
+        s.rotate_password("alice", "Passw0rd-2").unwrap();
+        s.rotate_password("alice", "Passw0rd-3").unwrap();
+        assert!(s.is_password_reused("alice", "Passw0rd-1"), "an old password is still blocked");
+        assert!(s.is_password_reused("alice", "Passw0rd-2"), "the previous password is blocked");
+        assert!(s.is_password_reused("alice", "Passw0rd-3"), "the current password is blocked");
+        assert!(!s.is_password_reused("alice", "Totally-New-9"), "a genuinely new password is allowed");
+        // History is capped: after > PASSWORD_HISTORY rotations, the oldest ages out and can be reused.
+        for i in 4..(4 + PASSWORD_HISTORY as u32 + 1) { s.rotate_password("alice", &format!("Passw0rd-{i}")).unwrap(); }
+        assert!(!s.is_password_reused("alice", "Passw0rd-1"), "beyond the history window, the oldest is reusable");
+    }
+
+    #[test]
+    fn must_change_flag_set_clear_and_cleared_on_remove() { // IA.3.5.9
+        let (_d, mut s) = store();
+        s.register("bob", "Passw0rd-1").unwrap();
+        assert!(!s.must_change("bob"));
+        s.set_must_change("bob", true).unwrap();
+        assert!(s.must_change("bob"));
+        s.set_must_change("bob", false).unwrap();
+        assert!(!s.must_change("bob"));
+        // Re-created same-name account never inherits a stale flag/history.
+        s.set_must_change("bob", true).unwrap();
+        s.rotate_password("bob", "Passw0rd-2").unwrap();
+        s.remove("bob").unwrap();
+        s.register("bob", "Fresh-Pass-1").unwrap();
+        assert!(!s.must_change("bob"), "re-created account starts un-flagged");
+        assert!(!s.is_password_reused("bob", "Passw0rd-2"), "re-created account inherits no history");
     }
 }

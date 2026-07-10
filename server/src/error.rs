@@ -10,6 +10,7 @@ pub enum AppError {
     BadRequest(String),
     Unauthorized,
     Forbidden, // 403 — authenticated but not authorized for this owner/vault
+    PasswordChangeRequired, // 403 — account flagged must-change; only /api/password & /api/logout allowed (IA.3.5.9)
     Conflict(String),
     Unavailable(String), // 503 — vault not writable / lock poisoned (propagate, don't resume)
     TooManyRequests(u64), // 429 — login throttle tripped; payload = Retry-After seconds (SEC-AUTH)
@@ -31,6 +32,8 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+            // Distinct body so a client can detect the forced-change state and prompt (vs a plain 403).
+            AppError::PasswordChangeRequired => (StatusCode::FORBIDDEN, "password change required".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
             AppError::TooManyRequests(_) => unreachable!("handled above"),

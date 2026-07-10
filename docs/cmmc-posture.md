@@ -5,11 +5,19 @@
 > engineering standard), not an externally-mandated regulatory obligation. All 110 controls are authored
 > as security `SystemRequirement`s in `.tracking/compliance/nist-800-171.sysml`, each `satisfy`-linked to
 > the framework `Need` `nSecurityFramework` (`source = internal`), so posture is **computed** — not just
-> this hand-written table. Disposition: **32 met** (software-verified now, each with a `#Verify` inspection
-> Test), **21 partial** (software half met + operator attests), **52 operator-attested** (the operator is
-> the verifier — *pending* sign-off, deliberately not fabricated), **5 POA&M** (open `issueCmmc*` Issues).
-> Check it any time: `keel coverage` / `keel tier-satisfaction` (which controls are verified vs uncovered)
-> and `keel open-issues` (the POA&M gaps). This markdown is the human-readable companion to that model.
+> this hand-written table. Disposition: **34 met**, **21 partial**, **52 operator-attested** (the operator
+> is the verifier — *pending* sign-off, deliberately not fabricated), **3 POA&M** (open `issueCmmc*`).
+> Each met/partial control carries a `#Verify` Test; the load-bearing ones (auth-gating, throttle, session
+> timeout, isolation, password policy + reuse + forced-change, hashing, plugin allowlist) point at **real
+> automated tests** (`method=test`) that fail if the control regresses — the rest are `method=inspect`
+> code-cited claims with a behavioral test as a tracked follow-up. Check it any time: `keel coverage` /
+> `keel tier-satisfaction` (verified vs uncovered) and `keel open-issues` (the POA&M gaps).
+>
+> **Implemented since the initial modeling:** IA.3.5.8 (password-reuse history — last 5 hashes) and
+> IA.3.5.9 (forced-change-on-reset — `must_change` enforced in the auth extractor), both real-tested; their
+> POA&M Issues are now resolved. **FIPS (3.13.11) is DEFERRED** — this deployment stores no genuine CUI, so
+> FIPS-validated crypto is not required. **Remaining POA&M:** MFA (3.5.3), CUI-at-rest (3.13.16, operator
+> volume encryption / E2EE deferred), and FIPS (deferred).
 
 
 > **Scope & honesty note.** CMMC 2.0 Level 2 = the 110 practices of NIST SP 800-171 rev2 across 14

@@ -47,6 +47,11 @@ pub struct LoginRequest {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoginResponse {
     pub token: String,
+    // IA.3.5.9: true if the account was flagged for a forced password change (admin create/reset) and
+    // must set a new password before the session can do anything else. Clients prompt on this; the
+    // server also ENFORCES it (AuthToken rejects a must-change account on all routes but change/logout).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub must_change_password: bool,
 }
 
 // Authenticated self-service password change. On success the server RE-ISSUES a fresh token

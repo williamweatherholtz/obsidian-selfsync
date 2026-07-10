@@ -132,11 +132,12 @@ pub async fn user_set_password(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
-        g.set_password(&u, &p)
+        g.rotate_password(&u, &p)?;         // records the old hash in history (IA.3.5.8)
+        g.set_must_change(&u, true)          // IA.3.5.9: the reset password is TEMPORARY — force a change on next use
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?
       .map_err(|e| AppError::Internal(e.to_string()))?;
     lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?; // sign out everywhere
-    log::info!("[admin {user}] reset password for '{name}' (all sessions revoked)");
+    log::info!("[admin {user}] reset password for '{name}' (temporary — must change; all sessions revoked)");
     audit(action::PASSWORD_RESET, &user, &name, outcome::SUCCESS, &ip);
     audit(action::SESSION_REVOKE, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
@@ -402,6 +403,9 @@ pub async fn users_create(
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     match result {
         Ok(()) => {
+            // IA.3.5.9: an admin-created account's initial password is TEMPORARY — force a change on
+            // first use so the operator-chosen password isn't used indefinitely.
+            let _ = lock(&st.users)?.set_must_change(&req.username, true);
             audit(action::ACCOUNT_CREATE, &user, &req.username, outcome::SUCCESS, &ip);
             Ok(StatusCode::OK)
         }

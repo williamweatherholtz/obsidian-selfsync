@@ -267,6 +267,45 @@ async fn my_vaults_reports_per_vault_health(/* admin UX */) {
 }
 
 #[tokio::test]
+async fn admin_created_account_is_forced_to_change_password_before_use(/* IA.3.5.9 */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let c = reqwest::Client::new();
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"dana","password":"Temp-Pass-1"})).await, 200);
+    // dana logs in — login succeeds and the response flags must_change.
+    let r = c.post(format!("{base}/api/login")).json(&json!({"username":"dana","password":"Temp-Pass-1"})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let body = r.json::<Value>().await.unwrap();
+    assert_eq!(body["must_change_password"], json!(true), "login flags the forced change");
+    let tok = body["token"].as_str().unwrap().to_string();
+    // Any normal authed route is BLOCKED with 403 until the password is changed.
+    assert_eq!(get(&base, "/api/admin/me", &tok).await.0, 403, "must-change account is blocked on authed routes");
+    // change-password is reachable (manual token), clears the flag, and returns a fresh usable token.
+    let cr = c.post(format!("{base}/api/password")).bearer_auth(&tok)
+        .json(&json!({"current":"Temp-Pass-1","new_password":"Perm-Pass-9"})).send().await.unwrap();
+    assert_eq!(cr.status().as_u16(), 200);
+    let tok2 = cr.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    assert_eq!(get(&base, "/api/admin/me", &tok2).await.0, 200, "after the change the account works normally");
+}
+
+#[tokio::test]
+async fn password_change_rejects_reuse_of_a_recent_password(/* IA.3.5.8 */) {
+    let base = spawn().await;
+    let t1 = login(&base, "bob").await; // bob's password is "pw"
+    let c = reqwest::Client::new();
+    // Change bob "pw" -> "First-Pass-1".
+    let r1 = c.post(format!("{base}/api/password")).bearer_auth(&t1).json(&json!({"current":"pw","new_password":"First-Pass-1"})).send().await.unwrap();
+    assert_eq!(r1.status().as_u16(), 200);
+    let t2 = r1.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    // Try to change back to the ORIGINAL "pw" (now in history) -> 400 reuse.
+    assert_eq!(send(&base, "POST", "/api/password", &t2, json!({"current":"First-Pass-1","new_password":"pw"})).await, 400, "reusing a recent password is rejected");
+    // Change to the SAME current password -> also reuse -> 400.
+    assert_eq!(send(&base, "POST", "/api/password", &t2, json!({"current":"First-Pass-1","new_password":"First-Pass-1"})).await, 400);
+    // A genuinely new one succeeds.
+    assert_eq!(send(&base, "POST", "/api/password", &t2, json!({"current":"First-Pass-1","new_password":"Second-Pass-2"})).await, 200);
+}
+
+#[tokio::test]
 async fn register_rejects_a_too_short_password(/* SEC-AUTH min-length */) {
     let base = spawn().await; // Open registration is off by default here, but the length check runs first.
     let c = reqwest::Client::new();
