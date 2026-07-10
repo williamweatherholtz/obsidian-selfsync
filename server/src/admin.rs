@@ -32,7 +32,7 @@ pub async fn me(AuthToken(user): AuthToken, State(st): State<AppState>) -> Json<
     Json(MeResp { username: user, is_server_admin })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GrantView {
     grantee: String,
     perm: Perm,
@@ -41,25 +41,99 @@ struct GrantView {
 pub struct VaultShares {
     vault: String,
     grants: Vec<GrantView>,
+    // Admin-UX: per-vault health so the operator sees which vaults need repair, and Reindex becomes
+    // status-driven instead of a guessed action. "ready" | "error" (corrupt index) | "missing".
+    status: String,
 }
-// The caller's OWN vaults + who each is shared with (owner-scoped share management).
+
+// Open a vault (in a blocking context — a cold open runs verify_and_gc) and report its health. Never
+// throws: a failed open / poisoned lock reports "error" so the operator is nudged to repair, not left
+// blind. `st.vault` auto-heals a recoverable vault on open, so viewing health also opportunistically
+// repairs — desirable for the "self-healing without babysitting" operator.
+fn vault_health(st: &AppState, owner: &str, vault: &str) -> String {
+    match st.vault(owner, vault) {
+        Ok(h) => match crate::error::rlock(&h.vault) {
+            Ok(v) => if v.is_corrupt() { "error".into() } else { "ready".into() },
+            Err(_) => "error".into(),
+        },
+        Err(_) => "missing".into(),
+    }
+}
+
+// The caller's OWN vaults + who each is shared with (owner-scoped share management) + health.
 pub async fn my_vaults(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<VaultShares>>, AppError> {
     let vaults = st.list_vaults(&user);
-    let shares = lock(&st.shares)?;
-    let out = vaults
-        .into_iter()
-        .map(|vault| {
-            let grants = shares
-                .grants_for(&user, &vault)
-                .into_iter()
-                .map(|g| GrantView { grantee: g.grantee, perm: g.perm })
-                .collect();
-            VaultShares { vault, grants }
-        })
-        .collect();
+    let grants_by_vault: std::collections::HashMap<String, Vec<GrantView>> = {
+        let shares = lock(&st.shares)?;
+        vaults.iter().map(|v| {
+            let g = shares.grants_for(&user, v).into_iter().map(|g| GrantView { grantee: g.grantee, perm: g.perm }).collect();
+            (v.clone(), g)
+        }).collect()
+    };
+    // Probe each vault's health off the async worker (cold opens walk + rehash). Operators have few vaults.
+    let (st2, owner, vlist) = (st.clone(), user.clone(), vaults.clone());
+    let statuses = tokio::task::spawn_blocking(move || {
+        vlist.into_iter().map(|v| { let s = vault_health(&st2, &owner, &v); (v, s) }).collect::<Vec<_>>()
+    }).await.map_err(|e| AppError::Internal(format!("vault-status join failed: {e}")))?;
+    let out = statuses.into_iter().map(|(vault, status)| {
+        let grants = grants_by_vault.get(&vault).cloned().unwrap_or_default();
+        VaultShares { vault, grants, status }
+    }).collect();
     Ok(Json(out))
+}
+
+#[derive(Serialize)]
+pub struct OwnerVault { vault: String, status: String }
+// Server-admin: list ANY account's vaults + health, so vault repair/delete for another user can live
+// under Accounts (folded from the old free-text repair panel — no typo-prone owner/vault entry). Admin-only.
+pub async fn owner_vaults(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+) -> Result<Json<Vec<OwnerVault>>, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&name) { return Err(AppError::BadRequest("invalid username".into())); }
+    let (st2, owner) = (st.clone(), name.clone());
+    let vaults = st.list_vaults(&name);
+    let out = tokio::task::spawn_blocking(move || {
+        vaults.into_iter().map(|v| { let status = vault_health(&st2, &owner, &v); OwnerVault { vault: v, status } }).collect::<Vec<_>>()
+    }).await.map_err(|e| AppError::Internal(format!("owner-vaults join failed: {e}")))?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct SetPwReq { password: String }
+// Server-admin password RESET for another account (operator-for-others). Without this, a forgotten
+// password forced a destructive delete+recreate (losing the account's vaults/shares). Sets the new
+// password AND revokes the account's sessions (so the reset also signs the user out everywhere). The
+// bootstrap admin is refused (its password is SYNC_PASSWORD, re-applied every boot). Admin-only.
+pub async fn user_set_password(
+    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>, Json(req): Json<SetPwReq>,
+) -> Result<StatusCode, AppError> {
+    require_admin(&st, &user)?;
+    if !safe_name(&name) { return Err(AppError::BadRequest("invalid username".into())); }
+    if name == st.cfg.user {
+        return Err(AppError::BadRequest("the bootstrap admin's password is controlled by SYNC_PASSWORD — change it in the server environment and restart".into()));
+    }
+    if req.password.len() > crate::auth::MAX_PASSWORD_LEN {
+        return Err(AppError::BadRequest("password too long".into()));
+    }
+    if req.password.len() < crate::auth::MIN_PASSWORD_LEN {
+        return Err(AppError::BadRequest(format!("password too short (minimum {} characters)", crate::auth::MIN_PASSWORD_LEN)));
+    }
+    if !lock(&st.users)?.exists(&name) { return Err(AppError::NotFound); }
+    let permit = crate::auth::acquire_auth(&st).await?;
+    let users = st.users.clone();
+    let (u, p) = (name.clone(), req.password.clone());
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
+        g.set_password(&u, &p)
+    }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?
+      .map_err(|e| AppError::Internal(e.to_string()))?;
+    lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?; // sign out everywhere
+    log::info!("[admin {user}] reset password for '{name}' (all sessions revoked)");
+    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]

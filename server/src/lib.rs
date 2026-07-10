@@ -107,6 +107,8 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             .route("/api/admin/users", get(admin::users_list).post(admin::users_create))
             .route("/api/admin/users/:name", axum::routing::delete(admin::users_delete))
             .route("/api/admin/users/:name/admin", post(admin::admin_grant).delete(admin::admin_revoke)) // promote/demote (D0021)
+            .route("/api/admin/users/:name/password", post(admin::user_set_password)) // operator password reset (admin UX)
+            .route("/api/admin/users/:name/vaults", get(admin::owner_vaults))          // any account's vaults + health (folded repair)
             .route("/api/admin/registration", get(admin::registration_get).put(admin::registration_set))
             .route("/api/admin/invites", get(admin::invites_list).post(admin::invite_create))
             .route("/api/admin/invites/:id", axum::routing::delete(admin::invite_delete));

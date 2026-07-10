@@ -226,6 +226,47 @@ async fn logout_revokes_the_presented_token(/* SEC-AUTH */) {
 }
 
 #[tokio::test]
+async fn operator_can_reset_a_user_password_and_revoke_sessions(/* admin UX */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    // bob (registered directly with "pw") has a live session; a reset changes the password AND kills it.
+    let bob = login(&base, "bob").await;
+    assert_eq!(get(&base, "/api/admin/me", &bob).await.0, 200);
+    assert_eq!(send(&base, "POST", "/api/admin/users/bob/password", &admin, json!({"password":"resetpw12"})).await, 200);
+    assert_eq!(get(&base, "/api/admin/me", &bob).await.0, 401, "old session revoked by the reset");
+    // bob logs in with the NEW password; the old one is dead.
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"resetpw12"})).send().await.unwrap().status().as_u16(), 200);
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"})).send().await.unwrap().status().as_u16(), 401);
+    // A short reset password is refused; the bootstrap admin cannot be reset this way.
+    assert_eq!(send(&base, "POST", "/api/admin/users/bob/password", &admin, json!({"password":"short"})).await, 400);
+    assert_eq!(send(&base, "POST", "/api/admin/users/admin/password", &admin, json!({"password":"whatever8"})).await, 400);
+}
+
+#[tokio::test]
+async fn admin_lists_any_account_vaults_with_health(/* admin UX: folded repair */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await; // owns the bootstrap "default" vault
+    let (s, vaults) = get(&base, "/api/admin/users/admin/vaults", &admin).await;
+    assert_eq!(s, 200);
+    let arr = vaults.as_array().unwrap();
+    let def = arr.iter().find(|v| v["vault"] == "default").expect("admin has a default vault");
+    assert_eq!(def["status"], serde_json::json!("ready"), "a healthy vault reports ready");
+    // A non-admin cannot enumerate another account's vaults (require_admin → 403 on the merged app).
+    let bob = login(&base, "bob").await;
+    assert_eq!(get(&base, "/api/admin/users/admin/vaults", &bob).await.0, 403);
+}
+
+#[tokio::test]
+async fn my_vaults_reports_per_vault_health(/* admin UX */) {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let (s, vaults) = get(&base, "/api/admin/vaults", &admin).await;
+    assert_eq!(s, 200);
+    let def = vaults.as_array().unwrap().iter().find(|v| v["vault"] == "default").expect("default vault present");
+    assert_eq!(def["status"], serde_json::json!("ready"));
+}
+
+#[tokio::test]
 async fn register_rejects_a_too_short_password(/* SEC-AUTH min-length */) {
     let base = spawn().await; // Open registration is off by default here, but the length check runs first.
     let c = reqwest::Client::new();

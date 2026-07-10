@@ -108,11 +108,18 @@ async function dashboard() {
     html += `<h2>Accounts</h2><div class="panel" id="users"><div class="empty">Loading…</div></div>`;
     html += `<h2>Registration</h2><div class="panel" id="reg"><div class="empty">Loading…</div></div>`;
     html += `<h2>Invite tokens</h2><div class="panel" id="invites"><div class="empty">Loading…</div></div>`;
-    html += `<h2>Vault repair</h2><div class="panel" id="repair"></div>`;
   }
   $("app").innerHTML = html;
   await renderVaults();
-  if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); renderRepair(); }
+  if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); }
+}
+
+// A per-vault health chip: green OK, red needs-repair. Repair (reindex) is offered only when a vault
+// is NOT ready — status-driven, so the operator acts on a signal instead of guessing.
+function healthChip(status) {
+  if (status === "ready") return `<span class="perm read">OK</span>`;
+  if (status === "missing") return `<span class="perm">no data yet</span>`;
+  return `<span class="perm readWrite">needs repair</span>`;
 }
 
 async function renderVaults() {
@@ -131,9 +138,12 @@ async function renderVaults() {
       ? v.grants.map(g => `<tr><td>${esc(g.grantee)}</td><td><span class="perm ${g.perm}">${g.perm}</span></td>
           <td style="text-align:right"><button class="danger" data-revoke="${esc(v.vault)}|${esc(g.grantee)}">Revoke</button></td></tr>`).join("")
       : `<tr><td colspan="3" class="empty">Not shared.</td></tr>`;
-    h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)}
+    // Reindex is shown only when the vault isn't healthy (vaults auto-repair on access, so a manual
+    // reindex is a rare, signal-driven action — not an always-present button inviting cargo-cult clicks).
+    const repairBtn = v.status === "ready" ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
+    h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)} ${healthChip(v.status)}
         <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button>
-        <button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Reindex</button></div>
+        ${repairBtn}</div>
       <table><tr><th>Shared with</th><th>Access</th><th></th></tr>${rows}</table>
       <div class="row" style="margin-top:8px">
         <input placeholder="grantee username" list="userlist" data-g="${esc(v.vault)}" style="flex:1;min-width:140px" />
@@ -156,13 +166,14 @@ async function renderVaults() {
     try { await api("DELETE", "/api/vault", { vault }); await renderVaults(); setMsg("Vault deleted.", "ok"); }
     catch (e) { setMsg("Delete failed: " + e.message, "err"); }
   });
-  // One-click reindex of your OWN vault (D0022). Vaults auto-repair on access, so this is rarely
-  // needed; if a rebuild reports files unrecoverable, use the repair panel's Force below.
+  // One-click repair of your OWN vault (D0022) — shown only when the health chip isn't "OK" (vaults
+  // auto-repair on access, so this is a signal-driven action). Force-repair (dropping unrecoverable
+  // entries) lives under Accounts → your account → Vaults, where the per-vault force option is offered.
   box.querySelectorAll("[data-reindex]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.reindex;
     try { const r = await api("POST", "/api/admin/reindex", { owner: me.username, vault, force: false });
-      setMsg(`Reindexed ${vault} — now at v${r.version}.`, "ok"); }
-    catch (e) { setMsg(`Reindex failed: ${e.message}. If files are unrecoverable, use Force in the repair panel below.`, "err"); }
+      await renderVaults(); setMsg(`Repaired ${vault} — now at v${r.version}.`, "ok"); }
+    catch (e) { setMsg(`Repair failed: ${e.message}. If files are unrecoverable, use Force under Accounts → your account → Vaults.`, "err"); }
   });
   box.querySelectorAll("[data-share]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.share;
@@ -191,13 +202,17 @@ async function renderUsers() {
     if (u.username === me.username) actions = '<span class="muted">you</span>';
     else if (u.is_bootstrap) actions = '<span class="muted">bootstrap admin</span>';
     else actions = `<button data-admin="${esc(u.username)}" data-on="${u.is_admin ? 1 : 0}">${u.is_admin ? "Revoke admin" : "Make admin"}</button>
+      <button data-resetpw="${esc(u.username)}">Reset password</button>
+      <button class="ghost" data-vaults="${esc(u.username)}">Vaults</button>
       <button class="danger" data-del="${esc(u.username)}">Delete</button>`;
-    return `<tr><td>${esc(u.username)}${badge}</td><td style="text-align:right">${actions}</td></tr>`;
+    // A hidden sub-row per account holds its vaults (health + repair/delete) — lazy-loaded on "Vaults".
+    return `<tr><td>${esc(u.username)}${badge}</td><td style="text-align:right">${actions}</td></tr>
+      <tr class="uvrow" data-uvfor="${esc(u.username)}" style="display:none"><td colspan="2"><div class="empty">Loading…</div></td></tr>`;
   }).join("");
   box.innerHTML = `<table><tr><th>Account</th><th></th></tr>${rows}</table>
     <div class="row" style="margin-top:10px">
       <input id="nu" placeholder="new username" style="flex:1;min-width:140px" />
-      <input id="np" type="password" placeholder="password" />
+      <input id="np" type="password" placeholder="password (min 8 chars)" />
       <button id="addu">Create account</button>
     </div>`;
   $("addu").onclick = async () => {
@@ -209,10 +224,59 @@ async function renderUsers() {
     try { await api(on ? "DELETE" : "POST", "/api/admin/users/" + encodeURIComponent(name) + "/admin"); await renderUsers(); setMsg(on ? "Admin revoked." : "Admin granted.", "ok"); }
     catch (e) { setMsg("Admin change failed: " + e.message, "err"); }
   });
+  // Operator password reset — replaces destructive delete+recreate for a forgotten password. Also
+  // revokes the account's sessions server-side (a reset signs them out everywhere).
+  box.querySelectorAll("[data-resetpw]").forEach(b => b.onclick = async () => {
+    const name = b.dataset.resetpw;
+    const pw = prompt(`Set a new password for "${name}" (min 8 characters). This also signs them out of all devices.`);
+    if (pw === null) return;
+    try { await api("POST", "/api/admin/users/" + encodeURIComponent(name) + "/password", { password: pw }); setMsg(`Password reset for ${name}; their sessions were revoked.`, "ok"); }
+    catch (e) { setMsg("Reset failed: " + e.message, "err"); }
+  });
   box.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm(`Delete account "${b.dataset.del}"? Their vaults, shares, and admin rights are removed.`)) return;
     try { await api("DELETE", "/api/admin/users/" + encodeURIComponent(b.dataset.del)); await renderUsers(); setMsg("Account deleted.", "ok"); }
     catch (e) { setMsg("Delete failed: " + e.message, "err"); }
+  });
+  // Expand/collapse an account's vaults; lazy-load their health + repair/delete on first open. This is
+  // the folded-in replacement for the old free-text "Vault repair" panel — no typo-prone owner/vault entry.
+  box.querySelectorAll("[data-vaults]").forEach(b => b.onclick = async () => {
+    const name = b.dataset.vaults;
+    const sub = box.querySelector(`.uvrow[data-uvfor="${CSS.escape(name)}"]`);
+    if (!sub) return;
+    if (sub.style.display !== "none") { sub.style.display = "none"; return; }
+    sub.style.display = "";
+    const cell = sub.querySelector("td");
+    try {
+      const vaults = await api("GET", "/api/admin/users/" + encodeURIComponent(name) + "/vaults");
+      renderOwnerVaults(name, vaults, cell);
+    } catch (e) { cell.innerHTML = `<span class="msg err">Couldn't load vaults: ${esc(e.message)}</span>`; }
+  });
+}
+
+// Render one account's vaults inside its expanded sub-row: health chip + status-driven Repair (with a
+// force option for unrecoverable entries) + Delete. Server-admin only (any owner).
+function renderOwnerVaults(name, vaults, cell) {
+  if (!vaults.length) { cell.innerHTML = `<div class="empty">No vaults.</div>`; return; }
+  cell.innerHTML = vaults.map(v => `<div class="row" style="margin:5px 0">
+      <span class="vault" style="flex:1;min-width:120px">${esc(v.vault)} ${healthChip(v.status)}</span>
+      <label class="inline"><input type="checkbox" class="ovforce" /> force</label>
+      <button class="ovreindex">Repair</button>
+      <button class="danger ovdel">Delete vault</button>
+    </div>`).join("");
+  cell.querySelectorAll(".row").forEach((rowEl, i) => {
+    const vault = vaults[i].vault;
+    rowEl.querySelector(".ovreindex").onclick = async () => {
+      const force = rowEl.querySelector(".ovforce").checked;
+      if (!confirm(`Repair "${name}/${vault}"${force ? " (force — drops unrecoverable entries)" : ""}?`)) return;
+      try { const r = await api("POST", "/api/admin/reindex", { owner: name, vault, force }); setMsg(`Repaired ${name}/${vault} — now at v${r.version}.`, "ok"); }
+      catch (e) { setMsg(`Repair failed: ${e.message}${force ? "" : " — try 'force' if entries are unrecoverable."}`, "err"); }
+    };
+    rowEl.querySelector(".ovdel").onclick = async () => {
+      if (!confirm(`DELETE vault "${name}/${vault}"? This removes all of its data on the server and cannot be undone.`)) return;
+      try { await api("DELETE", "/api/admin/vault", { owner: name, vault }); setMsg(`Deleted ${name}/${vault}.`, "ok"); }
+      catch (e) { setMsg(`Delete failed: ${e.message}`, "err"); }
+    };
   });
 }
 
@@ -254,32 +318,6 @@ async function renderInvites() {
     try { await api("DELETE", "/api/admin/invites/" + encodeURIComponent(b.dataset.inv)); await renderInvites(); setMsg("Invite revoked.", "ok"); }
     catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
   });
-}
-
-function renderRepair() {
-  $("repair").innerHTML = `
-    <div class="muted" style="font-size:13px;margin-bottom:8px">Repair a vault that reports an <strong>error</strong> (corrupt index) — including a shared vault you don't own — or delete one entirely. Reindex recovers files from the chunk store where possible; <strong>force</strong> drops entries that are unrecoverable (their content is already gone) so the rest can be repaired.</div>
-    <div class="row">
-      <input id="ro" placeholder="owner username" style="flex:1;min-width:120px" />
-      <input id="rv" placeholder="vault name" style="flex:1;min-width:120px" />
-      <label class="inline"><input type="checkbox" id="rf" /> force</label>
-      <button id="rgo">Reindex</button>
-      <button class="danger" id="rdel">Delete vault</button>
-    </div>`;
-  const owner = () => $("ro").value.trim(), vault = () => $("rv").value.trim();
-  $("rgo").onclick = async () => {
-    if (!owner() || !vault()) { setMsg("Enter both the owner and the vault name.", "err"); return; }
-    const force = $("rf").checked;
-    if (!confirm(`Rebuild the index for "${owner()}/${vault()}"${force ? " (force — drops unrecoverable entries)" : ""}?`)) return;
-    try { const r = await api("POST", "/api/admin/reindex", { owner: owner(), vault: vault(), force }); setMsg(`Reindexed ${owner()}/${vault()} — now at v${r.version}.`, "ok"); }
-    catch (e) { setMsg("Reindex failed: " + e.message, "err"); }
-  };
-  $("rdel").onclick = async () => {
-    if (!owner() || !vault()) { setMsg("Enter both the owner and the vault name.", "err"); return; }
-    if (!confirm(`DELETE vault "${owner()}/${vault()}"? This removes all of its data on the server and cannot be undone.`)) return;
-    try { await api("DELETE", "/api/admin/vault", { owner: owner(), vault: vault() }); setMsg(`Deleted ${owner()}/${vault()}.`, "ok"); }
-    catch (e) { setMsg("Delete failed: " + e.message, "err"); }
-  };
 }
 
 async function boot() {
