@@ -184,3 +184,30 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // SC.3.13.9 (terminate network connections) / SC.3.13.15 (session authenticity): a live WS socket
+    // is torn down the moment its bearer token stops resolving. `session_alive` is the EXACT predicate
+    // the socket loop re-checks on every ping and every change notification, so exercising it directly
+    // is the real teardown behavior — a revoked session cannot keep leaking change/version metadata.
+    #[test]
+    fn ws_session_dies_when_the_token_is_revoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = AppState::for_test(dir.path());
+        // The owner has full access to their own vault, so the ACL never blocks — this isolates the
+        // TOKEN-revocation teardown path.
+        // Single-token revoke (a logout).
+        let t1 = lock(&st.tokens).unwrap().issue("admin").unwrap();
+        assert!(session_alive(&st, "admin", "vault", "admin", &t1), "a fresh token keeps the socket alive");
+        lock(&st.tokens).unwrap().revoke(&t1).unwrap();
+        assert!(!session_alive(&st, "admin", "vault", "admin", &t1), "logout tears the socket down");
+        // Revoke-all (a password change / logout-everywhere) must kill an unrelated live token too.
+        let t2 = lock(&st.tokens).unwrap().issue("admin").unwrap();
+        assert!(session_alive(&st, "admin", "vault", "admin", &t2));
+        lock(&st.tokens).unwrap().revoke_user("admin").unwrap();
+        assert!(!session_alive(&st, "admin", "vault", "admin", &t2), "logout-all / password change tears every socket down");
+    }
+}

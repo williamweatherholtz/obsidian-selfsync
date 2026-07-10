@@ -13,7 +13,8 @@ async fn main() -> std::io::Result<()> {
     // SEC: refuse to boot with the default/unset admin password (SYNC_PASSWORD == "admin"), which
     // would ship a publicly-known admin login on any exposed server. A trusted LAN/dev box can
     // opt in explicitly with ALLOW_WEAK_ADMIN=1.
-    if cfg.password == "admin" && std::env::var("ALLOW_WEAK_ADMIN").ok().as_deref() != Some("1") {
+    let allow_weak = std::env::var("ALLOW_WEAK_ADMIN").ok().as_deref() == Some("1");
+    if new_livesync_server::config::weak_admin_refused(&cfg.password, allow_weak) {
         error!("REFUSING to start — SYNC_PASSWORD is unset or 'admin' (default admin credentials). Set a strong SYNC_PASSWORD. For a trusted LAN/dev instance only, set ALLOW_WEAK_ADMIN=1 to override.");
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "default admin password refused"));
     }

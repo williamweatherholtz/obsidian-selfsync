@@ -67,3 +67,25 @@ impl Config {
         }
     }
 }
+
+/// SEC (CM.3.4.2 — establish/enforce a secure baseline): decide whether to REFUSE to boot on the
+/// default/unset admin password. SYNC_PASSWORD defaults to "admin", so booting an exposed server on
+/// that well-known credential is refused unless the operator explicitly opts into a weak admin
+/// (ALLOW_WEAK_ADMIN=1) for a trusted LAN/dev box. Extracted as a pure predicate so the boot guard
+/// is unit-testable (real behavior), not just an inline assertion in `main`.
+pub fn weak_admin_refused(password: &str, allow_weak_override: bool) -> bool {
+    password == "admin" && !allow_weak_override
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // CM.3.4.2: the server must not silently ship a publicly-known admin login on an exposed box.
+    #[test]
+    fn refuses_boot_on_default_admin_password_unless_overridden() {
+        assert!(weak_admin_refused("admin", false), "default admin password must refuse boot");
+        assert!(!weak_admin_refused("admin", true), "ALLOW_WEAK_ADMIN=1 overrides for a trusted box");
+        assert!(!weak_admin_refused("a-strong-secret", false), "a non-default password boots normally");
+    }
+}
