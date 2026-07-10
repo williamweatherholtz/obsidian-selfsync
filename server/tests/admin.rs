@@ -440,3 +440,32 @@ async fn admin_invite_list_and_delete() {
     let (_s, lv2) = get(&base, "/api/admin/invites", &admin).await;
     assert_eq!(lv2.as_array().unwrap().len(), 0, "the deleted invite is gone");
 }
+
+// A server with REQUIRE_ADMIN_MFA=1 enforced.
+async fn spawn_admin_mfa() -> String {
+    let dir = tempdir().unwrap();
+    let root = Box::leak(Box::new(dir)).path().to_path_buf();
+    let state = AppState::for_test_admin_mfa(&root);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
+    format!("http://{addr}")
+}
+
+// IA.3.5.3 (crit-round): with REQUIRE_ADMIN_MFA=1, a server-admin cannot use any /api/admin/* route
+// until they enroll TOTP — MFA is MANDATORY for privileged accounts, not merely available. Enrollment
+// is reachable while blocked (the /api/mfa/* routes are AuthToken-gated, not admin-gated), so no lockout.
+#[tokio::test]
+async fn require_admin_mfa_blocks_admin_until_totp_enrolled() {
+    let base = spawn_admin_mfa().await;
+    let admin = login(&base, "admin").await;
+    assert_eq!(get(&base, "/api/admin/users", &admin).await.0, 403, "admin without MFA is denied when REQUIRE_ADMIN_MFA=1");
+    // Enroll + confirm TOTP (not admin-gated → reachable while the admin routes are blocked).
+    let (es, ev) = post_json(&base, "/api/mfa/enroll", &admin, Value::Null).await;
+    assert_eq!(es, 200);
+    let secret = ev["secret"].as_str().unwrap().to_string();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let code = new_livesync_server::totp::code_at(&secret, now).unwrap();
+    assert_eq!(post_json(&base, "/api/mfa/confirm", &admin, serde_json::json!({ "code": code })).await.0, 200);
+    assert_eq!(get(&base, "/api/admin/users", &admin).await.0, 200, "after enrolling MFA the admin can act");
+}

@@ -45,7 +45,11 @@ pub async fn confirm(
             audit(action::MFA_ENABLE, &user, &user, outcome::SUCCESS, &ip);
             Ok(Json(ConfirmResp { recovery_codes }))
         }
-        None => Err(AppError::BadRequest("that code didn't match — check your authenticator's time sync and try again".into())),
+        None => {
+            // AU.3.3.1 (crit-round): a failed enrollment-confirm is a security-relevant event — record it.
+            audit(action::MFA_ENABLE, &user, &user, outcome::FAILURE, &ip);
+            Err(AppError::BadRequest("that code didn't match — check your authenticator's time sync and try again".into()))
+        }
     }
 }
 
@@ -56,7 +60,12 @@ pub async fn disable(
 ) -> Result<StatusCode, AppError> {
     if !lock(&st.users)?.totp_enabled(&user) { return Ok(StatusCode::OK); }
     let ok = lock(&st.users)?.totp_verify_second_factor(&user, &req.code, now()).map_err(|e| AppError::Internal(e.to_string()))?;
-    if !ok { return Err(AppError::Unauthorized); }
+    if !ok {
+        // AU.3.3.1 (crit-round): a wrong-code MFA-disable attempt (a stolen-token probe to strip the
+        // second factor) must leave an audit trail — the success path was audited but this wasn't.
+        audit(action::MFA_DISABLE, &user, &user, outcome::FAILURE, &ip);
+        return Err(AppError::Unauthorized);
+    }
     lock(&st.users)?.totp_disable(&user).map_err(|e| AppError::Internal(e.to_string()))?;
     log::info!("[mfa] user='{user}' disabled TOTP");
     audit(action::MFA_DISABLE, &user, &user, outcome::SUCCESS, &ip);

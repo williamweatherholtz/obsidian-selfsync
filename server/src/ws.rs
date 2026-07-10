@@ -15,11 +15,24 @@ use tokio::sync::broadcast::Receiver;
 // TCP connection can't pin a task forever. (concurrency: WS idle timeout)
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 
-// Decrements the live-connection counter when a socket task ends (normal close, error, or
-// idle timeout), so the MAX_WS_CONNECTIONS budget is released on every exit path.
-struct ConnGuard(Arc<AtomicUsize>);
+// Decrements the live-connection counters when a socket task ends (normal close, error, or idle
+// timeout), so BOTH the global MAX_WS_CONNECTIONS budget and the per-user sub-cap are released on
+// every exit path. (crit-round SC.3.13.1: the per-user count is released here too.)
+struct ConnGuard {
+    global: Arc<AtomicUsize>,
+    per_user: Arc<std::sync::Mutex<HashMap<String, usize>>>,
+    user: String,
+}
 impl Drop for ConnGuard {
-    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::Relaxed); }
+    fn drop(&mut self) {
+        self.global.fetch_sub(1, Ordering::Relaxed);
+        if let Ok(mut m) = self.per_user.lock() {
+            if let Some(n) = m.get_mut(&self.user) {
+                *n = n.saturating_sub(1);
+                if *n == 0 { m.remove(&self.user); } // don't leak per-user entries
+            }
+        }
+    }
 }
 
 // The subprotocol the server speaks; the client offers it alongside its `auth.<token>` entry
@@ -109,7 +122,23 @@ pub async fn ws_handler(
         log::error!("[ws] connection refused — server is at capacity ({MAX_WS_CONNECTIONS} connections)");
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    let guard = ConnGuard(st.ws_conns.clone()); // released (decremented) when the socket task ends
+    // Per-user sub-cap (crit-round SC.3.13.1): reserve a slot for THIS account, releasing the global
+    // reserve if the user is already at their cap — one principal can't monopolize the shared budget.
+    {
+        let mut m = match lock(&st.ws_conns_per_user) {
+            Ok(m) => m,
+            Err(_) => { st.ws_conns.fetch_sub(1, Ordering::Relaxed); return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+        };
+        let n = m.entry(user.clone()).or_insert(0);
+        if *n >= crate::state::MAX_WS_PER_USER {
+            drop(m);
+            st.ws_conns.fetch_sub(1, Ordering::Relaxed);
+            log::warn!("[ws] connection refused — per-user cap reached");
+            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        *n += 1;
+    }
+    let guard = ConnGuard { global: st.ws_conns.clone(), per_user: st.ws_conns_per_user.clone(), user: user.clone() }; // releases both counters on task end
     // Routine connects are NOT logged. Emit capacity telemetry only: warn once we're at/over 80% of
     // the cap, and error at 100% (the next client will be refused).
     let pct = live * 100 / MAX_WS_CONNECTIONS;

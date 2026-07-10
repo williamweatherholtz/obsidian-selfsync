@@ -17,6 +17,14 @@ export interface Diagnosis { ok: boolean; layer: DiagnosisLayer; detail: string 
 // leaked promise just settles unobserved.)
 const REQUEST_TIMEOUT_MS = 30_000;
 function httpReq(params: RequestUrlParam): Promise<RequestUrlResponse> {
+  // SC.3.13.8 (crit-round): CENTRALIZED cleartext-remote refusal. Every request — sync ops AND the
+  // token-bearing account-management static calls (listVaults/createVault/changePassword/shares/…) —
+  // goes through here, so none can transmit a bearer token or password over http:// to a remote host.
+  // The per-call-site guards (constructor, login, register) stay for clearer early errors; this is the
+  // backstop that makes the "whole channel" guarantee actually whole. Loopback http stays allowed.
+  if (isInsecureRemote(params.url)) {
+    return Promise.reject(new Error("Refusing to send a request over an unencrypted http:// connection to a remote server — use an https:// address."));
+  }
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("request timed out (no response) — treating as offline")), REQUEST_TIMEOUT_MS);

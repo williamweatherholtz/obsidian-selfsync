@@ -99,7 +99,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f0b-4a10-9b20-a1b2c3d48f0b"; :>> title = "3.1.11 Terminate session after inactivity";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Terminate (automatically) a user session after a defined condition (inactivity).";
-        :>> rationale = "NIST SP 800-171 rev2 3.1.11 (paraphrased). Disposition: met. Token idle-expiry SESSION_IDLE_TIMEOUT_SECS (default 30 min) + 30-day absolute cap (tokens.rs).";
+        :>> rationale = "NIST SP 800-171 rev2 3.1.11 (paraphrased). Disposition: partial. Token idle-expiry (30 min) fires on app-close/network-loss + a 30-day absolute cap (tokens.rs) — a connected-but-idle app slides last_used via keepalives, so this is liveness-based, not user-inactivity; screen-lock is OS (3.1.10).";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement sr_3_1_12 : SystemRequirement {
@@ -277,7 +277,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f24-4a10-9b20-a1b2c3d48f24"; :>> title = "3.4.2 Enforce security configuration settings";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Establish and enforce security configuration settings for IT products.";
-        :>> rationale = "NIST SP 800-171 rev2 3.4.2 (paraphrased). Disposition: met. Env config with safe defaults; refuses to boot on the default admin password (main.rs).";
+        :>> rationale = "NIST SP 800-171 rev2 3.4.2 (paraphrased). Disposition: met. Env config with safe defaults; refuses to boot on a weak/short bootstrap password (known-weak set OR <8 chars) unless ALLOW_WEAK_ADMIN=1 (config.rs).";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement sr_3_4_3 : SystemRequirement {
@@ -348,7 +348,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f2e-4a10-9b20-a1b2c3d48f2e"; :>> title = "3.5.3 Multifactor authentication";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Use multifactor authentication for local and network access to privileged accounts and network access to non-privileged accounts.";
-        :>> rationale = "NIST SP 800-171 rev2 3.5.3 (paraphrased). Disposition: met. TOTP (RFC 6238) + single-use recovery codes for privileged accounts, enrolled via /admin, verified at login (totp.rs, mfa.rs). Non-privileged (plugin) MFA is a follow-up.";
+        :>> rationale = "NIST SP 800-171 rev2 3.5.3 (paraphrased). Disposition: met. TOTP (RFC 6238) + single-use recovery codes; enrolled via /admin, ENFORCED at login for enrolled accounts (totp.rs, mfa.rs). REQUIRE_ADMIN_MFA=1 makes MFA MANDATORY for privileged accounts (require_admin denies until enrolled) — an operator-configured control like TLS. Non-privileged (plugin) MFA is a follow-up.";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement sr_3_5_4 : SystemRequirement {
@@ -650,7 +650,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f58-4a10-9b20-a1b2c3d48f58"; :>> title = "3.13.1 Monitor/control communications at boundaries";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Monitor, control, and protect communications at external boundaries and key internal boundaries.";
-        :>> rationale = "NIST SP 800-171 rev2 3.13.1 (paraphrased). Disposition: met. public/admin router split; body cap; per-connection WS budget (lib.rs, ws.rs).";
+        :>> rationale = "NIST SP 800-171 rev2 3.13.1 (paraphrased). Disposition: met. public/admin router split; 16 MiB body cap; large-commit permit pool; global + per-user WS connection caps (lib.rs, ws.rs, state.rs).";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement sr_3_13_2 : SystemRequirement {
@@ -699,7 +699,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f5f-4a10-9b20-a1b2c3d48f5f"; :>> title = "3.13.8 Encrypt CUI in transit";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Implement cryptographic mechanisms to prevent unauthorized disclosure of CUI during transmission unless otherwise protected.";
-        :>> rationale = "NIST SP 800-171 rev2 3.13.8 (paraphrased). Disposition: partial. Client refuses cleartext http to a remote host on the whole channel; TLS termination + HSTS = operator proxy.";
+        :>> rationale = "NIST SP 800-171 rev2 3.13.8 (paraphrased). Disposition: met. Client refuses cleartext http to a remote host on the WHOLE channel — centralized in httpReq so every request incl. all token-bearing account calls is covered (transport.ts); server TLS termination + HSTS = operator proxy.";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::inspect;
     }
     requirement sr_3_13_9 : SystemRequirement {
@@ -944,14 +944,14 @@ package ProjectCompliance {
     verification v_3_3_7 : Test { :>> id = "c0f1a5cc-9011-4a10-9b20-a1b2c3d49011"; :>> method = VerificationMethod::inspect; :>> procedureText = "3.3.7 (code-cited claim, behavioral test pending): Audit events carry in-app UTC RFC-3339 ms; host NTP sync = operator."; }
     verification v_3_3_8 : Test { :>> id = "c0f1a5cc-9012-4a10-9b20-a1b2c3d49012"; :>> method = VerificationMethod::inspect; :>> procedureText = "3.3.8 (code-cited claim, behavioral test pending): Log-injection hardening prevents forged lines; at-rest sink protection = operator perms (SSP)."; }
     verification v_3_4_1 : Test { :>> id = "c0f1a5cc-9013-4a10-9b20-a1b2c3d49013"; :>> method = VerificationMethod::inspect; :>> procedureText = "3.4.1 (code-cited claim, behavioral test pending): Shipped compose is the baseline w/ safe defaults; env config documented. Inventory = operator."; }
-    verification v_3_4_2 : Test { :>> id = "c0f1a5cc-9014-4a10-9b20-a1b2c3d49014"; :>> method = VerificationMethod::test; :>> location = "server/src/config.rs"; :>> procedureText = "3.4.2: automated test — refuses_boot_on_default_admin_password_unless_overridden (secure baseline: server refuses to boot on the default 'admin' password unless ALLOW_WEAK_ADMIN=1)"; }
+    verification v_3_4_2 : Test { :>> id = "c0f1a5cc-9014-4a10-9b20-a1b2c3d49014"; :>> method = VerificationMethod::test; :>> location = "server/src/config.rs"; :>> procedureText = "3.4.2: automated test — refuses_boot_on_default_admin_password_unless_overridden + refuses_known_weak_and_short_bootstrap_passwords (rejects the whole weak/short class, not just 'admin')"; }
     verification v_3_4_6 : Test { :>> id = "c0f1a5cc-9015-4a10-9b20-a1b2c3d49015"; :>> method = VerificationMethod::test; :>> location = "server/tests/admin.rs"; :>> procedureText = "3.4.6: automated test — owner_share_endpoints_reachable_on_public_surface_but_not_account_admin (admin split)"; }
     verification v_3_4_7 : Test { :>> id = "c0f1a5cc-9016-4a10-9b20-a1b2c3d49016"; :>> method = VerificationMethod::test; :>> location = "server/tests/admin.rs"; :>> procedureText = "3.4.7: automated test — owner_share_endpoints_reachable_on_public_surface_but_not_account_admin"; }
     verification v_3_4_8 : Test { :>> id = "c0f1a5cc-9017-4a10-9b20-a1b2c3d49017"; :>> method = VerificationMethod::test; :>> location = "client/test/configsync.test.ts"; :>> procedureText = "3.4.8: automated test — shouldSync — SelfSync self-exclusion is absolute + allowlist gating"; }
     verification v_3_4_9 : Test { :>> id = "c0f1a5cc-9018-4a10-9b20-a1b2c3d49018"; :>> method = VerificationMethod::test; :>> location = "client/test/configsync.test.ts"; :>> procedureText = "3.4.9: automated test — shouldSync — a plugin stays device-local unless allowlisted"; }
     verification v_3_5_1 : Test { :>> id = "c0f1a5cc-9019-4a10-9b20-a1b2c3d49019"; :>> method = VerificationMethod::test; :>> location = "server/tests/sync.rs"; :>> procedureText = "3.5.1: automated test — userstore_register_verify_persist + login_issues_token_and_rejects_bad_creds"; }
     verification v_3_5_2 : Test { :>> id = "c0f1a5cc-901a-4a10-9b20-a1b2c3d4901a"; :>> method = VerificationMethod::test; :>> location = "server/tests/sync.rs"; :>> procedureText = "3.5.2: automated test — login_issues_token_and_rejects_bad_creds"; }
-    verification v_3_5_3 : Test { :>> id = "c0f1a5cc-901b-4a10-9b20-a1b2c3d4901b"; :>> method = VerificationMethod::test; :>> location = "server/src/totp.rs, server/tests/admin.rs"; :>> procedureText = "3.5.3: automated test — totp_rfc6238_vectors + hmac_sha1_rfc4231 (RFC-vector crypto) + mfa_totp_full_lifecycle (enroll->confirm->password-alone-401->password+TOTP-200->recovery-single-use->disable)"; }
+    verification v_3_5_3 : Test { :>> id = "c0f1a5cc-901b-4a10-9b20-a1b2c3d4901b"; :>> method = VerificationMethod::test; :>> location = "server/src/totp.rs, server/tests/admin.rs"; :>> procedureText = "3.5.3: automated test — totp_rfc6238_vectors + hmac_sha1_rfc4231 (RFC-vector crypto) + mfa_totp_full_lifecycle + require_admin_mfa_blocks_admin_until_totp_enrolled (REQUIRE_ADMIN_MFA=1 denies an admin without TOTP, allows after enroll)"; }
     verification v_3_5_4 : Test { :>> id = "c0f1a5cc-901c-4a10-9b20-a1b2c3d4901c"; :>> method = VerificationMethod::inspect; :>> procedureText = "3.5.4 (code-cited claim, behavioral test pending): Random 122-bit tokens over TLS; not a challenge-response. Full replay-resistance = MFA/mTLS (with 3.5.3)."; }
     verification v_3_5_5 : Test { :>> id = "c0f1a5cc-901d-4a10-9b20-a1b2c3d4901d"; :>> method = VerificationMethod::test; :>> location = "server/tests/admin.rs"; :>> procedureText = "3.5.5: automated test — deleting_a_vault_purges_its_share_grants + operator_can_reset (delete purges data)"; }
     verification v_3_5_7 : Test { :>> id = "c0f1a5cc-901e-4a10-9b20-a1b2c3d4901e"; :>> method = VerificationMethod::test; :>> location = "server/src/auth.rs, server/tests/admin.rs"; :>> procedureText = "3.5.7: automated test — enforces_length_and_complexity + register_rejects_a_too_short_password"; }
@@ -971,7 +971,7 @@ package ProjectCompliance {
     verification v_3_13_4 : Test { :>> id = "c0f1a5cc-902c-4a10-9b20-a1b2c3d4902c"; :>> method = VerificationMethod::test; :>> location = "server/tests/sync.rs"; :>> procedureText = "3.13.4: automated test — vaults_are_isolated_and_listable (no cross-tenant access; per-vault store)"; }
     verification v_3_13_5 : Test { :>> id = "c0f1a5cc-902d-4a10-9b20-a1b2c3d4902d"; :>> method = VerificationMethod::test; :>> location = "server/tests/sync.rs"; :>> procedureText = "3.13.5: automated test — admin_split_isolates_surfaces (code boundary; DMZ/subnet placement is operator)"; }
     verification v_3_13_6 : Test { :>> id = "c0f1a5cc-902e-4a10-9b20-a1b2c3d4902e"; :>> method = VerificationMethod::test; :>> location = "server/tests/sync.rs, server/src/shares.rs"; :>> procedureText = "3.13.6: automated test — default_mode_is_closed (registration deny-by-default) + non_grantee_is_denied / read_grant_allows_read_not_write (ACL deny-by-default)"; }
-    verification v_3_13_8 : Test { :>> id = "c0f1a5cc-902f-4a10-9b20-a1b2c3d4902f"; :>> method = VerificationMethod::test; :>> location = "client/test/connstr.test.ts"; :>> procedureText = "3.13.8: automated test — flags http to a remote host + allows https anywhere and http only to loopback (client encrypts-in-transit: refuses cleartext to remote; server TLS is operator)"; }
+    verification v_3_13_8 : Test { :>> id = "c0f1a5cc-902f-4a10-9b20-a1b2c3d4902f"; :>> method = VerificationMethod::test; :>> location = "client/test/connstr.test.ts, client/test/transport.test.ts"; :>> procedureText = "3.13.8: automated test — connstr flags http-to-remote + allows loopback/https; transport SC.3.13.8 — cleartext-remote refusal is centralized so all token-bearing account calls refuse http-to-remote too"; }
     verification v_3_13_9 : Test { :>> id = "c0f1a5cc-9030-4a10-9b20-a1b2c3d49030"; :>> method = VerificationMethod::test; :>> location = "server/src/ws.rs"; :>> procedureText = "3.13.9: automated test — ws_session_dies_when_the_token_is_revoked (a live WS socket is torn down when its token is revoked / logout-all — session_alive re-checked every ping+notification)"; }
     verification v_3_13_10 : Test { :>> id = "c0f1a5cc-9031-4a10-9b20-a1b2c3d49031"; :>> method = VerificationMethod::test; :>> location = "server/src/tokens.rs"; :>> procedureText = "3.13.10: automated test — survives_reopen_and_stores_only_hashes + open_sweeps_expired_tokens (key mgmt: hashed, TTL'd)"; }
     verification v_3_13_13 : Test { :>> id = "c0f1a5cc-9032-4a10-9b20-a1b2c3d49032"; :>> method = VerificationMethod::test; :>> location = "client/test/configsync.test.ts"; :>> procedureText = "3.13.13: automated test — community-plugin code is OFF by default + only allowlisted plugins sync (sync-delivered plugin code is never propagated/executed unless explicitly allowlisted)"; }

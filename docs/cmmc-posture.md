@@ -45,7 +45,7 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 | 3.1.8 limit unsuccessful logon attempts | MET | per-account throttle (10/5min → 429), argon2 permit pool; per-IP flood = OPERATOR (proxy) |
 | **3.1.9 system-use / consent banner** | **MET** | `SYNC_LOGIN_BANNER` shown pre-auth in the admin page + setup wizard (via `/health`) |
 | 3.1.10 session lock (screen lock) | OPERATOR | endpoint OS / Obsidian, not a sync server |
-| **3.1.11 terminate session after inactivity** | **MET** | token idle-expiry `SESSION_IDLE_TIMEOUT_SECS` (default 30 min) + 30-day absolute cap |
+| **3.1.11 terminate session after inactivity** | **PARTIAL** | token idle-expiry (30 min) terminates on app-close/network-loss + a 30-day absolute cap; a connected-but-idle app slides `last_used` via keepalives, so this is liveness-based, not user-inactivity (screen-lock is the OS, 3.1.10) |
 | 3.1.12 monitor/control remote access | MET / OPERATOR | all remote access token-gated + audited + revocable; central monitoring = SIEM (SSP) |
 | 3.1.20 control external connections | OPERATOR | firewall / proxy exposure; safe defaults (localhost admin split, no CORS) support it |
 
@@ -65,7 +65,7 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 | Practice | Status | Evidence / note |
 |---|---|---|
 | 3.5.1 / 3.5.2 identify & authenticate users / devices | MET / OPERATOR | account + argon2id; device auth (mTLS/VPN) = OPERATOR |
-| **3.5.3 multifactor authentication** | **MET** | TOTP (RFC 6238) second factor + single-use recovery codes for privileged/admin accounts; self-enrolled via `/admin`, verified at login. Self-contained crypto (`totp.rs`) pinned to RFC 4231/6238 vectors. Non-privileged (plugin) MFA = follow-up |
+| **3.5.3 multifactor authentication** | **MET\*** | TOTP (RFC 6238) + single-use recovery codes; self-enrolled via `/admin`, **enforced at login** for enrolled accounts. **`REQUIRE_ADMIN_MFA=1`** makes MFA **mandatory for privileged accounts** (`require_admin` denies until TOTP-enrolled) — an operator-configured control like TLS. Crypto (`totp.rs`) pinned to RFC 4231/6238 vectors. Non-privileged (plugin) MFA = follow-up |
 | **3.5.7 password complexity** | **MET** | `validate_password_policy`: length + ≥2 char classes, or ≥15-char passphrase, on every set path |
 | **3.5.8 prohibit password reuse** | **MET** | `users.rs` retains last 5 argon2 hashes; `change_password` rejects the current or any recent password |
 | **3.5.9 temporary password / forced change** | **MET** | admin create/reset flags `must_change`; the `AuthToken` extractor 403s every route but change-password/logout until a new password is set |
@@ -75,9 +75,9 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 ## System & Communications Protection (SC 3.13.x)
 | Practice | Status | Evidence / note |
 |---|---|---|
-| 3.13.1 / 3.13.5 boundary protection / separation | MET | public/admin router split; admin localhost-only by default |
+| 3.13.1 / 3.13.5 boundary protection / separation | MET | public/admin router split; admin localhost-only by default; 16 MiB body cap; large-commit permit pool + **global and per-user WS connection caps** (no single account can exhaust the notification budget) |
 | 3.13.6 deny by default | MET | registration closed by default; ACL deny-by-default; no CORS |
-| **3.13.8 encrypt CUI in transit** | MET (client) / OPERATOR (server TLS) | client refuses cleartext http:// to a remote host on **login, register, and the whole sync channel**; server TLS termination + HSTS = proxy (SSP) |
+| **3.13.8 encrypt CUI in transit** | MET (client) / OPERATOR (server TLS) | client refuses cleartext http:// to a remote host — **centralized in `httpReq`, so the WHOLE channel incl. every token-bearing account call** is covered (loopback http allowed); server TLS termination + HSTS = proxy (SSP) |
 | 3.13.10 key management | MET | random UUID tokens hashed at rest; per-user OsRng salts; env-rotatable bootstrap key |
 | **3.13.11 FIPS-validated crypto** | **POA&M** | argon2/sha2 crates + client SHA-256 are not FIPS-validated modules; decision below |
 | 3.13.15 authenticity of sessions | MET | bearer token off-URL (WS subprotocol); live WS re-authorization every ping/message |
@@ -94,7 +94,7 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 ## Configuration Management (CM 3.4.x)
 | Practice | Status | Evidence / note |
 |---|---|---|
-| 3.4.1 / 3.4.2 baseline / enforce secure settings | MET | env config with safe defaults; refuses to boot on the default admin password |
+| 3.4.1 / 3.4.2 baseline / enforce secure settings | MET | env config with safe defaults; refuses to boot on a weak/short bootstrap password (a known-weak set **or** <8 chars) unless `ALLOW_WEAK_ADMIN=1` |
 | 3.4.6 / 3.4.7 least functionality | MET | single binary; non-root uid 10001; slim image; admin-split; only required ports |
 | 3.4.9 control user-installed software | MET | community-plugin propagation off-by-default + per-plugin allowlist |
 

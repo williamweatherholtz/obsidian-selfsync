@@ -15,6 +15,9 @@ use tokio::sync::broadcast;
 // client (or a runaway reconnect loop) can't pin unbounded tasks/sockets. Generous for a
 // self-hosted deployment's device count. (concurrency: WS connection cap)
 pub const MAX_WS_CONNECTIONS: usize = 512;
+// Per-user WS sub-cap (crit-round SC.3.13.1): a single account may hold at most this many live
+// sockets, so it can't monopolize the global budget. Generous for legitimate multi-device use.
+pub const MAX_WS_PER_USER: usize = 16;
 
 // RS-1 (Round-7 scale): bound resident vault handles. The ns map was insert-only (removed only on
 // account/vault delete), so every vault ever opened stayed fully in RAM (its whole Index) for the
@@ -52,6 +55,9 @@ pub struct AppState {
     pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
     pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
+    // Per-user live WS count (crit-round SC.3.13.1): a sub-cap so one authenticated account can't
+    // consume the whole global budget and deny change-notifications to every other user.
+    pub ws_conns_per_user: Arc<Mutex<HashMap<String, usize>>>,
     // Bounds concurrent argon2 password hashing (login/register): argon2 is deliberately
     // memory-hard (~19 MiB each), so an unauthenticated flood could otherwise exhaust CPU+RAM.
     // A small permit pool caps in-flight hashes; excess auth requests queue briefly. (SEC-2)
@@ -114,6 +120,7 @@ impl AppState {
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
+            ws_conns_per_user: Arc::new(Mutex::new(HashMap::new())),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
             commit_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LARGE_COMMITS)),
             login_throttle: Arc::new(Mutex::new(crate::throttle::LoginThrottle::new())),
@@ -211,7 +218,10 @@ impl AppState {
         Ok(())
     }
 
-    pub fn for_test(data_root: &Path) -> Self {
+    pub fn for_test(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false) }
+    // Like for_test, but with the admin-MFA enforcement flag (crit-round IA.3.5.3) settable.
+    pub fn for_test_admin_mfa(data_root: &Path) -> Self { Self::for_test_cfg(data_root, true) }
+    fn for_test_cfg(data_root: &Path, require_admin_mfa: bool) -> Self {
         let cfg = Config {
             data_root: data_root.to_path_buf(),
             bind_addr: "127.0.0.1:0".into(),
@@ -222,6 +232,7 @@ impl AppState {
             registration: "open".into(),
             invite_code: String::new(),
             login_banner: String::new(),
+            require_admin_mfa,
         };
         let st = AppState::new(cfg).unwrap();
         // Tests exercise the sync routes against a `vault` namespace; provision it here (the

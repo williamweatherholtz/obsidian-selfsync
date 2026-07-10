@@ -19,6 +19,12 @@ pub struct Config {
     // authenticate. Empty ⇒ no banner. Set SYNC_LOGIN_BANNER to the operator's authorized-use notice
     // (e.g. a DoD standard consent banner for a CUI system). Surfaced by /health and rendered pre-auth.
     pub login_banner: String,
+    // SEC-CMMC (IA.3.5.3 — MFA for privileged accounts). When true, a server-admin cannot perform any
+    // privileged (/api/admin/*) action until they have enrolled TOTP, making MFA MANDATORY for admins
+    // (not merely available). Default false for bootstrap usability + backward-compat; the operator
+    // opts in with REQUIRE_ADMIN_MFA=1 (like TLS/audit-retention, an operator-configured control). A
+    // non-MFA admin can still reach the (AuthToken-gated, non-admin) MFA-enrollment routes to enroll.
+    pub require_admin_mfa: bool,
 }
 
 // The port from a "host:port" (or "[ipv6]:port") bind string.
@@ -64,6 +70,7 @@ impl Config {
             registration: env("REGISTRATION", "closed"),
             invite_code: env("INVITE_CODE", ""),
             login_banner: env("SYNC_LOGIN_BANNER", ""),
+            require_admin_mfa: env("REQUIRE_ADMIN_MFA", "") == "1",
         }
     }
 }
@@ -74,7 +81,14 @@ impl Config {
 /// (ALLOW_WEAK_ADMIN=1) for a trusted LAN/dev box. Extracted as a pure predicate so the boot guard
 /// is unit-testable (real behavior), not just an inline assertion in `main`.
 pub fn weak_admin_refused(password: &str, allow_weak_override: bool) -> bool {
-    password == "admin" && !allow_weak_override
+    if allow_weak_override { return false; } // explicit opt-out for a trusted LAN/dev box
+    // crit-round (CMMC): the guard used to reject only the exact literal "admin". Broaden it to the
+    // secure-baseline floor — a small known-weak set OR anything shorter than 8 chars is refused, so a
+    // trivially-guessable bootstrap credential (SYNC_PASSWORD=password / admin123 / a 4-char pin) can't
+    // ship on an exposed box. Strong passwords boot unchanged.
+    const KNOWN_WEAK: &[&str] = &["admin", "password", "changeme", "admin123", "root", "test", "letmein", "secret"];
+    let low = password.to_ascii_lowercase();
+    password.len() < 8 || KNOWN_WEAK.contains(&low.as_str())
 }
 
 #[cfg(test)]
@@ -87,5 +101,15 @@ mod tests {
         assert!(weak_admin_refused("admin", false), "default admin password must refuse boot");
         assert!(!weak_admin_refused("admin", true), "ALLOW_WEAK_ADMIN=1 overrides for a trusted box");
         assert!(!weak_admin_refused("a-strong-secret", false), "a non-default password boots normally");
+    }
+
+    // crit-round (CMMC CM.3.4.2): the boot guard rejects the whole trivially-weak class, not just "admin".
+    #[test]
+    fn refuses_known_weak_and_short_bootstrap_passwords() {
+        for w in ["password", "admin123", "Changeme", "root", "1234567"] {
+            assert!(weak_admin_refused(w, false), "'{w}' is weak/short and must refuse boot");
+        }
+        assert!(!weak_admin_refused("aStrongPassphrase1", false), "a strong password boots");
+        assert!(!weak_admin_refused("password", true), "override still lets a trusted box through");
     }
 }

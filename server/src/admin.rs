@@ -20,15 +20,22 @@ fn is_server_admin(st: &AppState, user: &str) -> bool {
     user == st.cfg.user || lock(&st.admins).map(|a| a.contains(user)).unwrap_or(false)
 }
 fn require_admin(st: &AppState, user: &str) -> Result<(), AppError> {
-    if is_server_admin(st, user) {
-        Ok(())
-    } else {
+    if !is_server_admin(st, user) {
         // SEC-CMMC (AU.3.3.1/3.3.2): audit a denied privileged-function attempt at this single
         // choke-point so every /api/admin/* route is covered. Actor is known; source IP isn't threaded
         // here (the mutating admin handlers carry it on their success events).
         audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, "-");
-        Err(AppError::Forbidden)
+        return Err(AppError::Forbidden);
     }
+    // IA.3.5.3 (crit-round): when the operator MANDATES admin MFA (REQUIRE_ADMIN_MFA=1), a privileged
+    // account cannot act until it has enrolled TOTP — making MFA required for privileged accounts, not
+    // merely available. Enrollment itself is on the (AuthToken-gated, non-admin) /api/mfa/* routes, so
+    // a fresh admin can still enroll and is never locked out.
+    if st.cfg.require_admin_mfa && !lock(&st.users)?.totp_enabled(user) {
+        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, "-");
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]

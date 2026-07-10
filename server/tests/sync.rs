@@ -74,6 +74,7 @@ async fn health_exposes_the_login_banner_preauth() {
         registration: "open".into(),
         invite_code: String::new(),
         login_banner: banner.into(),
+        require_admin_mfa: false,
     };
     let state = AppState::new(cfg).unwrap();
     std::mem::forget(dir);
