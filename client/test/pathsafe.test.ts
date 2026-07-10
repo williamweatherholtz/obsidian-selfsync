@@ -38,6 +38,17 @@ describe("isSafeVaultPath — receive-side traversal guard (R23)", () => {
     }
   });
 
+  it("rejects reserved Windows device names + trailing dot/space (server parity, R24)", () => {
+    for (const p of ["CON", "con.md", "folder/NUL.txt", "aux", "COM1", "lpt9.md",
+                     "note.md.", "trailing space ", "sub/dir./x.md"]) {
+      expect(isSafeVaultPath(p), `must reject: ${JSON.stringify(p)}`).toBe(false);
+    }
+    // but a name that merely CONTAINS a reserved stem as a substring is fine
+    for (const p of ["console.md", "companion.md", "lpt.md", "com0.md"]) {
+      expect(isSafeVaultPath(p), `must accept: ${JSON.stringify(p)}`).toBe(true);
+    }
+  });
+
   it("rejects an absurdly long path", () => {
     expect(isSafeVaultPath("a/".repeat(600) + "x.md")).toBe(false);
   });

@@ -4,6 +4,7 @@ import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } f
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta } from "../src/protocol";
+import { isSafeVaultPath } from "../src/pathsafe";
 
 const H = (h: string) => ({ hash: h });
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -67,6 +68,40 @@ function deps(api: SyncApi, io: VaultIo, extra: Partial<ReconcileDeps> = {}): Re
 async function serverPut(api: SyncApi, path: string, text: string) {
   await pushFile(api, fakeIo({ [path]: text }), { version: 0 }, new Map() as ChunkCache, path);
 }
+// A VaultIo that applies the production path guard (mirrors ObsidianVaultIo, R24): read/exists/write/
+// remove refuse a traversing/absolute server-supplied path so it can never touch the "filesystem".
+function guardedIo(seed: Record<string, string> = {}) {
+  const io = fakeIo(seed);
+  const raw = { read: io.read.bind(io), write: io.write.bind(io), remove: io.remove.bind(io) };
+  io.read = async (p) => { if (!isSafeVaultPath(p)) throw new Error("unsafe path refused"); return raw.read(p); };
+  io.exists = async (p) => (isSafeVaultPath(p) ? io.m.has(p) : false);
+  io.write = async (p, b) => { if (!isSafeVaultPath(p)) throw new Error("unsafe path refused"); return raw.write(p, b); };
+  io.remove = async (p) => { if (!isSafeVaultPath(p)) throw new Error("unsafe path refused"); return raw.remove(p); };
+  return io;
+}
+
+describe("R24: a compromised server cannot exfiltrate an out-of-vault file via a traversing tombstone", () => {
+  it("a traversing tombstone path is never read or pushed; a real file still syncs", async () => {
+    const { api, chunks, files } = fakeServer();
+    // The "vault" also contains an out-of-vault secret addressable by a traversing key (simulating the
+    // adapter escaping base via `..`), plus a legitimate note.
+    const io = guardedIo({ "../../../.ssh/id_rsa": "SUPER SECRET KEY", "note.md": "real note" });
+    let readSecret = false;
+    const origRead = io.read.bind(io);
+    io.read = async (p) => { const b = await origRead(p); if (p.includes("..")) readSecret = true; return b; };
+    // A malicious server pushes a tombstone for the traversing path (would resolve to push→exfil if unguarded).
+    const delta: ChangesResponse = { version: 5, upserts: [], deletes: [{ path: "../../../.ssh/id_rsa", version: 5 }] };
+    await reconcileDelta(deps(api, io), delta);
+    // The guarded read blocks the escape → the file reads as absent → decide()=in-sync → a SILENT SAFE
+    // no-op: the secret is never read, never chunked, never uploaded. (Unguarded, decide()=push here.)
+    expect(readSecret).toBe(false);
+    expect(files.has("../../../.ssh/id_rsa")).toBe(false);
+    for (const b of chunks.values()) expect(dec(b)).not.toContain("SUPER SECRET");
+    // A subsequent normal push of a real note still works (guard doesn't break legit paths).
+    await pushFile(api, io, { version: 0 }, new Map() as ChunkCache, "note.md");
+    expect(files.has("note.md")).toBe(true);
+  });
+});
 
 describe("reconcileAll", () => {
   it("uploads local-only and downloads remote-only", async () => {

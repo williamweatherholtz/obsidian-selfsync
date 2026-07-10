@@ -47,6 +47,17 @@ const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
 const SELF_WRITE_WINDOW_MS = 4000;
 
+// Best-effort fsync of a freshly-opened handle (file or directory), ALWAYS closing it. `open()` may
+// throw (mobile / unsupported dir-fsync) and `.sync()` may throw (I/O error) — either way we swallow
+// it (the content is already written; this only upgrades durability) but the `finally` guarantees the
+// handle is closed so a sync-error path can't leak a file descriptor (R24). No-op if open() throws.
+async function fsyncHandle(open: () => Promise<{ sync(): Promise<void>; close(): Promise<void> }>): Promise<void> {
+  let fh: { sync(): Promise<void>; close(): Promise<void> } | undefined;
+  try { fh = await open(); await fh.sync(); }
+  catch { /* best-effort: durability upgrade only, never fatal */ }
+  finally { try { await fh?.close(); } catch { /* already closed / never opened */ } }
+}
+
 class ObsidianVaultIo implements VaultIo {
   // Desktop-only streamed writer (Electron Node fs); left undefined on mobile so the
   // reconciler falls back to buffered writes there (Obsidian's adapter has no incremental
@@ -89,7 +100,7 @@ class ObsidianVaultIo implements VaultIo {
         // the page cache — on reboot the note is absent but base==remote, so decide() yields an
         // UNGUARDED delete-remote that propagates the loss fleet-wide. Best-effort: opening a dir as a
         // file works on Unix; on Windows/mobile it throws harmlessly (rename durability differs there).
-        try { const d = await fs.promises.open(nodePath.dirname(abs)); await d.sync(); await d.close(); } catch { /* dir fsync unsupported here */ }
+        await fsyncHandle(() => fs.promises.open(nodePath.dirname(abs)));
         this.plugin.onConfigWritten(path);
       },
       abort: async () => { try { await fh.close(); } catch { /* already closed */ } try { await fs.promises.rm(tmp, { force: true }); } catch { /* gone */ } },
@@ -133,9 +144,17 @@ class ObsidianVaultIo implements VaultIo {
   }
 
   async read(path: string): Promise<Uint8Array> {
+    // R24 SEC: guard the READ sink too (R23 covered only write/remove). A traversing server-supplied
+    // path — e.g. a tombstone `deletes:[{path:"../../../.ssh/id_rsa"}]` — resolves to a local read whose
+    // `..` escapes the vault via the adapter; that read then feeds decide()→push, EXFILTRATING the
+    // out-of-vault file to a malicious/compromised server. Fail loud (per-file isolated) so the read
+    // never happens and decide() sees the file as absent.
+    if (!isSafeVaultPath(path)) throw new Error(`refusing to read an unsafe/traversing path: '${path}'`);
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
   }
   async exists(path: string): Promise<boolean> {
+    // A traversing path is treated as "not present" — never probe outside the vault (R24 SEC).
+    if (!isSafeVaultPath(path)) return false;
     return this.plugin.app.vault.adapter.exists(normalizePath(path));
   }
   async write(path: string, bytes: Uint8Array): Promise<void> {
@@ -173,8 +192,8 @@ class ObsidianVaultIo implements VaultIo {
       const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
       const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
       const abs = nodePath.join(base, relPath);
-      try { const fh = await fs.promises.open(abs, "r+"); await fh.sync(); await fh.close(); } catch { /* content already written; fsync is best-effort */ }
-      try { const d = await fs.promises.open(nodePath.dirname(abs)); await d.sync(); await d.close(); } catch { /* dir fsync unsupported here */ }
+      await fsyncHandle(() => fs.promises.open(abs, "r+")); // fsync the note contents
+      await fsyncHandle(() => fs.promises.open(nodePath.dirname(abs))); // and its parent dir entry
     } catch { /* Node fs unavailable — mobile fallback, documented residual */ }
   }
   async remove(path: string): Promise<void> {

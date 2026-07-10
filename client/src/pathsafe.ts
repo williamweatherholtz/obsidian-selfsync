@@ -21,6 +21,19 @@ export function isSafeVaultPath(path: string): boolean {
   if (/^[a-zA-Z]:/.test(path)) return false;             // Windows drive letter (C:\...)
   for (const seg of path.split("/")) {
     if (seg === "" || seg === "." || seg === "..") return false; // empty (//, lead/trail /), dot, traversal
+    // Full parity with the server's safe_rel_path (R24): reject a segment Windows silently rewrites —
+    // a trailing '.'/' ' (folds to a sibling) or a reserved DOS device name (CON/PRN/AUX/NUL/COMn/LPTn,
+    // with or without extension). Not an escape, but it makes a hostile-server path fail-loud instead
+    // of materializing as a surprise sibling / DOS-device write on a Windows client.
+    if (seg.endsWith(".") || seg.endsWith(" ")) return false;
+    if (isReservedWinName(seg)) return false;
   }
   return true;
+}
+
+function isReservedWinName(segment: string): boolean {
+  const stem = segment.split(".")[0].toLowerCase();
+  if (stem === "con" || stem === "prn" || stem === "aux" || stem === "nul") return true;
+  return (stem.startsWith("com") || stem.startsWith("lpt"))
+    && stem.length === 4 && stem[3] >= "1" && stem[3] <= "9";
 }
