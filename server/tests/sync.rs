@@ -55,6 +55,34 @@ async fn health_ok() {
     assert_eq!(body["apiVersion"], new_livesync_server::protocol::API_VERSION);
 }
 
+// AC.3.1.9 (system-use / consent banner): the operator's authorized-use notice is surfaced pre-auth
+// via /health so the client and admin page can display it BEFORE any credentials are entered. This is
+// the real behavioral test for the control — it proves the configured banner round-trips into the
+// unauthenticated /health payload (no token presented).
+#[tokio::test]
+async fn health_exposes_the_login_banner_preauth() {
+    use new_livesync_server::config::Config;
+    let dir = tempfile::tempdir().unwrap();
+    let banner = "AUTHORIZED USE ONLY. Activity may be monitored.";
+    let cfg = Config {
+        data_root: dir.path().to_path_buf(),
+        bind_addr: "127.0.0.1:0".into(),
+        admin_bind: None,
+        vault: "vault".into(),
+        user: "admin".into(),
+        password: "admin".into(),
+        registration: "open".into(),
+        invite_code: String::new(),
+        login_banner: banner.into(),
+    };
+    let state = AppState::new(cfg).unwrap();
+    std::mem::forget(dir);
+    let base = serve(app(state)).await;
+    let body: serde_json::Value =
+        reqwest::get(format!("{base}/health")).await.unwrap().json().await.unwrap();
+    assert_eq!(body["banner"], banner, "the pre-auth banner must be returned by /health");
+}
+
 #[test]
 fn filemeta_roundtrips_json() {
     use new_livesync_server::protocol::FileMeta;
