@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:admin-e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/diff-match-patch": "^1.0.36",
     "@types/node": "^20.0.0",
     "diff-match-patch": "^1.0.5",
