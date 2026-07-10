@@ -19,7 +19,7 @@ export interface RunningServer { base: string; stop: () => Promise<void>; }
 
 // Spawn a throwaway server: admin/admin (ALLOW_WEAK_ADMIN opts past the default-credential boot guard),
 // merged admin surface on one ephemeral port. Resolves once it logs its listening address.
-export async function startServer(): Promise<RunningServer> {
+export async function startServer(opts: { banner?: string } = {}): Promise<RunningServer> {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-admin-pw-"));
   const srv: ChildProcess = spawn(serverBin, [], {
     env: {
@@ -27,6 +27,7 @@ export async function startServer(): Promise<RunningServer> {
       DATA_ROOT: dataDir, BIND_ADDR: "127.0.0.1:0",
       SYNC_USER: "admin", SYNC_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1",
       ADMIN_BIND_ADDR: "merge", LOG_LEVEL: "info",
+      ...(opts.banner ? { SYNC_LOGIN_BANNER: opts.banner } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
