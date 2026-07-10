@@ -1,6 +1,7 @@
 import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
 import { ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
 import { SyncApi } from "./sync";
+import { isInsecureRemote } from "./connstr";
 
 // A layered connection diagnosis: which link in the chain is broken, so the user gets an actionable
 // reason instead of a silent "offline". Addresses the #1 sync-support complaint — failures that don't
@@ -87,6 +88,12 @@ export class HttpTransport implements SyncApi {
   }
 
   static async login(baseUrl: string, username: string, password: string): Promise<string> {
+    // SEC-AUTH: never send a password over plain http:// to a remote host — it (and the returned
+    // bearer token, and everything after) would be interceptable. Refuse loudly; the fix is an
+    // https:// URL (put the server behind a TLS reverse proxy). Loopback http is allowed (local dev).
+    if (isInsecureRemote(baseUrl)) {
+      throw new Error("Refusing to send your password over an unencrypted http:// connection to a remote server — anyone on the network could read it. Use an https:// address (put the server behind a TLS reverse proxy).");
+    }
     const r = await httpReq({
       url: `${baseUrl}/api/login`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ username, password }), throw: false,
@@ -96,6 +103,9 @@ export class HttpTransport implements SyncApi {
   }
 
   static async register(baseUrl: string, username: string, password: string, invite = ""): Promise<void> {
+    if (isInsecureRemote(baseUrl)) {
+      throw new Error("Refusing to send a new password over an unencrypted http:// connection to a remote server. Use an https:// address.");
+    }
     const r = await httpReq({
       url: `${baseUrl}/api/register`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ username, password, invite }), throw: false,

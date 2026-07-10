@@ -56,6 +56,9 @@ pub struct AppState {
     // memory-hard (~19 MiB each), so an unauthenticated flood could otherwise exhaust CPU+RAM.
     // A small permit pool caps in-flight hashes; excess auth requests queue briefly. (SEC-2)
     pub auth_slots: Arc<tokio::sync::Semaphore>,
+    // SEC-AUTH (FR9): per-account login throttle / lockout — brute-force protection for the
+    // internet-facing front door (the design docs promised rate-limiting; it was never built).
+    pub login_throttle: Arc<Mutex<crate::throttle::LoginThrottle>>,
 }
 
 // Max concurrent password-hash operations across all login/register requests. (SEC-2)
@@ -100,6 +103,7 @@ impl AppState {
             ns: Arc::new(Mutex::new(HashMap::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
+            login_throttle: Arc::new(Mutex::new(crate::throttle::LoginThrottle::new())),
         };
         // Ensure the bootstrap account has a `default` vault to land in.
         if safe_name(&state.cfg.user) {

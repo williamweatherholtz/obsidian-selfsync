@@ -33,6 +33,16 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
 ## Public-exposure hardening checklist
 
 - **Set a strong `SYNC_PASSWORD`.** Never leave the `admin`/`admin` default on an exposed server.
+  (The server refuses to boot on the literal default password unless `ALLOW_WEAK_ADMIN=1`.) User
+  accounts must use a password of at least 8 characters (enforced on registration).
+- **Brute-force protection is built in, but add per-IP limiting at the proxy.** The server
+  rate-limits **per account** (after ~10 failed logins in 5 minutes an account is locked out with
+  HTTP 429 + `Retry-After` until the window rolls; a successful login clears it). It does **not** do
+  per-IP throttling — that's the reverse proxy's job. On an internet-facing box, add a per-IP rate
+  limit / fail2ban in front of `/api/login` and `/api/register` to blunt distributed guessing and
+  request floods.
+- **Runs as a non-root user.** The container process runs as an unprivileged user (`selfsync`,
+  UID 10001), not root. If you mount a host directory for `/data`, make it writable by that UID.
 - **Never publish the server's `:8080` port to the internet.** Only the reverse proxy's `443`
   should be public — the example does this (the server uses `expose:`, not `ports:`). Publishing
   `:8080` would bypass TLS.

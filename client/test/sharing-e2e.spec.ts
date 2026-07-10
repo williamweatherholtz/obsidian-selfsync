@@ -24,10 +24,10 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
 
   it("read-write share syncs both ways; read-only pulls but never pushes", async () => {
     const admin = await NodeTransport.login(base, "admin", "admin");
-    await NodeTransport.createUser(base, admin, "alice", "pw");
-    await NodeTransport.createUser(base, admin, "bob", "pw");
-    await NodeTransport.createUser(base, admin, "carol", "pw");
-    const aliceTok = await NodeTransport.login(base, "alice", "pw");
+    await NodeTransport.createUser(base, admin, "alice", "vaultpw12");
+    await NodeTransport.createUser(base, admin, "bob", "vaultpw12");
+    await NodeTransport.createUser(base, admin, "carol", "vaultpw12");
+    const aliceTok = await NodeTransport.login(base, "alice", "vaultpw12");
     await NodeTransport.createVault(base, aliceTok, "team");
 
     // alice writes a note in her own "team" vault and pushes it
@@ -39,7 +39,7 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
     await NodeTransport.grant(base, aliceTok, "team", "bob", "readWrite");
 
     // bob syncs alice's shared vault (owner-qualified transport) and gets the note
-    const bobTok = await NodeTransport.login(base, "bob", "pw");
+    const bobTok = await NodeTransport.login(base, "bob", "vaultpw12");
     const bob = mkClient(root("bob"), new NodeTransport(base, bobTok, "team", "alice"));
     await reconcileAll(dep(bob));
     expect(dec(await bob.io.read("n.md"))).toBe("from alice");
@@ -52,7 +52,7 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
 
     // carol has a READ-ONLY share: she pulls the current content...
     await NodeTransport.grant(base, aliceTok, "team", "carol", "read");
-    const carolTok = await NodeTransport.login(base, "carol", "pw");
+    const carolTok = await NodeTransport.login(base, "carol", "vaultpw12");
     const carol = mkClient(root("carol"), new NodeTransport(base, carolTok, "team", "alice"));
     await reconcileAll(ro(carol));
     expect(dec(await carol.io.read("n.md"))).toBe("edited by bob");

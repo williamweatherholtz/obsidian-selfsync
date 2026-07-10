@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DEFAULT_MAX_SYNC_BYTES, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, DEFAULT_MAX_SYNC_BYTES, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -202,7 +202,15 @@ class ObsidianVaultIo implements VaultIo {
     if (!this.passes(path)) return;
     this.plugin.markConfigSelfWrite(path); // suppress the "raw" echo of our own removal
     const p = normalizePath(path);
-    if (await this.plugin.app.vault.adapter.exists(p)) await this.plugin.app.vault.adapter.remove(p);
+    if (!(await this.plugin.app.vault.adapter.exists(p))) return;
+    // SEC-DATA (audit): a sync-driven deletion goes to the vault's `.trash`, NOT a hard unlink. The
+    // server is the most likely thing to be compromised on an internet-facing deployment; if a
+    // malicious/buggy server ever drives a mass delete (e.g. paced tombstones), the user can RECOVER
+    // from .trash instead of losing data irrecoverably. Fall back to a hard remove only if trashing
+    // is unavailable on this adapter.
+    const adapter = this.plugin.app.vault.adapter as unknown as { trashLocal?: (p: string) => Promise<void>; remove: (p: string) => Promise<void> };
+    if (adapter.trashLocal) { try { await adapter.trashLocal(p); return; } catch { /* fall through to hard remove */ } }
+    await adapter.remove(p);
   }
 }
 
@@ -271,6 +279,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   // R18 bounded-retry state (persists across reconcile passes): per-path consecutive pull-failure
   // budget, and the set of paths we've already surfaced as "server copy corrupt" (notice once).
   private pullRetries = new Map<string, { version: number; count: number }>();
+  // SEC-DATA: one cumulative delete-rate guard for the whole session (survives across reconcile passes)
+  // so a paced-tombstone vault drain from a compromised server is caught, not just per-pass ratio spikes.
+  private deleteGuard = new DeleteRateGuard();
   private pullExhaustedNotified = new Set<string>();
   private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
   private versionNoticeShown = false; // R12-PB6: toast a protocol-version mismatch once, not every retry
@@ -785,6 +796,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
+      deleteGuard: this.deleteGuard, // SEC-DATA: cross-pass cumulative delete-rate guard (anti-drain)
       retryBudget: this.pullRetries, // R18: bound re-download of a permanently-corrupt server file
       onPullExhausted: (p) => {
         if (this.pullExhaustedNotified.has(p)) return; // once per path per session

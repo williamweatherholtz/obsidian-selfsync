@@ -83,7 +83,7 @@ async fn non_admin_cannot_manage_server() {
 async fn admin_creates_and_lists_users() {
     let base = spawn().await;
     let admin = login(&base, "admin").await;
-    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"charlie","password":"pw"})).await, 200);
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"charlie","password":"charliepw"})).await, 200);
     let (_s, users) = get(&base, "/api/admin/users", &admin).await;
     // users_list now returns objects {username, is_admin, is_bootstrap} (D0021).
     let charlie = users.as_array().unwrap().iter().find(|u| u["username"] == "charlie").unwrap();
@@ -122,7 +122,7 @@ async fn admin_sets_registration_and_issues_working_invite() {
         (r.status().as_u16(), r.json::<Value>().await.unwrap())
     };
     let token = inv["token"].as_str().unwrap();
-    let reg = reqwest::Client::new().post(format!("{base}/api/register")).json(&json!({"username":"dave","password":"pw","invite":token})).send().await.unwrap();
+    let reg = reqwest::Client::new().post(format!("{base}/api/register")).json(&json!({"username":"dave","password":"davepw123","invite":token})).send().await.unwrap();
     assert_eq!(reg.status().as_u16(), 200);
 }
 
@@ -193,4 +193,43 @@ async fn owner_share_endpoints_reachable_on_public_surface_but_not_account_admin
     // Account-admin endpoints stay OFF the public surface (404, not exposed).
     assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 404);
     assert_eq!(get(&base, "/api/admin/usernames", &bob).await.0, 404);
+}
+
+#[tokio::test]
+async fn login_is_rate_limited_after_repeated_failures(/* SEC-AUTH FR9 */) {
+    let base = spawn().await;
+    let c = reqwest::Client::new();
+    // DEFAULT_MAX_FAILS (10) wrong-password attempts against one account are each a plain 401…
+    for _ in 0..10 {
+        let s = c.post(format!("{base}/api/login")).json(&json!({"username":"admin","password":"wrong"}))
+            .send().await.unwrap().status().as_u16();
+        assert_eq!(s, 401);
+    }
+    // …then the account is locked out: the NEXT attempt is 429 with Retry-After — EVEN with the
+    // correct password (lockout is by account, so a brute-forcer can't just keep guessing).
+    let r = c.post(format!("{base}/api/login")).json(&json!({"username":"admin","password":"admin"}))
+        .send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 429);
+    assert!(r.headers().contains_key("retry-after"), "429 carries a Retry-After header");
+    // A DIFFERENT account is unaffected by admin's lockout.
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
+        .send().await.unwrap().status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn logout_revokes_the_presented_token(/* SEC-AUTH */) {
+    let base = spawn().await;
+    let t = login(&base, "bob").await;
+    assert_eq!(get(&base, "/api/admin/me", &t).await.0, 200);        // token works
+    assert_eq!(send(&base, "POST", "/api/logout", &t, json!({})).await, 200);
+    assert_eq!(get(&base, "/api/admin/me", &t).await.0, 401);        // …and is dead after logout
+}
+
+#[tokio::test]
+async fn register_rejects_a_too_short_password(/* SEC-AUTH min-length */) {
+    let base = spawn().await; // Open registration is off by default here, but the length check runs first.
+    let c = reqwest::Client::new();
+    let s = c.post(format!("{base}/api/register")).json(&json!({"username":"shorty","password":"1234567"}))
+        .send().await.unwrap().status().as_u16();
+    assert_eq!(s, 400, "a <8-char password is rejected before the registration gate");
 }

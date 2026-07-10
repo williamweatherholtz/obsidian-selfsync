@@ -43,6 +43,38 @@ export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
 export const BULK_DELETE_MIN = 6;      // don't second-guess tiny vaults
 export const BULK_DELETE_RATIO = 0.5;  // >= half of base missing from a non-empty manifest = suspicious
 
+// SEC-DATA (audit): the per-pass ratio guard above is STATELESS, so a compromised/malicious server can
+// defeat it by pacing tombstones at just-under-RATIO of the CURRENT base each poll — the base shrinks
+// every pass (delete removes it), so a 1000-file vault drains to ~nothing in ~8 polls while no single
+// pass trips the ratio. DeleteRateGuard closes that by measuring CUMULATIVE deletes against a rolling
+// HIGH-WATER MARK of base size (a fixed denominator across passes), so a paced drain trips the guard
+// once cumulative deletions reach RATIO × peak within the window. In-memory + per-session (an attacker
+// pacing across restarts is far slower/noisier, and deletes now go to .trash so they're recoverable);
+// the plugin owns one instance and passes it in deps. Absent ⇒ only the per-pass guard applies.
+export class DeleteRateGuard {
+  private windowStart = 0;
+  private deletedInWindow = 0;
+  private peakBase = 0;
+  constructor(
+    private readonly windowMs = 60 * 60 * 1000, // 1h rolling window
+    private readonly ratio = BULK_DELETE_RATIO,
+    private readonly min = BULK_DELETE_MIN,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+  // Call once per pass with the current accepted-base size. Rolls the window (a quiet hour resets the
+  // peak + count) and tracks the high-water mark within the window.
+  observe(baseSize: number): void {
+    const t = this.now();
+    if (t - this.windowStart > this.windowMs) { this.windowStart = t; this.deletedInWindow = 0; this.peakBase = baseSize; }
+    else this.peakBase = Math.max(this.peakBase, baseSize);
+  }
+  // True if deleting `n` more files now would push cumulative window deletions to >= ratio × peak.
+  wouldExceed(n: number): boolean {
+    return this.peakBase >= this.min && (this.deletedInWindow + n) / this.peakBase >= this.ratio;
+  }
+  record(n: number): void { this.deletedInWindow += Math.max(0, n); }
+}
+
 // At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
 // supports it — which also lets it bypass the buffered size gate. Uploads still buffer
 // (chunking reads the whole local file), so they stay gated.
@@ -87,6 +119,9 @@ export interface ReconcileDeps {
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
+  // SEC-DATA: cross-pass cumulative delete-rate guard (defeats a paced-tombstone vault drain). Optional;
+  // when present it is OR'd with the per-pass ratio guard. The plugin owns one instance across passes.
+  deleteGuard?: DeleteRateGuard;
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
   // A config file whose reconcile can't be resolved additively — a removal (base present →
@@ -292,8 +327,13 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // a genuine mass delete slip under the guard. (DI-R2 note)
   const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p));
   const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
-  const guardBulkDelete = basePaths.length > 0 && (remote.size === 0
-    || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
+  // SEC-DATA: feed the cumulative guard this pass's accepted-base size, then OR its verdict with the
+  // stateless per-pass ratio so a paced drain (which never trips the per-pass ratio) is still caught.
+  d.deleteGuard?.observe(basePaths.length);
+  const guardBulkDelete = (basePaths.length > 0 && (remote.size === 0
+    || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO)))
+    || (d.deleteGuard?.wouldExceed(wouldDelete) ?? false);
+  if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
@@ -342,7 +382,13 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const tombstoned = new Set(delta.deletes.map((x) => x.path));
   const baseSet = new Set(d.base.paths().filter((p) => !d.accepts || d.accepts(p)));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
-  const guardBulkDelete = baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO;
+  // SEC-DATA: same cumulative-guard wiring as reconcileAll — the delta path also delete-locals on
+  // tombstones, so a paced drain must be caught here too (the per-pass ratio alone can't, and the
+  // <BULK_DELETE_MIN small-vault tail had no throttle at all).
+  d.deleteGuard?.observe(baseSet.size);
+  const guardBulkDelete = (baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO)
+    || (d.deleteGuard?.wouldExceed(wouldDelete) ?? false);
+  if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   await mapPool([...new Set<string>([...remote.keys(), ...tombstoned])], FILE_CONCURRENCY, async (p) => {

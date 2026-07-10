@@ -12,11 +12,20 @@ pub enum AppError {
     Forbidden, // 403 — authenticated but not authorized for this owner/vault
     Conflict(String),
     Unavailable(String), // 503 — vault not writable / lock poisoned (propagate, don't resume)
+    TooManyRequests(u64), // 429 — login throttle tripped; payload = Retry-After seconds (SEC-AUTH)
     Internal(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // 429 carries a Retry-After header, so build its response directly rather than via (code,msg).
+        if let AppError::TooManyRequests(secs) = self {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, secs.to_string())],
+                "too many attempts — try again later".to_string(),
+            ).into_response();
+        }
         let (code, msg) = match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
@@ -24,6 +33,7 @@ impl IntoResponse for AppError {
             AppError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            AppError::TooManyRequests(_) => unreachable!("handled above"),
             // SEC-6: never return the raw internal error (std::io messages can carry absolute
             // server paths) to the client — log it server-side, hand back a generic 500 body.
             AppError::Internal(m) => {

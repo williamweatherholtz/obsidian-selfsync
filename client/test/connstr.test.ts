@@ -1,5 +1,19 @@
 import { describe, it, expect } from "vitest";
-import { encodeSetupLink, parseSetupLink, normalizeServer } from "../src/connstr";
+import { encodeSetupLink, parseSetupLink, normalizeServer, isInsecureRemote } from "../src/connstr";
+
+describe("isInsecureRemote — block cleartext credentials to a remote host (SEC-AUTH)", () => {
+  it("flags http:// to a remote host (interceptable credentials)", () => {
+    for (const s of ["http://sync.example.com", "http://192.168.1.9:8080", "http://myserver:8080"]) {
+      expect(isInsecureRemote(s), s).toBe(true);
+    }
+  });
+  it("allows https anywhere and http only to loopback (local dev / same-host TLS proxy)", () => {
+    for (const s of ["https://sync.example.com", "https://192.168.1.9", "http://localhost:8080",
+                     "http://127.0.0.1:8080", "http://foo.localhost:8080"]) {
+      expect(isInsecureRemote(s), s).toBe(false);
+    }
+  });
+});
 
 describe("connstr round-trip", () => {
   it("encodes then parses back to the same server+user", () => {

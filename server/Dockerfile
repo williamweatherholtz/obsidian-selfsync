@@ -15,6 +15,11 @@ ENV DATA_ROOT=/data \
     BIND_ADDR=0.0.0.0:8080 \
     SYNC_USER=admin \
     SYNC_PASSWORD=admin
+# SEC-DEPLOY (audit): run as a non-root user, not UID 0 — so a future RCE or container escape can't
+# operate with root privileges. Own the data volume so the unprivileged process can still write it.
+RUN useradd --system --uid 10001 --home-dir /data --no-create-home selfsync \
+ && mkdir -p /data && chown selfsync:selfsync /data
+USER selfsync
 EXPOSE 8080
 VOLUME ["/data"]
 HEALTHCHECK --interval=3s --timeout=2s --start-period=2s --retries=10 \

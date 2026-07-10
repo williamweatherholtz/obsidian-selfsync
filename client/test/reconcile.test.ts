@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
+import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -79,6 +79,40 @@ function guardedIo(seed: Record<string, string> = {}) {
   io.remove = async (p) => { if (!isSafeVaultPath(p)) throw new Error("unsafe path refused"); return raw.remove(p); };
   return io;
 }
+
+describe("SEC-DATA: DeleteRateGuard defeats a paced-tombstone vault drain", () => {
+  it("catches cumulative deletes against a high-water mark even when no single pass trips the ratio", () => {
+    let t = 1_000_000;
+    const g = new DeleteRateGuard(60 * 60 * 1000, 0.5, 6, () => t);
+    // Pass 1: 100-file vault, delete 40 (40% < 50% per-pass ratio → per-pass guard would NOT fire).
+    g.observe(100);
+    expect(g.wouldExceed(40)).toBe(false);   // 40/100 = 0.40 < 0.5
+    g.record(40);
+    // Pass 2: base shrank to 60 (the drain). Delete another 20 — 20/60 = 0.33, still under the STATELESS
+    // per-pass ratio, but cumulative 40+20=60 against the peak of 100 = 0.60 >= 0.5 → guard fires.
+    g.observe(60);
+    expect(g.wouldExceed(20)).toBe(true);
+  });
+
+  it("does not fire on a legitimate small delete, and resets after a quiet window", () => {
+    let t = 0;
+    const g = new DeleteRateGuard(1000, 0.5, 6, () => t);
+    g.observe(100);
+    expect(g.wouldExceed(10)).toBe(false);   // 10% — fine
+    g.record(10);
+    // A quiet window passes → peak + count reset, so a later legitimate batch isn't penalized by history.
+    t += 2000;
+    g.observe(100);
+    expect(g.wouldExceed(40)).toBe(false);   // fresh window: 40/100 < 0.5
+  });
+
+  it("ignores tiny vaults (below BULK_DELETE_MIN) so a 3-file vault isn't second-guessed", () => {
+    let t = 0;
+    const g = new DeleteRateGuard(1000, 0.5, 6, () => t);
+    g.observe(3);
+    expect(g.wouldExceed(3)).toBe(false);    // peak 3 < min 6 → never guards
+  });
+});
 
 describe("R24: a compromised server cannot exfiltrate an out-of-vault file via a traversing tombstone", () => {
   it("a traversing tombstone path is never read or pushed; a real file still syncs", async () => {

@@ -169,8 +169,9 @@ async function renderVaults() {
     const grantee = box.querySelector(`[data-g="${CSS.escape(vault)}"]`).value.trim();
     const perm = box.querySelector(`[data-perm="${CSS.escape(vault)}"]`).value;
     if (!grantee) { setMsg("Enter a username to share with.", "err"); return; }
-    // Fuzzy guard: reject a grantee that isn't a real account, with a "did you mean" suggestion —
-    // not a blind string that would 400 server-side with no hint. (Server still verifies existence.)
+    // Fuzzy guard: warn on a grantee that isn't in the known-accounts list, with a "did you mean"
+    // suggestion — a client-side convenience only. (The server does NOT verify existence on
+    // share_create — a dormant grant to a future account is allowed, to avoid an enumeration oracle.)
     if (names.length && !names.includes(grantee)) {
       const sug = names.filter(n => n.toLowerCase().includes(grantee.toLowerCase())).slice(0, 3);
       setMsg(`No account "${grantee}".` + (sug.length ? ` Did you mean: ${sug.join(", ")}?` : " Check the username."), "err");

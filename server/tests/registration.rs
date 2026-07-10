@@ -16,7 +16,7 @@ async fn spawn() -> (String, AppState) {
 async fn register(base: &str, user: &str, invite: &str) -> u16 {
     reqwest::Client::new()
         .post(format!("{base}/api/register"))
-        .json(&serde_json::json!({ "username": user, "password": "pw", "invite": invite }))
+        .json(&serde_json::json!({ "username": user, "password": "regpw1234", "invite": invite }))
         .send()
         .await
         .unwrap()

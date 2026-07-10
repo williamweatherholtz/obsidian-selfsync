@@ -247,7 +247,8 @@ pub async fn users_list(
 // user — in MERGE mode /api/admin/* rides the public port, so an ungated list would be an
 // enumeration oracle worse than the per-name check the rest of the system de-oracles. The common
 // operator IS the admin, so autocomplete still works for them; a non-admin owner falls back to
-// typing the grantee (the server still verifies existence on share_create).
+// typing the grantee (share_create deliberately does NOT verify existence — a dormant grant to a
+// not-yet-registered name is allowed, precisely so it can't be used as an enumeration oracle).
 pub async fn usernames(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<String>>, AppError> {
@@ -306,7 +307,10 @@ pub async fn users_create(
     if req.password.len() > crate::auth::MAX_PASSWORD_LEN {
         return Err(AppError::BadRequest("password too long".into()));
     }
-    let permit = st.auth_slots.clone().acquire_owned().await.map_err(|_| AppError::Unavailable("auth busy".into()))?;
+    if req.password.len() < crate::auth::MIN_PASSWORD_LEN {
+        return Err(AppError::BadRequest(format!("password too short (minimum {} characters)", crate::auth::MIN_PASSWORD_LEN)));
+    }
+    let permit = crate::auth::acquire_auth(&st).await?;
     let users = st.users.clone();
     let (u, p) = (req.username.clone(), req.password.clone());
     let result = tokio::task::spawn_blocking(move || {

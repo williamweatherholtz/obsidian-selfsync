@@ -81,6 +81,12 @@ impl TokenStore {
         }
     }
 
+    // Revoke a SINGLE session by its plaintext token (server-side logout, SEC-AUTH). Idempotent:
+    // an unknown/already-expired token is a no-op success — the caller only cares that it's gone.
+    pub fn revoke(&mut self, token: &str) -> std::io::Result<()> {
+        if self.file.tokens.remove(&sha256_hex(token)).is_some() { self.save() } else { Ok(()) }
+    }
+
     // Revoke every session for a user (e.g. when the account is deleted). Takes effect at once.
     pub fn revoke_user(&mut self, user: &str) -> std::io::Result<()> {
         let before = self.file.tokens.len();

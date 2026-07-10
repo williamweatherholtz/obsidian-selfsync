@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod registration;
 pub mod shares;
 pub mod state;
+pub mod throttle;
 pub mod tokens;
 pub mod users;
 pub mod vault;
@@ -48,6 +49,9 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION }))
         }))
         .route("/api/login", post(auth::login))
+        // SEC-AUTH: server-side single-session logout (revokes the presented token). Token-gated by
+        // its own body, safe on both surfaces.
+        .route("/api/logout", post(auth::logout))
         // Authenticated self-service password change (revokes all sessions). Shared on both surfaces:
         // owner-scoped + AuthToken-gated, so it's safe on the public port and reachable in split mode. (R14 sec#2)
         .route("/api/password", post(auth::change_password))
