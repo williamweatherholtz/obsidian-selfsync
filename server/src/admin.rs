@@ -2,6 +2,7 @@
 // owner manages their own vaults' shares; the server-admin (the bootstrap SYNC_USER
 // account) manages accounts, the registration policy, and invite tokens. Password hashes
 // and token plaintext are never returned.
+use crate::audit::{action, audit, outcome, ClientIp};
 use crate::auth::AuthToken;
 use crate::error::{lock, AppError};
 use crate::registration::{Mode, TokenInfo};
@@ -19,7 +20,15 @@ fn is_server_admin(st: &AppState, user: &str) -> bool {
     user == st.cfg.user || lock(&st.admins).map(|a| a.contains(user)).unwrap_or(false)
 }
 fn require_admin(st: &AppState, user: &str) -> Result<(), AppError> {
-    if is_server_admin(st, user) { Ok(()) } else { Err(AppError::Forbidden) }
+    if is_server_admin(st, user) {
+        Ok(())
+    } else {
+        // SEC-CMMC (AU.3.3.1/3.3.2): audit a denied privileged-function attempt at this single
+        // choke-point so every /api/admin/* route is covered. Actor is known; source IP isn't threaded
+        // here (the mutating admin handlers carry it on their success events).
+        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, "-");
+        Err(AppError::Forbidden)
+    }
 }
 
 #[derive(Serialize)]
@@ -108,7 +117,7 @@ pub struct SetPwReq { password: String }
 // password AND revokes the account's sessions (so the reset also signs the user out everywhere). The
 // bootstrap admin is refused (its password is SYNC_PASSWORD, re-applied every boot). Admin-only.
 pub async fn user_set_password(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>, Json(req): Json<SetPwReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>, Json(req): Json<SetPwReq>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&name) { return Err(AppError::BadRequest("invalid username".into())); }
@@ -133,6 +142,8 @@ pub async fn user_set_password(
       .map_err(|e| AppError::Internal(e.to_string()))?;
     lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?; // sign out everywhere
     log::info!("[admin {user}] reset password for '{name}' (all sessions revoked)");
+    audit(action::PASSWORD_RESET, &user, &name, outcome::SUCCESS, &ip);
+    audit(action::SESSION_REVOKE, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -144,7 +155,7 @@ pub struct ShareReq {
 }
 // Grant a share on one of the caller's OWN vaults to another account.
 pub async fn share_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<ShareReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ShareReq>,
 ) -> Result<StatusCode, AppError> {
     if !safe_name(&req.vault) || !safe_name(&req.grantee) {
         return Err(AppError::BadRequest("invalid vault or grantee".into()));
@@ -171,6 +182,8 @@ pub async fn share_create(
         return Err(AppError::BadRequest("you've reached the maximum number of shares for this account".into()));
     }
     g.grant(&user, &req.vault, &req.grantee, req.perm).map_err(|e| AppError::Internal(e.to_string()))?;
+    drop(g);
+    audit(action::SHARE_GRANT, &user, &format!("{}/{} -> {}", user, req.vault, req.grantee), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -180,11 +193,12 @@ pub struct ShareDelReq {
     grantee: String,
 }
 pub async fn share_delete(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<ShareDelReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ShareDelReq>,
 ) -> Result<StatusCode, AppError> {
     lock(&st.shares)?
         .revoke(&user, &req.vault, &req.grantee)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    audit(action::SHARE_REVOKE, &user, &format!("{}/{} -> {}", user, req.vault, req.grantee), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -203,7 +217,7 @@ pub struct ReindexReq {
 // files (same operation as the owner's own /reindex), clears the ERROR state, and broadcasts the
 // new version so connected clients re-sync. Admin-only; the owner path (api::reindex) is unchanged.
 pub async fn reindex(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<ReindexReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ReindexReq>,
 ) -> Result<Json<crate::protocol::StatusResponse>, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
@@ -228,6 +242,7 @@ pub async fn reindex(
         Ok(version)
     }).await.map_err(|e| AppError::Internal(format!("reindex join failed: {e}")))??;
     log::info!("[{}/{} reindex by admin {user}] rebuilt manifest -> v{version}", req.owner, req.vault);
+    audit(action::VAULT_REINDEX, &user, &format!("{}/{}", req.owner, req.vault), outcome::SUCCESS, &ip);
     Ok(Json(crate::protocol::StatusResponse {
         status: "ready".to_string(), detail: String::new(), version,
         api_version: crate::protocol::API_VERSION,
@@ -248,7 +263,7 @@ pub struct PruneHistoryReq {
 // client left below the raised floor reconciles conservatively (keep + push + a batched notice) per
 // the horizon. Admin-only; broadcasts the (unchanged content) version so clients re-check.
 pub async fn prune_history(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<PruneHistoryReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<PruneHistoryReq>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
@@ -269,6 +284,7 @@ pub async fn prune_history(
         Ok((n, v.version()))
     }).await.map_err(|e| AppError::Internal(format!("prune join failed: {e}")))??;
     log::info!("[{}/{} prune-history by admin {user}] pruned {pruned} tombstone(s)", req.owner, req.vault);
+    audit(action::VAULT_PRUNE, &user, &format!("{}/{}", req.owner, req.vault), outcome::SUCCESS, &ip);
     Ok(Json(serde_json::json!({ "pruned": pruned, "version": version })))
 }
 
@@ -281,7 +297,7 @@ pub struct VaultDelReq {
 // the finer-grained complement to whole-account users_delete. Admin-only; the vault must exist.
 // (Any dangling share grants on it become inert — scoped() 404s a request to a non-existent vault.)
 pub async fn vault_delete(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<VaultDelReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<VaultDelReq>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
@@ -292,6 +308,7 @@ pub async fn vault_delete(
     }
     st.purge_vault(&req.owner, &req.vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
     log::info!("[admin {user}] deleted vault {}/{}", req.owner, req.vault);
+    audit(action::VAULT_DELETE, &user, &format!("{}/{}", req.owner, req.vault), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -332,7 +349,7 @@ pub async fn usernames(
 
 // Promote an account to server-admin (D0021) — server-admin only. The account must exist.
 pub async fn admin_grant(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&name) {
@@ -343,13 +360,14 @@ pub async fn admin_grant(
     }
     lock(&st.admins)?.grant(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     log::info!("[admin {user}] granted server-admin to {name}");
+    audit(action::ADMIN_GRANT, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
 // Revoke server-admin from an account (D0021) — server-admin only. The BOOTSTRAP account is always
 // admin and can never be demoted (else an operator could lock everyone out of administration).
 pub async fn admin_revoke(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&name) {
@@ -360,6 +378,7 @@ pub async fn admin_revoke(
     }
     lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     log::info!("[admin {user}] revoked server-admin from {name}");
+    audit(action::ADMIN_REVOKE, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -369,7 +388,7 @@ pub struct NewUserReq {
     password: String,
 }
 pub async fn users_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<NewUserReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<NewUserReq>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if !safe_name(&req.username) {
@@ -393,14 +412,17 @@ pub async fn users_create(
         g.register(&u, &p)
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     match result {
-        Ok(()) => Ok(StatusCode::OK),
+        Ok(()) => {
+            audit(action::ACCOUNT_CREATE, &user, &req.username, outcome::SUCCESS, &ip);
+            Ok(StatusCode::OK)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AppError::Conflict("user exists".into())),
         Err(_) => Err(AppError::BadRequest("could not create user".into())),
     }
 }
 
 pub async fn users_delete(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     if name == st.cfg.user {
@@ -413,6 +435,7 @@ pub async fn users_delete(
     // can race the purge (create_vault / an in-flight commit re-materializing DATA_ROOT/<name>/
     // after remove_dir_all). Only then purge data.
     lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    audit(action::SESSION_REVOKE, &user, &name, outcome::SUCCESS, &ip);
     // SEC-R3#2 / SEC-MED-2: purge the vault data (drops cached handles + the dir) and treat failure
     // as a HARD error. If the account row were removed first and the purge then failed (e.g. a
     // Windows-locked chunk file), the account would be gone while DATA_ROOT/<name>/ remained — a
@@ -428,6 +451,7 @@ pub async fn users_delete(
     lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     // Drop any server-admin membership so a re-created same-name account doesn't inherit admin (D0021).
     lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    audit(action::ACCOUNT_DELETE, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -447,10 +471,12 @@ pub struct SetRegReq {
     mode: Mode,
 }
 pub async fn registration_set(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<SetRegReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<SetRegReq>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     lock(&st.registration)?.set_mode(req.mode).map_err(|e| AppError::Internal(e.to_string()))?;
+    let mode_str = if req.mode == Mode::Open { "open" } else { "closed" };
+    audit(action::REGISTRATION_POLICY_CHANGE, &user, mode_str, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 
@@ -467,12 +493,14 @@ pub struct InviteResp {
     token: String,
 }
 pub async fn invite_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<InviteReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<InviteReq>,
 ) -> Result<Json<InviteResp>, AppError> {
     require_admin(&st, &user)?;
     let token = lock(&st.registration)?
         .issue(&req.label, req.ttl_secs)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Audit the invite creation (never the token — it's a credential); label identifies it.
+    audit(action::INVITE_CREATE, &user, &req.label, outcome::SUCCESS, &ip);
     Ok(Json(InviteResp { token }))
 }
 
@@ -484,9 +512,9 @@ pub async fn invites_list(
 }
 
 pub async fn invite_delete(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(id): Path<String>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user)?;
     let removed = lock(&st.registration)?.revoke(&id).map_err(|e| AppError::Internal(e.to_string()))?;
-    if removed { Ok(StatusCode::OK) } else { Err(AppError::NotFound) }
+    if removed { audit(action::INVITE_REVOKE, &user, &id, outcome::SUCCESS, &ip); Ok(StatusCode::OK) } else { Err(AppError::NotFound) }
 }

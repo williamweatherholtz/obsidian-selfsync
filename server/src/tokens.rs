@@ -9,12 +9,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // Tokens are stored HASHED (sha256) — the plaintext lives only on the client; a leaked
 // .tokens.json grants nothing. Tokens EXPIRE (30 days) and are REVOCABLE (per user), which
 // matters now that vaults can be shared across accounts.
-const TOKEN_TTL_SECS: u64 = 30 * 24 * 3600;
+const TOKEN_TTL_SECS: u64 = 30 * 24 * 3600; // absolute lifetime cap
+
+// SEC-CMMC (AC.3.1.11 — terminate a session after inactivity): in addition to the 30-day ABSOLUTE
+// cap, a session idle-expires after this many seconds with NO server activity. A syncing client polls
+// (≤60s) + WS-pings, so an active device slides its `last_used` and never idle-expires; a device whose
+// app is closed / not syncing stops touching the server and its token dies after the idle window, then
+// re-login is required. Configurable via SESSION_IDLE_TIMEOUT_SECS; default 30 min. 0 disables idle
+// expiry (absolute cap only). Endpoint screen-lock for a walked-away-but-open app is AC.3.1.10 (the OS).
+const DEFAULT_IDLE_TTL_SECS: u64 = 30 * 60;
+// last_used is persisted, but to avoid a disk write on EVERY request we only re-save the slid value
+// once it has advanced by more than this; so at most one write per token per interval, not per call.
+const SLIDE_PERSIST_SECS: u64 = 60;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct TokenRec {
     user: String,
     expires_at: u64,
+    // Last time this token was presented (epoch secs). #[serde(default)]=0 for pre-upgrade records;
+    // open() grandfathers those to "now" so an upgrade doesn't instantly idle-expire live sessions.
+    #[serde(default)]
+    last_used: u64,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -25,6 +40,7 @@ struct TokensFile {
 pub struct TokenStore {
     path: PathBuf,
     file: TokensFile,
+    idle_ttl_secs: u64, // 0 = idle expiry disabled
 }
 
 fn sha256_hex(s: &str) -> String {
@@ -47,11 +63,19 @@ impl TokenStore {
         // an expired token hash is only ever pruned when THAT exact token is presented again
         // (resolve), which never happens after a client re-logs-in, so it lingers in RAM and in
         // .tokens.json across restarts forever. Bounded, honest (never resurrects a live token).
-        let mut store = TokenStore { path: path.to_path_buf(), file: TokensFile::default() };
+        let idle_ttl_secs = std::env::var("SESSION_IDLE_TIMEOUT_SECS").ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_IDLE_TTL_SECS);
+        let mut store = TokenStore { path: path.to_path_buf(), file: TokensFile::default(), idle_ttl_secs };
+        let n = now();
         let before = file.tokens.len();
-        file.tokens.retain(|_, r| r.expires_at > now());
+        // Grandfather pre-upgrade records (no last_used) to "now" so an upgrade doesn't idle-expire live
+        // sessions on first load; then sweep absolutely-expired tokens (R22).
+        let mut changed = false;
+        for r in file.tokens.values_mut() { if r.last_used == 0 { r.last_used = n; changed = true; } }
+        file.tokens.retain(|_, r| r.expires_at > n);
         store.file = file;
-        if store.file.tokens.len() != before { let _ = store.save(); }
+        if changed || store.file.tokens.len() != before { let _ = store.save(); }
         Ok(store)
     }
 
@@ -66,19 +90,32 @@ impl TokenStore {
     // Issue a bearer token for `user`; returns the plaintext ONCE (only its hash is stored).
     pub fn issue_ttl(&mut self, user: &str, ttl_secs: u64) -> std::io::Result<String> {
         let token = uuid::Uuid::new_v4().simple().to_string();
-        self.file.tokens.insert(sha256_hex(&token), TokenRec { user: user.to_string(), expires_at: now() + ttl_secs });
+        let n = now();
+        self.file.tokens.insert(sha256_hex(&token), TokenRec { user: user.to_string(), expires_at: n + ttl_secs, last_used: n });
         self.save()?;
         Ok(token)
     }
 
-    // Resolve a token to its user iff present and unexpired; prunes an expired token.
+    // Resolve a token to its user iff present, within its ABSOLUTE lifetime, AND not idle-expired
+    // (AC.3.1.11). On a live resolve the `last_used` timestamp SLIDES (persisted at most once per
+    // SLIDE_PERSIST_SECS to avoid a disk write per request); an expired token — absolute OR idle — is
+    // pruned. idle_ttl_secs == 0 disables the idle check (absolute cap only).
     pub fn resolve(&mut self, token: &str) -> Option<String> {
         let h = sha256_hex(token);
-        match self.file.tokens.get(&h) {
-            Some(rec) if rec.expires_at > now() => Some(rec.user.clone()),
-            Some(_) => { self.file.tokens.remove(&h); let _ = self.save(); None } // expired
-            None => None,
+        let n = now();
+        let idle = self.idle_ttl_secs;
+        let (user, slide) = match self.file.tokens.get(&h) {
+            Some(rec) if rec.expires_at > n && (idle == 0 || n.saturating_sub(rec.last_used) <= idle) => {
+                (Some(rec.user.clone()), n.saturating_sub(rec.last_used) >= SLIDE_PERSIST_SECS)
+            }
+            Some(_) => { self.file.tokens.remove(&h); let _ = self.save(); return None; } // expired (absolute or idle)
+            None => return None,
+        };
+        if slide {
+            if let Some(r) = self.file.tokens.get_mut(&h) { r.last_used = n; }
+            let _ = self.save();
         }
+        user
     }
 
     // Revoke a SINGLE session by its plaintext token (server-side logout, SEC-AUTH). Idempotent:
@@ -131,6 +168,20 @@ mod tests {
         assert_eq!(s.resolve(&a1), None);
         assert_eq!(s.resolve(&a2), None);
         assert_eq!(s.resolve(&b).as_deref(), Some("bob")); // bob unaffected
+    }
+
+    #[test]
+    fn idle_expires_a_stale_token_but_keeps_an_active_one() { // CMMC AC.3.1.11
+        let (_d, mut s) = store();
+        let active = s.issue("alice").unwrap();
+        let stale = s.issue("bob").unwrap();
+        // Backdate bob's last_used beyond the idle window; alice stays recent.
+        let hb = sha256_hex(&stale);
+        let n = now();
+        s.file.tokens.get_mut(&hb).unwrap().last_used = n.saturating_sub(s.idle_ttl_secs + 100);
+        assert_eq!(s.resolve(&active).as_deref(), Some("alice"), "an active token still resolves (and slides)");
+        assert_eq!(s.resolve(&stale), None, "an idle token is idle-expired");
+        assert!(!s.file.tokens.contains_key(&hb), "the idle-expired token is pruned");
     }
 
     #[test]

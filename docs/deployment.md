@@ -43,6 +43,21 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
   request floods.
 - **Runs as a non-root user.** The container process runs as an unprivileged user (`selfsync`,
   UID 10001), not root. If you mount a host directory for `/data`, make it writable by that UID.
+- **Security audit log (for CMMC/compliance-style deployments).** Every security-relevant event —
+  login success/failure, lockout, logout, account create/delete, admin grant/revoke, password
+  change/reset, session revoke, registration-policy change, invite create/redeem/revoke, share
+  grant/revoke, vault create/delete/reindex/prune, and authorization denials — is emitted as a
+  single-line **JSON** record on the `audit` log target with a UTC timestamp, the acting user, the
+  target, the outcome, and the client IP (`{"ts":…,"actor":…,"action":…,"target":…,"outcome":…,"source":…}`).
+  For an attributable, retainable trail (NIST SP 800-171 AU-3.3.1/3.3.2), ship these to a **separate,
+  append-only sink** (e.g. filter your log processor on the JSON `action` field or the `audit` target)
+  and set a retention policy. The client IP is taken from `X-Forwarded-For`/`X-Real-IP`, so your reverse
+  proxy must set it honestly (Caddy does by default).
+- **Session inactivity timeout.** A session token idle-expires after `SESSION_IDLE_TIMEOUT_SECS`
+  (default **1800** = 30 min) of no server activity, in addition to the 30-day absolute lifetime; an
+  actively-syncing device slides its own timer and never expires. Lower it for stricter environments;
+  set `0` to disable idle expiry (absolute cap only). Endpoint screen-lock for a walked-away device is
+  the operating system's job, not the server's.
 - **Never publish the server's `:8080` port to the internet.** Only the reverse proxy's `443`
   should be public — the example does this (the server uses `expose:`, not `ports:`). Publishing
   `:8080` would bypass TLS.

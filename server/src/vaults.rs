@@ -1,3 +1,4 @@
+use crate::audit::{action, audit, outcome, ClientIp};
 use crate::auth::AuthToken;
 use crate::error::AppError;
 use crate::protocol::{CreateVaultRequest, VaultListResponse};
@@ -14,6 +15,7 @@ pub async fn list_vaults(AuthToken(user): AuthToken, State(st): State<AppState>)
 pub async fn create_vault(
     AuthToken(user): AuthToken,
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<CreateVaultRequest>,
 ) -> Result<StatusCode, AppError> {
     if !safe_name(&req.name) {
@@ -32,5 +34,6 @@ pub async fn create_vault(
     }
     st.vault(&user, &req.name).map_err(|e| AppError::BadRequest(e.to_string()))?;
     log::info!("[vault create] user='{}' vault='{}'", user, req.name);
+    audit(action::VAULT_CREATE, &user, &format!("{user}/{}", req.name), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }

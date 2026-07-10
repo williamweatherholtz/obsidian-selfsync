@@ -43,6 +43,11 @@ pub async fn ws_handler(
 ) -> impl IntoResponse {
     // Resolve token -> user, then subscribe to the requested vault's channel. A
     // poisoned token store returns 503 rather than panicking (matches error::lock).
+    // SEC-CMMC (AU): client IP for the audit SOURCE — XFF/X-Real-IP (behind the reverse proxy).
+    let src: String = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|s| s.split(',').next())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+        .unwrap_or("-").trim().chars().filter(|c| !c.is_control()).take(64).collect();
+    let src = if src.is_empty() { "-".to_string() } else { src };
     let token = token_from_protocols(&headers);
     let user = match lock(&st.tokens) {
         Ok(mut g) => token.as_deref().and_then(|t| g.resolve(t)),
@@ -50,6 +55,7 @@ pub async fn ws_handler(
     };
     let Some(user) = user else {
         log::warn!("[ws] connect REJECTED (missing/unknown token)");
+        crate::audit::audit(crate::audit::action::AUTHZ_DENIED, "-", "ws", crate::audit::outcome::DENIED, &src);
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
     let vault = q.get("vault").cloned().unwrap_or_default();
@@ -72,6 +78,7 @@ pub async fn ws_handler(
     };
     if !allowed {
         log::warn!("[ws] connect REJECTED (forbidden {user} -> {owner}/{vault})");
+        crate::audit::audit(crate::audit::action::AUTHZ_DENIED, &user, &format!("{owner}/{vault}"), crate::audit::outcome::DENIED, &src);
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     // Sync routes gate on vault existence (protocol-6); the WS is a read subscription, so it

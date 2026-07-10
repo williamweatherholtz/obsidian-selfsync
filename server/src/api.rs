@@ -1,3 +1,4 @@
+use crate::audit::{action, audit, outcome, ClientIp};
 use crate::auth::AuthToken;
 use crate::error::{lock, rlock, wlock, AppError};
 use crate::protocol::{ChangesResponse, CommitRequest, Deletion, FileMeta, MissingRequest, MissingResponse, StatusResponse};
@@ -25,6 +26,11 @@ async fn scoped(
     let vault = pp.get("vault").cloned().ok_or_else(|| AppError::BadRequest("missing vault".into()))?;
     let owner = pp.get("owner").cloned().unwrap_or_else(|| user.to_string());
     if !lock(&st.shares)?.authorized(&owner, &vault, user, access) {
+        // SEC-CMMC (AU.3.3.1/3.3.2): audit a cross-tenant access denial — the primary "probing another
+        // user's vault" signal. Emitted at this single choke-point so every sync route is covered; the
+        // authenticated principal (WHO) + target vault (WHAT) are known here (source IP is captured on
+        // the mutating/auth events, not threaded through every hot read handler — see audit.rs).
+        crate::audit::audit(crate::audit::action::AUTHZ_DENIED, user, &format!("{owner}/{vault}"), crate::audit::outcome::DENIED, "-");
         return Err(AppError::Forbidden);
     }
     // Sync routes act on an EXISTING vault only — never lazily provision one. Provisioning is
@@ -251,7 +257,7 @@ pub async fn status(
 // reindex — operator repair (rebuild the manifest from materialized files). Registered
 // only on the legacy own-vault route, so owner is always the caller (owner-scoped repair).
 pub async fn reindex(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let tx = h.tx.clone();
@@ -262,6 +268,7 @@ pub async fn reindex(
         Ok(v.version())
     }).await?;
     log::info!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
+    audit(action::VAULT_REINDEX, &user, &format!("{owner}/{vault}"), outcome::SUCCESS, &ip);
     let _ = tx.send(version);
     Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION }))
 }
@@ -275,7 +282,7 @@ pub struct OwnVaultDelReq {
 // cached handle; a still-synced device then 404s (RC-3) and can deliberately re-create from its
 // local copy (deletedVaultRecreatePrompt). DELETE /api/vault with a JSON body {vault}.
 pub async fn delete_own_vault(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Json(req): Json<OwnVaultDelReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<OwnVaultDelReq>,
 ) -> Result<StatusCode, AppError> {
     let vault = req.vault;
     if !crate::users::safe_name(&user) || !crate::users::safe_name(&vault) {
@@ -287,5 +294,6 @@ pub async fn delete_own_vault(
     }
     st.purge_vault(&user, &vault).map_err(|e| AppError::Internal(format!("could not delete vault: {e}")))?;
     log::info!("[{user} delete-own-vault] {vault}");
+    audit(action::VAULT_DELETE, &user, &format!("{user}/{vault}"), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }

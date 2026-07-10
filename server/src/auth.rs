@@ -1,3 +1,4 @@
+use crate::audit::{action, audit, outcome, ClientIp};
 use crate::error::{lock, AppError};
 use crate::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse, RegisterRequest};
 use crate::state::AppState;
@@ -29,6 +30,7 @@ pub async fn acquire_auth(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePe
 
 pub async fn login(
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
     if req.password.len() > MAX_PASSWORD_LEN {
@@ -43,6 +45,7 @@ pub async fn login(
     // knowing the account has been hammered). Checked before verify so a locked account is cheap to reject.
     if let Err(retry) = lock(&st.login_throttle)?.check(&req.username) {
         log::warn!("[login] user='{uname}' -> 429 (rate-limited)");
+        audit(action::RATE_LIMITED, &uname, &uname, outcome::DENIED, &ip);
         return Err(AppError::TooManyRequests(retry));
     }
     // Fetch the stored hash (or a dummy, constant-work) under a quick lock, then release it and
@@ -60,16 +63,19 @@ pub async fn login(
         lock(&st.login_throttle)?.success(&req.username); // clear the failure counter on success
         let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
         log::info!("[login] user='{uname}' -> OK");
+        audit(action::LOGIN, &uname, &uname, outcome::SUCCESS, &ip);
         Ok(Json(LoginResponse { token }))
     } else {
         lock(&st.login_throttle)?.fail(&req.username); // count the failure toward the lockout threshold
         log::warn!("[login] user='{uname}' -> 401");
+        audit(action::LOGIN, &uname, &uname, outcome::FAILURE, &ip);
         Err(AppError::Unauthorized)
     }
 }
 
 pub async fn register(
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<RegisterRequest>,
 ) -> Result<StatusCode, AppError> {
     if !safe_name(&req.username) {
@@ -90,6 +96,8 @@ pub async fn register(
         && (req.invite.is_empty() || !lock(&st.registration)?.redeem(&req.invite))
     {
         log::warn!("[register] user='{}' -> 403 (registration closed; missing/invalid invite)", req.username);
+        let uname: String = req.username.chars().filter(|c| !c.is_control()).take(64).collect();
+        audit(action::ACCOUNT_CREATE, "-", &uname, outcome::DENIED, &ip);
         return Err(AppError::Forbidden);
     }
     if lock(&st.users)?.exists(&req.username) {
@@ -106,7 +114,13 @@ pub async fn register(
         g.register(&u, &p)
     }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     match result {
-        Ok(()) => { log::info!("[register] user='{}' -> OK", req.username); Ok(StatusCode::OK) }
+        Ok(()) => {
+            log::info!("[register] user='{}' -> OK", req.username);
+            audit(action::ACCOUNT_CREATE, &req.username, &req.username, outcome::SUCCESS, &ip);
+            // A closed-mode registration that reached here consumed an invite; record the redemption.
+            if !req.invite.is_empty() { audit(action::INVITE_REDEEM, &req.username, &req.username, outcome::SUCCESS, &ip); }
+            Ok(StatusCode::OK)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(AppError::Conflict("user exists".into())),
         Err(_) => Err(AppError::BadRequest("could not register".into())),
     }
@@ -118,6 +132,7 @@ pub async fn register(
 pub async fn change_password(
     AuthToken(user): AuthToken,
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
     if req.current.len() > MAX_PASSWORD_LEN || req.new_password.len() > MAX_PASSWORD_LEN {
@@ -145,6 +160,7 @@ pub async fn change_password(
         .await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     if !(present && ok) {
         log::warn!("[password] user='{user}' -> 401 (wrong current password)");
+        audit(action::PASSWORD_CHANGE, &user, &user, outcome::FAILURE, &ip);
         return Err(AppError::Unauthorized);
     }
     // Hash + store the new password (offloaded, users lock taken inside the closure — like register).
@@ -162,6 +178,8 @@ pub async fn change_password(
     lock(&st.tokens)?.revoke_user(&user).map_err(|e| AppError::Internal(e.to_string()))?;
     let token = lock(&st.tokens)?.issue(&user).map_err(|e| AppError::Internal(e.to_string()))?;
     log::info!("[password] user='{user}' changed password; all sessions revoked + one re-issued");
+    audit(action::PASSWORD_CHANGE, &user, &user, outcome::SUCCESS, &ip);
+    audit(action::SESSION_REVOKE, &user, &user, outcome::SUCCESS, &ip);
     Ok(Json(LoginResponse { token }))
 }
 
@@ -172,6 +190,7 @@ pub async fn change_password(
 // directly (AuthToken discards it) and revokes just that one. Idempotent: an unknown token is a no-op OK.
 pub async fn logout(
     State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: axum::http::HeaderMap,
 ) -> Result<StatusCode, AppError> {
     let token = headers
@@ -179,7 +198,10 @@ pub async fn logout(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .ok_or(AppError::Unauthorized)?;
+    // Resolve the token to its user for audit attribution BEFORE revoking it (best-effort).
+    let actor = lock(&st.tokens)?.resolve(token).unwrap_or_else(|| "-".to_string());
     lock(&st.tokens)?.revoke(token).map_err(|e| AppError::Internal(e.to_string()))?;
+    audit(action::LOGOUT, &actor, &actor, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }
 

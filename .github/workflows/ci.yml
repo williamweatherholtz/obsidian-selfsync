@@ -1,0 +1,65 @@
+name: CI (tests + dependency audit)
+
+# SEC-CMMC (SI.3.14.1 — flaw remediation): the only automated safety net for known-vulnerable
+# dependencies and for server regressions. The release workflow is plugin-build-only and never ran
+# the Rust server tests or scanned dependencies; this closes that gap. Runs on every push/PR to main
+# and weekly (so a newly-disclosed CVE in a pinned dep turns the build red without a code change).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1" # weekly, Monday 06:17 UTC — catch newly-published advisories
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run the Rust server test suite
+        working-directory: server
+        run: cargo test --locked
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Rust dependencies for known vulnerabilities
+        working-directory: server
+        run: cargo audit
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Install client dependencies
+        working-directory: client
+        run: npm install
+      - name: Audit npm dependencies (production, high+)
+        working-directory: client
+        # Fail only on high/critical production advisories — dev-only advisories are noise for a
+        # plugin whose build output ships no node_modules. Tune to org policy as needed.
+        run: npm audit --omit=dev --audit-level=high
+
+  client-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Run the plugin test suite
+        working-directory: client
+        run: |
+          npm install
+          npm test

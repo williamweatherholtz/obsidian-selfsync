@@ -5,6 +5,7 @@ pub mod admin_ui;
 pub mod admins;
 pub mod atomicfile;
 pub mod api;
+pub mod audit;
 pub mod auth;
 pub mod chunkstore;
 pub mod config;
