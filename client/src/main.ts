@@ -861,6 +861,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // exactly one effect runs at a time, so the old CONC-3 interleave is impossible by construction.
   private async doConnect(): Promise<void> {
     this.lastIssue = undefined;
+    // crit-round (sync F4): a connect means the realtime socket is not (yet) live. Reset the flag up
+    // front so the status light can't briefly show green "Fully synced" during connect→idle before the
+    // new socket's open handler fires (the close handler's `this.ws !== ws` early-return can otherwise
+    // leave it stale-true after a non-socket failure).
+    this.realtimeConnected = false;
     // A connect is happening now — cancel any pending backoff timer so it can't later fire a
     // redundant {connect} after this one succeeds.
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }

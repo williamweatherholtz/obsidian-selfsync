@@ -1024,3 +1024,79 @@ describe("R14 sync-correctness fixes", () => {
     expect(errs).toContain(".obsidian/app.json");
   });
 });
+
+describe("crit-round: the delta reconcile path guards a present-but-unreadable file (C1 no longer inert)", () => {
+  it("a delta TOMBSTONE for a present-but-unreadable file does NOT clear base or delete it (no resurrection)", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "x.md": "hello" });
+    io.exists = async (p) => io.m.has(p);                 // vault reports the file PRESENT
+    const realRead = io.read.bind(io);
+    io.read = async (p) => { if (p === "x.md") throw new Error("EBUSY (AV lock / unhydrated placeholder)"); return realRead(p); };
+    const d = deps(api, io);
+    d.base.set("x.md", { hash: await sha256hex(enc("hello")), size: 5, mtime: 0 });
+    const errs: string[] = []; d.onFileError = (p) => errs.push(p);
+    await reconcileDelta(d, { version: 5, upserts: [], deletes: [{ path: "x.md", version: 5 }] } as ChangesResponse);
+    expect(io.m.has("x.md")).toBe(true);                  // file NOT removed
+    expect(d.base.get("x.md")).toBeTruthy();              // base NOT cleared → won't re-push (resurrect) next pass
+    expect(errs).toContain("x.md");                       // isolated as a per-file skip, retried next poll
+  });
+
+  it("a delta upsert whose hash equals base (R===B) for an unreadable file does NOT delete it server-side", async () => {
+    const { api, files } = fakeServer();
+    const hx = await sha256hex(enc("hello"));
+    let deleted = false;
+    const realDelete = api.deleteFile.bind(api);
+    (api as any).deleteFile = async (p: string) => { deleted = true; return realDelete(p); };
+    const io = fakeIo({ "x.md": "hello" });
+    io.exists = async (p) => io.m.has(p);
+    io.read = async () => { throw new Error("EBUSY"); };
+    const d = deps(api, io);
+    d.base.set("x.md", { hash: hx, size: 5, mtime: 0 });
+    // remote reports x.md unchanged (hash === base) — the R===B delta that used to yield delete-remote.
+    await reconcileDelta(d, { version: 5, upserts: [{ path: "x.md", hash: hx, size: 5, mtime: 0, chunks: [], version: 5 } as any], deletes: [] } as ChangesResponse);
+    expect(deleted).toBe(false);                          // never propagated a phantom deletion
+    expect(d.base.get("x.md")).toBeTruthy();
+  });
+});
+
+describe("crit-round: the delete-local restore is CAS-guarded (no lost update)", () => {
+  it("restoring an absent-without-tombstone file commits with expectedVersion 0", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "x.md": "restore me" });
+    const d = deps(api, io);
+    d.base.set("x.md", { hash: await sha256hex(enc("restore me")), size: 10, mtime: 0 });
+    let seenExpected: number | undefined = -1;
+    const realCommit = api.commit.bind(api);
+    (api as any).commit = async (r: CommitRequest) => { seenExpected = r.expectedVersion; return realCommit(r); };
+    // Full reconcile: local present, base present, remote ABSENT, no tombstone → delete-local → restore.
+    await reconcileAll(d);
+    expect(seenExpected).toBe(0);                          // "expected absent" → a concurrent create 409s instead of clobbering
+  });
+});
+
+describe("crit-round: a 'download' vault switch cannot mass-delete local files against a partial manifest", () => {
+  it("refuses to remove local-only files when the target manifest is suspiciously incomplete", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) seed[`n${i}.md`] = `c${i}`;
+    const io = fakeIo(seed);
+    await serverPut(api, "n0.md", "c0");                  // target has only 1 of the 10 local files
+    const d = deps(api, io);
+    const guarded: string[] = []; d.onGuard = (p) => guarded.push(p);
+    await switchTo(d, "download");
+    for (let i = 1; i < 10; i++) expect(io.m.has(`n${i}.md`)).toBe(true); // local-only notes preserved
+    expect(guarded.length).toBeGreaterThan(0);            // the mass-delete was guarded, not silently applied
+  });
+
+  it("still mirrors a genuine (mostly-overlapping) target — normal download deletes the few real extras", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) seed[`n${i}.md`] = `c${i}`;
+    const io = fakeIo(seed);
+    for (let i = 0; i < 9; i++) await serverPut(api, `n${i}.md`, `c${i}`); // target has 9/10 — only n9 is a local extra
+    const d = deps(api, io);
+    await switchTo(d, "download");
+    expect(io.m.has("n9.md")).toBe(false);                // the single genuine extra IS removed (ratio not tripped)
+    expect(io.m.has("n0.md")).toBe(true);
+  });
+});

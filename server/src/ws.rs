@@ -58,6 +58,16 @@ pub async fn ws_handler(
         crate::audit::audit(crate::audit::action::AUTHZ_DENIED, "-", "ws", crate::audit::outcome::DENIED, &src);
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     };
+    // IA.3.5.9 (crit-round): a must-change account can do NOTHING but set its own password. The HTTP
+    // AuthToken extractor enforces this everywhere; the WS path resolves the token manually, so mirror
+    // the gate here — otherwise a locked account could still open change-notification subscriptions.
+    match lock(&st.users) {
+        Ok(g) => if g.must_change(&user) {
+            log::warn!("[ws] connect REJECTED (password change required)");
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        },
+        Err(_) => return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
     let vault = q.get("vault").cloned().unwrap_or_default();
     // owner defaults to the caller (own vault); a shared vault names its owner. Subscribing
     // to change notifications is a read — gate it by the ACL, same as the read routes.

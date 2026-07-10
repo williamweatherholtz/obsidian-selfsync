@@ -56,6 +56,12 @@ pub struct AppState {
     // memory-hard (~19 MiB each), so an unauthenticated flood could otherwise exhaust CPU+RAM.
     // A small permit pool caps in-flight hashes; excess auth requests queue briefly. (SEC-2)
     pub auth_slots: Arc<tokio::sync::Semaphore>,
+    // Bounds concurrent LARGE-file commit reassemblies. A single commit is already capped at
+    // req.size ≤ MAX_FILE_BYTES (512 MiB), but a client owning many vaults could fire many large
+    // reassemblies at once (each holds up to 512 MiB transiently) and OOM a modest box. A small
+    // permit pool caps aggregate reassembly RAM for large commits; small note commits don't take a
+    // permit. (crit-round: authenticated memory-amplification DoS.)
+    pub commit_slots: Arc<tokio::sync::Semaphore>,
     // SEC-AUTH (FR9): per-account login throttle / lockout — brute-force protection for the
     // internet-facing front door (the design docs promised rate-limiting; it was never built).
     pub login_throttle: Arc<Mutex<crate::throttle::LoginThrottle>>,
@@ -63,6 +69,12 @@ pub struct AppState {
 
 // Max concurrent password-hash operations across all login/register requests. (SEC-2)
 pub const MAX_CONCURRENT_AUTH_HASHES: usize = 8;
+// At most this many LARGE-file reassemblies (req.size > COMMIT_LARGE_BYTES) run at once. Worst-case
+// aggregate transient RAM ≈ this × MAX_FILE_BYTES (512 MiB); 4 → ~2 GiB, safe on a modest box.
+pub const MAX_CONCURRENT_LARGE_COMMITS: usize = 4;
+// Commits declaring more than this go through the permit pool; smaller ones (the common note-sized
+// case) are unthrottled. 16 MiB matches the buffered-body ceiling.
+pub const COMMIT_LARGE_BYTES: u64 = 16 * 1024 * 1024;
 
 impl AppState {
     pub fn new(cfg: Config) -> std::io::Result<Self> {
@@ -103,6 +115,7 @@ impl AppState {
             ns: Arc::new(Mutex::new(HashMap::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
+            commit_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LARGE_COMMITS)),
             login_throttle: Arc::new(Mutex::new(crate::throttle::LoginThrottle::new())),
         };
         // Ensure the bootstrap account has a `default` vault to land in.

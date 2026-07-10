@@ -186,6 +186,17 @@ pub async fn commit(
     // relocated the injection here rather than eliminating it).
     let p: String = req.path.chars().filter(|c| !c.is_control()).take(256).collect();
     let (o, vlt, u) = (owner.clone(), vault.clone(), user.clone());
+    // SEC (crit-round): bound AGGREGATE reassembly memory. A single commit is capped at
+    // req.size ≤ MAX_FILE_BYTES, but a client owning many vaults could fire many large reassemblies
+    // concurrently and exhaust RAM. Route only LARGE commits through a small permit pool (held across
+    // the blocking reassembly); small note commits — the common case — take no permit. A bounded wait
+    // sheds load as 503 rather than queueing unboundedly.
+    let _commit_permit = if req.size > crate::state::COMMIT_LARGE_BYTES {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), st.commit_slots.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Some(permit),
+            _ => return Err(AppError::Unavailable("server busy — too many large uploads in flight; retry shortly".into())),
+        }
+    } else { None };
     // commit does journal + mirror IO under the write lock — run it on the blocking pool.
     let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;

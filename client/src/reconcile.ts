@@ -393,7 +393,15 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   await mapPool([...new Set<string>([...remote.keys(), ...tombstoned])], FILE_CONCURRENCY, async (p) => {
     try {
-      await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp));
+      // crit-round (data-integrity + sync critics, same root cause): the delta path MUST supply
+      // `locallyPresent`, or the C1 "present-but-unreadable ≠ deleted" guard in reconcileOne is inert
+      // here — a momentarily-unreadable file (AV lock / unhydrated cloud placeholder) during a poll
+      // delta was mis-decided as a deletion (unguarded delete-remote) or cleared-then-resurrected.
+      // Default to `true` (assume present) when the io can't answer, so we skip-and-retry rather than
+      // destroy; a genuine local deletion still propagates via the event path / full scan (which have
+      // authoritative presence). Matches reconcilePath's own io.exists probe.
+      const present = d.io.exists ? await d.io.exists(p) : true;
+      await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp), present);
       d.retryBudget?.delete(p); // applied cleanly → reset any failure budget (R18)
     }
     catch (e) {
@@ -556,7 +564,11 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
         // it into one review notice (it's kept + pushed either way — this is observational only).
         d.onKeptAbsent?.(path);
         if (d.readOnly) { d.onReadOnly?.(path); return; } // read-only share: can't restore; just keep local
-        const { hash: rh, bytes: rb } = await pushFile(d.api, d.io, d.state, d.cache, path);
+        // CAS (crit-round data-integrity): base the restore on "expected absent" (version 0) — the
+        // precondition this decision was made on (remote had no copy). If a peer created this path
+        // meanwhile, the commit 409s → CommitConflictError → per-file skip → the next reconcile MERGES
+        // instead of the restore silently overwriting the peer's just-created content (lost update).
+        const { hash: rh, bytes: rb } = await pushFile(d.api, d.io, d.state, d.cache, path, 0);
         setBase(d, path, rb, rh);
         return;
       }
@@ -714,8 +726,20 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
         if (holdForRetry(d, p, meta.version)) failedRemote.push(meta.version);
       }
     }
-    for (const [p, info] of local) {            // drop local files the target lacks
-      if (!accepted(p) || remote.has(p)) continue;
+    // BULK-DELETE GUARD (crit-round sync): a "download" switch mirrors the target — it removes local
+    // files the target lacks. But a target that was reindexed over a PARTIAL directory reports
+    // status:"ready" while missing files, so mirroring it would mass-delete legitimate local-only
+    // notes. Apply the SAME ratio guard reconcileAll uses: if removing would wipe an empty target's
+    // worth (remote.size===0) or >= BULK_DELETE_RATIO of the accepted local set, refuse the removals
+    // (the remote files were still adopted above) and surface it — a partial manifest can't silently
+    // delete the user's notes. A genuine populated target (remote has most paths) doesn't trip this.
+    const acceptedLocal = [...local.keys()].filter(accepted);
+    const toRemove = acceptedLocal.filter((p) => !remote.has(p));
+    const guardMassDelete = acceptedLocal.length > 0 && (remote.size === 0
+      || (acceptedLocal.length >= BULK_DELETE_MIN && toRemove.length / acceptedLocal.length >= BULK_DELETE_RATIO));
+    for (const p of toRemove) {
+      if (guardMassDelete) { d.onGuard?.(p); continue; } // suspicious mass delete → keep local, don't mirror-delete
+      const info = local.get(p)!;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
       try { await d.io.remove(p); } catch (e) { d.onFileError?.(p, e); }
     }
