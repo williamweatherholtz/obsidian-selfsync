@@ -78,8 +78,10 @@ async function api(method, path, body) {
   return ct.includes("application/json") ? r.json() : r.text();
 }
 
-async function login(username, password) {
-  const r = await api("POST", "/api/login", { username, password });
+async function login(username, password, totp) {
+  const body = { username, password };
+  if (totp) body.totp = totp;
+  const r = await api("POST", "/api/login", body);
   token = r.token; sessionStorage.setItem("selfsync_admin_token", token);
   await boot();
 }
@@ -98,26 +100,91 @@ async function loginView() {
       <h2 style="margin-top:0">Sign in</h2>
       <div class="row"><input id="u" placeholder="username" autofocus /></div>
       <div class="row" style="margin-top:8px"><input id="p" type="password" placeholder="password" /></div>
+      <div class="row" id="mfarow" style="margin-top:8px;display:none"><input id="mfa" inputmode="numeric" placeholder="authenticator code (or recovery code)" style="flex:1" /></div>
       <div class="row" style="margin-top:12px"><button id="go">Sign in</button></div>
     </div>`;
-  const submit = async () => { try { setMsg(""); await login($("u").value.trim(), $("p").value); } catch (e) { setMsg("Sign in failed.", "err"); } };
+  const submit = async () => {
+    try {
+      setMsg("");
+      await login($("u").value.trim(), $("p").value, $("mfa").value.trim() || undefined);
+    } catch (e) {
+      // IA.3.5.3: the account has MFA — reveal the code field and ask for the second factor.
+      if (String(e.message).includes("mfa required")) {
+        $("mfarow").style.display = "";
+        $("mfa").focus();
+        setMsg("Enter your authenticator code to finish signing in.", "");
+      } else {
+        setMsg("Sign in failed.", "err");
+      }
+    }
+  };
   $("go").onclick = submit;
   $("p").onkeydown = (e) => { if (e.key === "Enter") submit(); };
+  $("mfa").onkeydown = (e) => { if (e.key === "Enter") submit(); };
 }
 
 async function dashboard() {
   $("who").innerHTML = `signed in as <strong>${esc(me.username)}</strong>${me.is_server_admin ? '<span class="badge">server-admin</span>' : ''} · <a href="#" id="out">sign out</a>`;
   $("out").onclick = (e) => { e.preventDefault(); signOut(); };
 
-  let html = `<h2>My vaults &amp; sharing</h2><div class="panel" id="vaults"><div class="empty">Loading…</div></div>`;
+  let html = `<h2>Two-factor authentication</h2><div class="panel" id="mfa"><div class="empty">Loading…</div></div>`;
+  html += `<h2>My vaults &amp; sharing</h2><div class="panel" id="vaults"><div class="empty">Loading…</div></div>`;
   if (me.is_server_admin) {
     html += `<h2>Accounts</h2><div class="panel" id="users"><div class="empty">Loading…</div></div>`;
     html += `<h2>Registration</h2><div class="panel" id="reg"><div class="empty">Loading…</div></div>`;
     html += `<h2>Invite tokens</h2><div class="panel" id="invites"><div class="empty">Loading…</div></div>`;
   }
   $("app").innerHTML = html;
+  await renderMfa();
   await renderVaults();
   if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); }
+}
+
+// IA.3.5.3: self-service TOTP MFA for THIS account — enable (with recovery codes) or disable.
+async function renderMfa() {
+  const box = $("mfa");
+  let st;
+  try { st = await api("GET", "/api/mfa/status"); } catch (e) { box.innerHTML = `<div class="msg err">Couldn't load MFA status.</div>`; return; }
+  if (st.enabled) {
+    box.innerHTML = `<div class="card-title"><div>Authenticator app <span class="perm read">ENABLED</span>
+        <div class="muted" style="font-size:13px">A 6-digit code from your authenticator is required at sign-in.</div></div></div>
+      <div class="row" style="margin-top:8px">
+        <input id="mfaoff" inputmode="numeric" placeholder="current code to disable" style="flex:1;min-width:160px" />
+        <button class="danger" id="mfadis">Disable MFA</button>
+      </div>`;
+    $("mfadis").onclick = async () => {
+      const code = $("mfaoff").value.trim();
+      if (!code) { setMsg("Enter your current authenticator (or recovery) code to disable MFA.", "err"); return; }
+      try { await api("POST", "/api/mfa/disable", { code }); await renderMfa(); setMsg("MFA disabled.", "ok"); }
+      catch (e) { setMsg("Disable failed: " + e.message, "err"); }
+    };
+  } else {
+    box.innerHTML = `<div class="muted" style="font-size:13px">Add a second factor (TOTP). Recommended for admin accounts.</div>
+      <div class="row" style="margin-top:8px"><button id="mfaen">Enable MFA</button></div>
+      <div id="mfaenroll"></div>`;
+    $("mfaen").onclick = async () => {
+      try {
+        const en = await api("POST", "/api/mfa/enroll");
+        $("mfaenroll").innerHTML = `
+          <div class="muted" style="font-size:13px;margin-top:10px">1) Add this to your authenticator app (Google Authenticator, Aegis, 1Password…). Enter the secret manually or use the otpauth URI:</div>
+          <div class="token">${esc(en.secret)}</div>
+          <div class="muted" style="font-size:12px;margin-top:4px;word-break:break-all">${esc(en.otpauth)}</div>
+          <div class="row" style="margin-top:10px">
+            <input id="mfaconf" inputmode="numeric" placeholder="2) enter the 6-digit code to confirm" style="flex:1;min-width:180px" />
+            <button id="mfaconfgo">Confirm &amp; enable</button>
+          </div><div id="mfacodes"></div>`;
+        $("mfaconfgo").onclick = async () => {
+          const code = $("mfaconf").value.trim();
+          try {
+            const r = await api("POST", "/api/mfa/confirm", { code });
+            const list = (r.recovery_codes || []).map(c => `<div class="token" style="border-style:solid">${esc(c)}</div>`).join("");
+            $("mfacodes").innerHTML = `<div class="msg ok" style="margin-top:10px">MFA enabled. SAVE these one-time recovery codes now — they're shown once and let you sign in if you lose your authenticator:</div>${list}`;
+            setMsg("MFA enabled — save your recovery codes.", "ok");
+          } catch (e) { setMsg("Confirm failed: " + e.message, "err"); }
+        };
+      } catch (e) { setMsg("Couldn't start MFA enrollment: " + e.message, "err"); }
+    };
+  }
 }
 
 // A per-vault health chip: green OK, red needs-repair. Repair (reindex) is offered only when a vault

@@ -88,6 +88,24 @@ pub async fn login(
     let ok = tokio::task::spawn_blocking(move || crate::users::verify_password(&phc, &password))
         .await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
     if present && ok {
+        // IA.3.5.3: if the account has MFA enabled, the password alone is not enough — require a valid
+        // TOTP (or single-use recovery) second factor. A missing/invalid factor is a distinct 401 "mfa
+        // required" so the client prompts; the login-throttle failure is NOT cleared until BOTH factors
+        // pass, so MFA-enabled accounts get the same brute-force protection on the second factor.
+        if lock(&st.users)?.totp_enabled(&req.username) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let second_ok = match req.totp.as_deref() {
+                Some(code) if !code.trim().is_empty() =>
+                    lock(&st.users)?.totp_verify_second_factor(&req.username, code, now).map_err(|e| AppError::Internal(e.to_string()))?,
+                _ => false,
+            };
+            if !second_ok {
+                lock(&st.login_throttle)?.fail(&req.username);
+                log::warn!("[login] user='{uname}' -> 401 (mfa required/invalid)");
+                audit(action::LOGIN, &uname, &uname, outcome::FAILURE, &ip);
+                return Err(AppError::MfaRequired);
+            }
+        }
         lock(&st.login_throttle)?.success(&req.username); // clear the failure counter on success
         let token = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
         let must_change_password = lock(&st.users)?.must_change(&req.username); // IA.3.5.9 signal to the client

@@ -36,6 +36,8 @@ pub mod action {
     pub const VAULT_PRUNE: &str = "vault_prune";
     pub const AUTHZ_DENIED: &str = "authz_denied";
     pub const RATE_LIMITED: &str = "rate_limited";
+    pub const MFA_ENABLE: &str = "mfa_enable";
+    pub const MFA_DISABLE: &str = "mfa_disable";
 }
 
 pub mod outcome {

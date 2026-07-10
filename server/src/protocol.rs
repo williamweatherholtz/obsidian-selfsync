@@ -42,6 +42,10 @@ pub struct ChangesResponse {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    // IA.3.5.3: the TOTP 6-digit code (or a recovery code) — required only when the account has MFA
+    // enabled. Absent on a first attempt; the server replies 401 "mfa required" and the client re-submits with it.
+    #[serde(default)]
+    pub totp: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

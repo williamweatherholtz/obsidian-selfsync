@@ -53,6 +53,18 @@ struct UsersFile {
     // account can be used for anything but the change itself (set on admin create + admin reset).
     #[serde(default)]
     must_change: std::collections::HashSet<String>,
+    // IA.3.5.3 MFA: an ENABLED account's base32 TOTP secret (username -> secret). Present ⇒ MFA required
+    // at login. Secrets are a shared factor, stored server-side (a leaked .users.json would expose them,
+    // same trust boundary as the password hashes — acceptable under the trusted-server model).
+    #[serde(default)]
+    totp_secret: HashMap<String, String>,
+    // A secret mid-enrollment, not yet confirmed with a live code (so a half-finished enroll never
+    // locks the account out). Promoted to totp_secret on confirm.
+    #[serde(default)]
+    totp_pending: HashMap<String, String>,
+    // Single-use recovery codes (sha256-hashed), consumed one-per-use when the authenticator is lost.
+    #[serde(default)]
+    totp_recovery: HashMap<String, Vec<String>>,
 }
 
 pub struct UserStore {
@@ -90,10 +102,13 @@ impl UserStore {
     // and sessions separately.)
     pub fn remove(&mut self, user: &str) -> std::io::Result<bool> {
         if self.file.users.remove(user).is_some() {
-            // Also drop the reuse history + forced-change flag so a re-created same-name account
-            // starts clean (no inherited password history / stale must-change).
+            // Also drop the reuse history + forced-change flag + MFA state so a re-created same-name
+            // account starts clean (no inherited history / stale must-change / stale TOTP secret).
             self.file.prev_hashes.remove(user);
             self.file.must_change.remove(user);
+            self.file.totp_secret.remove(user);
+            self.file.totp_pending.remove(user);
+            self.file.totp_recovery.remove(user);
             self.save()?;
             Ok(true)
         } else {
@@ -159,6 +174,58 @@ impl UserStore {
             .to_string();
         self.file.users.insert(user.to_string(), hash);
         self.save()
+    }
+
+    // ---- IA.3.5.3 MFA (TOTP) ----
+    pub fn totp_enabled(&self, user: &str) -> bool { self.file.totp_secret.contains_key(user) }
+
+    // Begin enrollment: mint a fresh secret, stash it as PENDING (not yet enforced), return the secret
+    // for the authenticator (the caller builds the otpauth URI). A re-enroll overwrites any pending.
+    pub fn totp_begin_enroll(&mut self, user: &str) -> std::io::Result<String> {
+        let secret = crate::totp::generate_secret();
+        self.file.totp_pending.insert(user.to_string(), secret.clone());
+        self.save()?;
+        Ok(secret)
+    }
+
+    // Confirm enrollment with a live code against the PENDING secret. On success: promote to enabled,
+    // mint + store (hashed) recovery codes, and return the plaintext recovery codes ONCE. None if the
+    // code is wrong or there's no pending enrollment.
+    pub fn totp_confirm_enroll(&mut self, user: &str, code: &str, now_secs: u64) -> std::io::Result<Option<Vec<String>>> {
+        let Some(secret) = self.file.totp_pending.get(user).cloned() else { return Ok(None); };
+        if !crate::totp::verify(&secret, code, now_secs) { return Ok(None); }
+        self.file.totp_pending.remove(user);
+        self.file.totp_secret.insert(user.to_string(), secret);
+        let codes = crate::totp::generate_recovery_codes(10);
+        self.file.totp_recovery.insert(user.to_string(), codes.iter().map(|c| crate::totp::hash_recovery(c)).collect());
+        self.save()?;
+        Ok(Some(codes))
+    }
+
+    // Disable MFA for an account (drops the secret + recovery codes + any pending).
+    pub fn totp_disable(&mut self, user: &str) -> std::io::Result<()> {
+        let changed = self.file.totp_secret.remove(user).is_some()
+            | self.file.totp_pending.remove(user).is_some()
+            | self.file.totp_recovery.remove(user).is_some();
+        if changed { self.save() } else { Ok(()) }
+    }
+
+    // Verify a login second factor: a live TOTP code against the enabled secret, OR (fallback) a
+    // single-use recovery code (consumed on match). Returns whether the factor is accepted.
+    pub fn totp_verify_second_factor(&mut self, user: &str, code: &str, now_secs: u64) -> std::io::Result<bool> {
+        if let Some(secret) = self.file.totp_secret.get(user) {
+            if crate::totp::verify(secret, code, now_secs) { return Ok(true); }
+        }
+        // Recovery-code path: consume the matching code so it can't be reused.
+        let h = crate::totp::hash_recovery(code);
+        if let Some(list) = self.file.totp_recovery.get_mut(user) {
+            if let Some(pos) = list.iter().position(|x| x == &h) {
+                list.remove(pos);
+                self.save()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // IA.3.5.9 forced-change flag.

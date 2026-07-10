@@ -12,11 +12,13 @@ pub mod config;
 pub mod hash;
 pub mod index_store;
 pub mod error;
+pub mod mfa;
 pub mod protocol;
 pub mod registration;
 pub mod shares;
 pub mod state;
 pub mod throttle;
+pub mod totp;
 pub mod tokens;
 pub mod users;
 pub mod vault;
@@ -70,7 +72,13 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         // enumeration surface) and all account-admin endpoints stay private below.
         .route("/api/admin/me", get(admin::me))
         .route("/api/admin/vaults", get(admin::my_vaults))
-        .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete));
+        .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
+        // IA.3.5.3: self-service MFA (TOTP) — AuthToken-gated, safe on both surfaces (the admin page
+        // surfaces enroll/confirm/disable for privileged accounts; login verifies the second factor).
+        .route("/api/mfa/status", get(mfa::status))
+        .route("/api/mfa/enroll", post(mfa::enroll))
+        .route("/api/mfa/confirm", post(mfa::confirm))
+        .route("/api/mfa/disable", post(mfa::disable));
     if include_public {
         r = r
             .route("/api/register", post(auth::register))

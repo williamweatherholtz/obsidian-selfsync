@@ -306,6 +306,41 @@ async fn password_change_rejects_reuse_of_a_recent_password(/* IA.3.5.8 */) {
 }
 
 #[tokio::test]
+async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let base = spawn().await;
+    let c = reqwest::Client::new();
+    let t = login(&base, "bob").await; // bob's password is "pw"
+    // Enroll -> secret; confirm with a live code -> recovery codes; MFA now enabled.
+    let er = c.post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap();
+    assert_eq!(er.status().as_u16(), 200);
+    let secret = er.json::<Value>().await.unwrap()["secret"].as_str().unwrap().to_string();
+    let confirm_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let cr = c.post(format!("{base}/api/mfa/confirm")).bearer_auth(&t).json(&json!({"code": confirm_code})).send().await.unwrap();
+    assert_eq!(cr.status().as_u16(), 200);
+    let recovery = cr.json::<Value>().await.unwrap()["recovery_codes"][0].as_str().unwrap().to_string();
+    // Password alone no longer logs in — 401 "mfa required".
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
+        .send().await.unwrap().status().as_u16(), 401);
+    // Password + a valid TOTP code -> 200.
+    let login_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let ok = c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": login_code})).send().await.unwrap();
+    assert_eq!(ok.status().as_u16(), 200);
+    let tok = ok.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    // A single-use recovery code logs in; reusing it fails.
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": recovery}))
+        .send().await.unwrap().status().as_u16(), 200);
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": recovery}))
+        .send().await.unwrap().status().as_u16(), 401, "a consumed recovery code can't be reused");
+    // Disable requires a current code; after disabling, password alone logs in again.
+    let disable_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    assert_eq!(send(&base, "POST", "/api/mfa/disable", &tok, json!({"code": disable_code})).await, 200);
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
+        .send().await.unwrap().status().as_u16(), 200, "MFA disabled -> password alone works");
+}
+
+#[tokio::test]
 async fn register_rejects_a_too_short_password(/* SEC-AUTH min-length */) {
     let base = spawn().await; // Open registration is off by default here, but the length check runs first.
     let c = reqwest::Client::new();

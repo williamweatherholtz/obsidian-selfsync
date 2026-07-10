@@ -5,19 +5,20 @@
 > engineering standard), not an externally-mandated regulatory obligation. All 110 controls are authored
 > as security `SystemRequirement`s in `.tracking/compliance/nist-800-171.sysml`, each `satisfy`-linked to
 > the framework `Need` `nSecurityFramework` (`source = internal`), so posture is **computed** — not just
-> this hand-written table. Disposition: **34 met**, **21 partial**, **52 operator-attested** (the operator
-> is the verifier — *pending* sign-off, deliberately not fabricated), **3 POA&M** (open `issueCmmc*`).
+> this hand-written table. Disposition: **35 met**, **21 partial**, **52 operator-attested** (the operator
+> is the verifier — *pending* sign-off, deliberately not fabricated), **2 POA&M** (open `issueCmmc*`).
 > Each met/partial control carries a `#Verify` Test; the load-bearing ones (auth-gating, throttle, session
-> timeout, isolation, password policy + reuse + forced-change, hashing, plugin allowlist) point at **real
+> timeout, isolation, MFA, password policy + reuse + forced-change, hashing, plugin allowlist) point at **real
 > automated tests** (`method=test`) that fail if the control regresses — the rest are `method=inspect`
 > code-cited claims with a behavioral test as a tracked follow-up. Check it any time: `keel coverage` /
 > `keel tier-satisfaction` (verified vs uncovered) and `keel open-issues` (the POA&M gaps).
 >
-> **Implemented since the initial modeling:** IA.3.5.8 (password-reuse history — last 5 hashes) and
-> IA.3.5.9 (forced-change-on-reset — `must_change` enforced in the auth extractor), both real-tested; their
-> POA&M Issues are now resolved. **FIPS (3.13.11) is DEFERRED** — this deployment stores no genuine CUI, so
-> FIPS-validated crypto is not required. **Remaining POA&M:** MFA (3.5.3), CUI-at-rest (3.13.16, operator
-> volume encryption / E2EE deferred), and FIPS (deferred).
+> **Implemented since the initial modeling:** IA.3.5.3 (multifactor authentication — TOTP + recovery codes
+> for privileged/admin accounts), IA.3.5.8 (password-reuse history — last 5 hashes) and IA.3.5.9
+> (forced-change-on-reset — `must_change` enforced in the auth extractor), all real-tested; their POA&M
+> Issues are now resolved. **FIPS (3.13.11) is DEFERRED** — this deployment stores no genuine CUI, so
+> FIPS-validated crypto is not required. **Remaining POA&M:** CUI-at-rest (3.13.16, operator volume
+> encryption / E2EE deferred) and FIPS (deferred). Both are deliberate decisions, not unfinished work.
 
 
 > **Scope & honesty note.** CMMC 2.0 Level 2 = the 110 practices of NIST SP 800-171 rev2 across 14
@@ -64,10 +65,10 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 | Practice | Status | Evidence / note |
 |---|---|---|
 | 3.5.1 / 3.5.2 identify & authenticate users / devices | MET / OPERATOR | account + argon2id; device auth (mTLS/VPN) = OPERATOR |
-| **3.5.3 multifactor authentication** | **POA&M** | no MFA yet — the top open IA item; design + plan below |
+| **3.5.3 multifactor authentication** | **MET** | TOTP (RFC 6238) second factor + single-use recovery codes for privileged/admin accounts; self-enrolled via `/admin`, verified at login. Self-contained crypto (`totp.rs`) pinned to RFC 4231/6238 vectors. Non-privileged (plugin) MFA = follow-up |
 | **3.5.7 password complexity** | **MET** | `validate_password_policy`: length + ≥2 char classes, or ≥15-char passphrase, on every set path |
-| **3.5.8 prohibit password reuse** | **POA&M** | no password history yet; plan below |
-| **3.5.9 temporary password / forced change** | **POA&M** | admin reset revokes sessions but sets no must-change flag; plan below |
+| **3.5.8 prohibit password reuse** | **MET** | `users.rs` retains last 5 argon2 hashes; `change_password` rejects the current or any recent password |
+| **3.5.9 temporary password / forced change** | **MET** | admin create/reset flags `must_change`; the `AuthToken` extractor 403s every route but change-password/logout until a new password is set |
 | 3.5.10 store/transmit only protected passwords | MET | argon2id at rest, tokens sha256-hashed, TLS-in-transit; **client now defaults to token-only** (no plaintext password on device) |
 | 3.5.11 obscure authentication feedback | MET | de-oracled login/register (dummy-hash constant work, uniform 401/403) |
 
@@ -101,29 +102,20 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 
 ## POA&M (Plan of Action & Milestones)
 
-These are the open technical items. Two are feature-sized; two are deliberate architecture decisions.
+The two remaining open items are **deliberate architecture decisions**, not unfinished features. The three
+feature-sized IA gaps (MFA 3.5.3, forced-change 3.5.9, reuse history 3.5.8) are now **implemented and
+real-tested** — see the IA table above; their `issueCmmc*` Issues are resolved.
 
-1. **IA.3.5.3 — Multifactor authentication (HIGH, feature).** Plan: TOTP (RFC 6238) as a second factor
-   — per-account base32 secret, enrollment via the admin page (secret/QR + verify-before-enable),
-   verification at login on both surfaces, single-use recovery codes, and an enforce-for-admins policy
-   flag. Interim compensating controls for the SSP: front the server with a VPN/mTLS or an SSO/identity-
-   aware proxy (e.g. an OIDC forward-auth at the reverse proxy) that provides the second factor.
-2. **IA.3.5.9 — Forced password change on reset (MEDIUM, feature).** Plan: a `must_change` flag set by
-   admin create/reset, enforced server-side (block all endpoints except change-password until cleared),
-   with a graceful prompt in both login surfaces. Interim: the operator resets, communicates the temp
-   password out-of-band, and the reset already revokes all sessions.
-3. **IA.3.5.8 — Password-reuse history (MEDIUM).** Plan: retain the last N argon2 hashes per account and
-   reject a match on change. Interim: 3.5.7 complexity + rotation policy in the SSP.
-4. **SC.3.13.16 — CUI at rest (HIGH, decision).** **Recommendation: operator volume encryption now**
+1. **SC.3.13.16 — CUI at rest (HIGH, decision).** **Recommendation: operator volume encryption now**
    (LUKS/dm-crypt or a cloud-provider encrypted volume on `/data`) — a legitimate, assessor-accepted
    at-rest control needing zero code. Application-level E2EE is the only defense against a *compromised
    server* but is a major redesign against the current trusted-server model; keep deferred and record the
    residual "a server-side attacker/insider reads plaintext" risk in the SSP.
-5. **SC.3.13.11 — FIPS-validated cryptography (HIGH, decision).** If genuine CUI is stored, non-FIPS
-   crypto is a recognized sticking point that SSP prose cannot fully waive. Plan: move the server to a
-   FIPS-validated provider (e.g. an OpenSSL 3 FIPS provider for the hashing path) and retire the client's
-   hand-rolled streaming SHA-256 in favor of a validated primitive. **Do not represent current crypto as
-   FIPS-validated.**
+2. **SC.3.13.11 — FIPS-validated cryptography (DEFERRED, decision).** This deployment stores **no genuine
+   CUI**, so FIPS-validated crypto is not required and the item is formally deferred. If genuine CUI is ever
+   stored, revisit: move the server to a FIPS-validated provider (e.g. an OpenSSL 3 FIPS provider for the
+   hashing path) and retire the client's hand-rolled streaming SHA-256 in favor of a validated primitive.
+   **Do not represent current crypto as FIPS-validated.**
 
 ## Operator responsibilities (must be in the SSP regardless of code)
 TLS termination + HSTS at the proxy; per-IP rate-limiting / fail2ban; log forwarding, retention, and
