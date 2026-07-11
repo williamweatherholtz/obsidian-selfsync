@@ -51,6 +51,7 @@ pub struct AppState {
     pub users: Arc<Mutex<UserStore>>,
     pub shares: Arc<Mutex<ShareStore>>, // vault access-control list (.shares.json)
     pub registration: Arc<Mutex<RegistrationStore>>, // policy + invite tokens (.registration.json)
+    pub share_links: Arc<Mutex<crate::sharelinks::ShareLinkStore>>, // capability share-links (.share-links.json, D0023)
     pub admins: Arc<Mutex<crate::admins::AdminStore>>, // promoted server-admins beyond the bootstrap (.admins.json, D0021)
     pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
@@ -111,11 +112,13 @@ impl AppState {
         }
         let tokens = TokenStore::open(&cfg.data_root.join(".tokens.json"))?;
         let admins = crate::admins::AdminStore::open(&cfg.data_root.join(".admins.json"))?;
+        let share_links = crate::sharelinks::ShareLinkStore::open(&cfg.data_root.join(".share-links.json"))?;
         let state = AppState {
             cfg: Arc::new(cfg),
             users: Arc::new(Mutex::new(users)),
             shares: Arc::new(Mutex::new(shares)),
             registration: Arc::new(Mutex::new(registration)),
+            share_links: Arc::new(Mutex::new(share_links)),
             admins: Arc::new(Mutex::new(admins)),
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),

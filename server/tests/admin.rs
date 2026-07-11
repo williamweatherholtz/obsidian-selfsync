@@ -493,3 +493,41 @@ async fn require_admin_mfa_blocks_admin_until_totp_enrolled() {
     assert_eq!(post_json(&base, "/api/mfa/confirm", &admin, serde_json::json!({ "code": code })).await.0, 200);
     assert_eq!(get(&base, "/api/admin/users", &admin).await.0, 200, "after enrolling MFA the admin can act");
 }
+
+// D0023 (capability share-links): an owner creates a single-use link; a logged-in account redeems it,
+// gaining a normal grant bound to itself (reaches the owner-qualified route); the link is single-use.
+#[tokio::test]
+async fn share_link_create_redeem_binds_a_grant_and_is_single_use() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await; // owns "vault"
+    let (cs, cv) = post_json(&base, "/api/share-links", &admin, json!({"vault":"vault","perm":"readWrite","label":"for bob"})).await;
+    assert_eq!(cs, 200);
+    let token = cv["token"].as_str().unwrap().to_string();
+    // bob can't reach admin's vault yet.
+    let bob = login(&base, "bob").await;
+    assert_eq!(get(&base, "/api/u/admin/vault/status", &bob).await.0, 403, "no access before redeem");
+    // bob redeems → gets a grant bound to bob.
+    let (rs, rv) = post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await;
+    assert_eq!(rs, 200);
+    assert_eq!((rv["owner"].as_str(), rv["vault"].as_str(), rv["perm"].as_str()), (Some("admin"), Some("vault"), Some("readWrite")));
+    assert_eq!(get(&base, "/api/u/admin/vault/status", &bob).await.0, 200, "grantee reaches the shared vault after redeem");
+    // single-use.
+    assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 400, "a consumed link can't be redeemed again");
+}
+
+// A share-link is owner-scoped (can't create for a vault you don't own) and revoking a pending link
+// prevents redemption.
+#[tokio::test]
+async fn share_link_owner_scoped_and_revoke_blocks_redeem() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let bob = login(&base, "bob").await;
+    // bob doesn't own "vault".
+    assert_eq!(post_json(&base, "/api/share-links", &bob, json!({"vault":"vault","perm":"read"})).await.0, 404);
+    // admin creates a link, lists it, revokes it → redeem fails.
+    let token = post_json(&base, "/api/share-links", &admin, json!({"vault":"vault","perm":"read"})).await.1["token"].as_str().unwrap().to_string();
+    let (_ls, lv) = get(&base, "/api/share-links", &admin).await;
+    let id = lv.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(send(&base, "DELETE", &format!("/api/share-links/{id}"), &admin, Value::Null).await, 200);
+    assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 400, "a revoked link can't be redeemed");
+}

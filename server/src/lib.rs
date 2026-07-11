@@ -15,6 +15,7 @@ pub mod error;
 pub mod mfa;
 pub mod protocol;
 pub mod registration;
+pub mod sharelinks;
 pub mod shares;
 pub mod state;
 pub mod throttle;
@@ -73,6 +74,13 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         .route("/api/admin/me", get(admin::me))
         .route("/api/admin/vaults", get(admin::my_vaults))
         .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
+        // D0023 capability share-links — owner-scoped create/list/revoke + an AuthToken-gated redeem.
+        // On the shared surface (like the owner share ops above) so they're reachable on the public
+        // port in the default split. Redeem is a distinct path (not /share-links/:id) to avoid a
+        // matchit static-vs-param sibling conflict.
+        .route("/api/share-links", post(admin::share_link_create).get(admin::share_link_list))
+        .route("/api/share-links/:id", axum::routing::delete(admin::share_link_revoke))
+        .route("/api/share-redeem", post(admin::share_link_redeem))
         // IA.3.5.3: self-service MFA (TOTP) — AuthToken-gated, safe on both surfaces (the admin page
         // surfaces enroll/confirm/disable for privileged accounts; login verifies the second factor).
         .route("/api/mfa/status", get(mfa::status))

@@ -206,6 +206,70 @@ pub async fn share_delete(
     Ok(StatusCode::OK)
 }
 
+// ---- D0023 capability share-links: share a vault by sending a single-use LINK. The link carries only
+// an opaque token; redeeming (by a logged-in account) mints a normal grant bound to the redeemer. ----
+#[derive(Deserialize)]
+pub struct ShareLinkReq { vault: String, perm: Perm, #[serde(default)] label: String, #[serde(default)] ttl_secs: Option<u64> }
+#[derive(Serialize)]
+pub struct ShareLinkResp { token: String }
+
+// Owner creates a link for one of THEIR OWN vaults. Returns the plaintext token once.
+pub async fn share_link_create(
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ShareLinkReq>,
+) -> Result<Json<ShareLinkResp>, AppError> {
+    if !safe_name(&req.vault) { return Err(AppError::BadRequest("invalid vault".into())); }
+    if !st.list_vaults(&user).iter().any(|v| v == &req.vault) { return Err(AppError::NotFound); } // must own it
+    let token = lock(&st.share_links)?.create(&user, &req.vault, req.perm, &req.label, req.ttl_secs)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    audit(action::SHARE_LINK_CREATE, &user, &format!("{}/{}", user, req.vault), outcome::SUCCESS, &ip);
+    Ok(Json(ShareLinkResp { token }))
+}
+
+// The caller's own share-links (pending + redeemed); never the token/hash.
+pub async fn share_link_list(
+    AuthToken(user): AuthToken, State(st): State<AppState>,
+) -> Result<Json<Vec<crate::sharelinks::LinkInfo>>, AppError> {
+    Ok(Json(lock(&st.share_links)?.list(&user)))
+}
+
+// Revoke a PENDING link the caller owns. An already-redeemed grant is revoked via /api/admin/shares.
+pub async fn share_link_revoke(
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    if !lock(&st.share_links)?.revoke(&user, &id).map_err(|e| AppError::Internal(e.to_string()))? {
+        return Err(AppError::NotFound);
+    }
+    audit(action::SHARE_LINK_REVOKE, &user, &id, outcome::SUCCESS, &ip);
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+pub struct RedeemLinkReq { token: String }
+#[derive(Serialize)]
+pub struct RedeemLinkResp { owner: String, vault: String, perm: Perm }
+
+// Redeem a share-link (caller must be logged in). Binds a normal grant to the CALLER, consuming the
+// link. Uniform error for unknown/expired/consumed (no oracle). Self-redeem is a no-op success.
+pub async fn share_link_redeem(
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<RedeemLinkReq>,
+) -> Result<Json<RedeemLinkResp>, AppError> {
+    let Some(r) = lock(&st.share_links)?.redeem(&req.token, &user) else {
+        audit(action::SHARE_LINK_REDEEM, &user, "-", outcome::FAILURE, &ip);
+        return Err(AppError::BadRequest("this share link is invalid, expired, or already used".into()));
+    };
+    if r.owner != user {
+        // Mint the D0008 grant bound to the redeemer; bound per-owner (parity with share_create).
+        let mut g = lock(&st.shares)?;
+        let is_upsert = g.permission(&r.owner, &r.vault, &user).is_some();
+        if !is_upsert && g.owner_grant_count(&r.owner) >= crate::shares::MAX_GRANTS_PER_OWNER {
+            return Err(AppError::BadRequest("the vault owner has reached their maximum number of shares".into()));
+        }
+        g.grant(&r.owner, &r.vault, &user, r.perm).map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    audit(action::SHARE_LINK_REDEEM, &user, &format!("{}/{} -> {}", r.owner, r.vault, user), outcome::SUCCESS, &ip);
+    Ok(Json(RedeemLinkResp { owner: r.owner, vault: r.vault, perm: r.perm }))
+}
+
 #[derive(Deserialize)]
 pub struct ReindexReq {
     owner: String,

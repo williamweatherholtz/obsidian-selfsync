@@ -30,6 +30,9 @@ pub mod action {
     pub const INVITE_REVOKE: &str = "invite_revoke";
     pub const SHARE_GRANT: &str = "share_grant";
     pub const SHARE_REVOKE: &str = "share_revoke";
+    pub const SHARE_LINK_CREATE: &str = "share_link_create"; // D0023 capability share-links
+    pub const SHARE_LINK_REDEEM: &str = "share_link_redeem";
+    pub const SHARE_LINK_REVOKE: &str = "share_link_revoke";
     pub const VAULT_CREATE: &str = "vault_create";
     pub const VAULT_DELETE: &str = "vault_delete";
     pub const VAULT_REINDEX: &str = "vault_reindex";
