@@ -427,7 +427,7 @@ package ProjectIssues {
     #Resolves dependency from critRoundStd to issueCritDownloadSwitch;
     #Resolves dependency from critRoundStd to issueCritWsMustChange;
     #Resolves dependency from critRoundStd to issueCritRealtimeStale;
-    #Resolves dependency from critRoundResidual to issueCritOpenEnum;
+    #Resolves dependency from acceptOpenEnumRisk to issueCritOpenEnum;         // ACCEPTED-RISK (wweatherholtz, human-attested) — invite-only guidance
     #Resolves dependency from critResidualEasy to issueCritTotpReplay;         // DONE (real-tested)
     #Resolves dependency from critResidual2 to issueCritWsLiveness;            // DONE (real-tested)
     #Resolves dependency from acceptMobileFsyncRisk to issueCritMobileFsync;  // ACCEPTED-RISK (wweatherholtz, human-attested)

@@ -122,3 +122,9 @@ TLS termination + HSTS at the proxy; per-IP rate-limiting / fail2ban; log forwar
 alerting (a SIEM); volume/disk encryption for at-rest (`/data` and the client device's `data.json`);
 endpoint AV + screen-lock; network/DMZ topology; device authentication (mTLS/VPN); non-privileged
 day-to-day accounts; backup/restore; and the organizational families (AT, IR, MA, MP, PE, PS, RA, CA).
+
+**Keep registration invite-only.** The default `REGISTRATION=closed` (with single-use invite tokens)
+is the recommended posture. **Open** registration (`REGISTRATION=open`) exposes `/api/register` to the
+internet and is inherently username-enumerable (a taken name returns 409 vs 200 for a free one) — an
+accepted tradeoff of self-service sign-up, not a bug. Prefer invite-only unless anonymous self-registration
+is a deliberate requirement, in which case front it with per-IP rate-limiting at the proxy.
