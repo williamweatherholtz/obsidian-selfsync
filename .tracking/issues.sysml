@@ -430,7 +430,7 @@ package ProjectIssues {
     #Resolves dependency from critRoundResidual to issueCritOpenEnum;
     #Resolves dependency from critResidualEasy to issueCritTotpReplay;         // DONE (real-tested)
     #Resolves dependency from critResidual2 to issueCritWsLiveness;            // DONE (real-tested)
-    #Resolves dependency from critRoundResidual to issueCritMobileFsync;
+    #Resolves dependency from acceptMobileFsyncRisk to issueCritMobileFsync;  // ACCEPTED-RISK (wweatherholtz, human-attested)
 
     // ---- CMMC assessor round (2026-07, AC/IA/AU + SC/SI/CM). 5 FIXED + real-tested (critRoundCmmc),
     // 2 deferred (critRoundResidual). ----
