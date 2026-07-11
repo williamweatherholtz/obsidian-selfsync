@@ -65,6 +65,11 @@ struct UsersFile {
     // Single-use recovery codes (sha256-hashed), consumed one-per-use when the authenticator is lost.
     #[serde(default)]
     totp_recovery: HashMap<String, Vec<String>>,
+    // crit-round (IA.3.5.3 replay protection): the last TOTP 30s step consumed per user. A code whose
+    // step is <= this is rejected, so a captured code can't be replayed within its ~90s validity window
+    // (RFC 6238 §5.2). Recovery codes are separately single-use and don't touch this.
+    #[serde(default)]
+    totp_last_step: HashMap<String, u64>,
 }
 
 pub struct UserStore {
@@ -109,6 +114,7 @@ impl UserStore {
             self.file.totp_secret.remove(user);
             self.file.totp_pending.remove(user);
             self.file.totp_recovery.remove(user);
+            self.file.totp_last_step.remove(user);
             self.save()?;
             Ok(true)
         } else {
@@ -206,15 +212,25 @@ impl UserStore {
     pub fn totp_disable(&mut self, user: &str) -> std::io::Result<()> {
         let changed = self.file.totp_secret.remove(user).is_some()
             | self.file.totp_pending.remove(user).is_some()
-            | self.file.totp_recovery.remove(user).is_some();
+            | self.file.totp_recovery.remove(user).is_some()
+            | self.file.totp_last_step.remove(user).is_some();
         if changed { self.save() } else { Ok(()) }
     }
 
     // Verify a login second factor: a live TOTP code against the enabled secret, OR (fallback) a
     // single-use recovery code (consumed on match). Returns whether the factor is accepted.
     pub fn totp_verify_second_factor(&mut self, user: &str, code: &str, now_secs: u64) -> std::io::Result<bool> {
-        if let Some(secret) = self.file.totp_secret.get(user) {
-            if crate::totp::verify(secret, code, now_secs) { return Ok(true); }
+        if let Some(secret) = self.file.totp_secret.get(user).cloned() {
+            if let Some(step) = crate::totp::verify_step(&secret, code, now_secs) {
+                // Replay guard (RFC 6238 §5.2): reject a code from a step already consumed, so a
+                // captured code can't be reused within its validity window.
+                if self.file.totp_last_step.get(user).map_or(false, |&last| step <= last) {
+                    return Ok(false);
+                }
+                self.file.totp_last_step.insert(user.to_string(), step);
+                self.save()?;
+                return Ok(true);
+            }
         }
         // Recovery-code path: consume the matching code so it can't be reused.
         let h = crate::totp::hash_recovery(code);

@@ -333,11 +333,35 @@ async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
         .send().await.unwrap().status().as_u16(), 200);
     assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": recovery}))
         .send().await.unwrap().status().as_u16(), 401, "a consumed recovery code can't be reused");
-    // Disable requires a current code; after disabling, password alone logs in again.
-    let disable_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    // Disable requires a current code; after disabling, password alone logs in again. Use a NEXT-window
+    // code (now+30) — the login above consumed this window's step, and the replay guard rejects a reused
+    // step; a fresh-step code is still within the +1 skew window the server accepts.
+    let disable_code = new_livesync_server::totp::code_at(&secret, now() + 30).unwrap();
     assert_eq!(send(&base, "POST", "/api/mfa/disable", &tok, json!({"code": disable_code})).await, 200);
     assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
         .send().await.unwrap().status().as_u16(), 200, "MFA disabled -> password alone works");
+}
+
+// IA.3.5.3 (crit-round): a TOTP code can't be REPLAYED within its validity window — once a step is
+// consumed, the same code is rejected (RFC 6238 §5.2), so a captured code isn't reusable seconds later.
+#[tokio::test]
+async fn totp_code_cannot_be_replayed_within_its_window() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let base = spawn().await;
+    let c = reqwest::Client::new();
+    let t = login(&base, "bob").await;
+    let secret = c.post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap()
+        .json::<Value>().await.unwrap()["secret"].as_str().unwrap().to_string();
+    let confirm = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    assert_eq!(c.post(format!("{base}/api/mfa/confirm")).bearer_auth(&t).json(&json!({"code": confirm})).send().await.unwrap().status().as_u16(), 200);
+    let code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    // First use of a fresh code → 200.
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": code.clone()}))
+        .send().await.unwrap().status().as_u16(), 200);
+    // The SAME code (same 30s step) → 401: the consumed step is rejected as a replay.
+    assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": code}))
+        .send().await.unwrap().status().as_u16(), 401, "a consumed TOTP code can't be replayed");
 }
 
 #[tokio::test]

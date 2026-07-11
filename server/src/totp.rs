@@ -113,14 +113,21 @@ pub fn code_at(secret_b32: &str, now_secs: u64) -> Option<String> {
     Some(format!("{:06}", hotp(&secret, now_secs / 30)))
 }
 
+// Verify a 6-digit TOTP code and RETURN the 30s step it matched (else None), accepting the current
+// step and ±1 for clock skew. The matched step lets the caller record it for replay protection
+// (RFC 6238 §5.2: a code from an already-consumed step must be rejected).
+pub fn verify_step(secret_b32: &str, code: &str, now_secs: u64) -> Option<u64> {
+    let code = code.trim();
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    let secret = base32_decode(secret_b32)?;
+    let code_num = code.parse::<u32>().ok()?;
+    let step = now_secs / 30;
+    [step.wrapping_sub(1), step, step + 1].into_iter().find(|&c| hotp(&secret, c) == code_num)
+}
+
 // Verify a 6-digit TOTP code against the secret, accepting the current 30s step and ±1 for clock skew.
 pub fn verify(secret_b32: &str, code: &str, now_secs: u64) -> bool {
-    let code = code.trim();
-    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) { return false; }
-    let Some(secret) = base32_decode(secret_b32) else { return false; };
-    let Ok(code_num) = code.parse::<u32>() else { return false; };
-    let step = now_secs / 30;
-    [step.wrapping_sub(1), step, step + 1].iter().any(|&c| hotp(&secret, c) == code_num)
+    verify_step(secret_b32, code, now_secs).is_some()
 }
 
 // Recovery codes: N single-use codes shown ONCE at enrollment; only their sha256 hashes are stored.
