@@ -5,7 +5,7 @@ import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
-import { ChangePasswordModal, ShareManageModal } from "./accountui";
+import { ChangePasswordModal, ShareManageModal, RedeemShareLinkModal } from "./accountui";
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -143,6 +143,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         // Sharing only applies to a vault you OWN (not one shared TO you).
         if (!s.vaultOwner) st.addButton((b) => b.setButtonText("Share").onClick(() => new ShareManageModal(this.app, this.plugin).open()));
         st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
+        // Receive a share: redeem a selfsync-share:// link someone sent you (D0023).
+        st.addButton((b) => b.setButtonText("Redeem link").onClick(() => new RedeemShareLinkModal(this.app, this.plugin).open()));
       });
     this.factRow(g, "Last synced", this.lastSyncedAgo(s));
 

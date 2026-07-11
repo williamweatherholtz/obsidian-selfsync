@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
-import { HttpTransport, SharedVaultRef, SharePerm, VaultShares } from "./transport";
+import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, DEFAULT_MAX_SYNC_BYTES, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
@@ -7,7 +7,8 @@ import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
-import { encodeSetupLink } from "./connstr";
+import { encodeSetupLink, normalizeServer } from "./connstr";
+import { encodeShareLink, parseShareLink } from "./sharelink";
 import { Phase, light, isWsStale } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
@@ -652,6 +653,27 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   async unshareVault(vault: string, grantee: string): Promise<void> {
     await this.withAuth((t) => HttpTransport.shareDelete(this.settings.serverUrl, t, vault, grantee));
+  }
+  // D0023 capability share-links. Create returns the full selfsync-share:// link to hand out (Copy).
+  async createShareLink(vault: string, perm: SharePerm, label = "", ttlSecs?: number): Promise<string> {
+    const linkToken = await this.withAuth((t) => HttpTransport.createShareLink(this.settings.serverUrl, t, vault, perm, label, ttlSecs));
+    return encodeShareLink({ server: this.settings.serverUrl, token: linkToken });
+  }
+  listShareLinks(): Promise<ShareLinkInfo[]> {
+    return this.withAuth((t) => HttpTransport.listShareLinks(this.settings.serverUrl, t));
+  }
+  revokeShareLink(id: string): Promise<void> {
+    return this.withAuth((t) => HttpTransport.revokeShareLink(this.settings.serverUrl, t, id));
+  }
+  // Redeem a pasted share-link: it must be for the server this device is configured against (the token
+  // is server-specific; cross-server redemption needs an account there first). Binds a grant to this
+  // account and returns {owner,vault,perm} so the caller can offer to switch to the shared vault.
+  async redeemShareLink(link: string): Promise<SharedVaultRef> {
+    const { server, token } = parseShareLink(link);
+    if (normalizeServer(server) !== normalizeServer(this.settings.serverUrl)) {
+      throw new Error(`This link is for ${server}. Set up SelfSync against that server first, then redeem it.`);
+    }
+    return this.withAuth((t) => HttpTransport.redeemShareLink(this.settings.serverUrl, t, token));
   }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.

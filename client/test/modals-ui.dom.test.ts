@@ -3,7 +3,7 @@
 // confirm its confirm/resolve buttons actually invoke the right plugin action with the right args.
 // Directly targets the "dialogs with no effect" worry (esp. the conflict-adjudication modals).
 import { describe, it, expect } from "vitest";
-import { ChangePasswordModal } from "../src/accountui";
+import { ChangePasswordModal, ShareManageModal, RedeemShareLinkModal } from "../src/accountui";
 import { ConfigConflictModal } from "../src/configconflict";
 import { NoteConflictModal } from "../src/noteconflict";
 import { SetupWizardModal } from "../src/setupwizard";
@@ -89,6 +89,36 @@ describe("NoteConflictModal (adjudication)", () => {
     buttonByText(m.contentEl, "Open both to merge").click();
     await flush();
     expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "manual");
+  });
+});
+
+describe("capability share-links (D0023)", () => {
+  it("RedeemShareLinkModal: pasting a link + Redeem calls redeemShareLink", async () => {
+    const plugin = fakePlugin();
+    const m = new RedeemShareLinkModal(plugin.app, plugin as any);
+    m.onOpen();
+    typeInto(textByName(m.contentEl, "Share link"), "selfsync-share://redeem?server=https://s&token=tok");
+    buttonByText(m.contentEl, "Redeem").click();
+    await flush();
+    expect(plugin.redeemShareLink).toHaveBeenCalledWith("selfsync-share://redeem?server=https://s&token=tok");
+  });
+
+  it("RedeemShareLinkModal: an empty link does NOT redeem", async () => {
+    const plugin = fakePlugin();
+    const m = new RedeemShareLinkModal(plugin.app, plugin as any);
+    m.onOpen();
+    buttonByText(m.contentEl, "Redeem").click();
+    await flush();
+    expect(plugin.redeemShareLink).not.toHaveBeenCalled();
+  });
+
+  it("ShareManageModal: 'Create link' generates a share-link for the vault", async () => {
+    const plugin = fakePlugin({ myVaultShares: async () => [{ vault: "notes", grants: [] }] });
+    const m = new ShareManageModal(plugin.app, plugin as any);
+    m.onOpen(); await flush(); // load() populates + re-renders
+    buttonByText(m.contentEl, "Create link").click();
+    await flush();
+    expect(plugin.createShareLink).toHaveBeenCalledWith("notes", expect.stringMatching(/read/));
   });
 });
 

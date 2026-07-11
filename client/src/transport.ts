@@ -37,6 +37,9 @@ export type SharePerm = "read" | "readWrite";
 export type SharedVaultRef = { owner: string; vault: string; perm: SharePerm };
 // One of the caller's OWN vaults + who it's shared with (owner-scoped share management, sec#4).
 export type VaultShares = { vault: string; grants: { grantee: string; perm: SharePerm }[] };
+// A capability share-link's owner-facing metadata (never the token). `redeemed_by` = the account that
+// consumed it (null while pending); `expires_at` = epoch secs (null if the owner opted out of expiry).
+export type ShareLinkInfo = { id: string; vault: string; perm: SharePerm; label: string; expires_at: number | null; redeemed_by: string | null };
 
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
 // Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
@@ -195,6 +198,34 @@ export class HttpTransport implements SyncApi {
       headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, grantee }), throw: false,
     });
     if (r.status !== 200) throw new Error(`unshare: HTTP ${r.status}`);
+  }
+
+  // D0023 capability share-links. createShareLink returns the opaque token (the plugin wraps it in a
+  // selfsync-share:// link); redeemShareLink binds a grant to the caller and returns what they got.
+  static async createShareLink(baseUrl: string, token: string, vault: string, perm: SharePerm, label = "", ttlSecs?: number): Promise<string> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/share-links`, method: "POST", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, perm, label, ttl_secs: ttlSecs ?? null }), throw: false,
+    });
+    if (r.status !== 200) throw new Error((r.json as { error?: string })?.error ?? `share link: HTTP ${r.status}`);
+    return (r.json as { token: string }).token;
+  }
+  static async listShareLinks(baseUrl: string, token: string): Promise<ShareLinkInfo[]> {
+    const r = await httpReq({ url: `${baseUrl}/api/share-links`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+    if (r.status !== 200) throw new Error(`share links: HTTP ${r.status}`);
+    return r.json as ShareLinkInfo[];
+  }
+  static async revokeShareLink(baseUrl: string, token: string, id: string): Promise<void> {
+    const r = await httpReq({ url: `${baseUrl}/api/share-links/${encodeURIComponent(id)}`, method: "DELETE", headers: { authorization: `Bearer ${token}` }, throw: false });
+    if (r.status !== 200) throw new Error(`revoke share link: HTTP ${r.status}`);
+  }
+  static async redeemShareLink(baseUrl: string, token: string, linkToken: string): Promise<SharedVaultRef> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/share-redeem`, method: "POST", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ token: linkToken }), throw: false,
+    });
+    if (r.status !== 200) throw new Error((r.json as { error?: string })?.error ?? `redeem: HTTP ${r.status}`);
+    return r.json as SharedVaultRef;
   }
 
   private auth() { return { authorization: `Bearer ${this.token}` }; }

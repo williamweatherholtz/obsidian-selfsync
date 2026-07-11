@@ -56,6 +56,10 @@ export function fakePlugin(over: any = {}) {
     myVaultShares: vi.fn(async () => []),
     shareVault: vi.fn(async () => {}),
     unshareVault: vi.fn(async () => {}),
+    createShareLink: vi.fn(async () => "selfsync-share://redeem?server=https%3A%2F%2Fsync.example&token=tok"),
+    listShareLinks: vi.fn(async () => []),
+    revokeShareLink: vi.fn(async () => {}),
+    redeemShareLink: vi.fn(async () => ({ owner: "alice", vault: "notes", perm: "readWrite" })),
     ...over,
   };
   p.settings = settings;
