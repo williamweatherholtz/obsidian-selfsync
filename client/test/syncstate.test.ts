@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { transition, light, SyncMachine, Phase } from "../src/syncstate";
+import { transition, light, isWsStale, SyncMachine, Phase } from "../src/syncstate";
 
 describe("sync FSM transitions", () => {
   it("off → connecting → idle on a successful connect", () => {
@@ -61,6 +61,14 @@ describe("light is a pure function of phase", () => {
   it("the realtime flag only affects idle (syncing/offline are unchanged)", () => {
     expect(light("syncing", "", false).color).toBe(light("syncing", "", true).color);
     expect(light("offline", "", false).color).toBe("var(--color-red)");
+  });
+});
+
+describe("isWsStale (crit-round: WS half-open liveness)", () => {
+  it("is stale only once activity is older than the deadline", () => {
+    expect(isWsStale(1000, 1000 + 74_000, 75_000)).toBe(false); // within the window → alive
+    expect(isWsStale(1000, 1000 + 75_000, 75_000)).toBe(false); // exactly at the deadline → not yet
+    expect(isWsStale(1000, 1000 + 76_000, 75_000)).toBe(true);  // past the deadline → half-open
   });
 });
 

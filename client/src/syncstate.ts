@@ -55,6 +55,14 @@ export function light(phase: Phase, detail = "", realtime = true): LightSpec {
   }
 }
 
+// True when the realtime socket has gone silent past the liveness deadline — no frame (server
+// heartbeat OR change) within `staleAfterMs`. Browsers hide protocol ping/pong from JS, so an
+// app-level heartbeat is the only signal that a socket is alive vs half-open; this is the pure
+// decision the client's liveness timer uses to stop trusting a dead socket and re-dial.
+export function isWsStale(lastActivityMs: number, nowMs: number, staleAfterMs: number): boolean {
+  return nowMs - lastActivityMs > staleAfterMs;
+}
+
 // Holds the current phase and fires onChange only on an actual transition.
 export class SyncMachine {
   private phase: Phase = "off";

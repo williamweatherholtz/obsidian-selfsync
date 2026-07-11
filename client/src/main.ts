@@ -8,7 +8,7 @@ import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
 import { encodeSetupLink } from "./connstr";
-import { Phase, light } from "./syncstate";
+import { Phase, light, isWsStale } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
@@ -42,6 +42,10 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 // WS-less client still converges quickly.
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
+// WS half-open liveness (crit-round residual): the server sends an app heartbeat every ~30s. If the
+// client sees NO frame (heartbeat or change) for this long, the socket is silently dead → re-dial.
+const WS_STALE_MS = 75 * 1000;      // ~2.5 missed heartbeats
+const WS_LIVENESS_CHECK_MS = 20 * 1000;
 // Coalesce the burst of "raw" events a single config change emits before reconciling.
 const RAW_DEBOUNCE_MS = 600;
 // Ignore a "raw" event for a path WE just wrote (the change echoing back) within this window.
@@ -269,6 +273,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private reconnectTimer?: number;
   private pollTimer?: number;
   private lastConfigScanAt = 0; // wall-clock ms of the last CONFIG-ONLY scan (see doReconcileAll)
+  private lastWsActivity = 0;        // ms of the last WS frame (heartbeat or change) — for half-open detection
+  private wsLivenessTimer?: number;
   private realtimeConnected = false; // is the change-notification WebSocket currently OPEN? Drives the
   // status light's realtime-vs-polling distinction (syncstate.light) so green "Fully synced" never
   // shows over a dead socket. Polling still keeps data current when this is false.
@@ -954,6 +960,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private doTeardown(): void {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
+    if (this.wsLivenessTimer !== undefined) { window.clearInterval(this.wsLivenessTimer); this.wsLivenessTimer = undefined; }
     this.ws?.close(); this.ws = undefined;
     this.realtimeConnected = false; // torn down → no realtime channel
   }
@@ -970,8 +977,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws = ws ?? undefined;
     if (!ws) { this.log("ws not available — polling fallback active"); return null; }
     let opened = false;
+    // Half-open liveness (crit-round residual): bump on ANY frame — the server's app heartbeat or a
+    // real change poke — so a silent (half-open) socket is detectable. Additive to the transport's own
+    // onmessage handler (which only reacts to type:"changed").
+    this.lastWsActivity = Date.now();
+    ws.addEventListener("message", () => { this.lastWsActivity = Date.now(); });
+    this.startWsLiveness(ws);
     ws.addEventListener("open", () => {
       opened = true; this.log("ws channel open (instant sync)");
+      this.lastWsActivity = Date.now();
       this.realtimeConnected = true; this.renderLight(this.engine.phase()); // light → true realtime health
       this.startPolling(POLL_IDLE_MS); // WS live → downshift the poll to a slow liveness backstop (Finding 3a)
     });
@@ -990,6 +1004,24 @@ export default class NewLiveSyncPlugin extends Plugin {
       }
     });
     return ws;
+  }
+
+  // Detect a HALF-OPEN socket (crit-round residual): the browser hides protocol ping/pong from JS, so
+  // a socket whose TCP has silently died still reads as "open" and the light would stay green with the
+  // poll downshifted. The server heartbeats every ~30s; if we see no frame within WS_STALE_MS, treat
+  // the socket as dead — drop realtime health, upshift the poll, and re-dial (idempotent on the queue).
+  private startWsLiveness(ws: WebSocket): void {
+    if (this.wsLivenessTimer !== undefined) window.clearInterval(this.wsLivenessTimer);
+    this.wsLivenessTimer = window.setInterval(() => {
+      if (this.unloading || this.ws !== ws || !this.realtimeConnected) return;
+      if (isWsStale(this.lastWsActivity, Date.now(), WS_STALE_MS)) {
+        this.log("ws silent past the liveness deadline — treating as half-open, re-dialing");
+        this.realtimeConnected = false; this.renderLight(this.engine.phase());
+        this.lastWsActivity = Date.now();   // don't re-fire every tick until the re-dial settles
+        this.startPolling(POLL_ACTIVE_MS);
+        this.engine.enqueue({ kind: "rews" });
+      }
+    }, WS_LIVENESS_CHECK_MS);
   }
 
   // EFFECT: re-establish ONLY the WS socket (no token re-acquire, no reconcile). Rejects if it

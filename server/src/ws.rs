@@ -212,6 +212,13 @@ async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: Conn
                 // quiet period (no notifications flowing) so an idle revoked socket still tears down.
                 if !session_alive(&st, &owner, &vault, &user, &token) { break; }
                 if socket.send(Message::Ping(Vec::new())).await.is_err() { break; }
+                // crit-round (residual: WS half-open liveness): also send an APPLICATION heartbeat the
+                // client can see. Browsers auto-answer protocol Ping frames without surfacing them to
+                // JS, so the client can't tell a half-open socket from a quiet one via our Pings. This
+                // text frame reaches the client's onmessage on a healthy socket and is silently absent
+                // on a dead one — letting the client time out and re-dial instead of showing green over
+                // a dead channel. It carries no data; the client treats it as a liveness beat, not a poke.
+                if socket.send(Message::Text("{\"type\":\"hb\"}".into())).await.is_err() { break; }
                 awaiting_pong = true;
             }
             msg = socket.recv() => match msg {

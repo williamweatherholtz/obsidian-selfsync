@@ -19,12 +19,13 @@ fn is_server_admin(st: &AppState, user: &str) -> bool {
     // accounts live in the persisted admin set (D0021). A poisoned lock denies (fail-safe).
     user == st.cfg.user || lock(&st.admins).map(|a| a.contains(user)).unwrap_or(false)
 }
-fn require_admin(st: &AppState, user: &str) -> Result<(), AppError> {
+fn require_admin(st: &AppState, user: &str, ip: &str) -> Result<(), AppError> {
     if !is_server_admin(st, user) {
         // SEC-CMMC (AU.3.3.1/3.3.2): audit a denied privileged-function attempt at this single
-        // choke-point so every /api/admin/* route is covered. Actor is known; source IP isn't threaded
-        // here (the mutating admin handlers carry it on their success events).
-        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, "-");
+        // choke-point so every /api/admin/* route is covered. The mutating handlers now thread their
+        // ClientIp so the highest-value "who tried a privileged action, from where" events carry the
+        // source; read-only handlers pass "-" (lower value, and the reverse proxy correlates by time).
+        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, ip);
         return Err(AppError::Forbidden);
     }
     // IA.3.5.3 (crit-round): when the operator MANDATES admin MFA (REQUIRE_ADMIN_MFA=1), a privileged
@@ -32,7 +33,7 @@ fn require_admin(st: &AppState, user: &str) -> Result<(), AppError> {
     // merely available. Enrollment itself is on the (AuthToken-gated, non-admin) /api/mfa/* routes, so
     // a fresh admin can still enroll and is never locked out.
     if st.cfg.require_admin_mfa && !lock(&st.users)?.totp_enabled(user) {
-        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, "-");
+        audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, ip);
         return Err(AppError::Forbidden);
     }
     Ok(())
@@ -107,7 +108,7 @@ pub struct OwnerVault { vault: String, status: String }
 pub async fn owner_vaults(
     AuthToken(user): AuthToken, State(st): State<AppState>, Path(name): Path<String>,
 ) -> Result<Json<Vec<OwnerVault>>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, "-")?;
     if !safe_name(&name) { return Err(AppError::BadRequest("invalid username".into())); }
     let (st2, owner) = (st.clone(), name.clone());
     let vaults = st.list_vaults(&name);
@@ -126,7 +127,7 @@ pub struct SetPwReq { password: String }
 pub async fn user_set_password(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>, Json(req): Json<SetPwReq>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&name) { return Err(AppError::BadRequest("invalid username".into())); }
     if name == st.cfg.user {
         return Err(AppError::BadRequest("the bootstrap admin's password is controlled by SYNC_PASSWORD — change it in the server environment and restart".into()));
@@ -222,7 +223,7 @@ pub struct ReindexReq {
 pub async fn reindex(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ReindexReq>,
 ) -> Result<Json<crate::protocol::StatusResponse>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
         return Err(AppError::BadRequest("invalid owner or vault".into()));
     }
@@ -268,7 +269,7 @@ pub struct PruneHistoryReq {
 pub async fn prune_history(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<PruneHistoryReq>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
         return Err(AppError::BadRequest("invalid owner or vault".into()));
     }
@@ -302,7 +303,7 @@ pub struct VaultDelReq {
 pub async fn vault_delete(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<VaultDelReq>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&req.owner) || !safe_name(&req.vault) {
         return Err(AppError::BadRequest("invalid owner or vault".into()));
     }
@@ -326,7 +327,7 @@ pub struct UserView {
 pub async fn users_list(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<UserView>>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, "-")?;
     let names = lock(&st.users)?.usernames();
     let admins = lock(&st.admins)?;
     let out = names.into_iter().map(|u| {
@@ -346,7 +347,7 @@ pub async fn users_list(
 pub async fn usernames(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, "-")?;
     Ok(Json(lock(&st.users)?.usernames()))
 }
 
@@ -354,7 +355,7 @@ pub async fn usernames(
 pub async fn admin_grant(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&name) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
@@ -372,7 +373,7 @@ pub async fn admin_grant(
 pub async fn admin_revoke(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&name) {
         return Err(AppError::BadRequest("invalid username".into())); // R22: parity with admin_grant — never log/act on a raw path segment
     }
@@ -393,7 +394,7 @@ pub struct NewUserReq {
 pub async fn users_create(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<NewUserReq>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest("invalid username".into()));
     }
@@ -424,7 +425,7 @@ pub async fn users_create(
 pub async fn users_delete(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     if name == st.cfg.user {
         return Err(AppError::BadRequest("cannot delete the server-admin account".into()));
     }
@@ -462,7 +463,7 @@ pub struct RegResp {
 pub async fn registration_get(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<RegResp>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, "-")?;
     Ok(Json(RegResp { mode: lock(&st.registration)?.mode() }))
 }
 
@@ -473,7 +474,7 @@ pub struct SetRegReq {
 pub async fn registration_set(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<SetRegReq>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     lock(&st.registration)?.set_mode(req.mode).map_err(|e| AppError::Internal(e.to_string()))?;
     let mode_str = if req.mode == Mode::Open { "open" } else { "closed" };
     audit(action::REGISTRATION_POLICY_CHANGE, &user, mode_str, outcome::SUCCESS, &ip);
@@ -495,7 +496,7 @@ pub struct InviteResp {
 pub async fn invite_create(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<InviteReq>,
 ) -> Result<Json<InviteResp>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     let token = lock(&st.registration)?
         .issue(&req.label, req.ttl_secs)
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -507,14 +508,14 @@ pub async fn invite_create(
 pub async fn invites_list(
     AuthToken(user): AuthToken, State(st): State<AppState>,
 ) -> Result<Json<Vec<TokenInfo>>, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, "-")?;
     Ok(Json(lock(&st.registration)?.list()))
 }
 
 pub async fn invite_delete(
     AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    require_admin(&st, &user)?;
+    require_admin(&st, &user, &ip)?;
     let removed = lock(&st.registration)?.revoke(&id).map_err(|e| AppError::Internal(e.to_string()))?;
     if removed { audit(action::INVITE_REVOKE, &user, &id, outcome::SUCCESS, &ip); Ok(StatusCode::OK) } else { Err(AppError::NotFound) }
 }
