@@ -66,6 +66,51 @@ export class NodeTransport implements SyncApi {
     });
     if (!r.ok) throw new Error(`grant ${r.status}`);
   }
+  // login variant that exposes the must_change_password signal (mirrors HttpTransport.login).
+  static async loginFull(base: string, u: string, p: string): Promise<{ token: string; mustChange: boolean }> {
+    const r = await fetch(`${base}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: u, password: p }) });
+    if (!r.ok) throw new Error(`login ${r.status}`);
+    const j = (await r.json()) as { token: string; must_change_password?: boolean };
+    return { token: j.token, mustChange: Boolean(j.must_change_password) };
+  }
+  // Admin-create an account WITHOUT the forced change — leaves it must-change (the real admin-UI state).
+  static async createUserRaw(base: string, adminToken: string, username: string, tempPassword: string): Promise<void> {
+    const r = await fetch(`${base}/api/admin/users`, {
+      method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ username, password: tempPassword }),
+    });
+    if (!r.ok) throw new Error(`createUserRaw ${r.status}`);
+  }
+  static async changePassword(base: string, token: string, current: string, newPassword: string): Promise<string> {
+    const r = await fetch(`${base}/api/password`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ current, new_password: newPassword }),
+    });
+    if (!r.ok) throw new Error(`changePassword ${r.status}`);
+    return ((await r.json()) as { token: string }).token;
+  }
+  static async rawStatus(base: string, token: string, path: string): Promise<number> {
+    const r = await fetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    return r.status;
+  }
+  // Capability share-link create/redeem (D0023).
+  static async createShareLink(base: string, ownerToken: string, vault: string, perm: "read" | "readWrite"): Promise<string> {
+    const r = await fetch(`${base}/api/share-links`, {
+      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify({ vault, perm, label: "", ttl_secs: null }),
+    });
+    if (!r.ok) throw new Error(`createShareLink ${r.status}`);
+    return ((await r.json()) as { token: string }).token;
+  }
+  static async redeemShareLink(base: string, token: string, linkToken: string): Promise<{ owner: string; vault: string; perm: string }> {
+    const r = await fetch(`${base}/api/share-redeem`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ token: linkToken }),
+    });
+    if (!r.ok) throw new Error(`redeemShareLink ${r.status}`);
+    return (await r.json()) as { owner: string; vault: string; perm: string };
+  }
+  static async listShared(base: string, token: string): Promise<{ owner: string; vault: string; perm: string }[]> {
+    const r = await fetch(`${base}/api/shared`, { headers: { authorization: `Bearer ${token}` } });
+    if (!r.ok) throw new Error(`listShared ${r.status}`);
+    return (await r.json()) as { owner: string; vault: string; perm: string }[];
+  }
   private h() { return { authorization: `Bearer ${this.token}` }; }
   private v(suffix: string) {
     const scope = this.owner

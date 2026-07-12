@@ -63,4 +63,47 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
     await reconcileAll(dep(alice)); // alice pulls again
     expect(await exists(path.join(alice.root, "carol-only.md"))).toBe(false);
   }, 60000);
+
+  // Reproduces the REAL redeem-onboarding path end to end (the flow the 1.0.20–1.0.23 fixes touched):
+  // an admin-created recipient is must-change-gated, must change its password, THEN redeems a share
+  // LINK (not a direct grant) and gains cross-account access. Each earlier bug would have failed a
+  // specific step here — the test that should have existed before shipping.
+  it("must-change account → change password → redeem a share LINK → sync the shared vault", async () => {
+    const admin = await NodeTransport.login(base, "admin", "admin");
+    await NodeTransport.createUser(base, admin, "owner1", "vaultpw12"); // ready-to-use owner
+    await NodeTransport.createUserRaw(base, admin, "recip1", "Temp-1234"); // still must-change (admin-UI state)
+
+    // 1) A fresh admin-created account is must-change gated: login SUCCEEDS but signals it, and a normal
+    //    route 403s until the password is set. This is exactly the "vaults: HTTP 403" the wizard hit.
+    const first = await NodeTransport.loginFull(base, "recip1", "Temp-1234");
+    expect(first.mustChange).toBe(true);
+    expect(await NodeTransport.rawStatus(base, first.token, "/api/vaults")).toBe(403);
+
+    // 2) Change the password → fresh, un-gated token; must-change now clears.
+    const freshTok = await NodeTransport.changePassword(base, first.token, "Temp-1234", "Recip-pass-1");
+    expect(await NodeTransport.rawStatus(base, freshTok, "/api/vaults")).toBe(200);
+    expect((await NodeTransport.loginFull(base, "recip1", "Recip-pass-1")).mustChange).toBe(false);
+
+    // 3) owner1 puts a note in their vault and mints a read-write SHARE LINK.
+    const ownerTok = await NodeTransport.login(base, "owner1", "vaultpw12");
+    await NodeTransport.createVault(base, ownerTok, "mine");
+    const owner = mkClient(root("owner1"), new NodeTransport(base, ownerTok, "mine"));
+    await fs.writeFile(path.join(owner.root, "shared.md"), "hello from owner1");
+    await reconcileAll(dep(owner));
+    const linkToken = await NodeTransport.createShareLink(base, ownerTok, "mine", "readWrite");
+
+    // 4) recip1 REDEEMS the link (binds a grant to their account) and it shows up in "shared with me".
+    const redeemed = await NodeTransport.redeemShareLink(base, freshTok, linkToken);
+    expect(redeemed).toMatchObject({ owner: "owner1", vault: "mine", perm: "readWrite" });
+    const shared = await NodeTransport.listShared(base, freshTok);
+    expect(shared.some((s) => s.owner === "owner1" && s.vault === "mine")).toBe(true);
+
+    // 5) recip1 syncs the shared vault (owner-qualified) and gets the note — the whole point.
+    const recip = mkClient(root("recip1"), new NodeTransport(base, freshTok, "mine", "owner1"));
+    await reconcileAll(dep(recip));
+    expect(dec(await recip.io.read("shared.md"))).toBe("hello from owner1");
+
+    // 6) single-use: the same link can't be redeemed again.
+    await expect(NodeTransport.redeemShareLink(base, freshTok, linkToken)).rejects.toThrow();
+  }, 60000);
 });
