@@ -85,6 +85,11 @@ impl ShareStore {
 
     // Grant (or update) a share. Upsert: a re-grant to the same grantee replaces the perm.
     pub fn grant(&mut self, owner: &str, vault: &str, grantee: &str, perm: Perm) -> std::io::Result<()> {
+        // Snapshot before mutating so a save() failure (disk full, EIO) leaves the IN-MEMORY set exactly
+        // as it was on disk — never a live grant that isn't persisted. Otherwise the share-link redeem
+        // handler, which rolls the link claim back on a grant Err, would leave BOTH an in-memory grant
+        // AND a re-redeemable link — breaking single-use and the "fails closed" contract (critique F2a).
+        let snapshot = self.file.grants.clone();
         self.file
             .grants
             .retain(|g| !(g.owner == owner && g.vault == vault && g.grantee == grantee));
@@ -94,7 +99,11 @@ impl ShareStore {
             grantee: grantee.to_string(),
             perm,
         });
-        self.save()
+        if let Err(e) = self.save() {
+            self.file.grants = snapshot; // roll back to the last durable state
+            return Err(e);
+        }
+        Ok(())
     }
 
     // Revoke a share; takes effect immediately. No-op (no write) if it didn't exist.
@@ -162,6 +171,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let s = ShareStore::open(&dir.path().join(".shares.json")).unwrap();
         (dir, s)
+    }
+
+    #[test]
+    fn grant_rolls_back_in_memory_when_save_fails() {
+        // Point the store at a path whose PARENT dir doesn't exist so save() (atomic_write) fails.
+        let dir = tempdir().unwrap();
+        let mut s = ShareStore::open(&dir.path().join("missing").join(".shares.json")).unwrap();
+        let r = s.grant("alice", "v", "dana", Perm::Read);
+        assert!(r.is_err(), "save must fail (parent dir missing)");
+        // The failed grant must NOT linger in memory — otherwise the redeem rollback leaves a live
+        // grant + a re-redeemable link (critique F2a).
+        assert_eq!(s.owner_grant_count("alice"), 0);
+        assert!(s.permission("alice", "v", "dana").is_none());
     }
 
     #[test]

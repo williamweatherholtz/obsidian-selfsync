@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { lcsPairs } from "./merge";
+import { lcsPairs, isMergeable } from "./merge";
+import { sameIgnoringEol } from "./reconcile";
 import type NewLiveSyncPlugin from "./main";
 
 // A single line of a unified diff: shared context, or a line only on one side.
@@ -37,12 +38,6 @@ export class NoteConflictModal extends Modal {
   onOpen() { this.titleEl.setText("Resolve conflicts"); void this.run(); }
   onClose() { this.contentEl.empty(); }
 
-  // Only line endings / trailing newline differ → not a real conflict.
-  private cosmeticEqual(a: string, b: string): boolean {
-    const n = (s: string) => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
-    return n(a) === n(b);
-  }
-
   // Entry point: show an IMMEDIATE placeholder (never a blank modal), auto-dismiss cosmetic-only
   // conflicts with visible progress, then draw the real state. Wrapped so an error shows a message
   // instead of leaving the body empty (the reported "display error").
@@ -60,10 +55,14 @@ export class NoteConflictModal extends Modal {
         // exist") must be skipped, never abort the whole modal. Resolving a vanished copy is treated
         // as already-done — the derived list drops it on the next render.
         try {
-          const mine = await this.plugin.readTextOrEmpty(copy);
-          const theirs = await this.plugin.readTextOrEmpty(original);
-          if (this.cosmeticEqual(mine, theirs)) {
-            await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs);
+          const mineB = await this.plugin.readBytesOrNull(copy);
+          const theirsB = await this.plugin.readBytesOrNull(original);
+          // Auto-dismiss ONLY a genuine cosmetic (line-ending) difference in TEXT files. Never
+          // lossy-decode a binary attachment to compare it — two DIFFERENT binaries can decode equal
+          // and we'd silently delete this device's only copy (critique F1). isMergeable is extension-
+          // + fatal-UTF-8-gated, so binary/invalid content is excluded and falls through to the modal.
+          if (mineB && theirsB && isMergeable(copy, mineB) && isMergeable(original, theirsB) && sameIgnoringEol(mineB, theirsB)) {
+            await this.plugin.resolveNoteConflict(copy, original, "theirs", new TextDecoder().decode(theirsB));
             status.setText(`Clearing cosmetic (line-ending-only) conflicts… ${++dismissed}`);
           }
         } catch { /* stale/missing entry — skip; it's effectively resolved */ }

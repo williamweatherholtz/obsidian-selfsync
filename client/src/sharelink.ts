@@ -53,7 +53,9 @@ export function resolveShareGrant(
   if (!owner) return { status: "notShared" };
   const ref = grants.find((g) => g.owner === owner && g.vault === vault);
   if (!ref) return { status: "revoked" };
-  return { status: "active", readOnly: ref.perm === "read" };
+  // Fail CLOSED for a security flag: treat the grant as read-only UNLESS it is explicitly readWrite.
+  // An unexpected/renamed/malformed perm string must not silently confer write intent (critique F6).
+  return { status: "active", readOnly: ref.perm !== "readWrite" };
 }
 
 // Precheck before redeeming on THIS device. Redeem is an AUTHENTICATED, server-specific call: it binds

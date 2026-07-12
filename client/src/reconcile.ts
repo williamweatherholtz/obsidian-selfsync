@@ -1,6 +1,6 @@
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk, mapPool } from "./sync";
 import { sha256hex } from "./chunker";
-import { BaseStore, conflictCopyName } from "./base";
+import { BaseStore, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
 
@@ -569,7 +569,13 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       else if (!localBytes && !rmeta && baseEntry) { d.base.delete(path); d.onBaseChanged?.(); }
       return;
     case "push": {
-      if (d.readOnly) { d.onReadOnly?.(path); return; } // can't upload to a read-only share
+      if (d.readOnly) {
+        // Can't upload to a read-only share. A conflict-copy file is DELIBERATELY local there (it can
+        // never sync), so don't report it as a change that "won't sync" — that's just noise every
+        // reconcile; the copy is already surfaced via the derived conflict list.
+        if (!isConflictCopy(path)) d.onReadOnly?.(path);
+        return;
+      }
       // CAS: base this write on the remote version we saw (0 if this is a local-only create). If a
       // concurrent commit advanced the server past it, the commit 409s → CommitConflictError →
       // per-file skip → the next reconcile decides merge instead of a silent lost-update overwrite.
@@ -635,20 +641,29 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict — adopt the
       // remote bytes, record base, and spawn NO conflict copy. Runs before the read-only + merge
       // branches so it covers every path. (Fixes the false conflicts on a first sync of two identical
-      // copies authored on different OSes — issueFalseEolConflict.)
-      if (sameIgnoringEol(liveLocal, remoteBytes)) {
+      // copies authored on different OSes — issueFalseEolConflict.) TEXT ONLY: isMergeable is
+      // extension-gated AND fatal-UTF-8-gated, so a binary attachment (or invalid-UTF-8 bytes) is
+      // EXCLUDED — otherwise the lossy TextDecoder in sameIgnoringEol could map two DIFFERENT binaries'
+      // invalid bytes to the same U+FFFD string and silently clobber a local attachment (critique F1).
+      if (isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && sameIgnoringEol(liveLocal, remoteBytes)) {
         await d.io.write(path, remoteBytes);
         setBase(d, path, remoteBytes, rmeta!.hash);
         return;
       }
       if (d.readOnly) {
-        // Read-only share: the owner's version is canonical and we push nothing. Keep the
-        // reader's (current) local edit as a LOCAL-only conflict copy so it isn't silently lost.
-        const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
-        await d.io.write(copy, liveLocal);
+        // Read-only share: the owner's version is canonical and we push nothing. Preserve the reader's
+        // version as a LOCAL conflict copy ONLY for a genuine both-sides divergence against a KNOWN base
+        // (action "merge"). A NO-BASE divergence (action "conflict-copy") is first-contact reconciliation
+        // — NOT a reader edit — so adopt the owner's bytes with NO copy: a read-only copy can never sync
+        // (it's pushed nowhere), so manufacturing one just litters the vault with a permanently-flagged,
+        // unsyncable file (field report: read-only PNGs spuriously conflict-copied on every sync).
+        if (action === "merge") {
+          const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
+          await d.io.write(copy, liveLocal);
+          d.onReadOnly?.(path); d.onConflict?.(path, copy);
+        }
         await d.io.write(path, remoteBytes);
         setBase(d, path, remoteBytes, rmeta!.hash);
-        d.onReadOnly?.(path); d.onConflict?.(path, copy);
         return;
       }
       // Both sides changed: always attempt a clean three-way merge; fall through to a conflict copy

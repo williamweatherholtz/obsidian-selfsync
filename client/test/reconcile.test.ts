@@ -68,6 +68,10 @@ function deps(api: SyncApi, io: VaultIo, extra: Partial<ReconcileDeps> = {}): Re
 async function serverPut(api: SyncApi, path: string, text: string) {
   await pushFile(api, fakeIo({ [path]: text }), { version: 0 }, new Map() as ChunkCache, path);
 }
+async function serverPutBytes(api: SyncApi, path: string, bytes: Uint8Array) {
+  const io = fakeIo(); io.m.set(path, bytes);
+  await pushFile(api, io, { version: 0 }, new Map() as ChunkCache, path);
+}
 // A VaultIo that applies the production path guard (mirrors ObsidianVaultIo, R24): read/exists/write/
 // remove refuse a traversing/absolute server-supplied path so it can never touch the "filesystem".
 function guardedIo(seed: Record<string, string> = {}) {
@@ -170,6 +174,22 @@ describe("reconcileAll", () => {
     const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
     expect(copies.length).toBe(1);
     expect(dec(m.get(copies[0])!)).toBe("LOCAL version");
+  });
+
+  it("NO-BASE BINARY divergence (read-write): keeps BOTH as a conflict copy — never lossy-collapsed (critique F1)", async () => {
+    const { api } = fakeServer();
+    const remote = new Uint8Array([0x41, 0x80]); // invalid-UTF-8 bytes that a lossy TextDecoder maps
+    const local = new Uint8Array([0x41, 0x81]);  // to the SAME "A�" string — must NOT be treated equal
+    await serverPutBytes(api, "img.png", remote);
+    const io = fakeIo(); io.m.set("img.png", local);
+    const conf: string[] = [];
+    await reconcileAll(deps(api, io, { onConflict: (p) => conf.push(p) }));
+    const m = io.m;
+    expect([...m.get("img.png")!]).toEqual([...remote]); // remote canonical at the path
+    const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);
+    expect([...m.get(copies[0])!]).toEqual([...local]);  // local PRESERVED (no silent clobber)
+    expect(conf.length).toBe(1);
   });
 
   it("sameIgnoringEol: line-ending + trailing-newline differences are cosmetic; real edits are not", () => {
@@ -491,6 +511,32 @@ describe("read-only shared vault (never mutates the server)", () => {
     expect(dec(m.get(copies[0])!)).toBe("MY edit");          // local edit kept locally
     expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false); // NOT pushed
     expect(ro).toContain("n.md");
+  });
+
+  it("NO-BASE divergence: adopts the owner's version WITHOUT a conflict copy (field: read-only PNGs spuriously copied)", async () => {
+    const { api, files } = fakeServer();
+    const remote = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0a, 0x01]);
+    const local = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0a, 0x02]); // different bytes, no common base
+    await serverPutBytes(api, "assets/img.png", remote);
+    const io = fakeIo(); io.m.set("assets/img.png", local);
+    const conf: string[] = []; const ro: string[] = [];
+    await reconcileAll(deps(api, io, { readOnly: true, onConflict: (p) => conf.push(p), onReadOnly: (p) => ro.push(p) }));
+    const m = io.m;
+    expect([...m.get("assets/img.png")!]).toEqual([...remote]); // owner canonical, adopted byte-for-byte
+    expect([...m.keys()].filter((k) => k.includes("(conflict"))).toEqual([]); // NO litter copy on a read-only share
+    expect(conf).toEqual([]); // not flagged as a conflict
+    expect(ro).toEqual([]);   // not reported as "won't sync"
+    expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false);
+  });
+
+  it("an EXISTING conflict copy on a read-only share is NOT reported as 'won't sync' (noise suppression)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "keep.md", "owner");
+    // a leftover conflict copy sits locally (local-only new file); on read-only it can't push
+    const io = fakeIo({ "keep.md": "owner", "keep (conflict Pixel 9 20260712193013-09ba63).md": "old local" });
+    const ro: string[] = [];
+    await reconcileAll(deps(api, io, { readOnly: true, onReadOnly: (p) => ro.push(p) }));
+    expect(ro).toEqual([]); // the conflict-copy file is deliberately local — not a failed sync
   });
 });
 

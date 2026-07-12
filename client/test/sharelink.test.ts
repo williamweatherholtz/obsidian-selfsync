@@ -72,5 +72,9 @@ describe("share-link codec (D0023)", () => {
       expect(resolveShareGrant(grants, "carol", "gone")).toEqual({ status: "revoked" });
       expect(resolveShareGrant([], "alice", "research")).toEqual({ status: "revoked" });
     });
+    it("fails CLOSED — an unknown/malformed perm is read-only, never silently read-write (F6)", () => {
+      expect(resolveShareGrant([{ owner: "a", vault: "v", perm: "weird" }], "a", "v")).toEqual({ status: "active", readOnly: true });
+      expect(resolveShareGrant([{ owner: "a", vault: "v", perm: "" }], "a", "v")).toEqual({ status: "active", readOnly: true });
+    });
   });
 });

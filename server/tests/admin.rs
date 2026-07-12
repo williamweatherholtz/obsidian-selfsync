@@ -515,6 +515,23 @@ async fn share_link_create_redeem_binds_a_grant_and_is_single_use() {
     assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 400, "a consumed link can't be redeemed again");
 }
 
+// Self-redeem (the owner redeems their OWN link, e.g. to test it) is a no-op success that must NOT
+// burn the single-use invite — the intended recipient can still redeem it afterwards (critique F2b).
+#[tokio::test]
+async fn self_redeem_does_not_burn_the_link() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await; // owns "vault"
+    let token = post_json(&base, "/api/share-links", &admin, json!({"vault":"vault","perm":"read","label":"for bob"})).await.1["token"].as_str().unwrap().to_string();
+    // admin redeems their own link → success, but the link must remain available.
+    assert_eq!(post_json(&base, "/api/share-redeem", &admin, json!({"token": token})).await.0, 200, "self-redeem is a no-op success");
+    // bob (the intended recipient) can STILL redeem it and gain access — it wasn't consumed.
+    let bob = login(&base, "bob").await;
+    let (rs, rv) = post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await;
+    assert_eq!(rs, 200, "the invite survived the owner's self-redeem");
+    assert_eq!((rv["owner"].as_str(), rv["vault"].as_str()), (Some("admin"), Some("vault")));
+    assert_eq!(get(&base, "/api/u/admin/vault/status", &bob).await.0, 200, "recipient reaches the vault");
+}
+
 // A share-link is owner-scoped (can't create for a vault you don't own) and revoking a pending link
 // prevents redemption.
 #[tokio::test]

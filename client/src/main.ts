@@ -423,12 +423,23 @@ export default class NewLiveSyncPlugin extends Plugin {
   // array to drift: the list, count, and modal are a pure projection and can never go stale, show
   // dual-truth, or reference a file that no longer exists. Deleting/resolving a copy simply drops it.
   listNoteConflicts(): { copy: string; original: string }[] {
-    return deriveNoteConflicts(this.app.vault.getFiles().map((f) => f.path));
+    const paths = this.app.vault.getFiles().map((f) => f.path);
+    const present = new Set(paths);
+    // A genuine conflict copy always sits beside its original (we adopt the other version INTO the
+    // original when spawning the copy). If the original is ABSENT, this isn't a live conflict — it's
+    // an orphan copy (already resolved) or a user file that merely LOOKS like a copy; don't flag it,
+    // and never offer a real note (whose "copy" doesn't exist) as a deletable version (critique F5).
+    return deriveNoteConflicts(paths).filter((c) => present.has(c.original));
   }
   openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
   // Text of a file for the conflict preview ("" if gone or unreadable).
   async readTextOrEmpty(path: string): Promise<string> {
     try { return new TextDecoder().decode(await this.io.read(path)); } catch { return ""; }
+  }
+  // Raw bytes of a file (null if gone/unreadable) — used by the conflict modal to compare content
+  // WITHOUT a lossy UTF-8 round-trip, so a binary attachment is never mis-compared (critique F1).
+  async readBytesOrNull(path: string): Promise<Uint8Array | null> {
+    try { return await this.io.read(path); } catch { return null; }
   }
   // Resolve one note conflict. "mine" promotes this device's copy to canonical; "theirs" keeps the
   // on-disk (other) version; both then delete the copy. Each change is enqueued so it propagates.
@@ -451,6 +462,14 @@ export default class NewLiveSyncPlugin extends Plugin {
       // nothing to promote — treat as resolved rather than throwing (the derived list drops it).
       if (!(await this.io.exists?.(copy) ?? true)) return true;
       const bytes = await this.io.read(copy);
+      // Re-check the stale-preview guard IMMEDIATELY before the write: the guard above and this read
+      // both yield to the event loop, and the modal runs OUTSIDE the engine queue, so a reconcile
+      // could have pulled a newer `original` in the gap — don't clobber it (critique F3; narrows the
+      // window to this no-await span).
+      if (previewedOther !== undefined && (await this.readTextOrEmpty(original)) !== previewedOther) {
+        new Notice("SelfSync: that file changed since you opened this — review it again");
+        return false;
+      }
       await this.io.write(original, bytes);
       this.engine.enqueue({ kind: "path", path: original, size: bytes.byteLength });
     }
@@ -1132,6 +1151,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // The 4s safety-net poll is now just an event SOURCE: it enqueues {remote}; the engine serializes
   // it and doReconcileAll does the cheap incremental check, so an idle poll stays one tiny request.
   private startPolling(intervalMs: number = POLL_ACTIVE_MS): void {
+    // Never (re)arm the poll during/after teardown. `unload` is handled synchronously and can run
+    // while a connect() is suspended at an await (e.g. the refreshShareGrant round-trip); without this
+    // guard the resuming connect would install a fresh interval that outlives teardown and pins the
+    // plugin instance — one leaked timer per disable/re-enable cycle (critique F4, matches spinUpWs).
+    if (this.unloading) return;
     if (this.pollTimer !== undefined) window.clearInterval(this.pollTimer);
     this.pollTimer = window.setInterval(() => this.engine.enqueue({ kind: "remote" }), intervalMs);
   }

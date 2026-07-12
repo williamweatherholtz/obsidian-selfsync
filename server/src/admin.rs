@@ -276,6 +276,11 @@ pub async fn share_link_redeem(
             let _ = lock(&st.share_links)?.unredeem(&req.token);
             return Err(AppError::Internal(e.to_string()));
         }
+    } else {
+        // Self-redeem: the caller already owns the vault, so no grant is minted. Release the claim so
+        // a no-op self-test doesn't BURN the single-use invite (the handler doc calls this a "no-op
+        // success" — it must actually leave the link redeemable for the intended recipient) (critique F2b).
+        let _ = lock(&st.share_links)?.unredeem(&req.token);
     }
     audit(action::SHARE_LINK_REDEEM, &user, &format!("{}/{} -> {}", r.owner, r.vault, user), outcome::SUCCESS, &ip);
     Ok(Json(RedeemLinkResp { owner: r.owner, vault: r.vault, perm: r.perm }))
