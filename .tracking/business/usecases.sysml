@@ -71,9 +71,9 @@ package ProjectUseCases {
     use case ucShareVault : UseCase {
         :>> id = "c0f1a5cc-b009-4a10-9b20-a1b2c3d400a9"; :>> title = "Share a vault with another user";
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
-        :>> description = "An owner grants another account access to a vault at a chosen permission level.";
-        :>> mainSuccess = "The owner grants a named user read-only or read-write access; the grantee sees the shared vault, selects it, and syncs it via owner-qualified routes.";
-        :>> extensions = "A read-only grantee can pull but is never allowed to push (local edits kept as a local conflict copy). | A non-grantee is denied server-side. | The owner's other vaults and credentials are never exposed by the share.";
+        :>> description = "An owner shares a vault they own — either by naming an existing account or by sending a single-use LINK (D0023) — at a chosen permission level (read-only / read-write). The grantee-side flow is ucRedeemSharedVault.";
+        :>> mainSuccess = "From the vault they are CURRENTLY syncing, the owner opens Share and either adds a named account (read-only/read-write) OR creates a single-use share LINK to send out-of-band; the recipient gains access and syncs via owner-qualified routes.";
+        :>> extensions = "Sharing applies ONLY to the vault you own and are currently syncing — not a picker over all your vaults (avoids sharing the wrong one). | A share link is shown once, is single-use (binds a normal grant to whoever redeems it), and can be revoked while still pending. | A read-only grantee can pull but is never allowed to push (local edits kept as a local conflict copy). | A non-grantee is denied server-side; a grantee may later leave/decline (see ucRedeemSharedVault). | The owner's other vaults and credentials are never exposed by the share.";
     }
     use case ucAdministerServer : UseCase {
         :>> id = "c0f1a5cc-b010-4a10-9b20-a1b2c3d400b0"; :>> title = "Administer the server";

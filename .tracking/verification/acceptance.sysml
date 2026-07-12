@@ -243,7 +243,9 @@ package ProjectAcceptance {
     #Verify dependency from acConfigAdditiveSafe to ucSyncSetupAcrossDevices;
     #Verify dependency from acTombstoneAuthoritativeDelete to ucNeverLoseLocalData;
     #Verify dependency from acTombstoneAuthoritativeDelete to ucSwitchVault;
-    // grantee-side sharing: the redeem-a-link + leave e2e verifies both the SR and the new use case
+    // sharing: the redeem-a-link + leave e2e verifies the SR, the grantee use case, AND the owner-side
+    // link-create path of ucShareVault (the e2e mints the link the recipient redeems).
     #Verify dependency from acRedeemAndLeaveShare to srVaultSharing;
     #Verify dependency from acRedeemAndLeaveShare to ucRedeemSharedVault;
+    #Verify dependency from acRedeemAndLeaveShare to ucShareVault;
 }
