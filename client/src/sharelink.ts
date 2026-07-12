@@ -17,10 +17,14 @@ export function encodeShareLink({ server, token }: ShareLink): string {
 export function parseShareLink(str: string): ShareLink {
   const trimmed = str.trim();
   if (!trimmed.startsWith("selfsync-share://")) throw new Error("Not a SelfSync share link");
-  // Swap the custom scheme for one the URL parser accepts, then read query params.
-  const u = new URL(trimmed.replace(/^selfsync-share:\/\//, "https://"));
-  const server = u.searchParams.get("server") ?? "";
-  const token = u.searchParams.get("token") ?? "";
+  // Read the query params DIRECTLY (no `new URL` on a scheme-swapped string). The old approach —
+  // `new URL(link.replace("selfsync-share://","https://"))` — produced `https://redeem?…`, whose host
+  // is the bare label "redeem"; some engines (notably the Android WebView Obsidian mobile uses) throw
+  // "Failed to construct 'URL': Invalid URL" on that. URLSearchParams needs no host and decodes for us.
+  const qi = trimmed.indexOf("?");
+  const params = new URLSearchParams(qi >= 0 ? trimmed.slice(qi + 1) : "");
+  const server = params.get("server") ?? "";
+  const token = params.get("token") ?? "";
   if (!server || !token) throw new Error("Share link is missing server or token");
   return { server: normalizeServer(server), token };
 }

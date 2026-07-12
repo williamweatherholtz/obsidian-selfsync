@@ -36,11 +36,14 @@ export function encodeSetupLink({ server, user, vault }: SetupLink): string {
 export function parseSetupLink(str: string): SetupLink {
   const trimmed = str.trim();
   if (!trimmed.startsWith("selfsync://")) throw new Error("Not a SelfSync setup link");
-  // Swap the custom scheme for one the URL parser accepts, then read query params.
-  const u = new URL(trimmed.replace(/^selfsync:\/\//, "https://"));
-  const server = u.searchParams.get("server") ?? "";
-  const user = u.searchParams.get("user") ?? "";
-  const vault = u.searchParams.get("vault") ?? undefined;
+  // Read the query params DIRECTLY — do NOT `new URL` on a scheme-swapped string. That produced
+  // `https://connect?…`, a bare-label host that the Android WebView URL parser rejects ("Invalid URL").
+  // URLSearchParams needs no host and decodes percent-encoding for us.
+  const qi = trimmed.indexOf("?");
+  const params = new URLSearchParams(qi >= 0 ? trimmed.slice(qi + 1) : "");
+  const server = params.get("server") ?? "";
+  const user = params.get("user") ?? "";
+  const vault = params.get("vault") ?? undefined;
   if (!server || !user) throw new Error("Setup link is missing server or username");
   return { server: normalizeServer(server), user, ...(vault ? { vault } : {}) };
 }
