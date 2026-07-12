@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { encodeShareLink, parseShareLink, isShareLink, redeemTargetError } from "../src/sharelink";
+import { encodeShareLink, parseShareLink, isShareLink, redeemTargetError, resolveShareGrant } from "../src/sharelink";
 
 describe("share-link codec (D0023)", () => {
   it("encodes then parses back to the same server + token", () => {
@@ -49,6 +49,28 @@ describe("share-link codec (D0023)", () => {
     });
     it("returns null when the device is signed in to the SAME server (redeem may proceed)", () => {
       expect(redeemTargetError("https://s.example/", "https://s.example")).toBeNull();
+    });
+  });
+
+  // The server's share table is the AUTHORITY for our access; the cached vaultOwner/vaultReadOnly
+  // are a projection of it, re-derived on every connect so they can't silently go stale (fix b).
+  describe("resolveShareGrant — cached permission is a projection of the server grant", () => {
+    const grants = [
+      { owner: "alice", vault: "research", perm: "read" },
+      { owner: "bob", vault: "shared", perm: "readWrite" },
+    ];
+    it("an owned vault (empty owner) is notShared — nothing to re-check", () => {
+      expect(resolveShareGrant(grants, "", "default")).toEqual({ status: "notShared" });
+    });
+    it("reflects the CURRENT server permission (read → read-only)", () => {
+      expect(resolveShareGrant(grants, "alice", "research")).toEqual({ status: "active", readOnly: true });
+    });
+    it("reflects an upgraded permission (readWrite → not read-only) even if the client cached read-only", () => {
+      expect(resolveShareGrant(grants, "bob", "shared")).toEqual({ status: "active", readOnly: false });
+    });
+    it("a grant that is no longer present is REVOKED (owner removed our access while we were away)", () => {
+      expect(resolveShareGrant(grants, "carol", "gone")).toEqual({ status: "revoked" });
+      expect(resolveShareGrant([], "alice", "research")).toEqual({ status: "revoked" });
     });
   });
 });

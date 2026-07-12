@@ -8,7 +8,7 @@ import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
 import { encodeSetupLink } from "./connstr";
-import { encodeShareLink, parseShareLink, redeemTargetError } from "./sharelink";
+import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant } from "./sharelink";
 import { Phase, light, isWsStale } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
@@ -693,6 +693,31 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.withAuth((t) => HttpTransport.leaveShare(this.settings.serverUrl, t, owner, vault));
     if (this.settings.vaultOwner === owner && this.settings.vaultId === vault) await this.disconnect();
   }
+
+  private shareRevokedNotified = false;
+  // Re-derive our access to a vault shared BY someone else from the server's authoritative grant list,
+  // making the cached vaultOwner/vaultReadOnly a pure projection of the server rather than a copy frozen
+  // at redeem time (see resolveShareGrant). Runs on every connect BEFORE the first reconcile, so a
+  // read↔write change takes effect immediately and a revoked grant stops us before a push would 403.
+  // Own vaults short-circuit with no extra call. Throws on revocation → offline with a clear, actionable
+  // card message; recovers automatically if the owner re-grants (the next connect re-checks).
+  private async refreshShareGrant(token: string): Promise<void> {
+    if (!this.settings.vaultOwner) return;
+    const grants = await HttpTransport.listShared(this.settings.serverUrl, token);
+    const g = resolveShareGrant(grants, this.settings.vaultOwner, this.settings.vaultId);
+    if (g.status === "revoked") {
+      this.lastIssue = `The owner removed your access to ${this.settings.vaultOwner}/${this.settings.vaultId}. Your local copy is untouched — Switch to another vault, or Leave this one, in Settings.`;
+      this.log(this.lastIssue, !this.shareRevokedNotified); // toast once per revocation episode, not every backoff retry
+      this.shareRevokedNotified = true;
+      throw new Error("share access revoked");
+    }
+    this.shareRevokedNotified = false;
+    if (g.status === "active" && g.readOnly !== Boolean(this.settings.vaultReadOnly)) {
+      this.settings.vaultReadOnly = g.readOnly;
+      await this.saveSettings();
+      this.log(`share permission updated: ${this.settings.vaultOwner}/${this.settings.vaultId} is now ${g.readOnly ? "read-only" : "read-write"}`);
+    }
+  }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
   async hasLocalData(): Promise<boolean> {
@@ -940,8 +965,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       // Leaving this.ws pointing at the closing socket during the await would let its close enqueue
       // a spurious {rews} that re-dials on top of this connect. (Round-6 CONC)
       this.ws?.close(); this.ws = undefined;
-      const token = await this.acquireToken();
-      this.api = this.buildApi(token);
+      let activeToken = await this.acquireToken();
+      this.api = this.buildApi(activeToken);
       // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
       // on the resulting empty manifest could delete local files. Surface the operator action.
       // status() is the first authed call; if the stored token was rejected (401), re-login ONCE
@@ -953,8 +978,8 @@ export default class NewLiveSyncPlugin extends Plugin {
         if (!this.isAuthError(e)) throw e;
         this.log("token rejected — re-logging in");
         this.settings.authToken = undefined;
-        const fresh = await this.freshLogin();
-        this.api = this.buildApi(fresh);
+        activeToken = await this.freshLogin();
+        this.api = this.buildApi(activeToken);
         health = await this.api.status();
       }
       // Version handshake: refuse to sync against a server on a different protocol/schema version
@@ -977,6 +1002,9 @@ export default class NewLiveSyncPlugin extends Plugin {
         this.log(this.lastIssue);
         throw new Error("server vault not ready (reindex needed)");
       }
+      // If this is a vault shared TO us, re-derive our permission from the server's grant so the
+      // cached vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
+      await this.refreshShareGrant(activeToken);
       // Connection is now established (token + health OK). Flip the indicator from "Connecting…" to
       // "Syncing…" before the initial reconcile — which is the bulk of the time and was showing
       // "Connecting…" for its whole duration (critique/field bug). The engine settles to idle after.

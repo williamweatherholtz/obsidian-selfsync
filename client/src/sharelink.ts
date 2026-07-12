@@ -33,6 +33,29 @@ export function isShareLink(str: string): boolean {
   return str.trim().startsWith("selfsync-share://");
 }
 
+// The server's share table is the AUTHORITY for our access to a vault shared BY someone else. The
+// client caches a projection of it (settings.vaultOwner / vaultReadOnly), but that projection was
+// frozen at redeem time and would silently go stale if the owner later changed the permission
+// (read↔readWrite) or revoked the grant. resolveShareGrant re-derives the current status from the
+// server's grant list so `connect` can refresh the cache on every reconnect — the flag becomes a
+// pure projection of the grant, never a copy that drifts. `owner` empty ⇒ we own the vault (nothing
+// to re-check). Kept a PURE function (no I/O) so the decision is testable in isolation.
+export type ShareGrantStatus =
+  | { status: "notShared" }                  // own vault — no grant to check
+  | { status: "revoked" }                    // shared to us, but the grant is gone (owner removed it)
+  | { status: "active"; readOnly: boolean }; // grant present; readOnly reflects its CURRENT perm
+
+export function resolveShareGrant(
+  grants: readonly { owner: string; vault: string; perm: string }[],
+  owner: string,
+  vault: string,
+): ShareGrantStatus {
+  if (!owner) return { status: "notShared" };
+  const ref = grants.find((g) => g.owner === owner && g.vault === vault);
+  if (!ref) return { status: "revoked" };
+  return { status: "active", readOnly: ref.perm === "read" };
+}
+
 // Precheck before redeeming on THIS device. Redeem is an AUTHENTICATED, server-specific call: it binds
 // the shared vault to your account, so the device must be signed in to the SAME server the link points
 // at. Returns an actionable message, or null if redeem can proceed. Guards the empty-serverUrl case so a
