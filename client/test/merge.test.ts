@@ -29,3 +29,18 @@ describe("merge3", () => {
     expect(r.merged).toBe("b\n");
   });
 });
+
+import { unifiedLineDiff } from "../src/noteconflict";
+describe("unifiedLineDiff (conflict diff view)", () => {
+  it("marks shared lines as context, other-only as '-', this-device-only as '+'", () => {
+    const d = unifiedLineDiff("a\nb\nc", "a\nB\nc\nd");
+    expect(d.find((l) => l.text === "a")!.sign).toBe(" "); // shared
+    expect(d.find((l) => l.sign === "-" && l.text === "b")).toBeTruthy(); // removed (the other's line)
+    expect(d.find((l) => l.sign === "+" && l.text === "B")).toBeTruthy(); // this device's line
+    expect(d.find((l) => l.sign === "+" && l.text === "d")).toBeTruthy(); // added on this device
+  });
+  it("EOL-only difference produces zero changed lines", () => {
+    const d = unifiedLineDiff("a\r\nb\r\n", "a\nb");
+    expect(d.filter((l) => l.sign !== " ").length).toBe(0);
+  });
+});

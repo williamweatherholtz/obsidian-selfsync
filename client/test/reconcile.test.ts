@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
+import { decide, sameIgnoringEol, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -170,6 +170,23 @@ describe("reconcileAll", () => {
     const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
     expect(copies.length).toBe(1);
     expect(dec(m.get(copies[0])!)).toBe("LOCAL version");
+  });
+
+  it("sameIgnoringEol: line-ending + trailing-newline differences are cosmetic; real edits are not", () => {
+    expect(sameIgnoringEol(enc("a\r\nb\r\n"), enc("a\nb"))).toBe(true);  // CRLF vs LF, no trailing NL
+    expect(sameIgnoringEol(enc("a\nb\n\n"), enc("a\nb"))).toBe(true);    // extra trailing blank lines
+    expect(sameIgnoringEol(enc("a\nb"), enc("a\nB"))).toBe(false);       // a real content edit
+    expect(sameIgnoringEol(enc("a\nb"), enc("a\nb\nc"))).toBe(false);    // an added line
+  });
+
+  it("no-base divergence that is ONLY line endings -> converge on remote, NO conflict copy (issueFalseEolConflict)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "note.md", "line1\r\nline2\r\n");  // server copy: Windows CRLF
+    const io = fakeIo({ "note.md": "line1\nline2" });        // local copy: LF, no trailing newline — same text
+    await reconcileAll(deps(api, io));
+    const m = (io as any).m as Map<string, Uint8Array>;
+    expect([...m.keys()].filter((k) => k.includes("(conflict")).length).toBe(0); // NOT flagged as a conflict
+    expect(dec(m.get("note.md")!)).toBe("line1\r\nline2\r\n");                    // converged on the remote bytes
   });
 
   it("both-changed mergeable -> three-way merge (auto-merge)", async () => {

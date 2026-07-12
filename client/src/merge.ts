@@ -16,7 +16,7 @@ function splitLines(s: string): string[] {
 }
 
 // LCS alignment: increasing (baseIndex, otherIndex) pairs where lines are equal.
-function lcsPairs(base: string[], other: string[]): Array<[number, number]> {
+export function lcsPairs(base: string[], other: string[]): Array<[number, number]> {
   const n = base.length, m = other.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)

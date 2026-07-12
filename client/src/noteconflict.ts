@@ -1,31 +1,74 @@
 import { App, Modal, Notice, Setting } from "obsidian";
+import { lcsPairs } from "./merge";
 import type NewLiveSyncPlugin from "./main";
+
+// A single line of a unified diff: shared context, or a line only on one side.
+type DiffLine = { sign: " " | "-" | "+"; text: string };
+// Unified line diff of `theirs` (the other/server version, left) vs `mine` (this device, right).
+// EOL-normalized so line-ending differences don't show as noise. Exported for tests.
+export function unifiedLineDiff(theirs: string, mine: string): DiffLine[] {
+  // Normalize EOL + strip trailing blank lines (matches sameIgnoringEol) so a pure line-ending
+  // difference shows as ZERO changes rather than a phantom trailing-empty-line diff.
+  const norm = (s: string) => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  const A = norm(theirs).split("\n");
+  const B = norm(mine).split("\n");
+  const pairs = lcsPairs(A, B); // matched [ai,bi] in order
+  const out: DiffLine[] = [];
+  let ai = 0, bi = 0;
+  for (const [ma, mb] of pairs) {
+    while (ai < ma) out.push({ sign: "-", text: A[ai++] }); // only on the other side (removed here)
+    while (bi < mb) out.push({ sign: "+", text: B[bi++] }); // only on this device (added here)
+    out.push({ sign: " ", text: A[ma] }); ai = ma + 1; bi = mb + 1;
+  }
+  while (ai < A.length) out.push({ sign: "-", text: A[ai++] });
+  while (bi < B.length) out.push({ sign: "+", text: B[bi++] });
+  return out;
+}
 
 // Walk through unresolved note conflicts one at a time. A conflict copy holds THIS device's version,
 // kept beside the note (which holds the other device's version) when concurrent edits couldn't merge
 // cleanly. For each: keep this version, keep the other, or open both to merge by hand. The set is
 // DERIVED from the vault, so resolving one drops it off and the count self-updates — no stale list.
+// A copy that differs from the note ONLY by line endings / trailing newline is auto-dismissed (kept
+// the note's version) — it was never a real conflict (issueFalseEolConflict), so the user isn't asked.
 export class NoteConflictModal extends Modal {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Resolve conflicts"); void this.render(); }
   onClose() { this.contentEl.empty(); }
 
+  // Only line endings / trailing newline differ → not a real conflict.
+  private cosmeticEqual(a: string, b: string): boolean {
+    const n = (s: string) => s.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+    return n(a) === n(b);
+  }
+
   private async render() {
     const c = this.contentEl; c.empty();
-    const conflicts = this.plugin.listNoteConflicts();
+    let conflicts = this.plugin.listNoteConflicts();
+
+    // Auto-dismiss any cosmetic-only conflicts up front (clears a batch of false EOL conflicts from an
+    // older client without 46 manual clicks). Bounded to the current list length so it can't loop.
+    for (let i = 0; i < conflicts.length; i++) {
+      const { copy, original } = conflicts[i];
+      const mine = await this.plugin.readTextOrEmpty(copy);
+      const theirs = await this.plugin.readTextOrEmpty(original);
+      if (this.cosmeticEqual(mine, theirs)) { await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs); }
+    }
+    conflicts = this.plugin.listNoteConflicts();
+
     if (conflicts.length === 0) {
       c.createEl("p", { text: "No conflicts to resolve — everything is in sync." });
       new Setting(c).addButton((b) => b.setButtonText("Close").setCta().onClick(() => this.close()));
       return;
     }
     const { copy, original } = conflicts[0];
-    c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once:` })
+    c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once — changes are shown below:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
     const theirs = await this.plugin.readTextOrEmpty(original); // captured to guard "keep mine" against a stale preview
-    this.preview(c, "This device's version", await this.plugin.readTextOrEmpty(copy));
-    this.preview(c, "The other version (currently on disk)", theirs);
+    const mine = await this.plugin.readTextOrEmpty(copy);
+    this.renderDiff(c, theirs, mine);
 
     new Setting(c)
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
@@ -33,11 +76,28 @@ export class NoteConflictModal extends Modal {
       .addButton((b) => b.setButtonText("Keep this device's").setCta().onClick(() => void this.resolve(copy, original, "mine", theirs)));
   }
 
-  private preview(c: HTMLElement, label: string, text: string) {
-    c.createEl("div", { text: label }).setAttribute("style", "font-weight:600;font-size:12px;margin-top:8px;");
-    const shown = text.length > 2000 ? text.slice(0, 2000) + "\n…" : (text || "(empty)");
-    c.createEl("pre", { text: shown })
-      .setAttribute("style", "max-height:180px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;");
+  // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.
+  // Capped so a huge note stays responsive.
+  private renderDiff(c: HTMLElement, theirs: string, mine: string) {
+    c.createEl("div", { text: "− the other version    + this device's" })
+      .setAttribute("style", "font-size:11px;opacity:.7;margin:4px 0 2px;");
+    const lines = unifiedLineDiff(theirs, mine);
+    const changed = lines.filter((l) => l.sign !== " ").length;
+    if (changed === 0) {
+      c.createEl("p", { text: "The two versions are identical apart from line endings." })
+        .setAttribute("style", "font-size:12px;opacity:.8;");
+      return;
+    }
+    const pre = c.createEl("pre");
+    pre.setAttribute("style", "max-height:340px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;line-height:1.35;");
+    const shown = lines.slice(0, 400);
+    for (const l of shown) {
+      const color = l.sign === "+" ? "var(--color-green)" : l.sign === "-" ? "var(--color-red)" : "var(--text-muted)";
+      const bg = l.sign === "+" ? "rgba(0,180,0,.10)" : l.sign === "-" ? "rgba(220,0,0,.10)" : "transparent";
+      const row = pre.createEl("div", { text: `${l.sign} ${l.text}` });
+      row.setAttribute("style", `color:${color};background:${bg};`);
+    }
+    if (lines.length > shown.length) pre.createEl("div", { text: `… (${lines.length - shown.length} more lines)` }).setAttribute("style", "opacity:.6;");
   }
 
   private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther: string) {

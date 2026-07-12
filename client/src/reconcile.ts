@@ -31,6 +31,17 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
   return "merge";                                   // both changed
 }
 
+// Two text blobs are "cosmetically equal" if they differ ONLY by line-ending style (CRLF/CR vs LF)
+// and/or trailing blank lines — i.e. the SAME note authored/saved on different OSes (Windows CRLF vs
+// mobile LF). Such a pair must NEVER be treated as a conflict: on a first sync / adopt of two
+// independent-but-identical copies, decide() has no common base and returns conflict-copy, which
+// previously spawned a spurious conflict copy per file (the "46 false conflicts" report). Minimal +
+// safe normalization: normalize EOL, strip trailing newlines. Real content differences still conflict.
+export function sameIgnoringEol(a: Uint8Array, b: Uint8Array): boolean {
+  const norm = (u: Uint8Array) => new TextDecoder().decode(u).replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  return norm(a) === norm(b);
+}
+
 // Files above this size are skipped (not synced) — reading them whole into RAM would
 // OOM a mobile device (Obsidian's adapter/requestUrl don't stream). Overridable per deps.
 export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
@@ -601,6 +612,15 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       // the pre-fetch localHash — a save that raced the multi-chunk fetch changes liveLocal, and a
       // stale tag would mislabel the copy (issueConflictCopyCosmetic).
       const liveLocalHash = await sha256hex(liveLocal);
+      // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict — adopt the
+      // remote bytes, record base, and spawn NO conflict copy. Runs before the read-only + merge
+      // branches so it covers every path. (Fixes the false conflicts on a first sync of two identical
+      // copies authored on different OSes — issueFalseEolConflict.)
+      if (sameIgnoringEol(liveLocal, remoteBytes)) {
+        await d.io.write(path, remoteBytes);
+        setBase(d, path, remoteBytes, rmeta!.hash);
+        return;
+      }
       if (d.readOnly) {
         // Read-only share: the owner's version is canonical and we push nothing. Keep the
         // reader's (current) local edit as a LOCAL-only conflict copy so it isn't silently lost.
