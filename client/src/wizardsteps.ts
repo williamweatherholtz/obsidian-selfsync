@@ -4,8 +4,17 @@ import { Phase } from "./syncstate";
 
 // Mirrors the server's safe_name: letters/numbers/.-_ , 1–64 chars, not "."/"..".
 // Validated client-side so a bad new-vault name gets a clear message, not a raw 400.
+// Normalize a user-typed vault name to what the server accepts: trimmed + lowercased (vault names are
+// directories, so — like usernames — they're lowercase-canonical to avoid case-collisions on
+// case-insensitive filesystems). "Testbrsin" → "testbrsin".
+export function sanitizeVaultName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+// Must match the server's safe_name rule EXACTLY (lowercase only) so a name that passes here never
+// 400s server-side. Callers sanitizeVaultName() first, so uppercase input is already lowercased.
 export function isValidVaultName(name: string): boolean {
-  return /^[A-Za-z0-9._-]{1,64}$/.test(name) && name !== "." && name !== "..";
+  return /^[a-z0-9._-]{1,64}$/.test(name) && name !== "." && name !== "..";
 }
 
 export interface WizardState {

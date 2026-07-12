@@ -178,6 +178,11 @@ pub async fn commit(
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,
 ) -> Result<Json<FileMeta>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
+    // Configurable per-file ceiling (env MAX_FILE_MB, default 512). Reject an over-limit file early
+    // with a clear message so the client can surface it, before taking a permit or touching the vault.
+    if req.size > st.cfg.max_file_bytes {
+        return Err(AppError::BadRequest(format!("file exceeds the server's size limit ({} MB)", st.cfg.max_file_bytes / (1024 * 1024))));
+    }
     let tx = h.tx.clone();
     // `p` is for LOG lines only (the real path travels in `req`, moved into commit below). Strip
     // control chars here: on a bad-path rejection commit logs `p` verbatim, so an unsanitized raw

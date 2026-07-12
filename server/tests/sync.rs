@@ -75,6 +75,7 @@ async fn health_exposes_the_login_banner_preauth() {
         invite_code: String::new(),
         login_banner: banner.into(),
         require_admin_mfa: false,
+        max_file_bytes: 512 * 1024 * 1024,
     };
     let state = AppState::new(cfg).unwrap();
     std::mem::forget(dir);

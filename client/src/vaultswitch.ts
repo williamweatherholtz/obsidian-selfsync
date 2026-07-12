@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
+import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
 import type { SharedVaultRef } from "./transport";
@@ -54,7 +55,7 @@ export class SwitchVaultModal extends Modal {
       c.createEl("p", { text: "No remote vaults yet — create one below." });
     }
     new Setting(c).setName("Or create a new vault")
-      .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { this.newName = v.trim(); }));
+      .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { const n = sanitizeVaultName(v); this.newName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }));
     new Setting(c).addButton((b) => b.setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
 
     // Vaults other people have shared with this account.
@@ -72,7 +73,11 @@ export class SwitchVaultModal extends Modal {
   private async doSwitch() {
     try {
       let vault = this.chosen;
-      if (this.newName) { await this.plugin.createRemoteVault(this.newName); vault = this.newName; }
+      if (this.newName) {
+        const name = sanitizeVaultName(this.newName);
+        if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
+        await this.plugin.createRemoteVault(name); vault = name;
+      }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       this.target = vault; this.targetOwner = ""; this.targetReadOnly = false; // own vault
       // No local content to lose → adopt the target automatically (fetch), no prompt.

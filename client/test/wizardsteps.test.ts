@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canLogIn, canFinish, statusTitle, isValidVaultName, wizardCredentials, WizardState } from "../src/wizardsteps";
+import { canLogIn, canFinish, statusTitle, isValidVaultName, sanitizeVaultName, wizardCredentials, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -35,6 +35,21 @@ describe("isValidVaultName", () => {
     expect(isValidVaultName("a/b")).toBe(false);
     expect(isValidVaultName("has space")).toBe(false);
     expect(isValidVaultName("x".repeat(65))).toBe(false);
+  });
+  // Regression: uppercase must be REJECTED so isValidVaultName matches the server's lowercase-only
+  // safe_name rule — a name that passes here must never 400 server-side.
+  it("rejects uppercase (server safe_name is lowercase-only)", () => {
+    expect(isValidVaultName("Testbrsin")).toBe(false);
+    expect(isValidVaultName("Notes")).toBe(false);
+  });
+});
+
+describe("sanitizeVaultName", () => {
+  it("trims and lowercases so uppercase input becomes a valid name", () => {
+    expect(sanitizeVaultName("  Testbrsin ")).toBe("testbrsin");
+    expect(sanitizeVaultName("MyVault")).toBe("myvault");
+    // sanitize → validate is the real pipeline: what the user typed now passes.
+    expect(isValidVaultName(sanitizeVaultName("Testbrsin"))).toBe(true);
   });
 });
 

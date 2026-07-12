@@ -25,6 +25,10 @@ pub struct Config {
     // opts in with REQUIRE_ADMIN_MFA=1 (like TLS/audit-retention, an operator-configured control). A
     // non-MFA admin can still reach the (AuthToken-gated, non-admin) MFA-enrollment routes to enroll.
     pub require_admin_mfa: bool,
+    // Per-file size ceiling in BYTES (env MAX_FILE_MB, default 512). The hard limit any single file
+    // may reach on this server — enforced on commit. Raising it raises transient reassembly RAM
+    // (≈ this × concurrent large commits), so it's an operator knob, not a client one.
+    pub max_file_bytes: u64,
 }
 
 // The port from a "host:port" (or "[ipv6]:port") bind string.
@@ -71,6 +75,11 @@ impl Config {
             invite_code: env("INVITE_CODE", ""),
             login_banner: env("SYNC_LOGIN_BANNER", ""),
             require_admin_mfa: env("REQUIRE_ADMIN_MFA", "") == "1",
+            // MAX_FILE_MB (default 512). Parse defensively: a junk/zero value falls back to 512.
+            max_file_bytes: {
+                let mb = env("MAX_FILE_MB", "512").parse::<u64>().ok().filter(|&m| m > 0).unwrap_or(512);
+                mb.saturating_mul(1024 * 1024)
+            },
         }
     }
 }

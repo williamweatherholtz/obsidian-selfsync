@@ -5,11 +5,12 @@ use crate::protocol::{ChangesResponse, CommitRequest, Deletion, FileMeta};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-// Reject absurd/hostile declared file sizes before allocating anything for them. commit
-// reassembles the whole body into one Vec bounded only by this ceiling, so several concurrent
-// large commits could OOM the server; 512 MiB is well above any real Obsidian attachment while
-// bounding the transient per-commit allocation. (SEC-5)
-const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+// ABSOLUTE backstop against an absurd/hostile declared size (prevents a u64 overflow / giant capacity
+// hint before allocating). The REAL, operator-tunable per-file limit is Config::max_file_bytes (env
+// MAX_FILE_MB, default 512 MiB), enforced in api::commit BEFORE we get here — so this only has to sit
+// safely above any sane configured value. commit reassembles the whole body into one Vec bounded by
+// req.size (already ≤ the configured limit at the api layer). (SEC-5)
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB absolute backstop
 
 // SEC#4 runtime orphan GC: opportunistically reclaim ABANDONED uploads (chunks pushed but never
 // committed) so a ReadWrite grantee can't grow the owner's disk unbounded between restarts (orphans

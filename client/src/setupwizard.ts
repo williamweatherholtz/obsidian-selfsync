@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
-import { WizardState, canLogIn, canFinish, isValidVaultName, wizardCredentials } from "./wizardsteps";
+import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
 // Guided first-run setup, all in ONE pane: Server → Account → Vault, revealed progressively.
@@ -86,7 +86,7 @@ export class SetupWizardModal extends Modal {
         new Setting(c).setDesc("No remote vaults yet — create one below.");
       }
       new Setting(c).setName("Or create a new vault")
-        .addText((t) => { newVaultInput = t.inputEl; t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { this.s.newVault = v.trim(); }); });
+        .addText((t) => { newVaultInput = t.inputEl; t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { const n = sanitizeVaultName(v); this.s.newVault = n; if (newVaultInput && newVaultInput.value !== n) newVaultInput.value = n; }); });
       onEnter(newVaultInput, () => { if (canFinish(this.s)) void this.finish(); });
     }
 
@@ -162,8 +162,9 @@ export class SetupWizardModal extends Modal {
     try {
       let vault = this.s.chosenVault;
       if (this.s.newVault) {
-        if (!isValidVaultName(this.s.newVault)) { new Notice("SelfSync: vault name — use letters, numbers, dots, dashes or underscores (max 64)."); return; }
-        await HttpTransport.createVault(this.s.server, this.token, this.s.newVault); vault = this.s.newVault;
+        const name = sanitizeVaultName(this.s.newVault);
+        if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
+        await HttpTransport.createVault(this.s.server, this.token, name); vault = name;
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       const st = this.plugin.settings;

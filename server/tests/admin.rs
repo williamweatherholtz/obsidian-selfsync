@@ -531,3 +531,18 @@ async fn share_link_owner_scoped_and_revoke_blocks_redeem() {
     assert_eq!(send(&base, "DELETE", &format!("/api/share-links/{id}"), &admin, Value::Null).await, 200);
     assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 400, "a revoked link can't be redeemed");
 }
+
+// Configurable per-file ceiling (env MAX_FILE_MB, default 512): a commit DECLARING a size over the
+// limit is rejected 400 at the api layer — before any reassembly — with a clear "size limit" message.
+// (The check is on req.size, so no real large body is needed to exercise it.)
+#[tokio::test]
+async fn commit_over_size_limit_is_rejected() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    let over = 513u64 * 1024 * 1024; // just over the 512 MiB test default
+    let (s, _v) = post_json(&base, "/api/v/default/commit", &admin,
+        json!({"path":"big.bin","hash":"h","size":over,"mtime":1,"chunks":["c1"]})).await;
+    // 400 = rejected at the api-layer size check (before reassembly). The error body is plain text,
+    // not JSON, so we assert on the status rather than the message.
+    assert_eq!(s, 400, "a file over the server ceiling is rejected before reassembly");
+}

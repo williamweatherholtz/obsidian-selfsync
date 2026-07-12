@@ -236,6 +236,7 @@ impl AppState {
             invite_code: String::new(),
             login_banner: String::new(),
             require_admin_mfa,
+            max_file_bytes: 512 * 1024 * 1024,
         };
         let st = AppState::new(cfg).unwrap();
         // Tests exercise the sync routes against a `vault` namespace; provision it here (the

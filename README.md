@@ -109,6 +109,7 @@ Set via environment variables. See [`deploy/docker-compose.yml`](deploy/docker-c
 | `SYNC_USER` / `SYNC_PASSWORD` | `admin` / `admin` | Bootstrap admin account. **Always set a strong password.** |
 | `ADMIN_BIND_ADDR` | private, `port + 1` | Private admin surface. Set to `merge` to serve `/admin` on the public port for single-port setups only. |
 | `REGISTRATION` | `closed` | First-run seed only: `closed` is invite-only, `open` lets anyone register. After first boot the policy is managed from `/admin` and persisted — changing this later has no effect. |
+| `MAX_FILE_MB` | `512` | Per-file size ceiling (MB). Raising it raises transient server RAM (≈ this × concurrent large uploads). Each device also has its own "Max file size to sync" setting (default 200 MB) — the effective limit is the smaller of the two. |
 | `LOG_LEVEL` | `info` | One of `error`, `warn`, `info`, `debug`. |
 
 The internal sync bind (`BIND_ADDR`, `0.0.0.0:8080`) and data path (`DATA_ROOT`, `/data`) are fixed by

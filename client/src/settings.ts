@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, SettingGroup, Notice } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts } from "./configsync";
 import { statusTitle } from "./wizardsteps";
@@ -20,6 +20,7 @@ export interface NewLiveSyncSettings {
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
+  maxSyncMB: number; // per-file size cap for THIS device (MB). Files larger than this are skipped here; raise with care on mobile (files buffer in RAM). The server enforces its own ceiling (MAX_FILE_MB).
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
   // Conflict-copy paths SelfSync ITSELF created when concurrent edits couldn't merge (onConflict).
   // Tracked explicitly — NOT derived from filenames — so a user's own note that happens to be named
@@ -62,6 +63,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // The revocable bearer token is stored instead; the user re-enters the password only when the session
   // expires. A user can opt back into stored-password for silent re-login, accepting the at-rest exposure.
   storePassword: false,
+  maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
   configConflicts: [],
   noteConflicts: [],
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
@@ -244,6 +246,14 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         s.storePassword = v;
         if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
         await this.plugin.saveSettings();
+      })));
+    g.addSetting((st) => st.setName("Max file size to sync (MB)")
+      .setDesc(Platform.isMobile
+        ? "Files larger than this are skipped ON THIS DEVICE. Mobile buffers files in memory — very large values can crash the app. Larger files still sync on desktop."
+        : "Files larger than this are skipped on this device. The server enforces its own ceiling.")
+      .addText((t) => t.setPlaceholder("200").setValue(String(s.maxSyncMB)).onChange(async (v) => {
+        const n = Math.floor(Number(v));
+        if (Number.isFinite(n) && n > 0) { s.maxSyncMB = n; await this.plugin.saveSettings(); }
       })));
     g.addSetting((st) => st.setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); })));

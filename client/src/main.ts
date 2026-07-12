@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, originalOfConflictCopy } from "./base";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, DEFAULT_MAX_SYNC_BYTES, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -27,11 +27,11 @@ import { androidModelFromUA, platformDisplayName, usableModel } from "./devicena
 // and desktop gets instant config sync via the raw watcher regardless. (R11-#3; a config-ONLY scan
 // that skips re-hashing notes is the deeper fix, planned for the config-sync round.)
 const CONFIG_SCAN_INTERVAL_MS = 120_000;
-// Mobile has no streamed I/O (ObsidianVaultIo.appendWrite is desktop-only), so a synced file is
-// buffered whole in the WebView heap (~2× its size during fetch+concat). Cap the buffered size well
-// below the desktop ceiling so a mid-size attachment can't OOM-crash the app; bigger files sync on
-// desktop and the peer's copy is never endangered (skipped, not deleted). (R11-#2)
-const MOBILE_MAX_SYNC_BYTES = 50 * 1024 * 1024;
+// The per-file sync cap is now the user-configurable setting `maxSyncMB` (default 200), resolved by
+// maxSyncBytes(). NOTE the platform trade-off it exposes: mobile has no streamed I/O
+// (ObsidianVaultIo.appendWrite is desktop-only), so a synced file is buffered whole in the WebView
+// heap (~2× its size during fetch+concat) — a large value can OOM-crash the app. Desktop streams to
+// disk, so it's safe higher. An over-cap file is SKIPPED, never deleted (the peer's copy is safe).
 // Whole-vault re-hash cadence (R13): the config scan above is now CONFIG-ONLY (cheap), so a LOCAL
 // note edit whose vault event was dropped (external/cloud write, missed event) is caught by this
 // slower full pass instead of a costly full re-hash every config tick. 15 min balances safety vs
@@ -823,12 +823,18 @@ export default class NewLiveSyncPlugin extends Plugin {
   private deviceLabel(): string {
     return this.settings.deviceName || this.autoDeviceName();
   }
+  // Per-device per-file sync cap in bytes, from settings.maxSyncMB (default 200). Clamped to a sane
+  // floor so a bad/zero value can't silently skip everything.
+  private maxSyncBytes(): number {
+    const mb = this.settings.maxSyncMB;
+    return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_SETTINGS.maxSyncMB) * 1024 * 1024;
+  }
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(),
       readOnly: this.settings.vaultReadOnly,
-      maxSyncBytes: this.io.appendWrite ? undefined : MOBILE_MAX_SYNC_BYTES, // R11-#2: tighter buffered cap on mobile (no streaming)
+      maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
       // reconcile too, so a device that opted out never records a base for it (no phantom delete).
       accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
@@ -850,8 +856,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       onSkip: (p, bytes) => {
         if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
         this.skipNotified.add(p);
-        const cap = this.io.appendWrite ? DEFAULT_MAX_SYNC_BYTES : MOBILE_MAX_SYNC_BYTES; // platform-aware: mobile buffers, desktop streams
-        this.log(`skipped '${p}' — ${Math.round(bytes / 1048576)} MB, over this device's ${Math.round(cap / 1048576)} MB sync limit${this.io.appendWrite ? "" : " (larger files sync on desktop)"}`, true);
+        const cap = this.maxSyncBytes();
+        this.log(`skipped '${p}' — ${Math.round(bytes / 1048576)} MB, over this device's ${Math.round(cap / 1048576)} MB sync limit (raise it in settings${this.io.appendWrite ? "" : "; larger files also sync on desktop"})`, true);
       },
     };
   }
