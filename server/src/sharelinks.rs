@@ -120,6 +120,19 @@ impl ShareLinkStore {
         Some(out)
     }
 
+    // Roll back a redeem whose caller couldn't complete the follow-on grant (owner at cap, grant I/O
+    // error). The link is single-use, so redeem() claims it atomically BEFORE the grant to preserve
+    // single-use under concurrency; unredeem() returns an un-granted claim to the pool so a recoverable
+    // failure doesn't burn the invite. Clears the redemption marks; returns whether a link matched.
+    pub fn unredeem(&mut self, secret: &str) -> bool {
+        let hash = sha256_hex(secret);
+        let Some(rec) = self.file.links.iter_mut().find(|l| l.hash == hash) else { return false; };
+        rec.redeemed_by = None;
+        rec.redeemed_at = None;
+        let _ = self.save();
+        true
+    }
+
     pub fn list(&self, owner: &str) -> Vec<LinkInfo> {
         self.file.links.iter().filter(|l| l.owner == owner).map(|l| LinkInfo {
             id: l.id.clone(), vault: l.vault.clone(), perm: l.perm, label: l.label.clone(),
@@ -157,6 +170,26 @@ mod tests {
         assert_eq!((r.owner.as_str(), r.vault.as_str(), r.perm), ("alice", "notes", Perm::ReadWrite));
         assert!(s.redeem(&token, "dana").is_none(), "single-use — a second redeem fails");
         assert!(s.redeem(&token, "eve").is_none(), "and can't be redeemed by anyone else");
+    }
+
+    #[test]
+    fn unredeem_rolls_back_a_claim_so_a_failed_grant_does_not_burn_the_link() {
+        // The redeem handler claims a link (single-use, atomic) BEFORE minting the grant. If the grant
+        // then fails for a recoverable reason (owner at cap, grant I/O error), the handler rolls the
+        // claim back with unredeem() so the single-use invite isn't destroyed — the user can retry.
+        let (_d, mut s) = store();
+        let token = s.create("alice", "notes", Perm::Read, "for dana", None).unwrap();
+        let r = s.redeem(&token, "dana").expect("claim succeeds");
+        assert_eq!(r.owner, "alice");
+        assert!(s.redeem(&token, "dana").is_none(), "claimed → not redeemable until rolled back");
+        assert!(s.unredeem(&token), "unredeem finds the claimed link and restores it");
+        // Restored: redeemable again, so a recoverable grant failure did NOT burn the invite.
+        let r2 = s.redeem(&token, "dana").expect("re-redeemable after rollback");
+        assert_eq!(r2.vault, "notes");
+        // Single-use still holds for a genuine (uncompensated) consume.
+        assert!(s.redeem(&token, "eve").is_none(), "still single-use after a real consume");
+        // Rolling back an unknown token is a harmless no-op.
+        assert!(!s.unredeem("nope"), "unredeem of an unknown token is false");
     }
 
     #[test]

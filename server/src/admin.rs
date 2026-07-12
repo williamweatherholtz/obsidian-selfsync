@@ -259,13 +259,23 @@ pub async fn share_link_redeem(
         return Err(AppError::BadRequest("this share link is invalid, expired, or already used".into()));
     };
     if r.owner != user {
-        // Mint the D0008 grant bound to the redeemer; bound per-owner (parity with share_create).
+        // The link is now CLAIMED (redeem marked it consumed atomically — this preserves single-use
+        // under concurrent redemption). Mint the D0008 grant bound to the redeemer; bound per-owner
+        // (parity with share_create). If the grant fails for a RECOVERABLE reason (owner at cap, or a
+        // grant I/O error), ROLL THE CLAIM BACK with unredeem() so the single-use invite isn't burned —
+        // a missing grant fails closed, and the user/owner can retry rather than needing a fresh link.
         let mut g = lock(&st.shares)?;
         let is_upsert = g.permission(&r.owner, &r.vault, &user).is_some();
         if !is_upsert && g.owner_grant_count(&r.owner) >= crate::shares::MAX_GRANTS_PER_OWNER {
+            drop(g);
+            let _ = lock(&st.share_links)?.unredeem(&req.token);
             return Err(AppError::BadRequest("the vault owner has reached their maximum number of shares".into()));
         }
-        g.grant(&r.owner, &r.vault, &user, r.perm).map_err(|e| AppError::Internal(e.to_string()))?;
+        if let Err(e) = g.grant(&r.owner, &r.vault, &user, r.perm) {
+            drop(g);
+            let _ = lock(&st.share_links)?.unredeem(&req.token);
+            return Err(AppError::Internal(e.to_string()));
+        }
     }
     audit(action::SHARE_LINK_REDEEM, &user, &format!("{}/{} -> {}", r.owner, r.vault, user), outcome::SUCCESS, &ip);
     Ok(Json(RedeemLinkResp { owner: r.owner, vault: r.vault, perm: r.perm }))
