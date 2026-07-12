@@ -34,7 +34,7 @@ export function unifiedLineDiff(theirs: string, mine: string): DiffLine[] {
 export class NoteConflictModal extends Modal {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
-  onOpen() { this.titleEl.setText("Resolve conflicts"); void this.render(); }
+  onOpen() { this.titleEl.setText("Resolve conflicts"); void this.run(); }
   onClose() { this.contentEl.empty(); }
 
   // Only line endings / trailing newline differ → not a real conflict.
@@ -43,19 +43,37 @@ export class NoteConflictModal extends Modal {
     return n(a) === n(b);
   }
 
+  // Entry point: show an IMMEDIATE placeholder (never a blank modal), auto-dismiss cosmetic-only
+  // conflicts with visible progress, then draw the real state. Wrapped so an error shows a message
+  // instead of leaving the body empty (the reported "display error").
+  private async run() {
+    const c = this.contentEl; c.empty();
+    const status = c.createEl("p", { text: "Checking conflicts…" });
+    status.setAttribute("style", "font-size:13px;opacity:.85;");
+    try {
+      // Auto-dismiss cosmetic-only conflicts (clears a batch of false EOL conflicts from an older
+      // client without one tap per file). Bounded to the current list; updates the placeholder.
+      const conflicts = this.plugin.listNoteConflicts();
+      let dismissed = 0;
+      for (const { copy, original } of conflicts) {
+        const mine = await this.plugin.readTextOrEmpty(copy);
+        const theirs = await this.plugin.readTextOrEmpty(original);
+        if (this.cosmeticEqual(mine, theirs)) {
+          await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs);
+          status.setText(`Clearing cosmetic (line-ending-only) conflicts… ${++dismissed}`);
+        }
+      }
+      await this.render();
+    } catch (e: any) {
+      c.empty();
+      c.createEl("p", { text: `Couldn't load conflicts: ${e?.message ?? e}` }).setAttribute("style", "font-size:13px;");
+      new Setting(c).addButton((b) => b.setButtonText("Close").setCta().onClick(() => this.close()));
+    }
+  }
+
   private async render() {
     const c = this.contentEl; c.empty();
-    let conflicts = this.plugin.listNoteConflicts();
-
-    // Auto-dismiss any cosmetic-only conflicts up front (clears a batch of false EOL conflicts from an
-    // older client without 46 manual clicks). Bounded to the current list length so it can't loop.
-    for (let i = 0; i < conflicts.length; i++) {
-      const { copy, original } = conflicts[i];
-      const mine = await this.plugin.readTextOrEmpty(copy);
-      const theirs = await this.plugin.readTextOrEmpty(original);
-      if (this.cosmeticEqual(mine, theirs)) { await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs); }
-    }
-    conflicts = this.plugin.listNoteConflicts();
+    const conflicts = this.plugin.listNoteConflicts();
 
     if (conflicts.length === 0) {
       c.createEl("p", { text: "No conflicts to resolve — everything is in sync." });

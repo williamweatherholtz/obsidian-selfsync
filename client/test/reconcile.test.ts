@@ -179,6 +179,18 @@ describe("reconcileAll", () => {
     expect(sameIgnoringEol(enc("a\nb"), enc("a\nb\nc"))).toBe(false);    // an added line
   });
 
+  it("reconcileAll reports onProgress and finishes at done === total (drives the 'Syncing… N/M' text)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "A"); await serverPut(api, "b.md", "B");
+    const io = fakeIo({ "c.md": "C" }); // 3 distinct paths across local+remote
+    const seen: Array<[number, number]> = [];
+    await reconcileAll(deps(api, io, { onProgress: (done: number, total: number) => seen.push([done, total]) }));
+    expect(seen.length).toBeGreaterThan(0);
+    const [lastDone, lastTotal] = seen[seen.length - 1];
+    expect(lastTotal).toBe(3);
+    expect(lastDone).toBe(lastTotal); // pass completes at 100%
+  });
+
   it("no-base divergence that is ONLY line endings -> converge on remote, NO conflict copy (issueFalseEolConflict)", async () => {
     const { api } = fakeServer();
     await serverPut(api, "note.md", "line1\r\nline2\r\n");  // server copy: Windows CRLF

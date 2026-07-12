@@ -45,6 +45,11 @@ describe("light is a pure function of phase", () => {
   });
   it("offline is red", () => expect(light("offline").color).toBe("var(--color-red)"));
 
+  it("syncing tip includes the progress detail when given ('Syncing… 12/174')", () => {
+    expect(light("syncing", "12/174").tip).toBe("Syncing… 12/174");
+    expect(light("syncing").tip).toBe("Syncing…"); // no detail → plain
+  });
+
   // P4 (status/transport dual-truth guard): when idle but the realtime WS is DOWN, the light must not
   // claim full green "Fully synced" — it reflects the polling-fallback truth instead.
   it("idle with realtime DOWN is not green and says it's polling", () => {

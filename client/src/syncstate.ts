@@ -48,7 +48,7 @@ export function light(phase: Phase, detail = "", realtime = true): LightSpec {
     case "idle":       return realtime
       ? { color: "var(--color-green)", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` }
       : { color: "var(--color-yellow)", label: "SelfSync", tip: `Synced — realtime reconnecting, polling${detail ? " (" + detail + ")" : ""}` };
-    case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: "Syncing…" };
+    case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: `Syncing…${detail ? ` ${detail}` : ""}` };
     case "connecting": return { color: "var(--color-yellow)", label: "SelfSync", tip: "Connecting…" };
     case "offline":    return { color: "var(--color-red)", label: "SelfSync", tip: "Offline — retrying" };
     case "off":        return { color: "var(--text-faint)", label: "SelfSync", tip: "Not connected" };

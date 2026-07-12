@@ -135,6 +135,9 @@ export interface ReconcileDeps {
   deleteGuard?: DeleteRateGuard;
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
+  // Progress feedback during a full reconcile: (done, total) files examined this pass. Fired often
+  // (once per file) — the consumer should throttle its UI updates. Used for the "Syncing… N/M" text.
+  onProgress?: (done: number, total: number) => void;
   // A config file whose reconcile can't be resolved additively — a removal (base present →
   // gone) or a same-file divergence. NEVER auto-deleted (could lose data a device merely
   // couldn't hold) and NEVER auto-pulled-back (would resurrect a genuine removal); recorded
@@ -349,6 +352,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
   const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
+  let done = 0; const total = paths.length; d.onProgress?.(0, total); // progress feedback for the status text
   // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
   // errors stay isolated (one bad file never aborts the pass).
   await mapPool(paths, FILE_CONCURRENCY, async (p) => {
@@ -365,6 +369,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
       const rv = remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version;
       if (rv !== undefined && holdForRetry(d, p, rv)) failedRemote.push(rv);
     }
+    finally { d.onProgress?.(++done, total); }
   });
   const minFailedRemote = failedRemote.length ? Math.min(...failedRemote) : Infinity;
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made

@@ -153,7 +153,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // Live status light at the BOTTOM: coloured dot + phase; issue as desc; connection actions right.
     g.addSetting((st) => {
       st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(phase).color}`);
-      st.nameEl.createSpan({ text: statusTitle(phase) });
+      const prog = phase === "syncing" ? this.plugin.syncProgressText() : "";
+      st.nameEl.createSpan({ text: statusTitle(phase) + (prog ? ` ${prog}` : "") });
       const issue = this.plugin.getLastIssue();
       if (phase !== "idle" && issue) st.setDesc(issue);
       // Diagnose is always available: it names the first broken link so a silent offline — or a
