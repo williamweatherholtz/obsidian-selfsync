@@ -94,14 +94,25 @@ export function pluginIdOf(path: string): string | null {
   return id || null;
 }
 
+// OS/tool junk the server refuses on commit (its is_junk): trying to sync these just produces noisy
+// HTTP 400s per file, so skip them client-side too. EXACT mirror of the server list (basename match on
+// any path segment — a `.git` dir anywhere, or the OS thumbnail/metadata files) plus the crash-orphaned
+// atomic-write temps. Kept an exact mirror so the client skips PRECISELY what the server rejects.
+export function isJunkFile(path: string): boolean {
+  if (path.endsWith(".selfsync-part") || path.endsWith(".selfsync-tmp")) return true;
+  for (const seg of path.split("/")) {
+    if (seg === ".DS_Store" || seg === "Thumbs.db" || seg === "desktop.ini" || seg === ".git") return true;
+  }
+  return false;
+}
+
 // True if `path` should participate in sync given the selection and this device's own
 // SelfSync plugin id (the folder that must never sync).
 export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId: string): boolean {
-  // (0) Never sync a crash-orphaned atomic-write temp. `openAppend` streams a download into
-  // `<name>.selfsync-part` then renames; a crash mid-download leaves a VISIBLE partial file that
-  // getFiles() re-indexes on next launch. Without this it would decide()=push and the torn content
-  // would propagate fleet-wide (the server now also rejects the suffix in is_junk — defense in depth).
-  if (path.endsWith(".selfsync-part") || path.endsWith(".selfsync-tmp")) return false;
+  // (0) Never sync OS/tool junk (Thumbs.db, .DS_Store, desktop.ini, .git) or a crash-orphaned
+  // atomic-write temp (`<name>.selfsync-part`/`.selfsync-tmp`). The server 400s all of these on
+  // commit, so attempting them only spams the log — skip them here (defense in depth + quiet).
+  if (isJunkFile(path)) return false;
   if (!path.startsWith(CONFIG_PREFIX)) return true; // ordinary note/attachment
   if (!sel.enabled) return false;                   // config sync switched off entirely
 

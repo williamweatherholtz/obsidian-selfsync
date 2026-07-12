@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, ConfigSyncSelection } from "../src/configsync";
+import { shouldSync, isJunkFile, pluginIdOf, DEFAULT_CONFIG_SYNC, ConfigSyncSelection } from "../src/configsync";
 
 const SELF = "obsidian-selfsync";
 const on = (over: Partial<ConfigSyncSelection> = {}): ConfigSyncSelection =>
@@ -10,6 +10,25 @@ describe("shouldSync — notes always sync", () => {
     for (const sel of [DEFAULT_CONFIG_SYNC, on()]) {
       expect(shouldSync("Note.md", sel, SELF)).toBe(true);
       expect(shouldSync("folder/deep/img.png", sel, SELF)).toBe(true);
+    }
+  });
+});
+
+describe("isJunkFile / shouldSync — OS junk the server rejects is skipped client-side", () => {
+  it("skips Thumbs.db / .DS_Store / desktop.ini / .git anywhere in the path", () => {
+    for (const p of [
+      "Thumbs.db", "a/b/Thumbs.db", ".DS_Store", "sub/.DS_Store",
+      "desktop.ini", "x/desktop.ini", ".git", "repo/.git/config",
+    ]) {
+      expect(isJunkFile(p)).toBe(true);
+      expect(shouldSync(p, on(), SELF)).toBe(false); // never synced, config on or off
+      expect(shouldSync(p, DEFAULT_CONFIG_SYNC, SELF)).toBe(false);
+    }
+  });
+  it("does NOT skip legitimate files that merely resemble junk", () => {
+    for (const p of ["thumbs.db.md", "notes/Thumbsdb.md", "my.git.notes.md", "git/readme.md"]) {
+      expect(isJunkFile(p)).toBe(false);
+      expect(shouldSync(p, on(), SELF)).toBe(true);
     }
   });
 });
