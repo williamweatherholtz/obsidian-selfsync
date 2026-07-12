@@ -17,7 +17,7 @@ package ProjectUseCases {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> description = "A new user connects the plugin to their server and starts syncing a vault, without hand-editing opaque fields.";
         :>> mainSuccess = "The wizard opens on first run; the user enters the server URL and tests reachability; signs in (or creates an account); picks or creates a remote vault; the plugin begins syncing and the indicator goes green.";
-        :>> extensions = "Server unreachable from a phone (LAN IP / localhost) -> the wizard explains to use the LAN IP or https address. | The server disallows new accounts -> the user is told to ask the admin for login details. | A pasted setup link prefills server+username and skips to sign-in.";
+        :>> extensions = "Server unreachable from a phone (LAN IP / localhost) -> the wizard explains to use the LAN IP or https address. | The server disallows new accounts -> the user is told to ask the admin for login details. | A pasted setup link prefills server+username and skips to sign-in. | An admin-created account is FORCED to set a new password before first use (IA.3.5.9) — the wizard prompts for it, then continues. | A pasted vault SHARE link routes to the redeem flow instead (see ucRedeemSharedVault).";
     }
     use case ucAddSecondDevice : UseCase {
         :>> id = "c0f1a5cc-b002-4a10-9b20-a1b2c3d400a2"; :>> title = "Add a second device";
@@ -31,7 +31,7 @@ package ProjectUseCases {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> description = "Ongoing note/attachment edits propagate between devices with low latency.";
         :>> mainSuccess = "An edit on device A is pushed and, via the WebSocket channel, appears on device B near-instantly; edits made while offline reconcile on reconnect.";
-        :>> extensions = "A large file is streamed to disk rather than buffered whole. | A file over the size limit is skipped with a one-time notice rather than failing the sync. | The server index is unavailable -> the client surfaces 'repair needed' and does not act on an empty manifest.";
+        :>> extensions = "A large file is streamed to disk rather than buffered whole. | A file over the per-device size limit is skipped with a one-time notice rather than failing the sync — the limit is CONFIGURABLE ('Max file size to sync', default 200 MB), and the server enforces its own ceiling (MAX_FILE_MB, default 512 MB); the effective cap is the smaller of the two. | The server index is unavailable -> the client surfaces 'repair needed' and does not act on an empty manifest. | A transient DNS/network failure is retried with backoff and self-heals (no user action).";
     }
     use case ucConcurrentEdit : UseCase {
         :>> id = "c0f1a5cc-b004-4a10-9b20-a1b2c3d400a4"; :>> title = "Resolve concurrent edits to a note";
@@ -80,7 +80,14 @@ package ProjectUseCases {
         :>> createdAt = "2026-07-05"; :>> createdBy = "wweatherholtz";
         :>> description = "An operator manages accounts, shares, and registration through the admin surface.";
         :>> mainSuccess = "The operator opens the web admin UI, creates/removes accounts and vault shares, and sets registration to closed or open-with-invite.";
-        :>> extensions = "A single-use invite token is consumed exactly once. | The admin UI never leaks password hashes or session tokens. | The server persists everything to its own filesystem storage with no external database.";
+        :>> extensions = "A single-use invite token is consumed exactly once. | The admin UI never leaks password hashes or session tokens. | The server persists everything to its own filesystem storage with no external database. | Privileged (server-admin) accounts can enrol TOTP MFA (IA.3.5.3), optionally REQUIRED via REQUIRE_ADMIN_MFA. | An admin-created or operator-reset account is forced to set a new password before use. | The operator can reindex/repair or delete a specific vault from the admin UI. | Usernames are lowercase-canonical (case-insensitive) and may be email addresses (incl. plus-addressing); the create form states the rule.";
+    }
+    use case ucDeployServer : UseCase {
+        :>> id = "c0f1a5cc-b014-4a10-9b20-a1b2c3d400b4"; :>> title = "Stand up the sync server";
+        :>> createdAt = "2026-07-12"; :>> createdBy = "wweatherholtz";
+        :>> description = "An operator deploys the self-hostable server on infrastructure they control, behind TLS, with no external database (D0007 trusted-server + TLS-in-transit). Was implicit before; modeled 2026-07-12 to reflect the prebuilt-image + Compose deploy reality.";
+        :>> mainSuccess = "The operator pulls the PREBUILT server image and runs it via the Docker Compose stack (bundled Caddy for automatic HTTPS, or their own reverse proxy); sets a strong SYNC_PASSWORD + the domain; the server comes up healthy and the plugin connects over https.";
+        :>> extensions = "TLS is not optional for remote access — the server speaks plain HTTP/WS and MUST sit behind a TLS-terminating proxy; loopback http is allowed only for local testing. | The admin surface binds to a PRIVATE port by default (host-loopback / not through the public proxy); ADMIN_BIND_ADDR=merge opts into a single port. | The only operator knobs are the published PORT + a few envs (SYNC_USER/PASSWORD, REGISTRATION seed, MAX_FILE_MB, LOG_LEVEL); the internal bind address + data path are image-fixed (not tunable). | The server REFUSES to boot on the default/weak admin password unless ALLOW_WEAK_ADMIN=1. | REGISTRATION is a FIRST-RUN seed only — afterwards the policy is runtime-managed from /admin and persists. | All state lives in the mounted data volume (accounts, ACL, chunks, vault files) — back it up; no external DB. | A no-proxy Compose stack is provided for operators terminating TLS with their own proxy/tunnel.";
     }
     use case ucSwitchVault : UseCase {
         :>> id = "c0f1a5cc-b011-4a10-9b20-a1b2c3d400b1"; :>> title = "Switch which remote vault this vault syncs to";
@@ -139,4 +146,6 @@ package ProjectUseCases {
     #DependsOn dependency from ucNeverLoseLocalData to n3NeverClobber;
     #DependsOn dependency from ucRedeemSharedVault to collaborator;
     #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
+    #DependsOn dependency from ucDeployServer to selfHostOperator;
+    #DependsOn dependency from ucDeployServer to goal2SimpleBackend;
 }

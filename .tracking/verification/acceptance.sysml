@@ -248,4 +248,9 @@ package ProjectAcceptance {
     #Verify dependency from acRedeemAndLeaveShare to srVaultSharing;
     #Verify dependency from acRedeemAndLeaveShare to ucRedeemSharedVault;
     #Verify dependency from acRedeemAndLeaveShare to ucShareVault;
+    // reality-reconciliation (2026-07-12): validate the updated/new use cases via the delivery DoDs
+    // that already cover the shipped behaviour.
+    #Verify dependency from deployComposeHardeningDoD to ucDeployServer;      // prebuilt image + Compose + TLS posture
+    #Verify dependency from cmmcMfaDoD to ucAdministerServer;                 // admin TOTP MFA
+    #Verify dependency from vaultNameAndSizeLimitsDoD to ucContinuousNoteSync; // configurable per-file size cap
 }
