@@ -58,7 +58,7 @@ export class ShareManageModal extends Modal {
 
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
-  onOpen() { this.titleEl.setText("Share your vaults"); this.render(); void this.load(); }
+  onOpen() { this.titleEl.setText("Share this vault"); this.render(); void this.load(); }
   onClose() { this.contentEl.empty(); }
 
   private async load() {
@@ -73,43 +73,50 @@ export class ShareManageModal extends Modal {
 
   private render() {
     const c = this.contentEl; c.empty();
-    if (this.loading) { c.createEl("p", { text: "Loading your vaults…" }); return; }
+    if (this.loading) { c.createEl("p", { text: "Loading…" }); return; }
     if (this.error) { c.createEl("p", { text: `Couldn't load sharing: ${this.error}` }); return; }
-    if (!this.vaults.length) { c.createEl("p", { text: "You don't own any vaults to share yet." }); return; }
 
-    c.createEl("p", { text: "Grant another account access to a vault you own. Read-only can pull but never push." })
-      .setAttribute("style", "font-size:13px;margin-bottom:10px;");
-
-    for (const v of this.vaults) {
-      new Setting(c).setName(v.vault).setHeading();
-      if (v.grants.length === 0) {
-        c.createEl("div", { text: "Not shared with anyone.", cls: "setting-item-description" });
-      }
-      for (const gr of v.grants) {
-        new Setting(c).setName(gr.grantee).setDesc(gr.perm === "readWrite" ? "read-write" : "read-only")
-          .addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => void this.revoke(v.vault, gr.grantee)));
-      }
-      // Add-a-grant row: grantee username + permission + Add.
-      let grantee = "";
-      let perm: SharePerm = "readWrite";
-      new Setting(c)
-        .addText((t) => t.setPlaceholder("username to share with").onChange((val) => { grantee = val.trim(); }))
-        .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(perm).onChange((val) => { perm = val as SharePerm; }); })
-        .addButton((b) => b.setButtonText("Add").setCta().onClick(() => void this.grant(v.vault, grantee, perm)));
-      // D0023: or share via a single-use LINK — no username needed. Copies the link to send out-of-band.
-      let linkPerm: SharePerm = "readWrite";
-      new Setting(c).setName("Or share via link").setDesc("Single-use — anyone you send it to can redeem it once to gain access.")
-        .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(linkPerm).onChange((val) => { linkPerm = val as SharePerm; }); })
-        .addButton((b) => b.setButtonText("Create link").onClick(() => void this.makeLink(v.vault, linkPerm)));
+    // Share only the vault this device is currently syncing — no vault picker, no per-vault labels.
+    // You can only share a vault you OWN; a vault shared with you (vaultOwner set) can't be re-shared.
+    const current = this.plugin.settings.vaultId;
+    const v = this.vaults.find((x) => x.vault === current);
+    if (!v) {
+      c.createEl("p", { text: this.plugin.settings.vaultOwner
+        ? `The vault you're syncing (${current}) is owned by ${this.plugin.settings.vaultOwner}, so you can't re-share it.`
+        : `The vault you're syncing (${current}) isn't on the server yet — sync once, then share it.` });
+      new Setting(c).addButton((b) => b.setButtonText("Done").onClick(() => this.close()));
+      return;
     }
 
-    // Pending (unredeemed) share-links across the caller's vaults, with revoke. Redeemed ones already
-    // appear as normal grants above.
-    const pending = this.links.filter((l) => l.redeemed_by === null);
+    c.createEl("p", { text: "Grant another account access to this vault. Read-only can pull but never push." })
+      .setAttribute("style", "font-size:13px;margin-bottom:10px;");
+
+    if (v.grants.length === 0) {
+      c.createEl("div", { text: "Not shared with anyone.", cls: "setting-item-description" });
+    }
+    for (const gr of v.grants) {
+      new Setting(c).setName(gr.grantee).setDesc(gr.perm === "readWrite" ? "read-write" : "read-only")
+        .addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => void this.revoke(v.vault, gr.grantee)));
+    }
+    // Add-a-grant row: grantee username + permission + Add.
+    let grantee = "";
+    let perm: SharePerm = "readWrite";
+    new Setting(c)
+      .addText((t) => t.setPlaceholder("username to share with").onChange((val) => { grantee = val.trim(); }))
+      .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(perm).onChange((val) => { perm = val as SharePerm; }); })
+      .addButton((b) => b.setButtonText("Add").setCta().onClick(() => void this.grant(v.vault, grantee, perm)));
+    // D0023: or share via a single-use LINK — no username needed. Copies the link to send out-of-band.
+    let linkPerm: SharePerm = "readWrite";
+    new Setting(c).setName("Or share via link").setDesc("Single-use — anyone you send it to can redeem it once to gain access.")
+      .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(linkPerm).onChange((val) => { linkPerm = val as SharePerm; }); })
+      .addButton((b) => b.setButtonText("Create link").onClick(() => void this.makeLink(v.vault, linkPerm)));
+
+    // Pending (unredeemed) links for THIS vault, with revoke. Redeemed ones already appear as grants above.
+    const pending = this.links.filter((l) => l.redeemed_by === null && l.vault === current);
     if (pending.length) {
       new Setting(c).setName("Pending share links").setHeading();
       for (const l of pending) {
-        new Setting(c).setName(`${l.vault} — ${l.perm === "readWrite" ? "read-write" : "read-only"}${l.label ? ` (${l.label})` : ""}`)
+        new Setting(c).setName(`${l.perm === "readWrite" ? "read-write" : "read-only"}${l.label ? ` (${l.label})` : ""}`)
           .setDesc("Not yet redeemed.")
           .addButton((b) => b.setButtonText("Revoke").setWarning().onClick(() => void this.revokeLink(l.id)));
       }

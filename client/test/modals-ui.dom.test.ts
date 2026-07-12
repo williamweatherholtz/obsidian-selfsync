@@ -120,6 +120,22 @@ describe("capability share-links (D0023)", () => {
     await flush();
     expect(plugin.createShareLink).toHaveBeenCalledWith("notes", expect.stringMatching(/read/));
   });
+
+  it("ShareManageModal: shares ONLY the current vault, even when the account owns several", async () => {
+    // settings.vaultId is "notes"; the account also owns "work" and "default" — those must NOT appear.
+    const plugin = fakePlugin({ myVaultShares: async () => [
+      { vault: "default", grants: [] }, { vault: "notes", grants: [] }, { vault: "work", grants: [] },
+    ] });
+    const m = new ShareManageModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const text = m.contentEl.textContent ?? "";
+    expect(text).not.toContain("work");
+    expect(text).not.toContain("default");
+    // One (and only one) Create link, and it targets the current vault.
+    expect(m.contentEl.querySelectorAll("button")).toBeTruthy();
+    buttonByText(m.contentEl, "Create link").click(); await flush();
+    expect(plugin.createShareLink).toHaveBeenCalledWith("notes", expect.stringMatching(/read/));
+  });
 });
 
 describe("SetupWizardModal", () => {
