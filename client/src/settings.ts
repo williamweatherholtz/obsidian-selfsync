@@ -22,10 +22,8 @@ export interface NewLiveSyncSettings {
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
   maxSyncMB: number; // per-file size cap for THIS device (MB). Files larger than this are skipped here; raise with care on mobile (files buffer in RAM). The server enforces its own ceiling (MAX_FILE_MB).
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
-  // Conflict-copy paths SelfSync ITSELF created when concurrent edits couldn't merge (onConflict).
-  // Tracked explicitly — NOT derived from filenames — so a user's own note that happens to be named
-  // like a conflict copy is never mistaken for one and destroyed by the resolver (critique R9-H1).
-  noteConflicts: string[];
+  // NOTE conflicts are NOT stored here — they are DERIVED from the vault's conflict-copy files
+  // (deriveNoteConflicts, D-conflict-model), so the list/count/modal can never drift from reality.
   // A vault-switch resolution awaiting the next reconnect. PERSISTED (R12-CA1) so a restart between
   // writing the new vaultId and applying the switch replays the chosen mode (download/upload/merge)
   // — otherwise the reconnect would do a plain MERGE against the OLD vault's stale base, silently
@@ -65,7 +63,6 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   storePassword: false,
   maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
   configConflicts: [],
-  noteConflicts: [],
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
   // would be ALIASED across instances by Object.assign (a shared-mutable-default bug). It's created
   // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).

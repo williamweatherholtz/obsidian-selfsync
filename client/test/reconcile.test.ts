@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { decide, sameIgnoringEol, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
-import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy } from "../src/base";
+import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta } from "../src/protocol";
@@ -764,6 +764,21 @@ describe("originalOfConflictCopy — derive the pending-conflict set from filena
     expect(originalOfConflictCopy("notes/foo.md")).toBeNull();
     expect(originalOfConflictCopy("a (conflict about war).md")).toBeNull(); // no 14-digit timestamp
     expect(isConflictCopy("plain.md")).toBe(false);
+  });
+});
+
+describe("deriveNoteConflicts — the SINGLE source of truth (D-conflict-model): conflicts ARE vault files", () => {
+  it("derives conflicts from the vault file list; ignores ordinary files AND look-alike user files", () => {
+    const copy = conflictCopyName("notes/foo.md", "Phone", new Date(Date.UTC(2026, 6, 8, 13, 15, 0)), "abc123");
+    const paths = ["notes/foo.md", copy, "a (conflict about war).md", "readme.md"];
+    const derived = deriveNoteConflicts(paths);
+    expect(derived).toEqual([{ copy, original: "notes/foo.md" }]); // only the real owned copy
+  });
+  it("empty vault → no conflicts (and a resolved copy simply drops out on the next derivation)", () => {
+    expect(deriveNoteConflicts([])).toEqual([]);
+    const copy = conflictCopyName("n.md", "Dev", new Date(Date.UTC(2026, 0, 1, 0, 0, 0)), "aa11bb");
+    expect(deriveNoteConflicts([copy]).length).toBe(1);        // present → listed
+    expect(deriveNoteConflicts(["n.md"]).length).toBe(0);      // copy gone → not a conflict, no stale entry
   });
 });
 

@@ -67,3 +67,13 @@ export function originalOfConflictCopy(path: string): string | null {
   return m ? `${dir}${m[1]}${ext}` : null;
 }
 export function isConflictCopy(path: string): boolean { return originalOfConflictCopy(path) !== null; }
+
+// DERIVE the set of unresolved note conflicts purely from the vault's file list — a conflict IS an
+// owned conflict-copy file (recognized by the strict scheme above), so the list/count/modal are a
+// pure projection of the vault and can NEVER go stale or disagree with a cached array. Idempotent +
+// total; the single source of truth for note conflicts (D-conflict-model). Pure → unit-testable.
+export function deriveNoteConflicts(paths: readonly string[]): { copy: string; original: string }[] {
+  const out: { copy: string; original: string }[] = [];
+  for (const p of paths) { const original = originalOfConflictCopy(p); if (original) out.push({ copy: p, original }); }
+  return out;
+}

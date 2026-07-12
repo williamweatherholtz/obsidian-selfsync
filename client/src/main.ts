@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
-import { BaseStore, originalOfConflictCopy } from "./base";
+import { BaseStore, deriveNoteConflicts } from "./base";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
@@ -418,25 +418,12 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
 
   // --- note conflicts: when concurrent edits can't merge cleanly, this device's version is kept as
-  // a conflict-copy file beside the note (which holds the other version). We track ONLY the copies
-  // SelfSync itself created (recorded from onConflict) — never files merely matching the conflict
-  // name — so a user's own "(conflict …)"-named note can't be mistaken for one and destroyed. The
-  // list self-cleans: a copy the user deleted (or resolved) drops off. See NoteConflictModal.
+  // a conflict-copy file beside the note. Conflict state is DERIVED PURELY FROM THE VAULT — a conflict
+  // IS an owned conflict-copy file (strict naming scheme, D-conflict-model) — so there is no cached
+  // array to drift: the list, count, and modal are a pure projection and can never go stale, show
+  // dual-truth, or reference a file that no longer exists. Deleting/resolving a copy simply drops it.
   listNoteConflicts(): { copy: string; original: string }[] {
-    const present = this.settings.noteConflicts.filter((copy) => this.app.vault.getAbstractFileByPath(copy) != null);
-    if (present.length !== this.settings.noteConflicts.length) { this.settings.noteConflicts = present; void this.saveSettings(); }
-    return present.map((copy) => ({ copy, original: originalOfConflictCopy(copy) ?? copy }));
-  }
-  private recordNoteConflict(copy: string): void {
-    if (this.settings.noteConflicts.includes(copy)) return;
-    this.settings.noteConflicts.push(copy);
-    void this.saveSettings();
-    this.settingsRefresh?.(); this.statusListener?.();
-  }
-  private clearNoteConflict(copy: string): void {
-    if (!this.settings.noteConflicts.includes(copy)) return;
-    this.settings.noteConflicts = this.settings.noteConflicts.filter((p) => p !== copy);
-    void this.saveSettings();
+    return deriveNoteConflicts(this.app.vault.getFiles().map((f) => f.path));
   }
   openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
   // Text of a file for the conflict preview ("" if gone or unreadable).
@@ -460,13 +447,17 @@ export default class NewLiveSyncPlugin extends Plugin {
         new Notice("SelfSync: that file changed since you opened this — review it again");
         return false; // don't clobber the newer version; the modal re-renders with the new content
       }
+      // Idempotent: if the copy is already gone (resolved elsewhere / on another device), there's
+      // nothing to promote — treat as resolved rather than throwing (the derived list drops it).
+      if (!(await this.io.exists?.(copy) ?? true)) return true;
       const bytes = await this.io.read(copy);
       await this.io.write(original, bytes);
       this.engine.enqueue({ kind: "path", path: original, size: bytes.byteLength });
     }
-    await this.io.remove(copy);
+    await this.io.remove(copy); // io.remove is a no-op if the file is already gone (idempotent)
     this.engine.enqueue({ kind: "path", path: copy, size: 0 });
-    this.clearNoteConflict(copy);
+    // No cache to clear — the conflict was DERIVED from the copy file; deleting it clears the conflict.
+    this.settingsRefresh?.(); this.statusListener?.();
     return true;
   }
 
@@ -878,7 +869,8 @@ export default class NewLiveSyncPlugin extends Plugin {
         this.renderLight(this.engine.phase());
         this.statusListener?.(); // refresh the settings status row if open
       },
-      onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.recordNoteConflict(c); },
+      // The conflict copy file IS the record (derived from the vault) — just log + refresh the count.
+      onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.settingsRefresh?.(); this.statusListener?.(); },
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
@@ -1318,7 +1310,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings.configSync.pluginAllow = [...(s.configSync?.pluginAllow ?? [])]; // fresh array (CS2): never alias DEFAULT_CONFIG_SYNC's
     // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
     this.settings.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
-    this.settings.noteConflicts = Array.isArray(s.noteConflicts) ? [...s.noteConflicts] : [];
+    // noteConflicts array retired (D-conflict-model): note conflicts are now derived from the vault.
     this.base = new BaseStore(data.base && typeof data.base === "object" ? data.base : {});
   }
   async saveSettings() { await this.persist(); }
