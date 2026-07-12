@@ -191,7 +191,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderObsidianConfig(c: HTMLElement, s: NewLiveSyncSettings): void {
     const cs = s.configSync;
     const g = new SettingGroup(c).setHeading("Obsidian configuration");
-    g.addSetting((st) => st.setName("Sync settings, themes & plugins")
+    g.addSetting((st) => st.setName("Sync settings, themes, or plugins")
       .setDesc("Sync your Obsidian configuration across devices.")
       .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
         cs.enabled = v; await this.plugin.applyConfigSyncChange(); this.display();

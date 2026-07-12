@@ -19,7 +19,7 @@ describe("settings tab renders and wires its controls", () => {
 
   it("renders the config-sync section with the master + category toggles", () => {
     const { containerEl } = renderTab(plugin);
-    expect(toggleByName(containerEl, "Sync settings, themes & plugins")).toBeTruthy();
+    expect(toggleByName(containerEl, "Sync settings, themes, or plugins")).toBeTruthy();
     for (const name of ["Core settings", "Hotkeys", "Appearance & themes", "CSS snippets", "Community plugins"]) {
       expect(toggleByName(containerEl, name)).toBeTruthy();
     }
@@ -27,7 +27,7 @@ describe("settings tab renders and wires its controls", () => {
 
   it("P2: toggling the config-sync master calls applyConfigSyncChange (immediate apply) + flips the setting", () => {
     const { containerEl } = renderTab(plugin);
-    const master = toggleByName(containerEl, "Sync settings, themes & plugins");
+    const master = toggleByName(containerEl, "Sync settings, themes, or plugins");
     expect(master.checked).toBe(true);        // reflects settings.configSync.enabled
     flipToggle(master);                        // change event → onChange
     expect(plugin.settings.configSync.enabled).toBe(false);
