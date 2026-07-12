@@ -170,18 +170,56 @@ export class SetupWizardModal extends Modal {
     if (!canLogIn(this.s)) { new Notice("SelfSync: enter the server, username, and password"); return; }
     try {
       if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password);
-      this.token = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
-      this.s.vaults = await HttpTransport.listVaults(this.s.server, this.token);
-      // Keep a vault pre-selected from a setup link if the account actually has it; else default to the first.
-      this.s.chosenVault = this.s.vaults.includes(this.s.chosenVault) ? this.s.chosenVault : (this.s.vaults[0] ?? this.s.chosenVault);
-      this.s.loggedIn = true;
-      this.s.serverOk = true; this.serverMsg = "Reachable ✓"; // a successful login proves reachability
-      // Redeem mode: signing in was the only gate — now redeem the shared vault and finish. No vault step.
-      if (this.pendingShareLink) { await this.finishRedeem(); return; }
-      this.render();
+      const { token, mustChange } = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
+      this.token = token;
+      // IA.3.5.9: an admin-created/reset account must set a new password before ANY other call (every
+      // route 403s until then — the cause of the "vaults: HTTP 403" a fresh account hit). Prompt here.
+      if (mustChange) { this.promptMustChange(); return; }
+      await this.afterAuthenticated();
     } catch (e: any) {
       new Notice(`SelfSync: ${this.friendlyAuthError(e)}`);
     }
+  }
+
+  // Forced first-password-change step (shown when login reports must_change). Sets a new password via
+  // /api/password (returns a fresh, un-gated token), then continues exactly as a normal login would.
+  private promptMustChange() {
+    const c = this.contentEl; c.empty();
+    this.titleEl.setText("Set a new password");
+    c.createEl("p", { text: "This account was created with a temporary password and must set a new one before it can be used." })
+      .setAttribute("style", "font-size:13px;margin-bottom:10px;");
+    let np = "", np2 = "";
+    let npInput: HTMLInputElement | undefined;
+    new Setting(c).setName("New password").addText((t) => { npInput = t.inputEl; t.inputEl.type = "password"; t.onChange((v) => { np = v; }); });
+    new Setting(c).setName("Confirm new password").addText((t) => { t.inputEl.type = "password"; t.onChange((v) => { np2 = v; }); });
+    new Setting(c)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.render()))
+      .addButton((b) => b.setButtonText("Set password & continue").setCta().onClick(() => void this.doMustChange(np, np2)));
+    if (npInput) window.setTimeout(() => npInput!.focus(), 0);
+  }
+
+  private async doMustChange(np: string, np2: string) {
+    if (np.length < 8) { new Notice("SelfSync: the new password must be at least 8 characters"); return; }
+    if (np !== np2) { new Notice("SelfSync: the passwords don't match"); return; }
+    try {
+      // `this.s.password` is the temp password just used to log in; changePassword verifies it and
+      // returns a fresh token with the must-change flag cleared.
+      this.token = await HttpTransport.changePassword(this.s.server, this.token, this.s.password, np);
+      this.s.password = np; // storePassword mode persists the NEW password; token-only clears it later
+      await this.afterAuthenticated();
+    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
+  }
+
+  // Post-authentication continuation (shared by normal login + forced-change): redeem mode finishes by
+  // redeeming; otherwise load the vault list and reveal the vault step.
+  private async afterAuthenticated() {
+    if (this.pendingShareLink) { await this.finishRedeem(); return; }
+    this.s.vaults = await HttpTransport.listVaults(this.s.server, this.token);
+    // Keep a vault pre-selected from a setup link if the account actually has it; else default to the first.
+    this.s.chosenVault = this.s.vaults.includes(this.s.chosenVault) ? this.s.chosenVault : (this.s.vaults[0] ?? this.s.chosenVault);
+    this.s.loggedIn = true;
+    this.s.serverOk = true; this.serverMsg = "Reachable ✓"; // a successful login proves reachability
+    this.render();
   }
 
   // Redeem finish: persist the just-established session, redeem the shared vault, adopt it as this

@@ -127,7 +127,10 @@ export class HttpTransport implements SyncApi {
     return { ok: true, layer: "ok", detail: "All good: server reachable, protocol matches, signed in, and the vault is ready." };
   }
 
-  static async login(baseUrl: string, username: string, password: string): Promise<string> {
+  // Returns the session token AND whether the account must set a new password before use (IA.3.5.9 —
+  // admin-created / reset accounts are gated: every route 403s until the password is changed). Callers
+  // that see mustChange must run changePassword before any other authed call.
+  static async login(baseUrl: string, username: string, password: string): Promise<{ token: string; mustChange: boolean }> {
     // SEC-AUTH: never send a password over plain http:// to a remote host — it (and the returned
     // bearer token, and everything after) would be interceptable. Refuse loudly; the fix is an
     // https:// URL (put the server behind a TLS reverse proxy). Loopback http is allowed (local dev).
@@ -139,7 +142,8 @@ export class HttpTransport implements SyncApi {
       body: JSON.stringify({ username, password }), throw: false,
     });
     if (r.status !== 200) throw new Error(`login failed: HTTP ${r.status}`);
-    return (r.json as { token: string }).token;
+    const j = r.json as { token: string; must_change_password?: boolean };
+    return { token: j.token, mustChange: Boolean(j.must_change_password) };
   }
 
   static async register(baseUrl: string, username: string, password: string, invite = ""): Promise<void> {

@@ -2,11 +2,12 @@
 // Real-DOM tests for the plugin's MODALS — render each through the (happy-dom) obsidian stub and
 // confirm its confirm/resolve buttons actually invoke the right plugin action with the right args.
 // Directly targets the "dialogs with no effect" worry (esp. the conflict-adjudication modals).
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { ChangePasswordModal, ShareManageModal, RedeemShareLinkModal } from "../src/accountui";
 import { ConfigConflictModal } from "../src/configconflict";
 import { NoteConflictModal } from "../src/noteconflict";
 import { SetupWizardModal } from "../src/setupwizard";
+import { HttpTransport } from "../src/transport";
 import { fakePlugin, buttonByText, textByName, typeInto, flush } from "./ui-dom-harness";
 
 describe("ChangePasswordModal", () => {
@@ -157,4 +158,31 @@ describe("SetupWizardModal", () => {
     await flush();
     expect(plugin.reconnect).not.toHaveBeenCalled(); // finish() guards on "log in first"
   });
+
+  it("a must-change account is prompted for a new password before any other call (no 403 dead-end)", async () => {
+    // login reports must_change → the wizard shows the new-password step, calls changePassword, THEN
+    // proceeds with the fresh token (previously it barreled into listVaults and 403'd).
+    const login = vi.spyOn(HttpTransport, "login").mockResolvedValue({ token: "temp-tok", mustChange: true });
+    const changePw = vi.spyOn(HttpTransport, "changePassword").mockResolvedValue("fresh-tok");
+    const listVaults = vi.spyOn(HttpTransport, "listVaults").mockResolvedValue(["notes"]);
+    const plugin = fakePlugin();
+    const m = new SetupWizardModal(plugin.app, plugin as any);
+    m.onOpen();
+    typeInto(textByName(m.contentEl, "Server URL"), "https://s.example");
+    typeInto(textByName(m.contentEl, "Username"), "wi1y");
+    typeInto(textByName(m.contentEl, "Password"), "Temp1234");
+    buttonByText(m.contentEl, "Log in")!.click();
+    await flush();
+    expect(login).toHaveBeenCalled();
+    expect(listVaults).not.toHaveBeenCalled(); // gated: no other call before the password is set
+    // The forced-change step is now showing.
+    typeInto(textByName(m.contentEl, "New password"), "BrandNew12");
+    typeInto(textByName(m.contentEl, "Confirm new password"), "BrandNew12");
+    buttonByText(m.contentEl, "Set password & continue")!.click();
+    await flush();
+    expect(changePw).toHaveBeenCalledWith("https://s.example", "temp-tok", "Temp1234", "BrandNew12");
+    expect(listVaults).toHaveBeenCalledWith("https://s.example", "fresh-tok"); // proceeds with the fresh token
+  });
 });
+
+afterEach(() => vi.restoreAllMocks());

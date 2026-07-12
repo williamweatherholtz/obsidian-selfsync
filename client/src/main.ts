@@ -307,8 +307,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   protected buildApi(token: string): ApiClient {
     return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
   }
-  protected loginRemote(): Promise<string> {
-    return HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password);
+  protected async loginRemote(): Promise<string> {
+    // Re-login for an ALREADY-set-up account (its password was set at setup, so must-change is cleared);
+    // we only need the token here. Forced-change is handled once, in the setup wizard.
+    return (await HttpTransport.login(this.settings.serverUrl, this.settings.username, this.settings.password)).token;
   }
 
   async onload() {
