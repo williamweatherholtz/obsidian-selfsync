@@ -1,0 +1,48 @@
+# SelfSync — server ONLY, no bundled TLS proxy. For when you terminate TLS yourself with an
+# EXISTING reverse proxy (nginx, Traefik, HAProxy) or a tunnel (Cloudflare Tunnel, Tailscale).
+#
+#   1. Create a .env next to this file:
+#        SYNC_USER=admin
+#        SYNC_PASSWORD=<a long random password>   # NEVER leave the default
+#   2. docker compose -f docker-compose.noproxy.yml up -d
+#      Upgrade later with:  docker compose -f docker-compose.noproxy.yml pull && \
+#                           docker compose -f docker-compose.noproxy.yml up -d
+#   3. Point your proxy at http://127.0.0.1:8080 WITH WebSocket upgrade for /api/ws
+#      (see docs/deployment.md → "Using your own reverse proxy").
+#
+# ⚠️ The sync port speaks PLAIN HTTP/WS — it carries your password (at login), a bearer token, and
+#    your note content in cleartext. It is published to the HOST LOOPBACK ONLY (127.0.0.1) so nothing
+#    is exposed unencrypted to the network; your TLS-terminating proxy must run on THIS host and
+#    forward to 127.0.0.1:8080. Your users always connect to the proxy's https:// URL, never :8080.
+#
+#    If your proxy runs on a DIFFERENT host, change the mapping below to "0.0.0.0:8080" — but ONLY
+#    across a trusted/private link (VPN, WireGuard, a firewalled backend network). Never expose the
+#    plain sync port to the internet; that bypasses TLS.
+services:
+  selfsync:
+    image: ghcr.io/williamweatherholtz/obsidian-selfsync-server:latest
+    restart: unless-stopped
+    environment:
+      SYNC_USER: ${SYNC_USER:?set SYNC_USER in .env}
+      SYNC_PASSWORD: ${SYNC_PASSWORD:?set a STRONG SYNC_PASSWORD in .env}
+      # Admin surface on its own port (see the Caddy stack for the full rationale). Published to the
+      # host loopback below. ADMIN_BIND_ADDR=merge to fold /admin onto the public port instead.
+      ADMIN_BIND_ADDR: 0.0.0.0:8091
+      # FIRST-RUN SEED ONLY — afterward the policy is managed from /admin and persisted; changing this
+      # later has no effect, and an opened policy stays open across reboots. See docker-compose.yml.
+      REGISTRATION: closed
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - selfsync-data:/data            # BACK THIS UP — accounts, ACL, chunks, registration, vault files
+    ports:
+      - "127.0.0.1:8080:8080"          # sync/login → host loopback; point YOUR proxy here (add TLS)
+      - "127.0.0.1:8091:8091"          # private admin surface → host loopback only
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  selfsync-data:

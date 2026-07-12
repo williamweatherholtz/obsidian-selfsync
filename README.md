@@ -66,8 +66,9 @@ external to provision.
 
 ### 1. Run the server
 
-The server speaks plain HTTP/WS and sits behind a TLS-terminating reverse proxy. A ready-to-run
-Caddy + Docker Compose example lives in [`deploy/`](deploy/):
+The server speaks plain HTTP/WS and sits behind a TLS-terminating reverse proxy. It ships as a
+prebuilt image (`ghcr.io/williamweatherholtz/obsidian-selfsync-server`), so the Compose files just
+pull it. A ready-to-run Caddy + Docker Compose example lives in [`deploy/`](deploy/):
 
 ```bash
 cd deploy
@@ -77,11 +78,12 @@ SYNC_USER=admin
 SYNC_PASSWORD=a-long-random-password   # never leave the default
 EOF
 docker compose up -d
+# upgrade later:  docker compose pull && docker compose up -d
 ```
 
-Caddy provisions a Let's Encrypt certificate for your domain and proxies to the server. Full
-deployment, hardening, and reverse-proxy guidance — including using your own proxy — is in
-[`docs/deployment.md`](docs/deployment.md).
+Caddy provisions a Let's Encrypt certificate for your domain and proxies to the server. Terminating
+TLS with your own proxy instead? Use [`deploy/docker-compose.noproxy.yml`](deploy/docker-compose.noproxy.yml).
+Full deployment, hardening, and reverse-proxy guidance is in [`docs/deployment.md`](docs/deployment.md).
 
 ### 2. Install the plugin with BRAT
 
@@ -105,11 +107,13 @@ Set via environment variables. See [`deploy/docker-compose.yml`](deploy/docker-c
 | Variable | Default | Meaning |
 |---|---|---|
 | `SYNC_USER` / `SYNC_PASSWORD` | `admin` / `admin` | Bootstrap admin account. **Always set a strong password.** |
-| `BIND_ADDR` | `0.0.0.0:8080` | Sync and login port; put it behind TLS. |
 | `ADMIN_BIND_ADDR` | private, `port + 1` | Private admin surface. Set to `merge` to serve `/admin` on the public port for single-port setups only. |
-| `DATA_ROOT` | `./data` | Where accounts, the ACL, chunks, and vault files live — **back this up.** |
-| `REGISTRATION` | `closed` | `closed` is invite-only; `open` lets anyone register. |
+| `REGISTRATION` | `closed` | First-run seed only: `closed` is invite-only, `open` lets anyone register. After first boot the policy is managed from `/admin` and persisted — changing this later has no effect. |
 | `LOG_LEVEL` | `info` | One of `error`, `warn`, `info`, `debug`. |
+
+The internal sync bind (`BIND_ADDR`, `0.0.0.0:8080`) and data path (`DATA_ROOT`, `/data`) are fixed by
+the image and mapped by Compose — you don't set them. Change the published **port**, not the internal
+address.
 
 ## Status
 

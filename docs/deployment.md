@@ -6,7 +6,10 @@ client-side end-to-end encryption yet**, so the server (and anyone with access t
 can read your notes — run it on infrastructure you control.
 
 The server speaks **plain HTTP/WS** and is meant to sit **behind a TLS-terminating reverse
-proxy**. A ready-to-use Caddy example lives in [`deploy/`](../deploy/).
+proxy**. It ships as a **prebuilt image** (`ghcr.io/williamweatherholtz/obsidian-selfsync-server`,
+published on every release), so the Compose files just pull it — no local build. Two ready-to-use
+stacks live in [`deploy/`](../deploy/): `docker-compose.yml` (bundled Caddy, automatic HTTPS) and
+`docker-compose.noproxy.yml` (server only, for your own proxy/tunnel).
 
 ## Quick start (Caddy, automatic HTTPS)
 
@@ -17,10 +20,13 @@ proxy**. A ready-to-use Caddy example lives in [`deploy/`](../deploy/).
    SYNC_USER=admin
    SYNC_PASSWORD=<a long random password>
    ```
-3. From `deploy/`: `docker compose up -d`
+3. From `deploy/`: `docker compose up -d`  (upgrade later with `docker compose pull && docker compose up -d`)
 
 Caddy provisions a Let's Encrypt certificate for your domain, terminates TLS, and proxies
 to the server. In the plugin's setup wizard, use `https://sync.example.com`.
+
+Pin `image:` to a version tag (e.g. `:1.0.15`) in production for reproducible upgrades; `:latest`
+tracks the newest release.
 
 ## Why TLS is not optional for remote access
 
@@ -59,11 +65,18 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
   set `0` to disable idle expiry (absolute cap only). Endpoint screen-lock for a walked-away device is
   the operating system's job, not the server's.
 - **Never publish the server's `:8080` port to the internet.** Only the reverse proxy's `443`
-  should be public — the example does this (the server uses `expose:`, not `ports:`). Publishing
-  `:8080` would bypass TLS.
-- **Keep registration closed.** It defaults to closed (invite-only). Create accounts, open
-  registration, or issue **single-use invite tokens** from the `/admin` page. Open registration
-  lets anyone who can reach the server create an account — only do it deliberately.
+  should be public. In the Caddy stack the sync port has **no host `ports:` at all** — Caddy reaches
+  it over the private Docker network, so it's never bound on the host. The `noproxy` stack binds it
+  to `127.0.0.1:8080` (host loopback only) for a same-host proxy. Either way, publishing `:8080` to
+  `0.0.0.0` would bypass TLS — don't.
+- **Keep registration closed — and know it's a first-run seed.** `REGISTRATION` in the compose file
+  sets the policy **only on the first boot** (when `/data/.registration.json` doesn't exist yet).
+  After that the policy is runtime state, managed from `/admin` and persisted in the data volume:
+  **editing `REGISTRATION` later has no effect, and if you open registration in `/admin` it stays
+  open across reboots regardless of the env value.** To close it again, do so in `/admin` (or delete
+  `.registration.json` to re-seed). It defaults to closed (invite-only); create accounts, open
+  registration, or issue **single-use invite tokens** from `/admin`. Open registration lets anyone
+  who can reach the server create an account — only do it deliberately.
 - **Owner tasks don't need the admin page.** Managing your OWN vaults' shares and changing your
   own password are done from the plugin over the public port (owner-scoped, authenticated) — the
   private `/admin` page is only for server-owner tasks (accounts, registration, invites, deletes).
@@ -83,8 +96,11 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
 
 ## Using your own reverse proxy
 
-Any proxy works — just forward to the server's `:8080` **with WebSocket upgrade** for the
-`/api/ws` endpoint. For example, nginx:
+Use [`deploy/docker-compose.noproxy.yml`](../deploy/docker-compose.noproxy.yml): it runs the server
+alone and binds sync to `127.0.0.1:8080` (host loopback). Bring it up with
+`docker compose -f docker-compose.noproxy.yml up -d`, then point your proxy at it. Any proxy works —
+just forward to the server's `:8080` **with WebSocket upgrade** for the `/api/ws` endpoint. For
+example, nginx:
 
 ```nginx
 location / {

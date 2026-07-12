@@ -1,51 +1,67 @@
 # SelfSync — production example: the sync server behind Caddy (automatic HTTPS).
 #
 #   1. Point your domain's DNS A/AAAA record at this host.
-#   2. Create a .env next to this file:
+#   2. Create a .env next to this file (see .env.example):
 #        SELFSYNC_DOMAIN=sync.example.com
 #        SYNC_USER=admin
 #        SYNC_PASSWORD=<a long random password>   # NEVER leave the default
 #   3. docker compose up -d
+#      Upgrade later with:  docker compose pull && docker compose up -d
 #
-# Caddy provisions a Let's Encrypt certificate for SELFSYNC_DOMAIN and terminates TLS,
-# proxying plain HTTP/WS to the server on the internal network. The server port is
-# deliberately NOT published to the host — the ONLY way in is Caddy on 443 (TLS).
+# Caddy provisions a Let's Encrypt certificate for SELFSYNC_DOMAIN, terminates TLS, and reverse-
+# proxies plain HTTP/WS to the server over the PRIVATE Docker network (no host port for sync). The
+# only public entry point is Caddy on 443. The sync container port is reachable by Caddy purely
+# because they share this Compose network — Docker needs no `expose:` or `ports:` for that.
+#
+# Terminating TLS with your OWN proxy (nginx / Traefik / a Cloudflare tunnel) instead of Caddy?
+# Use docker-compose.noproxy.yml.
 services:
   selfsync:
-    build: ../server
+    # Prebuilt, published on each release. Pin to a version tag (e.g. :1.0.15) in production for
+    # reproducible, controlled upgrades; :latest tracks the newest release.
+    image: ghcr.io/williamweatherholtz/obsidian-selfsync-server:latest
     restart: unless-stopped
     environment:
-      DATA_ROOT: /data
-      BIND_ADDR: 0.0.0.0:8080          # sync/login — plain HTTP/WS, private, behind Caddy
-      # ADMIN surface (/admin + /api/admin/*) on a SEPARATE port, bound to all interfaces INSIDE the
-      # container (0.0.0.0) so Docker can publish it — but published ONLY to the host loopback below,
-      # so it's reachable at http://localhost:8091/admin ON THE HOST (or an SSH tunnel), never from
-      # the LAN/internet and never through Caddy. This keeps account management off the public port.
-      # (Set ADMIN_BIND_ADDR=merge to instead serve /admin on the public port behind Caddy.)
-      ADMIN_BIND_ADDR: 0.0.0.0:8091
       SYNC_USER: ${SYNC_USER:?set SYNC_USER in .env}
       SYNC_PASSWORD: ${SYNC_PASSWORD:?set a STRONG SYNC_PASSWORD in .env}
-      REGISTRATION: closed             # invite-only by default; open it from /admin if you must
-      # Log verbosity: error | warn | info (default) | debug. Set to warn to see only problems
-      # (failed logins, rejections, capacity, corruption); info adds the routine audit trail
-      # (logins, commits, deletes, reindexes). Per-module filters also work, e.g. LOG_LEVEL=warn.
+      # ADMIN surface (/admin + /api/admin/*) on its OWN port. It binds all interfaces INSIDE the
+      # container (0.0.0.0) only so Docker can publish it — and it's published ONLY to the host
+      # loopback (see ports: below), so it's reachable at http://localhost:8091/admin ON THIS HOST
+      # (or an SSH tunnel), never from the LAN/internet and never through Caddy. This is the ONE knob
+      # you need: internal bind addresses and the data path are fixed by the image (nothing to tune).
+      # Set ADMIN_BIND_ADDR=merge to instead serve /admin on the public port behind Caddy (single-
+      # port, trusted/all-in-one setups only).
+      ADMIN_BIND_ADDR: 0.0.0.0:8091
+      # FIRST-RUN SEED ONLY. This sets the registration policy the first time the server starts (when
+      # /data/.registration.json does not yet exist). Afterward the policy is runtime-managed from
+      # /admin and persisted in the data volume: changing this value later has NO effect, and a policy
+      # you OPEN in /admin STAYS open across reboots regardless of what this says. To force it closed
+      # again, set it in /admin (or delete .registration.json to re-seed from this value).
+      REGISTRATION: closed
+      # Log verbosity: error | warn | info (default) | debug. warn shows only problems (failed logins,
+      # rejections, capacity, corruption); info adds the routine audit trail (logins, commits, deletes).
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
-      - selfsync-data:/data            # accounts, ACL, chunks, and each vault's real files
-    expose:
-      - "8080"                         # sync port: inter-container ONLY — not published to the host
+      # Accounts, ACL, chunks, the registration policy, and every vault's real files. BACK THIS UP.
+      - selfsync-data:/data
     ports:
-      - "127.0.0.1:8091:8091"          # admin port: published to the HOST LOOPBACK only (localhost),
-                                       # NOT 0.0.0.0 — so it's reachable on the host but not the LAN/internet
-    # NOTE: the sync port has no host `ports:` on purpose — publishing :8080 would expose plain HTTP
-    # to the internet, bypassing TLS. Reach sync only through Caddy (below); reach admin at
-    # http://localhost:8091/admin on this host.
+      # Admin port → HOST LOOPBACK ONLY (127.0.0.1), never 0.0.0.0 — reachable on this host but not the
+      # LAN/internet. The sync port (8080) is intentionally NOT published: reach it only through Caddy.
+      - "127.0.0.1:8091:8091"
+    healthcheck:
+      # /health is unauthenticated and served on every surface (incl. the sync port). Caddy waits for
+      # this to pass before starting (depends_on below).
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   caddy:
     image: caddy:2
     restart: unless-stopped
     ports:
-      - "80:80"                        # HTTP -> auto-redirects to HTTPS + ACME challenge
+      - "80:80"                        # HTTP → auto-redirects to HTTPS + ACME challenge
       - "443:443"                      # HTTPS (and WSS) — the only public entry point
     environment:
       SELFSYNC_DOMAIN: ${SELFSYNC_DOMAIN:?set SELFSYNC_DOMAIN in .env}
@@ -54,7 +70,8 @@ services:
       - caddy-data:/data               # persists issued certificates across restarts
       - caddy-config:/config
     depends_on:
-      - selfsync
+      selfsync:
+        condition: service_healthy     # don't start Caddy until the server is actually up
 
 volumes:
   selfsync-data:
