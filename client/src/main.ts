@@ -674,6 +674,23 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (err) throw new Error(err);
     return this.withAuth((t) => HttpTransport.redeemShareLink(this.settings.serverUrl, t, token));
   }
+
+  // Single entry point for "I have a share link". If this device is already signed in to the link's
+  // server, redeem now and tell the user to Switch to it (they keep their current vault). Otherwise the
+  // link IS the onboarding: open the setup wizard in redeem mode (server prefilled from the link) so it
+  // walks the user through sign-in and then redeems + adopts the shared vault automatically.
+  async startRedeem(link: string): Promise<void> {
+    let server: string;
+    try { server = parseShareLink(link).server; } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); return; }
+    if (redeemTargetError(server, this.settings.serverUrl)) {
+      new SetupWizardModal(this.app, this, { shareLink: link }).open();
+      return;
+    }
+    try {
+      const ref = await this.redeemShareLink(link);
+      new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Open Settings → Switch vault to sync it.`, 9000);
+    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); }
+  }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
   async hasLocalData(): Promise<boolean> {

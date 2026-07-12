@@ -60,6 +60,7 @@ export function fakePlugin(over: any = {}) {
     listShareLinks: vi.fn(async () => []),
     revokeShareLink: vi.fn(async () => {}),
     redeemShareLink: vi.fn(async () => ({ owner: "alice", vault: "notes", perm: "readWrite" })),
+    startRedeem: vi.fn(async () => {}),
     ...over,
   };
   p.settings = settings;

@@ -183,12 +183,11 @@ export class RedeemShareLinkModal extends Modal {
     if (this.busy) return;
     if (!this.link) { new Notice("SelfSync: paste a share link first"); return; }
     this.busy = true;
-    try {
-      const ref = await this.plugin.redeemShareLink(this.link);
-      new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Use "Switch" to sync it.`, 9000);
-      this.close();
-    } catch (e: any) {
-      new Notice(`SelfSync: ${e?.message ?? e}`);
-    } finally { this.busy = false; }
+    // startRedeem decides: redeem now if already signed in to the link's server, else open the guided
+    // setup-and-redeem wizard. Either way the user is walked through what's needed.
+    const link = this.link;
+    this.close();
+    try { await this.plugin.startRedeem(link); }
+    finally { this.busy = false; }
   }
 }

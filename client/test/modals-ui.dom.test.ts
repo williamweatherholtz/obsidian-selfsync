@@ -93,14 +93,14 @@ describe("NoteConflictModal (adjudication)", () => {
 });
 
 describe("capability share-links (D0023)", () => {
-  it("RedeemShareLinkModal: pasting a link + Redeem calls redeemShareLink", async () => {
+  it("RedeemShareLinkModal: pasting a link + Redeem routes to startRedeem (guided-or-direct)", async () => {
     const plugin = fakePlugin();
     const m = new RedeemShareLinkModal(plugin.app, plugin as any);
     m.onOpen();
     typeInto(textByName(m.contentEl, "Share link"), "selfsync-share://redeem?server=https://s&token=tok");
     buttonByText(m.contentEl, "Redeem").click();
     await flush();
-    expect(plugin.redeemShareLink).toHaveBeenCalledWith("selfsync-share://redeem?server=https://s&token=tok");
+    expect(plugin.startRedeem).toHaveBeenCalledWith("selfsync-share://redeem?server=https://s&token=tok");
   });
 
   it("RedeemShareLinkModal: an empty link does NOT redeem", async () => {
@@ -109,7 +109,7 @@ describe("capability share-links (D0023)", () => {
     m.onOpen();
     buttonByText(m.contentEl, "Redeem").click();
     await flush();
-    expect(plugin.redeemShareLink).not.toHaveBeenCalled();
+    expect(plugin.startRedeem).not.toHaveBeenCalled();
   });
 
   it("ShareManageModal: 'Create link' generates a share-link for the vault", async () => {

@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
-import { isShareLink } from "./sharelink";
+import { isShareLink, parseShareLink } from "./sharelink";
 import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
@@ -13,12 +13,19 @@ export class SetupWizardModal extends Modal {
   private token = "";
   private serverMsg = ""; // Test-connection result, persisted across re-renders
   private s: WizardState;
+  // When set (opened from a share link), the wizard is in REDEEM mode: the server is fixed by the link
+  // and the goal is to sign in + redeem it, not pick/create a vault. See finishRedeem().
+  private pendingShareLink = "";
 
-  constructor(app: App, private plugin: NewLiveSyncPlugin) {
+  constructor(app: App, private plugin: NewLiveSyncPlugin, opts: { shareLink?: string } = {}) {
     super(app);
     const st = plugin.settings;
+    this.pendingShareLink = opts.shareLink ?? "";
+    // A share link fixes the server (that's the whole point — you don't need to be set up first).
+    let linkServer = "";
+    if (this.pendingShareLink) { try { linkServer = parseShareLink(this.pendingShareLink).server; } catch { /* handled on submit */ } }
     this.s = {
-      server: st.serverUrl ?? "", serverOk: false, mode: "login",
+      server: linkServer || (st.serverUrl ?? ""), serverOk: false, mode: "login",
       username: st.username ?? "", password: "", loggedIn: false,
       vaults: [], chosenVault: st.vaultId ?? "", newVault: "",
     };
@@ -33,7 +40,8 @@ export class SetupWizardModal extends Modal {
   // top-to-bottom and a re-render never strands focus (which read as tab order being "all over").
   private render() {
     const c = this.contentEl; c.empty();
-    this.titleEl.setText("Set up SelfSync");
+    const redeeming = Boolean(this.pendingShareLink);
+    this.titleEl.setText(redeeming ? "Get access to a shared vault" : "Set up SelfSync");
     let serverInput: HTMLInputElement | undefined;
     let usernameInput: HTMLInputElement | undefined;
     let passwordInput: HTMLInputElement | undefined;
@@ -41,8 +49,13 @@ export class SetupWizardModal extends Modal {
     const onEnter = (el: HTMLInputElement | undefined, fn: () => void) =>
       el?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); fn(); } });
 
-    new Setting(c).setName("Have a setup link?").setDesc("Prefill the server and account from a link created on another device.")
-      .addButton((b) => b.setButtonText("Paste setup link").onClick(() => this.promptSetupLink()));
+    if (redeeming) {
+      c.createEl("p", { text: `Someone shared a vault with you on ${this.s.server}. Sign in to your account on that server to get access — you don't need to be set up first.` })
+        .setAttribute("style", "font-size:13px;margin-bottom:10px;");
+    } else {
+      new Setting(c).setName("Have a setup link?").setDesc("Prefill the server and account from a link created on another device.")
+        .addButton((b) => b.setButtonText("Paste setup link").onClick(() => this.promptSetupLink()));
+    }
 
     // ── Server ──
     new Setting(c).setName("Server").setHeading();
@@ -69,30 +82,35 @@ export class SetupWizardModal extends Modal {
           .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
       new Setting(c).setName("Username").addText((t) => { usernameInput = t.inputEl; t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }); });
       new Setting(c).setName("Password").addText((t) => { passwordInput = t.inputEl; t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
-      new Setting(c).addButton((b) => b.setButtonText(this.s.mode === "login" ? "Log in" : "Create & log in").setCta()
+      new Setting(c).addButton((b) => b.setButtonText(
+        redeeming ? (this.s.mode === "login" ? "Log in & get access" : "Create account & get access")
+                  : (this.s.mode === "login" ? "Log in" : "Create & log in")).setCta()
         .onClick(() => void this.doLogin()));
       onEnter(usernameInput, () => passwordInput?.focus());
       onEnter(passwordInput, () => { if (canLogIn(this.s)) void this.doLogin(); });
     }
 
-    // ── Vault ── (needs a login to list what exists)
-    new Setting(c).setName("Vault").setHeading();
-    if (!this.s.loggedIn) {
-      new Setting(c).setDesc("Log in to choose or create a vault.");
-    } else {
-      if (this.s.vaults.length) {
-        new Setting(c).setName("Sync this vault to")
-          .addDropdown((dd) => { for (const v of this.s.vaults) dd.addOption(v, v); dd.setValue(this.s.chosenVault).onChange((v) => { this.s.chosenVault = v; this.s.newVault = ""; }); });
+    // ── Vault ── (needs a login to list what exists). SKIPPED in redeem mode: the vault comes from
+    // the share link, added automatically after sign-in (finishRedeem).
+    if (!redeeming) {
+      new Setting(c).setName("Vault").setHeading();
+      if (!this.s.loggedIn) {
+        new Setting(c).setDesc("Log in to choose or create a vault.");
       } else {
-        new Setting(c).setDesc("No remote vaults yet — create one below.");
+        if (this.s.vaults.length) {
+          new Setting(c).setName("Sync this vault to")
+            .addDropdown((dd) => { for (const v of this.s.vaults) dd.addOption(v, v); dd.setValue(this.s.chosenVault).onChange((v) => { this.s.chosenVault = v; this.s.newVault = ""; }); });
+        } else {
+          new Setting(c).setDesc("No remote vaults yet — create one below.");
+        }
+        new Setting(c).setName("Or create a new vault")
+          .addText((t) => { newVaultInput = t.inputEl; t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { const n = sanitizeVaultName(v); this.s.newVault = n; if (newVaultInput && newVaultInput.value !== n) newVaultInput.value = n; }); });
+        onEnter(newVaultInput, () => { if (canFinish(this.s)) void this.finish(); });
       }
-      new Setting(c).setName("Or create a new vault")
-        .addText((t) => { newVaultInput = t.inputEl; t.setPlaceholder("e.g. notes").setValue(this.s.newVault).onChange((v) => { const n = sanitizeVaultName(v); this.s.newVault = n; if (newVaultInput && newVaultInput.value !== n) newVaultInput.value = n; }); });
-      onEnter(newVaultInput, () => { if (canFinish(this.s)) void this.finish(); });
-    }
 
-    // ── Finish ──
-    new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().onClick(() => void this.finish()));
+      // ── Finish ──
+      new Setting(c).addButton((b) => b.setButtonText("Start syncing").setCta().onClick(() => void this.finish()));
+    }
 
     // Focus the next field to fill: the first blank of server → username → password before login,
     // then the create-vault box after. Deferred a tick so it wins over the modal's default focus.
@@ -112,14 +130,16 @@ export class SetupWizardModal extends Modal {
       .addButton((b) => b.setButtonText("Back").onClick(() => this.render()))
       .addButton((b) => b.setButtonText("Use link").setCta().onClick(() => {
         // A vault SHARE link (selfsync-share://redeem?…) is a different thing from a device SETUP link
-        // (selfsync://connect?…). If someone pastes a share link here, REDEEM IT DIRECTLY (no extra
-        // click / no separate modal) — redeemShareLink itself gives clear guidance if this device isn't
-        // signed in to the link's server yet.
+        // (selfsync://connect?…). Pasting one here switches the wizard into REDEEM mode: prefill the
+        // server from the link and guide the user through sign-in, then redeem automatically. No need
+        // to be set up first — the link IS the onboarding.
         if (isShareLink(text)) {
-          this.close();
-          this.plugin.redeemShareLink(text)
-            .then((ref) => new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Use "Switch" to sync it.`, 9000))
-            .catch((e: any) => new Notice(`SelfSync: ${e?.message ?? e}`, 9000));
+          try {
+            this.pendingShareLink = text;
+            this.s.server = parseShareLink(text).server;
+            this.s.serverOk = false; this.serverMsg = "";
+            this.render();
+          } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
           return;
         }
         try {
@@ -156,9 +176,32 @@ export class SetupWizardModal extends Modal {
       this.s.chosenVault = this.s.vaults.includes(this.s.chosenVault) ? this.s.chosenVault : (this.s.vaults[0] ?? this.s.chosenVault);
       this.s.loggedIn = true;
       this.s.serverOk = true; this.serverMsg = "Reachable ✓"; // a successful login proves reachability
+      // Redeem mode: signing in was the only gate — now redeem the shared vault and finish. No vault step.
+      if (this.pendingShareLink) { await this.finishRedeem(); return; }
       this.render();
     } catch (e: any) {
       new Notice(`SelfSync: ${this.friendlyAuthError(e)}`);
+    }
+  }
+
+  // Redeem finish: persist the just-established session, redeem the shared vault, adopt it as this
+  // device's sync target, and reconnect. This is the guided path a share link takes on a device that
+  // wasn't set up — server came from the link, credentials from the login above.
+  private async finishRedeem() {
+    const st = this.plugin.settings;
+    st.serverUrl = this.s.server; st.username = this.s.username; st.authToken = this.token;
+    st.password = st.storePassword ? this.s.password : ""; // token-only at rest by default
+    await this.plugin.saveSettings(); // redeemShareLink authenticates via these persisted creds
+    try {
+      const ref = await this.plugin.redeemShareLink(this.pendingShareLink);
+      st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
+      await this.plugin.saveSettings();
+      new Notice(`SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
+      this.close();
+      void this.plugin.reconnect();
+    } catch (e: any) {
+      new Notice(`SelfSync: ${e?.message ?? e}`, 9000);
+      this.render(); // stay signed in so the user can see the error / retry
     }
   }
 
