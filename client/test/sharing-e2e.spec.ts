@@ -105,5 +105,12 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
 
     // 6) single-use: the same link can't be redeemed again.
     await expect(NodeTransport.redeemShareLink(base, freshTok, linkToken)).rejects.toThrow();
+
+    // 7) the GRANTEE can leave/decline the share (remove their OWN access): before, the owner-qualified
+    //    route is reachable (200); after leaving, it's forbidden (403) and it's gone from "shared with me".
+    expect(await NodeTransport.rawSharedStatus(base, freshTok, "owner1", "mine")).toBe(200);
+    await NodeTransport.leaveShare(base, freshTok, "owner1", "mine");
+    expect(await NodeTransport.rawSharedStatus(base, freshTok, "owner1", "mine")).toBe(403);
+    expect((await NodeTransport.listShared(base, freshTok)).some((s) => s.owner === "owner1")).toBe(false);
   }, 60000);
 });

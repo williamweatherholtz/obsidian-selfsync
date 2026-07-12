@@ -693,6 +693,12 @@ export default class NewLiveSyncPlugin extends Plugin {
       new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Open Settings → Switch vault to sync it.`, 9000);
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); }
   }
+  // Grantee leaves/declines a shared vault — drops THIS account's own access. If we're currently
+  // syncing it, stop (the grant is gone; further sync would 403) and leave local files in place.
+  async leaveSharedVault(owner: string, vault: string): Promise<void> {
+    await this.withAuth((t) => HttpTransport.leaveShare(this.settings.serverUrl, t, owner, vault));
+    if (this.settings.vaultOwner === owner && this.settings.vaultId === vault) await this.disconnect();
+  }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
   async hasLocalData(): Promise<boolean> {

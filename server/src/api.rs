@@ -65,6 +65,21 @@ pub async fn shared_with_me(
     Ok(Json(grants.into_iter().map(|g| SharedVault { owner: g.owner, vault: g.vault, perm: g.perm }).collect()))
 }
 
+#[derive(serde::Deserialize)]
+pub struct LeaveShareReq { owner: String, vault: String }
+// Grantee-initiated "leave/decline a share": removes the CALLER's OWN grant on someone else's vault.
+// The grantee is forced to the authed caller, so this can only drop your own access — never anyone
+// else's (the owner's revoke stays separate). Idempotent: leaving a share you don't have is a no-op OK.
+pub async fn leave_share(
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<LeaveShareReq>,
+) -> Result<StatusCode, AppError> {
+    crate::error::lock(&st.shares)?
+        .revoke(&req.owner, &req.vault, &user) // grantee == caller — you can only remove your OWN access
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    audit(action::SHARE_REVOKE, &user, &format!("{}/{} -> {} (left)", req.owner, req.vault, user), outcome::SUCCESS, &ip);
+    Ok(StatusCode::OK)
+}
+
 // 503 if the vault's index is corrupt: sync ops must not read a degraded/empty
 // manifest (our hash-based reconcile could interpret "no files" as deletions).
 // Only /status and /reindex work on a corrupt vault. Caller holds the lock.

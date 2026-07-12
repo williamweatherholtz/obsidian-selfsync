@@ -66,7 +66,9 @@ export class SwitchVaultModal extends Modal {
         new Setting(c)
           .setName(`${ref.vault}`)
           .setDesc(`owned by ${ref.owner} · ${ref.perm === "read" ? "read-only" : "read-write"}`)
-          .addButton((b) => b.setButtonText("Use").onClick(() => void this.selectShared(ref)));
+          .addButton((b) => b.setButtonText("Use").onClick(() => void this.selectShared(ref)))
+          // Decline/leave: drop your OWN access to this shared vault (local files stay).
+          .addButton((b) => b.setButtonText("Leave").setWarning().onClick(() => void this.leaveShared(ref)));
       }
     }
     // Redeeming a share link ADDS someone's vault to the "Shared with you" list above — so it lives
@@ -96,6 +98,16 @@ export class SwitchVaultModal extends Modal {
 
   // Switch to a vault shared BY someone else. Read-only shares can only be downloaded
   // (we can't push); read-write shares use the same resolution prompt as an own vault.
+  private async leaveShared(ref: SharedVaultRef) {
+    if (!confirm(`Leave the shared vault "${ref.owner}/${ref.vault}"? You'll lose access until it's re-shared. Your local files are kept.`)) return;
+    try {
+      await this.plugin.leaveSharedVault(ref.owner, ref.vault);
+      new Notice(`SelfSync: left ${ref.owner}/${ref.vault}`);
+      this.close();
+      this.plugin.settingsRefresh?.(); // refresh the settings tab (vault may have been cleared)
+    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
+  }
+
   private async selectShared(ref: SharedVaultRef) {
     // SF3: fail CLOSED on the permission — writable ONLY if the server explicitly says "readWrite".
     // A missing/unknown value (server bug, version skew, MITM) must be treated as read-only, never

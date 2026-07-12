@@ -177,6 +177,14 @@ export class HttpTransport implements SyncApi {
     if (r.status !== 200) throw new Error(`shared: HTTP ${r.status}`);
     return r.json as SharedVaultRef[];
   }
+  // Grantee leaves/declines a share — removes THIS account's own access to someone else's vault.
+  static async leaveShare(baseUrl: string, token: string, owner: string, vault: string): Promise<void> {
+    const r = await httpReq({
+      url: `${baseUrl}/api/shared`, method: "DELETE", contentType: "application/json",
+      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ owner, vault }), throw: false,
+    });
+    if (r.status !== 200) throw new Error(errText(r, `leave share: HTTP ${r.status}`));
+  }
 
   // Self-service password change (R14 sec#2): verifies `current`, sets `newPassword`, REVOKES all
   // other sessions server-side, and returns a FRESH token for this device (the old token is now dead).

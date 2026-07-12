@@ -111,6 +111,18 @@ export class NodeTransport implements SyncApi {
     if (!r.ok) throw new Error(`listShared ${r.status}`);
     return (await r.json()) as { owner: string; vault: string; perm: string }[];
   }
+  // Grantee leaves/declines a share (removes their OWN access).
+  static async leaveShare(base: string, token: string, owner: string, vault: string): Promise<void> {
+    const r = await fetch(`${base}/api/shared`, {
+      method: "DELETE", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ owner, vault }),
+    });
+    if (!r.ok) throw new Error(`leaveShare ${r.status}`);
+  }
+  // Status of a GET on an owner-qualified sync route (for asserting access was granted/revoked).
+  static async rawSharedStatus(base: string, token: string, owner: string, vault: string): Promise<number> {
+    const r = await fetch(`${base}/api/u/${encodeURIComponent(owner)}/${encodeURIComponent(vault)}/changes?since=0`, { headers: { authorization: `Bearer ${token}` } });
+    return r.status;
+  }
   private h() { return { authorization: `Bearer ${this.token}` }; }
   private v(suffix: string) {
     const scope = this.owner
