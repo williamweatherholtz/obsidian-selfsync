@@ -100,6 +100,17 @@ package ProjectUseCases {
         :>> extensions = "Point a populated vault at an EMPTY/FRESH server -> every local file is restored, none deleted. | Point at a RESTORED/reindexed server missing many files (no tombstones) -> all missing files restored, none deleted (partial-shrink is not a mass delete). | Two reconciles in a row against such a server -> still no deletion on the second pass (durable, not a one-shot guard). | A genuine deletion on device A (tombstone) DOES propagate to device B. | A read-only shared target that lacks a file we hold -> kept locally, not pushed, not deleted.";
     }
 
+    // Grantee-side sharing (the flow that shipped untested at the use-case level, 1.0.20–1.0.25):
+    // receiving access via a single-use LINK — including onboarding a not-yet-set-up device — and
+    // later declining/leaving the share. Complements ucShareVault (owner-side). Added 2026-07-12.
+    use case ucRedeemSharedVault : UseCase {
+        :>> id = "c0f1a5cc-b013-4a10-9b20-a1b2c3d400b3"; :>> title = "Receive (and later leave) a shared vault via a link";
+        :>> createdAt = "2026-07-12"; :>> createdBy = "wweatherholtz";
+        :>> description = "A person sent a share link gains access to the owner's vault. The link carries only server + an opaque single-use token — the recipient need NOT already be set up (the link is the onboarding). They can later decline/leave the share, dropping their own access.";
+        :>> mainSuccess = "The recipient opens the share link; if this device isn't signed in to that server the guided setup opens with the server PREFILLED from the link; they sign in (or create an account); the link is redeemed (a grant binds to their account); the shared vault appears under 'Shared with you' and syncs via owner-qualified routes.";
+        :>> extensions = "Already signed in to that server -> redeem immediately, keep the current vault, prompt to Switch. | NOT set up (or a different server) -> the guided wizard prefills the link's server and finishes by redeeming + adopting the vault. | The account was admin-created (must-change) -> the wizard forces a new password first (no silent 403). | Single-use -> a second redeem of the same link is rejected. | LEAVE/DECLINE -> the grantee drops their OWN access (Switch -> Shared with you -> Leave): local files are kept, only their grant is removed (never the owner's or anyone else's), and if it was the vault being synced it disconnects. | A read-only grant pulls but never pushes.";
+    }
+
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
     #DependsOn dependency from ucFirstRunSetup to selfHoster;
     #DependsOn dependency from ucFirstRunSetup to n1GuidedSetup;
@@ -126,4 +137,6 @@ package ProjectUseCases {
     #DependsOn dependency from ucSwitchVault to nConfigSync;
     #DependsOn dependency from ucNeverLoseLocalData to selfHoster;
     #DependsOn dependency from ucNeverLoseLocalData to n3NeverClobber;
+    #DependsOn dependency from ucRedeemSharedVault to collaborator;
+    #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
 }

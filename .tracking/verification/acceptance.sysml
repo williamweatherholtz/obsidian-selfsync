@@ -149,6 +149,12 @@ package ProjectAcceptance {
         :>> id = "c0f1a5cc-3005-4a10-9b20-a1b2c3d40025"; :>> method = VerificationMethod::inspect;
         :>> procedureText = "Inspected: neither the plugin nor the server contains a licence/payment/sponsorship gate on any sync, conflict, or merge capability — all reconciliation is available to every user.";
     }
+    // ── Grantee-side sharing: redeem a share LINK (incl. must-change onboarding) + leave/decline ──
+    verification acRedeemAndLeaveShare : Test {
+        :>> id = "c0f1a5cc-3402-4a10-9b20-a1b2c3d40342"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/sharing-e2e.spec.ts";
+        :>> procedureText = "e2e (real server) 'must-change account -> change password -> redeem a share LINK -> sync the shared vault': an admin-created (must-change) recipient logs in (must_change signalled; /api/vaults 403), changes password (200), the owner mints a readWrite share LINK, the recipient REDEEMS it (grant bound; appears in listShared), syncs the owner-qualified vault and reads the note; a SECOND redeem of the same link is rejected (single-use); then the grantee LEAVES (DELETE /api/shared) -> the owner-qualified route is 200 before and 403 after, and the vault is gone from listShared. Green (2 tests) against the debug server binary. Client parse/decision units (sharelink.test redeemTargetError + percent-encoded link) + the guided-redeem wizard must-change flow (modals-ui.dom) are also green.";
+    }
 
     part acConfigSelectiveR1 : TestResult { :>> id = "c0f1a5cc-4001-4a10-9b20-a1b2c3d40031"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acConfigAdditiveSafeR1 : TestResult { :>> id = "c0f1a5cc-4002-4a10-9b20-a1b2c3d40032"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "af8b722"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
@@ -156,6 +162,7 @@ package ProjectAcceptance {
     part acSyncRobustR1 : TestResult { :>> id = "c0f1a5cc-4004-4a10-9b20-a1b2c3d40034"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acFreeMergeR1 : TestResult { :>> id = "c0f1a5cc-4005-4a10-9b20-a1b2c3d40035"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "db1b008"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acTombstoneAuthoritativeDeleteR1 : TestResult { :>> id = "c0f1a5cc-4401-4a10-9b20-a1b2c3d40341"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "a9f2ee7"; :>> judgedAt = "2026-07-06"; :>> judgedBy = "ai"; }
+    part acRedeemAndLeaveShareR1 : TestResult { :>> id = "c0f1a5cc-4402-4a10-9b20-a1b2c3d40342"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d46a9ac"; :>> judgedAt = "2026-07-12"; :>> judgedBy = "ai"; }
     part acConfigLiveDetectR1 : TestResult { :>> id = "c0f1a5cc-4006-4a10-9b20-a1b2c3d40036"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "d6c0325"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acServerApiR1 : TestResult { :>> id = "c0f1a5cc-4211-4a10-9b20-a1b2c3d40311"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
     part acInstantPushR1 : TestResult { :>> id = "c0f1a5cc-4212-4a10-9b20-a1b2c3d40312"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "5364968"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "ai"; }
@@ -236,4 +243,7 @@ package ProjectAcceptance {
     #Verify dependency from acConfigAdditiveSafe to ucSyncSetupAcrossDevices;
     #Verify dependency from acTombstoneAuthoritativeDelete to ucNeverLoseLocalData;
     #Verify dependency from acTombstoneAuthoritativeDelete to ucSwitchVault;
+    // grantee-side sharing: the redeem-a-link + leave e2e verifies both the SR and the new use case
+    #Verify dependency from acRedeemAndLeaveShare to srVaultSharing;
+    #Verify dependency from acRedeemAndLeaveShare to ucRedeemSharedVault;
 }
