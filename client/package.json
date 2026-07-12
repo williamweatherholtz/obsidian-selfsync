@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "vitest run",
-    "test:admin-e2e": "playwright test"
+    "test:admin-e2e": "playwright test",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
