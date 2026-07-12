@@ -23,10 +23,15 @@ fn dummy_hash() -> &'static str {
 // the same directory while being distinct accounts, letting one read/write the other's vault.
 // Forcing a single canonical case (lowercase) makes store-key == directory-segment, so no two
 // distinct names can ever collide on disk.
+// The human-readable rule, surfaced verbatim in the "invalid" error so the UI can set expectations.
+pub const NAME_RULE: &str = "use lowercase letters, digits, and . _ - + @ (max 64, no spaces or slashes)";
 pub fn safe_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_'))
+        // '+' and '@' admitted so an email address works as a username (plus-addressing included).
+        // Both are safe: valid in a URL path segment and on every filesystem, and neither enables
+        // traversal (no '/', and '.'/'..' whole-names stay blocked). Still lowercase-canonical (§ above).
+        && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'+' | b'@'))
         && s != "."
         && s != ".."
 }

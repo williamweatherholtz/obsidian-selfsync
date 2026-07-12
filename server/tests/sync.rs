@@ -379,8 +379,11 @@ fn vault_open_locks_on_corrupt_index_not_blank_reset() {
 fn userstore_register_verify_persist() {
     use new_livesync_server::users::{UserStore, safe_name};
     assert!(safe_name("will"));
+    assert!(safe_name("will+tag@example.com")); // email-style incl. plus-addressing
     assert!(!safe_name("../etc"));
     assert!(!safe_name("bad name"));
+    assert!(!safe_name("Alice"));               // uppercase stays rejected (lowercase-canonical)
+    assert!(!safe_name("a/b"));                  // no path separators (traversal safety)
     assert!(!safe_name(""));
     assert!(!safe_name(".."));
     let dir = tempfile::tempdir().unwrap();

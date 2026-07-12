@@ -331,7 +331,8 @@ async function renderUsers() {
       <input id="nu" placeholder="new username" style="flex:1;min-width:140px" />
       <input id="np" type="password" placeholder="password (min 8 chars)" />
       <button id="addu">Create account</button>
-    </div>`;
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:4px">Username: lowercase letters, digits, and . _ - + @ (an email address works). Max 64, no spaces or slashes.</div>`;
   $("addu").onclick = async () => {
     try { await api("POST", "/api/admin/users", { username: $("nu").value.trim(), password: $("np").value }); await renderUsers(); setMsg("Account created.", "ok"); }
     catch (e) { setMsg("Create failed: " + e.message, "err"); }

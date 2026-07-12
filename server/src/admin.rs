@@ -460,7 +460,7 @@ pub async fn users_create(
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user, &ip)?;
     if !safe_name(&req.username) {
-        return Err(AppError::BadRequest("invalid username".into()));
+        return Err(AppError::BadRequest(format!("invalid username — {}", crate::users::NAME_RULE)));
     }
     // SEC-R2#4: same argon2 DoS protection as the public register path (offloaded, permit-bounded)
     // plus the shared password policy (IA.3.5.7).

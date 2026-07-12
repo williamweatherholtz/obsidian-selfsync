@@ -126,7 +126,7 @@ pub async fn register(
     Json(req): Json<RegisterRequest>,
 ) -> Result<StatusCode, AppError> {
     if !safe_name(&req.username) {
-        return Err(AppError::BadRequest("invalid username".into()));
+        return Err(AppError::BadRequest(format!("invalid username — {}", crate::users::NAME_RULE)));
     }
     validate_password_policy(&req.password)?; // IA.3.5.7 complexity/length
     // Registration/invite gate FIRST — before any existence check — so a closed server returns a
