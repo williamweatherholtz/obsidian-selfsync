@@ -42,6 +42,20 @@ export function sameIgnoringEol(a: Uint8Array, b: Uint8Array): boolean {
   return norm(a) === norm(b);
 }
 
+// A CONNECTION-level failure — DNS can't resolve the host, connection refused/reset, network
+// unreachable — means the SERVER is unreachable, so it hits EVERY file identically. Isolating it
+// per-file (skip + log + continue) turns one outage into a flood of ~one-error-per-file and churns
+// the whole vault pointlessly (field: a mobile resume that started syncing before DNS was ready
+// logged 200+ "UnknownHostException" lines). Detect it so the reconcile loops ABORT the pass instead
+// — the engine then goes offline + backs off ONCE. Matches only host-resolution + connection-
+// establishment failures, NEVER a per-file content/read error (a corrupt chunk, a locked file, a
+// full disk), which must stay isolated. Kept deliberately narrow (no bare "timeout"/"socket": a
+// single huge-file read timeout is a per-file problem, not a whole-connection outage).
+export function isConnectionError(e: unknown): boolean {
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return /unknownhostexception|unable to resolve host|no address associated with hostname|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|enetunreach|network is unreachable|failed to fetch|fetch failed|err_name_not_resolved|err_internet_disconnected|err_connection_(refused|reset)|err_address_unreachable/.test(m);
+}
+
 // Files above this size are skipped (not synced) — reading them whole into RAM would
 // OOM a mobile device (Obsidian's adapter/requestUrl don't stream). Overridable per deps.
 export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
@@ -302,6 +316,7 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
       const rmeta = await d.api.fileMeta(p);
       await reconcileOne(d, p, rmeta ?? undefined, false, cur?.length ?? 0, () => false, local.has(p));
     } catch (e) {
+      if (isConnectionError(e)) throw e; // server unreachable → abort the config pass (for-loop) → engine offline
       // Isolate EVERY per-file error (R14 sync#2), matching reconcileAll/reconcileDelta — not only
       // CommitConflictError. A momentarily-unreadable config file (AV lock, cloud-drive placeholder)
       // throws the "present but couldn't be read" guard, and re-throwing it here escaped to
@@ -367,12 +382,15 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   let pending = pendingPaths.size; d.onProgress?.(pending);
   // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
   // errors stay isolated (one bad file never aborts the pass).
+  let connAbort: unknown = null; // a server-unreachable error aborts the whole pass (isConnectionError)
   await mapPool(paths, FILE_CONCURRENCY, async (p) => {
+    if (connAbort) throw connAbort; // server unreachable — stop; don't per-file-log the remaining files
     try {
       await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p));
       d.retryBudget?.delete(p); // reconciled cleanly → reset any failure budget for this path (R18)
     }
     catch (e) {
+      if (isConnectionError(e)) { connAbort = e; throw e; } // whole-connection failure → abort → engine offline+backoff
       d.onFileError?.(p, e);
       // Hold the cursor below a failed change so it's retried next poll (R14 sync#1). Cover a failed
       // TOMBSTONE (delete-local) path too (R15 sync#2). But once a file has failed MAX_PULL_RETRIES
@@ -421,7 +439,9 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   const changed = [...new Set<string>([...remote.keys(), ...tombstoned])]; // the delta IS the pending set
   let pending = changed.length; d.onProgress?.(pending);
+  let connAbort: unknown = null; // a server-unreachable error aborts the whole pass (isConnectionError)
   await mapPool(changed, FILE_CONCURRENCY, async (p) => {
+    if (connAbort) throw connAbort;
     try {
       // crit-round (data-integrity + sync critics, same root cause): the delta path MUST supply
       // `locallyPresent`, or the C1 "present-but-unreadable ≠ deleted" guard in reconcileOne is inert
@@ -435,6 +455,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       d.retryBudget?.delete(p); // applied cleanly → reset any failure budget (R18)
     }
     catch (e) {
+      if (isConnectionError(e)) { connAbort = e; throw e; } // whole-connection failure → abort → engine offline+backoff
       d.onFileError?.(p, e);
       const v = versionOf(p);
       if (v !== undefined && holdForRetry(d, p, v)) failed.push(v); // stop pinning a permanently-failing file (R18)

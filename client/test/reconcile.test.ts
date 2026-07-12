@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, sameIgnoringEol, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
+import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -190,6 +190,41 @@ describe("reconcileAll", () => {
     expect(copies.length).toBe(1);
     expect([...m.get(copies[0])!]).toEqual([...local]);  // local PRESERVED (no silent clobber)
     expect(conf.length).toBe(1);
+  });
+
+  it("a CONNECTION failure (DNS) ABORTS the pass — one error, not one-per-file", async () => {
+    const { api } = fakeServer();
+    for (let i = 0; i < 20; i++) await serverPut(api, `n${i}.md`, `v${i}`); // 20 remote files to pull
+    const io = fakeIo({});
+    // every pull fails with the host-resolution error mobile reports when it resumes before DNS is ready
+    const down: SyncApi = { ...api, async getChunk() { throw new Error('Request Failed. UnknownHostException Unable to resolve host "notes2.example": No address associated with hostname'); } };
+    const errs: string[] = [];
+    await expect(reconcileAll(deps(down, io, { onFileError: (p) => errs.push(p) }))).rejects.toThrow(/UnknownHost/i);
+    expect(errs).toEqual([]); // NO per-file noise — the whole pass aborted on the connection error
+  });
+
+  it("a single-file error is still ISOLATED (a connection abort must not swallow real per-file failures)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "ok.md", "fine");
+    await serverPut(api, "bad.md", "boom");
+    const io = fakeIo({});
+    const origWrite = io.write.bind(io);
+    (io as any).write = async (p: string, b: Uint8Array) => { if (p === "bad.md") throw new Error("disk full"); return origWrite(p, b); };
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { onFileError: (p) => errs.push(p) })); // must NOT throw
+    expect(errs).toEqual(["bad.md"]);                 // the one bad file is isolated…
+    expect(dec((io as any).m.get("ok.md")!)).toBe("fine"); // …and the others sync
+  });
+
+  it("isConnectionError classifies host/connection failures but NOT per-file content/read errors", () => {
+    expect(isConnectionError(new Error('UnknownHostException Unable to resolve host "x": No address associated with hostname'))).toBe(true);
+    expect(isConnectionError(new Error("getaddrinfo ENOTFOUND notes2.example"))).toBe(true);
+    expect(isConnectionError(new Error("connect ECONNREFUSED 10.0.0.1:8080"))).toBe(true);
+    expect(isConnectionError(new Error("net::ERR_INTERNET_DISCONNECTED"))).toBe(true);
+    expect(isConnectionError(new Error("disk full"))).toBe(false);
+    expect(isConnectionError(new Error("ENOENT"))).toBe(false); // NOT ENOTFOUND
+    expect(isConnectionError(new Error("chunk a1b2c3 failed content verification"))).toBe(false);
+    expect(isConnectionError(new Error("unsafe path refused"))).toBe(false);
   });
 
   it("sameIgnoringEol: line-ending + trailing-newline differences are cosmetic; real edits are not", () => {
