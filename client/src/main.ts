@@ -377,6 +377,13 @@ export default class NewLiveSyncPlugin extends Plugin {
   onunload() {
     this.unloading = true;
     this.engine.enqueue({ kind: "unload" }); // → teardown (stops timers, closes ws), projects off
+    // view.addAction() header buttons are NOT auto-cleaned by Obsidian on unload (unlike the ribbon /
+    // status-bar items, which are). Without this, every plugin RELOAD/UPDATE orphans this instance's
+    // in-editor icon and the next instance adds another — stacking a row of stale, frozen-phase sync
+    // icons in the note header (field: 6 icons after several updates). Removing them here makes add
+    // idempotent across reloads: unload leaves nothing behind, so the next load shows exactly one.
+    for (const el of this.editorActionEls) el.remove();
+    this.editorActionEls.clear();
     this.log("plugin unloaded");
   }
 
