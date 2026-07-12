@@ -5,7 +5,7 @@ import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
-import { ChangePasswordModal, ShareManageModal, RedeemShareLinkModal } from "./accountui";
+import { ChangePasswordModal, ShareManageModal } from "./accountui";
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -136,7 +136,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     }
 
     // Facts (label left, value right) with their management action integrated as a button.
-    this.factRow(g, "Server", s.serverUrl, (st) => st.addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup())));
+    this.factRow(g, "Server", s.serverUrl); // Reconfigure lives under Advanced (rarely needed)
     this.factRow(g, "Account", s.username, (st) => st
       .addButton((b) => b.setButtonText("Change password").onClick(() => new ChangePasswordModal(this.app, this.plugin).open()))
       .addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); })));
@@ -144,9 +144,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       (st) => {
         // Sharing only applies to a vault you OWN (not one shared TO you).
         if (!s.vaultOwner) st.addButton((b) => b.setButtonText("Share").onClick(() => new ShareManageModal(this.app, this.plugin).open()));
+        // "Switch" both changes vaults AND is where you redeem a share link to gain access to another
+        // vault (redeeming isn't an action ON the current vault, so it doesn't belong beside it here).
         st.addButton((b) => b.setButtonText("Switch").onClick(() => new SwitchVaultModal(this.app, this.plugin).open()));
-        // Receive a share: redeem a selfsync-share:// link someone sent you (D0023).
-        st.addButton((b) => b.setButtonText("Redeem link").onClick(() => new RedeemShareLinkModal(this.app, this.plugin).open()));
       });
     this.factRow(g, "Last synced", this.lastSyncedAgo(s));
 
@@ -167,7 +167,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         }
       } else {
         st.addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink()));
-        st.addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); }));
+        // "Disconnect" (stop syncing, keep the login) moved to Advanced — "Sign out" is the primary
+        // stop action; a bare disconnect is the rarer case.
       }
     });
   }
@@ -260,6 +261,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s))));
+    g.addSetting((st) => st.setName("Connection").setDesc("Reconfigure re-opens setup (server/account/vault). Disconnect stops syncing on this device but keeps your login — 'Sign out' above does both.")
+      .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup()))
+      .addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); })));
   }
 
   private copyDebugInfo(s: NewLiveSyncSettings): void {

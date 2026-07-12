@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
+import { RedeemShareLinkModal } from "./accountui";
 import type NewLiveSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
 import type { SharedVaultRef } from "./transport";
@@ -68,6 +69,10 @@ export class SwitchVaultModal extends Modal {
           .addButton((b) => b.setButtonText("Use").onClick(() => void this.selectShared(ref)));
       }
     }
+    // Redeeming a share link ADDS someone's vault to the "Shared with you" list above — so it lives
+    // here (in the choose-a-vault flow), not as an action on the vault you're currently syncing.
+    new Setting(c).setName("Have a share link?").setDesc("Redeem a link someone sent you to add their vault here.")
+      .addButton((b) => b.setButtonText("Redeem a share link").onClick(() => { this.close(); new RedeemShareLinkModal(this.app, this.plugin).open(); }));
   }
 
   private async doSwitch() {
