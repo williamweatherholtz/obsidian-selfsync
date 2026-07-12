@@ -56,12 +56,17 @@ export class NoteConflictModal extends Modal {
       const conflicts = this.plugin.listNoteConflicts();
       let dismissed = 0;
       for (const { copy, original } of conflicts) {
-        const mine = await this.plugin.readTextOrEmpty(copy);
-        const theirs = await this.plugin.readTextOrEmpty(original);
-        if (this.cosmeticEqual(mine, theirs)) {
-          await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs);
-          status.setText(`Clearing cosmetic (line-ending-only) conflicts… ${++dismissed}`);
-        }
+        // Per-entry isolation: a STALE entry (the copy or note was already removed → "File does not
+        // exist") must be skipped, never abort the whole modal. Resolving a vanished copy is treated
+        // as already-done — the derived list drops it on the next render.
+        try {
+          const mine = await this.plugin.readTextOrEmpty(copy);
+          const theirs = await this.plugin.readTextOrEmpty(original);
+          if (this.cosmeticEqual(mine, theirs)) {
+            await this.plugin.resolveNoteConflict(copy, original, "theirs", theirs);
+            status.setText(`Clearing cosmetic (line-ending-only) conflicts… ${++dismissed}`);
+          }
+        } catch { /* stale/missing entry — skip; it's effectively resolved */ }
       }
       await this.render();
     } catch (e: any) {

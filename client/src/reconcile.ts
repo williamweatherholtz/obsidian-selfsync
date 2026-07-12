@@ -135,9 +135,10 @@ export interface ReconcileDeps {
   deleteGuard?: DeleteRateGuard;
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
-  // Progress feedback during a full reconcile: (done, total) files examined this pass. Fired often
-  // (once per file) — the consumer should throttle its UI updates. Used for the "Syncing… N/M" text.
-  onProgress?: (done: number, total: number) => void;
+  // Progress feedback: the number of files still PENDING transfer this pass (drives to 0). Fired at
+  // the start and as each pending file completes — the consumer should throttle. Files that don't need
+  // syncing are never counted, so this is "work left", not "files examined". Used for the "N pending" text.
+  onProgress?: (pending: number) => void;
   // A config file whose reconcile can't be resolved additively — a removal (base present →
   // gone) or a same-file divergence. NEVER auto-deleted (could lose data a device merely
   // couldn't hold) and NEVER auto-pulled-back (would resurrect a genuine removal); recorded
@@ -352,7 +353,18 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
   const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
-  let done = 0; const total = paths.length; d.onProgress?.(0, total); // progress feedback for the status text
+  // Progress = files that actually need TRANSFER, not files examined (a 900-file vault with 3 changes
+  // should show "3 pending", not "897"). Cheaply pre-classify from the maps we already have (remote
+  // hash vs base hash, real tombstones, brand-new local) — no local hashing. A same-size local edit
+  // isn't detectable here and just isn't counted (minor under-count); it drives honestly to 0.
+  const pendingPaths = new Set<string>();
+  for (const p of paths) {
+    const r = remote.get(p); const b = d.base.get(p);
+    if (r) { if ((b?.hash ?? null) !== r.hash) pendingPaths.add(p); }        // remote new/changed → pull/merge
+    else if (tombstoned.has(p) && local.has(p)) pendingPaths.add(p);         // a real tombstone to apply
+    else if (!b && local.has(p)) pendingPaths.add(p);                        // brand-new local → push
+  }
+  let pending = pendingPaths.size; d.onProgress?.(pending);
   // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
   // errors stay isolated (one bad file never aborts the pass).
   await mapPool(paths, FILE_CONCURRENCY, async (p) => {
@@ -369,7 +381,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
       const rv = remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version;
       if (rv !== undefined && holdForRetry(d, p, rv)) failedRemote.push(rv);
     }
-    finally { d.onProgress?.(++done, total); }
+    finally { if (pendingPaths.has(p)) d.onProgress?.(--pending); }
   });
   const minFailedRemote = failedRemote.length ? Math.min(...failedRemote) : Infinity;
   // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
@@ -407,7 +419,9 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
-  await mapPool([...new Set<string>([...remote.keys(), ...tombstoned])], FILE_CONCURRENCY, async (p) => {
+  const changed = [...new Set<string>([...remote.keys(), ...tombstoned])]; // the delta IS the pending set
+  let pending = changed.length; d.onProgress?.(pending);
+  await mapPool(changed, FILE_CONCURRENCY, async (p) => {
     try {
       // crit-round (data-integrity + sync critics, same root cause): the delta path MUST supply
       // `locallyPresent`, or the C1 "present-but-unreadable ≠ deleted" guard in reconcileOne is inert
@@ -425,6 +439,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       const v = versionOf(p);
       if (v !== undefined && holdForRetry(d, p, v)) failed.push(v); // stop pinning a permanently-failing file (R18)
     }
+    finally { d.onProgress?.(--pending); }
   });
   // Assign, not max (rewind convergence) — but hold the cursor below the earliest change that FAILED
   // this pass so it's retried on the next poll, not dropped until the 15-min full scan (R14 sync#1).

@@ -276,11 +276,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   private lastConfigScanAt = 0; // wall-clock ms of the last CONFIG-ONLY scan (see doReconcileAll)
   private lastWsActivity = 0;        // ms of the last WS frame (heartbeat or change) — for half-open detection
   private wsLivenessTimer?: number;
-  // Files-examined progress of the CURRENT reconcile pass, for the "Syncing… N/M" text. null when not
-  // actively reconciling. lastProgressPct throttles UI updates to integer-% changes (the reconcile
-  // fires onProgress once per file — hundreds of times on a big vault).
-  private syncProgress: { done: number; total: number } | null = null;
-  private lastProgressPct = -1;
+  // Files still PENDING transfer this reconcile pass, for the "N pending" text. 0/null when nothing is
+  // outstanding. Only counts files that actually need syncing (not files examined), so it drives to 0.
+  private syncPending = 0;
   private realtimeConnected = false; // is the change-notification WebSocket currently OPEN? Drives the
   // status light's realtime-vs-polling distinction (syncstate.light) so green "Fully synced" never
   // shows over a dead socket. Polling still keeps data current when this is false.
@@ -753,13 +751,12 @@ export default class NewLiveSyncPlugin extends Plugin {
   // The status light is a pure function of the FSM phase (see syncstate.ts). It drives
   // the one platform indicator, any opt-in editor indicators, and (if the settings tab is
   // open) its live status card — all from a single source of truth, never diverging.
-  // "12/174" while a reconcile pass runs, else "" — appended to the "Syncing…" text (settings + tooltip).
+  // "12 pending" while a reconcile pass has files left to transfer, else "" — appended to "Syncing…".
   syncProgressText(): string {
-    const p = this.syncProgress;
-    return p ? `${p.done}/${p.total}` : "";
+    return this.syncPending > 0 ? `${this.syncPending} pending` : "";
   }
   private renderLight(phase: Phase) {
-    const detail = phase === "syncing" && this.syncProgress ? this.syncProgressText() : `v${this.state.version}`;
+    const detail = phase === "syncing" && this.syncPending > 0 ? this.syncProgressText() : `v${this.state.version}`;
     const spec = light(phase, detail, this.realtimeConnected);
     // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). When idle
     // but the realtime socket is down (polling fallback), show the "reconnecting" glyph, not the check.
@@ -875,16 +872,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
-      onProgress: (done, total) => {
-        const pct = total > 0 ? Math.floor((done / total) * 100) : 100;
-        const settled = done >= total;
-        // Throttle to integer-% changes (onProgress fires per file): update the light + the settings
-        // status row only when the percentage moves or the pass settles.
-        if (pct === this.lastProgressPct && settled === (this.syncProgress === null)) return;
-        this.lastProgressPct = settled ? -1 : pct;
-        this.syncProgress = settled ? null : { done, total };
+      onProgress: (pending) => {
+        if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
+        this.syncPending = Math.max(0, pending);
         this.renderLight(this.engine.phase());
-        this.statusListener?.();
+        this.statusListener?.(); // refresh the settings status row if open
       },
       onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.recordNoteConflict(c); },
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),

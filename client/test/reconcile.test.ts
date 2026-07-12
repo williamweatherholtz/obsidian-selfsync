@@ -179,16 +179,24 @@ describe("reconcileAll", () => {
     expect(sameIgnoringEol(enc("a\nb"), enc("a\nb\nc"))).toBe(false);    // an added line
   });
 
-  it("reconcileAll reports onProgress and finishes at done === total (drives the 'Syncing… N/M' text)", async () => {
+  it("reconcileAll reports PENDING work (not files examined) and drives to 0", async () => {
     const { api } = fakeServer();
-    await serverPut(api, "a.md", "A"); await serverPut(api, "b.md", "B");
-    const io = fakeIo({ "c.md": "C" }); // 3 distinct paths across local+remote
-    const seen: Array<[number, number]> = [];
-    await reconcileAll(deps(api, io, { onProgress: (done: number, total: number) => seen.push([done, total]) }));
-    expect(seen.length).toBeGreaterThan(0);
-    const [lastDone, lastTotal] = seen[seen.length - 1];
-    expect(lastTotal).toBe(3);
-    expect(lastDone).toBe(lastTotal); // pass completes at 100%
+    await serverPut(api, "a.md", "A"); await serverPut(api, "b.md", "B"); // 2 remote-new → pull
+    const io = fakeIo({ "c.md": "C" });                                    // 1 local-new → push
+    const seen: number[] = [];
+    await reconcileAll(deps(api, io, { onProgress: (pending: number) => seen.push(pending) }));
+    expect(seen[0]).toBe(3);                    // 3 files actually need transfer
+    expect(seen[seen.length - 1]).toBe(0);      // drives to 0
+  });
+
+  it("reconcileAll counts only files that NEED work — an already-in-sync vault reports 0 pending", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "hello");
+    const io = fakeIo({ "n.md": "hello" });
+    const base = new BaseStore(); base.set("n.md", { hash: await sha256hex(enc("hello")) });
+    const seen: number[] = [];
+    await reconcileAll(deps(api, io, { base, onProgress: (pending: number) => seen.push(pending) }));
+    expect(Math.max(...seen)).toBe(0); // nothing to do → never any pending, total (1 file) is irrelevant
   });
 
   it("no-base divergence that is ONLY line endings -> converge on remote, NO conflict copy (issueFalseEolConflict)", async () => {
