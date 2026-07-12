@@ -158,7 +158,7 @@ export class ShareManageModal extends Modal {
 export class RedeemShareLinkModal extends Modal {
   private link = "";
   private busy = false;
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: NewLiveSyncPlugin, prefill = "") { super(app); this.link = prefill.trim(); }
   onOpen() { this.titleEl.setText("Redeem a share link"); this.render(); }
   onClose() { this.contentEl.empty(); }
 
@@ -166,7 +166,7 @@ export class RedeemShareLinkModal extends Modal {
     const c = this.contentEl; c.empty();
     c.createEl("p", { text: "Paste a selfsync-share:// link someone sent you to gain access to their vault. It works once." })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;");
-    new Setting(c).setName("Share link").addText((t) => t.setPlaceholder("selfsync-share://…").onChange((v) => { this.link = v.trim(); }));
+    new Setting(c).setName("Share link").addText((t) => t.setValue(this.link).setPlaceholder("selfsync-share://…").onChange((v) => { this.link = v.trim(); }));
     new Setting(c)
       .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((b) => b.setButtonText("Redeem").setCta().onClick(() => void this.submit()));

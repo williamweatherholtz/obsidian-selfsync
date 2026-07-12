@@ -546,3 +546,23 @@ async fn commit_over_size_limit_is_rejected() {
     // not JSON, so we assert on the status rather than the message.
     assert_eq!(s, 400, "a file over the server ceiling is rejected before reassembly");
 }
+
+// Usernames are case-insensitive (canonicalized to lowercase). An admin creates "Dana"; it's stored
+// as "dana", logs in as "DANA", and is grantable as "Dana" — all map to the one canonical account.
+#[tokio::test]
+async fn usernames_are_case_insensitive() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    assert_eq!(send(&base, "POST", "/api/admin/users", &admin, json!({"username":"Dana","password":"Temp1234"})).await, 200);
+    // login with a different case succeeds against the same account …
+    let (ls, lv) = post_json(&base, "/api/login", "", json!({"username":"DANA","password":"Temp1234"})).await;
+    assert_eq!(ls, 200, "mixed-case login maps to the canonical account");
+    let dtok = lv["token"].as_str().unwrap().to_string();
+    let (cs, _cv) = post_json(&base, "/api/password", &dtok, json!({"current":"Temp1234","new_password":"Newpass12"})).await;
+    assert_eq!(cs, 200);
+    // … and it appears exactly once, lowercased, in the account list.
+    let (_s, users) = get(&base, "/api/admin/users", &admin).await;
+    let danas = users.as_array().unwrap().iter().filter(|u| u["username"] == json!("dana")).count();
+    assert_eq!(danas, 1, "stored once, canonical lowercase");
+    assert!(!users.as_array().unwrap().iter().any(|u| u["username"] == json!("Dana")), "never stored mixed-case");
+}

@@ -159,8 +159,9 @@ pub struct ShareReq {
 }
 // Grant a share on one of the caller's OWN vaults to another account.
 pub async fn share_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<ShareReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(mut req): Json<ShareReq>,
 ) -> Result<StatusCode, AppError> {
+    req.grantee = req.grantee.trim().to_ascii_lowercase(); // usernames are case-insensitive
     if !safe_name(&req.vault) || !safe_name(&req.grantee) {
         return Err(AppError::BadRequest("invalid vault or grantee".into()));
     }
@@ -456,9 +457,10 @@ pub struct NewUserReq {
     password: String,
 }
 pub async fn users_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(req): Json<NewUserReq>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(mut req): Json<NewUserReq>,
 ) -> Result<StatusCode, AppError> {
     require_admin(&st, &user, &ip)?;
+    req.username = req.username.trim().to_ascii_lowercase(); // usernames are case-insensitive
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest(format!("invalid username — {}", crate::users::NAME_RULE)));
     }

@@ -59,11 +59,15 @@ pub async fn acquire_auth(st: &AppState) -> Result<tokio::sync::OwnedSemaphorePe
 pub async fn login(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
-    Json(req): Json<LoginRequest>,
+    Json(mut req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
     if req.password.len() > MAX_PASSWORD_LEN {
         return Err(AppError::BadRequest("password too long".into()));
     }
+    // Usernames are case-insensitive: canonicalize to lowercase so "Will" logs into the same account
+    // as "will". Non-breaking — stored keys have always been lowercase (safe_name enforced it), so this
+    // only maps mixed-case INPUT onto the existing canonical key; the token binds to the canonical name.
+    req.username = req.username.trim().to_ascii_lowercase();
     // S5 (R10): login doesn't require safe_name, so strip control chars + cap length before logging —
     // otherwise a username with embedded CR/LF could forge/split log lines (e.g. inject a fake "-> OK").
     let uname: String = req.username.chars().filter(|c| !c.is_control()).take(64).collect();
@@ -123,8 +127,9 @@ pub async fn login(
 pub async fn register(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
-    Json(req): Json<RegisterRequest>,
+    Json(mut req): Json<RegisterRequest>,
 ) -> Result<StatusCode, AppError> {
+    req.username = req.username.trim().to_ascii_lowercase(); // case-insensitive: canonicalize on create
     if !safe_name(&req.username) {
         return Err(AppError::BadRequest(format!("invalid username — {}", crate::users::NAME_RULE)));
     }
