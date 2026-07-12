@@ -2,7 +2,6 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport } from "./transport";
 import { parseSetupLink } from "./connstr";
 import { isShareLink } from "./sharelink";
-import { RedeemShareLinkModal } from "./accountui";
 import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
@@ -113,9 +112,16 @@ export class SetupWizardModal extends Modal {
       .addButton((b) => b.setButtonText("Back").onClick(() => this.render()))
       .addButton((b) => b.setButtonText("Use link").setCta().onClick(() => {
         // A vault SHARE link (selfsync-share://redeem?…) is a different thing from a device SETUP link
-        // (selfsync://connect?…). If someone pastes a share link here, hand off to the redeem flow
-        // instead of failing with "Not a SelfSync setup link".
-        if (isShareLink(text)) { this.close(); new RedeemShareLinkModal(this.app, this.plugin, text).open(); return; }
+        // (selfsync://connect?…). If someone pastes a share link here, REDEEM IT DIRECTLY (no extra
+        // click / no separate modal) — redeemShareLink itself gives clear guidance if this device isn't
+        // signed in to the link's server yet.
+        if (isShareLink(text)) {
+          this.close();
+          this.plugin.redeemShareLink(text)
+            .then((ref) => new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Use "Switch" to sync it.`, 9000))
+            .catch((e: any) => new Notice(`SelfSync: ${e?.message ?? e}`, 9000));
+          return;
+        }
         try {
           const link = parseSetupLink(text);
           this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false; this.serverMsg = "";

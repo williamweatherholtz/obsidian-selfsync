@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { encodeShareLink, parseShareLink, isShareLink } from "../src/sharelink";
+import { encodeShareLink, parseShareLink, isShareLink, redeemTargetError } from "../src/sharelink";
 
 describe("share-link codec (D0023)", () => {
   it("encodes then parses back to the same server + token", () => {
@@ -35,5 +35,20 @@ describe("share-link codec (D0023)", () => {
   it("isShareLink distinguishes it from a setup link", () => {
     expect(isShareLink("selfsync-share://redeem?server=https://s&token=t")).toBe(true);
     expect(isShareLink("selfsync://connect?server=https://s&user=u")).toBe(false);
+  });
+
+  describe("redeemTargetError — redeem is authenticated + server-specific", () => {
+    it("a not-set-up device (empty server) gets clear guidance, NOT a URL crash", () => {
+      const msg = redeemTargetError("https://notes2.willweatherholtz.com", "");
+      expect(msg).toMatch(/set up selfsync and sign in/i);
+      expect(msg).toContain("notes2.willweatherholtz.com");
+    });
+    it("a device signed in to a DIFFERENT server is told to set up against the link's server", () => {
+      const msg = redeemTargetError("https://notes2.willweatherholtz.com", "https://other.example");
+      expect(msg).toMatch(/this link is for https:\/\/notes2\.willweatherholtz\.com/i);
+    });
+    it("returns null when the device is signed in to the SAME server (redeem may proceed)", () => {
+      expect(redeemTargetError("https://s.example/", "https://s.example")).toBeNull();
+    });
   });
 });

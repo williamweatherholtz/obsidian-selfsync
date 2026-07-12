@@ -32,3 +32,16 @@ export function parseShareLink(str: string): ShareLink {
 export function isShareLink(str: string): boolean {
   return str.trim().startsWith("selfsync-share://");
 }
+
+// Precheck before redeeming on THIS device. Redeem is an AUTHENTICATED, server-specific call: it binds
+// the shared vault to your account, so the device must be signed in to the SAME server the link points
+// at. Returns an actionable message, or null if redeem can proceed. Guards the empty-serverUrl case so a
+// not-set-up device gives clear guidance instead of a cryptic `new URL("")` "Invalid URL" crash.
+export function redeemTargetError(linkServer: string, deviceServer: string): string | null {
+  if (!deviceServer) return `Set up SelfSync and sign in to ${linkServer} first, then redeem this link.`;
+  let a: string, b: string;
+  try { a = normalizeServer(linkServer); b = normalizeServer(deviceServer); }
+  catch { return "This share link's server address looks invalid."; }
+  if (a !== b) return `This link is for ${a}, but you're signed in to ${b}. Set up SelfSync against ${a} first, then redeem.`;
+  return null;
+}

@@ -7,8 +7,8 @@ import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
-import { encodeSetupLink, normalizeServer } from "./connstr";
-import { encodeShareLink, parseShareLink } from "./sharelink";
+import { encodeSetupLink } from "./connstr";
+import { encodeShareLink, parseShareLink, redeemTargetError } from "./sharelink";
 import { Phase, light, isWsStale } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
@@ -670,9 +670,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   // account and returns {owner,vault,perm} so the caller can offer to switch to the shared vault.
   async redeemShareLink(link: string): Promise<SharedVaultRef> {
     const { server, token } = parseShareLink(link);
-    if (normalizeServer(server) !== normalizeServer(this.settings.serverUrl)) {
-      throw new Error(`This link is for ${server}. Set up SelfSync against that server first, then redeem it.`);
-    }
+    const err = redeemTargetError(server, this.settings.serverUrl); // guards not-set-up + wrong-server
+    if (err) throw new Error(err);
     return this.withAuth((t) => HttpTransport.redeemShareLink(this.settings.serverUrl, t, token));
   }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
