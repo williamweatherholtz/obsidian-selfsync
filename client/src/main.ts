@@ -332,7 +332,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       reconcilePath: (p, size) => this.doReconcilePath(p, size),
       rews: () => this.doRews(),
       teardown: () => this.doTeardown(),
-      onPhase: (p) => this.renderLight(p),
+      onPhase: (p) => { if (p !== "connecting" && p !== "syncing") this.resuming = false; this.renderLight(p); }, // resume window ends once state settles
       onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
       scheduleReconnect: () => this.scheduleReconnect(),
     });
@@ -898,9 +898,25 @@ export default class NewLiveSyncPlugin extends Plugin {
   syncProgressText(): string {
     return this.syncPending > 0 ? `${this.syncPending} pending` : "";
   }
+  private resuming = false; // just returned from a context switch (mobile resume) and re-assessing sync state
+  isResuming(): boolean { return this.resuming; }
+  // User-facing status = the FSM phase + the transient resuming flag + the pending count, so "Syncing…"
+  // always says WHAT it's doing (checking / N pending) rather than a bare, seemingly-stuck label, and a
+  // post-resume re-assessment reads as "Resuming…". The dot COLOUR still comes from syncstate.light(phase).
+  statusDisplay(phase: Phase): { label: string; detail: string } {
+    if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "checking for changes" };
+    switch (phase) {
+      case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "checking for changes" };
+      case "idle":       return { label: this.realtimeConnected ? "Fully synced" : "Synced (polling)", detail: "" };
+      case "connecting": return { label: "Connecting…", detail: "" };
+      case "offline":    return { label: "Offline — retrying", detail: "" };
+      case "off":        return { label: "Not connected", detail: "" };
+    }
+  }
   private renderLight(phase: Phase) {
-    const detail = phase === "syncing" && this.syncPending > 0 ? this.syncProgressText() : `v${this.state.version}`;
-    const spec = light(phase, detail, this.realtimeConnected);
+    const spec = light(phase, "", this.realtimeConnected); // COLOUR source
+    const disp = this.statusDisplay(phase);
+    const tip = disp.detail ? `${disp.label} ${disp.detail}` : disp.label;
     // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). When idle
     // but the realtime socket is down (polling fallback), show the "reconnecting" glyph, not the check.
     const glyph = phase === "idle" ? (this.realtimeConnected ? "check" : "refresh-cw")
@@ -912,18 +928,18 @@ export default class NewLiveSyncPlugin extends Plugin {
       const dot = this.statusEl.createSpan({ text: "●" });
       dot.setAttribute("style", `color:${spec.color};margin-right:4px;`);
       this.statusEl.createSpan({ text: spec.label });
-      this.statusEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
+      this.statusEl.setAttribute("aria-label", `SelfSync — ${tip}`);
     }
     if (this.ribbonEl) {
       this.ribbonEl.style.color = spec.color; // SVG uses currentColor -> tints the icon
       setIcon(this.ribbonEl, glyph);
-      this.ribbonEl.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
+      this.ribbonEl.setAttribute("aria-label", `SelfSync — ${tip}`);
     }
     for (const el of this.editorActionEls) {
       if (!el.isConnected) { this.editorActionEls.delete(el); continue; } // view closed — prune
       el.style.color = spec.color;
       setIcon(el, glyph);
-      el.setAttribute("aria-label", `${spec.label} — ${spec.tip}`);
+      el.setAttribute("aria-label", `SelfSync — ${tip}`);
     }
     this.statusListener?.(); // refresh the settings status card if it's on screen
   }
@@ -1018,6 +1034,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);
+        if (this.syncPending > 0) this.resuming = false; // transfers started → show the count, not "Resuming…"
         this.renderLight(this.engine.phase());
         this.statusListener?.(); // refresh the settings status row if open
       },
@@ -1383,9 +1400,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // now, so a config change that happened while suspended (here or on another device) syncs promptly
   // instead of waiting for the periodic tick. Cheap: the scan skips unchanged files by (size, mtime).
   private onResume() {
-    if (this.unloading || !this.settings.configSync.enabled) return;
-    this.lastConfigScanAt = 0; // due immediately (doReconcileAll gates the config scan on this)
-    this.engine.enqueue({ kind: "remote" }); // run a reconcile now rather than at the next poll tick
+    if (this.unloading) return;
+    this.resuming = true;                    // show "Resuming…" while we re-assess after the context switch
+    this.renderLight(this.engine.phase());
+    this.engine.enqueue({ kind: "remote" }); // re-assess: reconcile now rather than at the next poll tick
+    if (this.settings.configSync.enabled) this.lastConfigScanAt = 0; // also force a config re-scan
   }
 
   private lastConfigEventScanAt = 0;

@@ -2,7 +2,6 @@ import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "
 import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
 import { ConfigDirectionModal } from "./configdir";
-import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -152,8 +151,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // Live status light at the BOTTOM: coloured dot + phase; issue as desc; connection actions right.
     g.addSetting((st) => {
       st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(phase).color}`);
-      const prog = phase === "syncing" ? this.plugin.syncProgressText() : "";
-      st.nameEl.createSpan({ text: statusTitle(phase) + (prog ? ` ${prog}` : "") });
+      const disp = this.plugin.statusDisplay(phase); // label + detail (Resuming… / Syncing… N pending / checking for changes)
+      st.nameEl.createSpan({ text: disp.label + (disp.detail ? ` ${disp.detail}` : "") });
       const issue = this.plugin.getLastIssue();
       if (phase !== "idle" && issue) st.setDesc(issue);
       // Diagnose is always available: it names the first broken link so a silent offline — or a

@@ -36,6 +36,8 @@ export function fakePlugin(over: any = {}) {
     setPluginDir: vi.fn(async () => {}),
     getServerPluginIds: vi.fn(() => [] as string[]),
     installAllServerPlugins: vi.fn(async () => {}),
+    isResuming: vi.fn(() => false),
+    statusDisplay: vi.fn((phase: string) => ({ label: phase === "idle" ? "Fully synced" : phase === "syncing" ? "Syncing…" : phase === "connecting" ? "Connecting…" : phase === "offline" ? "Offline — retrying" : "Not connected", detail: "" })),
     reconnect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),

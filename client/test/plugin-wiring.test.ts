@@ -125,6 +125,23 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("statusDisplay gives actionable status — Syncing detail, Resuming after a context switch, idle realtime", async () => {
+    const { p } = await bootPlugin();
+    (p as any).syncPending = 3;
+    expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "3 pending" });
+    (p as any).syncPending = 0;
+    expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "checking for changes" }); // never a bare "Syncing…"
+    (p as any).resuming = true; // just came back from a context switch
+    expect(p.statusDisplay("connecting").label).toBe("Resuming…");
+    expect(p.statusDisplay("syncing").label).toBe("Resuming…");
+    (p as any).resuming = false;
+    (p as any).realtimeConnected = true;
+    expect(p.statusDisplay("idle").label).toBe("Fully synced");
+    (p as any).realtimeConnected = false;
+    expect(p.statusDisplay("idle").label).toBe("Synced (polling)");
+    p.onunload();
+  });
+
   it("a config-related UI event (css-change) triggers a config scan — event-driven, not just polled", async () => {
     const { p, fire, api } = await bootPlugin(true, { settings: { configSync: { enabled: true } } });
     const before = api.__calls.changes?.length ?? 0;
