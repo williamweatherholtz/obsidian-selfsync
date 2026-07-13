@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "
 import type NewLiveSyncPlugin from "./main";
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
 import { ConfigDirectionModal } from "./configdir";
+import { confirmModal } from "./confirm";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -144,7 +145,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       // getting back in needs the password re-entered — and the button sits right next to "Change
       // password", easy to fat-finger on mobile.
       .addButton((b) => b.setButtonText("Sign out").onClick(async () => {
-        if (!confirm(`Sign out of ${s.serverUrl}? You'll need your password to sign back in. Your local files are kept.`)) return;
+        if (!(await confirmModal(this.app, { title: "Sign out?", body: `Sign out of ${s.serverUrl}? You'll need your password to sign back in. Your local files are kept.`, confirmText: "Sign out", warn: true }))) return;
         await this.plugin.signOut(); this.display();
       })));
     this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,

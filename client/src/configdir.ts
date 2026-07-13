@@ -24,7 +24,7 @@ export class ConfigDirectionModal extends Modal {
 
     new Setting(c).setName("Use the synced settings")
       .setDesc("Adopt what's already synced, replacing this device's version where they differ (download).")
-      .addButton((b) => b.setButtonText("Use synced").setCta().onClick(() => this.pick("download")));
+      .addButton((b) => b.setButtonText("Use the synced version").onClick(() => this.pick("download")));
 
     if (!this.readOnly) {
       new Setting(c).setName("Use this device's settings")

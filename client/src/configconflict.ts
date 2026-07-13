@@ -35,8 +35,10 @@ export class ConfigConflictModal extends Modal {
       new Setting(c)
         .setName(g.label)
         .setDesc(desc)
-        .addButton((b) => b.setButtonText("Use this device").setCta().onClick(() => void this.resolve(g, "local")))
-        .addButton((b) => b.setButtonText("Use synced").onClick(() => void this.resolve(g, "remote")));
+        // Standardized vocabulary ("this device's" / "the synced version") + no CTA on this unbiased
+        // both-edited choice, matching the note-conflict modal.
+        .addButton((b) => b.setButtonText("Use this device's").onClick(() => void this.resolve(g, "local")))
+        .addButton((b) => b.setButtonText("Use the synced version").onClick(() => void this.resolve(g, "remote")));
     }
   }
 

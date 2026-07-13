@@ -2,7 +2,10 @@
 // Real-DOM tests for the plugin's SETTINGS TAB: render it through the (happy-dom) obsidian stub and
 // confirm each control actually invokes the right plugin behavior — the click-level guard for the
 // settings surface (complements the pure/harness tests). Every control here was in the functional audit.
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+// Destructive confirms now go through an in-app modal (confirm.ts) instead of window.confirm; auto-accept
+// so the Sign-out wiring test still fires. (Its own behaviour is covered by inspection, not this stub.)
+vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
 import { NewLiveSyncSettingTab } from "../src/settings";
 import { fakePlugin, toggleByName, buttonByText, flipToggle } from "./ui-dom-harness";
 
@@ -16,7 +19,7 @@ function renderTab(plugin: any) {
 describe("settings tab renders and wires its controls", () => {
   let plugin: any;
   // Destructive actions (Sign out) are now confirm()-gated; auto-accept so the wiring test still fires.
-  beforeEach(() => { plugin = fakePlugin(); (globalThis as any).confirm = () => true; });
+  beforeEach(() => { plugin = fakePlugin(); });
 
   it("renders the config-sync section with the master + category toggles", () => {
     const { containerEl } = renderTab(plugin);
@@ -57,11 +60,12 @@ describe("settings tab renders and wires its controls", () => {
     expect(plugin.setEditorStatus).toHaveBeenCalledWith(true);
   });
 
-  it("when connected: Disconnect + Sign out buttons invoke their plugin actions", () => {
+  it("when connected: Disconnect + Sign out buttons invoke their plugin actions", async () => {
     const { containerEl } = renderTab(plugin); // phase "idle" ⇒ Disconnect shown (not Reconnect)
     buttonByText(containerEl, "Disconnect").click();
     expect(plugin.disconnect).toHaveBeenCalled();
     buttonByText(containerEl, "Sign out").click();
+    await new Promise((r) => setTimeout(r, 0)); // Sign out now awaits the in-app confirm (async) before signOut
     expect(plugin.signOut).toHaveBeenCalled();
   });
 

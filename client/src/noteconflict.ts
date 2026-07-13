@@ -95,7 +95,9 @@ export class NoteConflictModal extends Modal {
     new Setting(c)
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
       .addButton((b) => b.setButtonText("Keep the other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
-      .addButton((b) => b.setButtonText("Keep this device's").setCta().onClick(() => void this.resolve(copy, original, "mine", theirs)));
+      // No CTA (highlighted default) here: this is an unbiased, irreversible either-side choice, and a
+      // highlighted default invites a reflexive tap that discards the OTHER device's edits (capture error).
+      .addButton((b) => b.setButtonText("Keep this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)));
   }
 
   // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.

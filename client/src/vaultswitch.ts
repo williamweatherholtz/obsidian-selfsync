@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
 import { RedeemShareLinkModal } from "./accountui";
+import { confirmModal } from "./confirm";
 import type NewLiveSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
 import type { SharedVaultRef } from "./transport";
@@ -109,7 +110,7 @@ export class SwitchVaultModal extends Modal {
     if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
     // Fork uploads unconditionally (it skips the switch's resolve prompt), so a name that ALREADY
     // exists would be OVERWRITTEN with no warning. Guard it: refuse unless the user confirms.
-    if (this.vaults.includes(name) && !confirm(`A vault named "${name}" already exists — forking will OVERWRITE its contents with this vault's. Continue?`)) return;
+    if (this.vaults.includes(name) && !(await confirmModal(this.app, { title: "Fork over an existing vault?", body: `A vault named "${name}" already exists — forking will OVERWRITE its contents with this vault's.`, confirmText: "Overwrite", warn: true }))) return;
     this.close();
     new Notice(`SelfSync: forking into '${name}' (uploading a copy)…`);
     try {
@@ -122,7 +123,7 @@ export class SwitchVaultModal extends Modal {
   // Switch to a vault shared BY someone else. Read-only shares can only be downloaded
   // (we can't push); read-write shares use the same resolution prompt as an own vault.
   private async leaveShared(ref: SharedVaultRef) {
-    if (!confirm(`Leave the shared vault "${ref.owner}/${ref.vault}"? You'll lose access until it's re-shared. Your local files are kept.`)) return;
+    if (!(await confirmModal(this.app, { title: "Leave shared vault?", body: `Leave "${ref.owner}/${ref.vault}"? You'll lose access until it's re-shared. Your local files are kept.`, confirmText: "Leave", warn: true }))) return;
     try {
       await this.plugin.leaveSharedVault(ref.owner, ref.vault);
       new Notice(`SelfSync: left ${ref.owner}/${ref.vault}`);
@@ -186,7 +187,7 @@ export class SwitchVaultModal extends Modal {
       const what = mode === "download"
         ? `local files that aren't in '${this.target}' will be moved to this device's trash (recoverable there)`
         : `files in '${this.target}' that aren't on this device will be removed on the server`;
-      if (!confirm(`${mode === "download" ? "Download" : "Upload"}: ${what}. Continue?`)) return;
+      if (!(await confirmModal(this.app, { title: mode === "download" ? "Download — mirror this vault?" : "Upload — overwrite the target?", body: `${what}.`, confirmText: mode === "download" ? "Download" : "Upload", warn: true }))) return;
     }
     this.close();
     const verb = mode === "download" ? "fetching" : mode === "upload" ? "uploading to" : "merging with";
