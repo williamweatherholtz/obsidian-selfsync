@@ -133,6 +133,9 @@ export class Plugin {
   constructor(app: any, manifest: any) { this.app = app; this.manifest = manifest; }
   addSettingTab() {} addRibbonIcon() { return fakeEl(); } addStatusBarItem() { return fakeEl(); }
   addCommand() {} registerEvent() {}
+  // Obsidian's Plugin.registerDomEvent(target, type, cb) — auto-unregistered on unload. The stub just
+  // wires it through addEventListener so a handler under test (e.g. visibilitychange resume) can fire.
+  registerDomEvent(target: any, type: string, cb: (e: any) => void) { target?.addEventListener?.(type, cb); }
   async loadData() { return this._data; } async saveData(d: any) { this._data = d; }
 }
 export class Notice { constructor(_m?: string) {} }

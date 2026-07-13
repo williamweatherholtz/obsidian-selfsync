@@ -227,6 +227,38 @@ describe("reconcileAll", () => {
     expect(isConnectionError(new Error("unsafe path refused"))).toBe(false);
   });
 
+  it("config scan fast-path: an unchanged config file (matching size+mtime) is NOT re-read/hashed", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ ".obsidian/app.json": "{}" });
+    let reads = 0; const origRead = io.read.bind(io);
+    (io as any).read = async (p: string) => { reads++; return origRead(p); };
+    const base = new BaseStore();
+    const bytes = enc("{}");
+    base.set(".obsidian/app.json", { hash: await sha256hex(bytes) });
+    base.stampStat(".obsidian/app.json", bytes.length, 0); // fakeIo.list reports mtime 0, size = length → matches
+    await reconcileLocalConfig(deps(api, io, { base }));
+    expect(reads).toBe(0); // skipped by the (size,mtime) fast-path — no read, no SHA-256
+  });
+
+  it("config scan still DETECTS a new local config file and pushes it (no stale stat to skip it)", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({ ".obsidian/app.json": "new-config" });
+    await reconcileLocalConfig(deps(api, io, { base: new BaseStore() })); // empty base → not skipped → push
+    expect(files.has(".obsidian/app.json")).toBe(true);
+  });
+
+  it("config scan stamps an unchanged-but-unstamped file so the NEXT scan skips it", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ ".obsidian/app.json": "{}" });
+    const base = new BaseStore();
+    base.set(".obsidian/app.json", { hash: await sha256hex(enc("{}")) }); // hash matches, but NO stat stamp yet
+    await reconcileLocalConfig(deps(api, io, { base }));       // pass 1: reads+hashes, confirms equal, stamps
+    let reads = 0; const origRead = io.read.bind(io);
+    (io as any).read = async (p: string) => { reads++; return origRead(p); };
+    await reconcileLocalConfig(deps(api, io, { base }));       // pass 2: stat now matches → skipped
+    expect(reads).toBe(0);
+  });
+
   it("sameIgnoringEol: line-ending + trailing-newline differences are cosmetic; real edits are not", () => {
     expect(sameIgnoringEol(enc("a\r\nb\r\n"), enc("a\nb"))).toBe(true);  // CRLF vs LF, no trailing NL
     expect(sameIgnoringEol(enc("a\nb\n\n"), enc("a\nb"))).toBe(true);    // extra trailing blank lines

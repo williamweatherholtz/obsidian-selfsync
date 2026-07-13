@@ -309,9 +309,21 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
   for (const p of d.base.paths()) if (isConfig(p)) candidates.add(p); // catch a LOCAL removal (base present, file gone)
   for (const p of candidates) {
     if (d.accepts && !d.accepts(p)) continue;
+    const be = d.base.get(p);
+    const st = local.get(p);
+    // Fast-path (perf): if the on-disk (size, mtime) match the stamp from the last time we confirmed
+    // this file equals its base, it hasn't changed — skip the read + SHA-256 entirely. This is what
+    // lets the scan run OFTEN (mobile has no live `raw` event) without re-hashing every synced plugin's
+    // bytes each pass. Same (size,mtime) heuristic the whole-vault scan uses (a write bumps mtime).
+    if (be && st && be.size === st.size && be.mtime === st.mtime) continue;
     const cur = await readOrNull(d.io, p);
     const curHash = cur ? await sha256hex(cur) : null;
-    if (curHash === (d.base.get(p)?.hash ?? null)) continue; // unchanged vs base → nothing to do
+    if (curHash === (be?.hash ?? null)) {
+      // Unchanged vs base, but the stat stamp was missing/stale — record it so the NEXT scan skips
+      // the hash (the stamp is dropped on restart, so the first post-restart scan re-hashes once).
+      if (st && cur) d.base.stampStat(p, st.size, st.mtime);
+      continue;
+    }
     try {
       const rmeta = await d.api.fileMeta(p);
       await reconcileOne(d, p, rmeta ?? undefined, false, cur?.length ?? 0, () => false, local.has(p));
