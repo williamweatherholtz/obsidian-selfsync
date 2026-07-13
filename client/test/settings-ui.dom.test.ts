@@ -15,7 +15,8 @@ function renderTab(plugin: any) {
 
 describe("settings tab renders and wires its controls", () => {
   let plugin: any;
-  beforeEach(() => { plugin = fakePlugin(); });
+  // Destructive actions (Sign out) are now confirm()-gated; auto-accept so the wiring test still fires.
+  beforeEach(() => { plugin = fakePlugin(); (globalThis as any).confirm = () => true; });
 
   it("renders the config-sync section with the master + category toggles", () => {
     const { containerEl } = renderTab(plugin);

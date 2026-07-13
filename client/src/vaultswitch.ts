@@ -107,6 +107,9 @@ export class SwitchVaultModal extends Modal {
   private async doFork() {
     const name = sanitizeVaultName(this.forkName);
     if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
+    // Fork uploads unconditionally (it skips the switch's resolve prompt), so a name that ALREADY
+    // exists would be OVERWRITTEN with no warning. Guard it: refuse unless the user confirms.
+    if (this.vaults.includes(name) && !confirm(`A vault named "${name}" already exists — forking will OVERWRITE its contents with this vault's. Continue?`)) return;
     this.close();
     new Notice(`SelfSync: forking into '${name}' (uploading a copy)…`);
     try {
@@ -174,6 +177,15 @@ export class SwitchVaultModal extends Modal {
   }
 
   private async applySwitch(mode: SwitchMode) {
+    // The two MIRROR modes delete files (download removes local-only; upload removes remote-only) and
+    // can't be undone — gate them behind a second confirm, naming which side loses files. Merge (the
+    // safe default) needs none. (The 'safe' Leave action already confirms; the destructive ones should too.)
+    if (mode !== "merge") {
+      const what = mode === "download"
+        ? `local files that aren't in '${this.target}' will be DELETED from this device`
+        : `files in '${this.target}' that aren't on this device will be DELETED on the server`;
+      if (!confirm(`${mode === "download" ? "Download" : "Upload"}: ${what}. This can't be undone. Continue?`)) return;
+    }
     this.close();
     const verb = mode === "download" ? "fetching" : mode === "upload" ? "uploading to" : "merging with";
     const label = this.targetOwner ? `${this.targetOwner}/${this.target}` : this.target;

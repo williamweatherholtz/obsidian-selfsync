@@ -137,7 +137,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.factRow(g, "Server", s.serverUrl); // Reconfigure lives under Advanced (rarely needed)
     this.factRow(g, "Account", s.username, (st) => st
       .addButton((b) => b.setButtonText("Change password").onClick(() => new ChangePasswordModal(this.app, this.plugin).open()))
-      .addButton((b) => b.setButtonText("Sign out").onClick(async () => { await this.plugin.signOut(); this.display(); })));
+      // Confirm: sign-out clears the token (and, in token-only mode, there's no saved password), so
+      // getting back in needs the password re-entered — and the button sits right next to "Change
+      // password", easy to fat-finger on mobile.
+      .addButton((b) => b.setButtonText("Sign out").onClick(async () => {
+        if (!confirm(`Sign out of ${s.serverUrl}? You'll need your password to sign back in. Your local files are kept.`)) return;
+        await this.plugin.signOut(); this.display();
+      })));
     this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,
       (st) => {
         // Sharing only applies to a vault you OWN (not one shared TO you).
