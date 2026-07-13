@@ -143,6 +143,10 @@ describe("plugin wiring — producers → engine → effects", () => {
     (p as any).settings.vaultReadOnly = true;
     expect(p.statusDisplay("idle")).toEqual({ label: "Synced (read-only)", detail: "your edits stay on this device" });
     (p as any).settings.vaultReadOnly = false;
+    // A vault switch/fork in flight (pendingSwitch saved) shows a persistent "Switching vault…" state.
+    (p as any).settings.pendingSwitch = "download";
+    expect(p.statusDisplay("syncing").label).toBe("Switching vault…");
+    (p as any).settings.pendingSwitch = undefined;
     p.onunload();
   });
 

@@ -356,6 +356,9 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.addCommand({ id: "switch-vault", name: "Switch vault", callback: () => new SwitchVaultModal(this.app, this).open() });
     this.addCommand({ id: "redeem", name: "Redeem a share link", callback: () => this.openRedeem() });
     this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts", callback: () => this.openConflicts() });
+    // On-demand TEXT readout of sync state — on mobile the persistent indicator is an icon in the sidebar
+    // drawer with no reachable tooltip, so a one-tap "what's the status?" in words is the accessible path.
+    this.addCommand({ id: "status", name: "Sync status", callback: () => { const d = this.statusDisplay(this.engine.phase()); new Notice(`SelfSync: ${d.label}${d.detail ? ` — ${d.detail}` : ""}`); } });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
     this.addCommand({ id: "clear-log", name: "Clear sync log", callback: () => this.clearLogs() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
@@ -929,6 +932,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // always says WHAT it's doing (checking / N pending) rather than a bare, seemingly-stuck label, and a
   // post-resume re-assessment reads as "Resuming…". The dot COLOUR still comes from syncstate.light(phase).
   statusDisplay(phase: Phase): { label: string; detail: string } {
+    // A vault switch/fork in flight — persistent across a mobile suspend because pendingSwitch is SAVED
+    // (it clears only when the switch reconcile completes). So a long fork/switch reads as "Switching
+    // vault…" instead of a generic "Syncing…", and survives backgrounding, answering "did it finish?".
+    if (this.settings.pendingSwitch) return { label: "Switching vault…", detail: "applying your choice" };
     if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "checking for changes" };
     switch (phase) {
       case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "checking for changes" };

@@ -19,7 +19,7 @@ export class ConfigDirectionModal extends Modal {
   onOpen() {
     this.titleEl.setText("Set up settings sync");
     const c = this.contentEl; c.empty();
-    c.createEl("p", { text: `Turning on sync for ${this.label}. When this device's settings differ from the synced copy, which should win to start?` })
+    c.createEl("p", { text: `Turning on sync for ${this.label}. Where this device's settings differ from the synced copy, which should win to START? Only files that differ change — everything else is left alone, and after this, later edits on either side reconcile normally.` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;");
 
     new Setting(c).setName("Use the synced settings")
