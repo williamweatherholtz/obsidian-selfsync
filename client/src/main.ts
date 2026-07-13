@@ -26,9 +26,11 @@ import { androidModelFromUA, platformDisplayName, usableModel } from "./devicena
 // burns battery on a large mobile vault; config changes are infrequent so ~2-min latency is fine,
 // and desktop gets instant config sync via the raw watcher regardless. (R11-#3; a config-ONLY scan
 // that skips re-hashing notes is the deeper fix, planned for the config-sync round.)
-const CONFIG_SCAN_INTERVAL_MS = 30_000; // config-only re-hash cadence (mobile has no live `raw` watcher).
-// Cheap because reconcileLocalConfig skips unchanged files by (size, mtime), so a frequent scan
-// doesn't re-hash every synced plugin's bytes — cuts mobile config-sync latency from ~2 min to ~30s.
+const CONFIG_SCAN_INTERVAL_MS = 30_000; // config-only re-hash cadence — the BACKSTOP for a config change
+// that fires no UI event. Cheap because reconcileLocalConfig skips unchanged files by (size, mtime).
+// The primary detector is event-driven: the `raw` FS event (desktop) + css-change/layout-change proxies
+// (mobile) trigger the scan on demand; this timer just catches the rare change nothing signalled.
+const CONFIG_EVENT_MIN_GAP_MS = 5_000; // rate-limit UI-event-triggered scans (layout-change fires on plain navigation too)
 // The per-file sync cap is now the user-configurable setting `maxSyncMB` (default 200), resolved by
 // maxSyncBytes(). NOTE the platform trade-off it exposes: mobile has no streamed I/O
 // (ObsidianVaultIo.appendWrite is desktop-only), so a synced file is buffered whole in the WebView
@@ -371,6 +373,13 @@ export default class NewLiveSyncPlugin extends Plugin {
     // backgrounding — or on another device while this one slept — isn't caught until the next scan
     // tick. On resume, force a config re-scan immediately instead of waiting up to CONFIG_SCAN_INTERVAL_MS.
     if (typeof document !== "undefined") this.registerDomEvent(document, "visibilitychange", () => { if (document.visibilityState === "visible") this.onResume(); });
+    // Event-driven config detection where the `raw` FS event is unreliable (mobile): Obsidian's UI events
+    // are proxies for "config probably changed" — a theme/snippet/appearance edit fires css-change; a
+    // plugin enable/disable (or pane change) fires layout-change. Each just TRIGGERS the cheap config
+    // scan (which figures out the actual diff), so the common config edits sync near-instantly instead
+    // of waiting for the periodic backstop. Rate-limited (layout-change also fires on plain navigation).
+    this.registerEvent(this.app.workspace.on("css-change", () => this.scheduleConfigScan()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.scheduleConfigScan()));
 
     this.log("plugin loaded");
     this.app.workspace.onLayoutReady(() => {
@@ -1289,6 +1298,25 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.unloading || !this.settings.configSync.enabled) return;
     this.lastConfigScanAt = 0; // due immediately (doReconcileAll gates the config scan on this)
     this.engine.enqueue({ kind: "remote" }); // run a reconcile now rather than at the next poll tick
+  }
+
+  private lastConfigEventScanAt = 0;
+  private configScanTimer?: number;
+  // Trigger a config scan from a UI-event proxy (css-change / layout-change), COALESCED + RATE-LIMITED:
+  // the first event fires promptly (wait ≈ 0); a burst (a plugin toggle emits several events) collapses
+  // to one (a pending timer swallows the rest); steady navigation can't scan more than ~once per
+  // CONFIG_EVENT_MIN_GAP_MS. The scan itself is cheap (skips unchanged files by size+mtime), so the
+  // trigger needn't know WHAT changed — it just makes the scan due and kicks a reconcile.
+  private scheduleConfigScan() {
+    if (this.unloading || !this.settings.configSync.enabled || this.configScanTimer !== undefined) return;
+    const wait = Math.max(0, CONFIG_EVENT_MIN_GAP_MS - (Date.now() - this.lastConfigEventScanAt));
+    this.configScanTimer = window.setTimeout(() => {
+      this.configScanTimer = undefined;
+      if (this.unloading) return;
+      this.lastConfigEventScanAt = Date.now();
+      this.lastConfigScanAt = 0;               // config scan now due
+      this.engine.enqueue({ kind: "remote" }); // run a reconcile now
+    }, wait);
   }
 
   private onRawConfigEvent(path: string) {

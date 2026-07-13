@@ -83,7 +83,7 @@ function makeApp() {
     },
     workspace: {
       onLayoutReady: (cb: Function) => cb(), // fire immediately so onload connects
-      on: () => ({}),
+      on: (name: string, cb: Function) => { (events[name] ??= []).push(cb); return {}; }, // capture so fire() can trigger UI events
       getActiveViewOfType: () => null,
       trigger: () => {},
     },
@@ -122,6 +122,24 @@ describe("plugin wiring — producers → engine → effects", () => {
     const { p, api } = await bootPlugin(false);
     expect(api.__calls.status?.length ?? 0).toBe(0);
     expect(p.statusText()).toBe("off");
+    p.onunload();
+  });
+
+  it("a config-related UI event (css-change) triggers a config scan — event-driven, not just polled", async () => {
+    const { p, fire, api } = await bootPlugin(true, { settings: { configSync: { enabled: true } } });
+    const before = api.__calls.changes?.length ?? 0;
+    fire("css-change");   // theme/snippet/appearance edit proxy; first event schedules with ~0 delay
+    await flush();
+    expect(api.__calls.changes?.length ?? 0).toBeGreaterThan(before); // a reconcile (config scan) fired on the event
+    p.onunload();
+  });
+
+  it("a config UI event does NOTHING when config sync is OFF (no needless scans)", async () => {
+    const { p, fire, api } = await bootPlugin(); // configSync default OFF
+    const before = api.__calls.changes?.length ?? 0;
+    fire("layout-change");
+    await flush();
+    expect(api.__calls.changes?.length ?? 0).toBe(before); // gated on configSync.enabled
     p.onunload();
   });
 
