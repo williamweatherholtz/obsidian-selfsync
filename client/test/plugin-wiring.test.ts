@@ -139,6 +139,10 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusDisplay("idle").label).toBe("Fully synced");
     (p as any).realtimeConnected = false;
     expect(p.statusDisplay("idle").label).toBe("Synced (polling)");
+    // Read-only vault: idle must NOT read a plain green "Fully synced" (edits there never upload).
+    (p as any).settings.vaultReadOnly = true;
+    expect(p.statusDisplay("idle")).toEqual({ label: "Synced (read-only)", detail: "your edits stay on this device" });
+    (p as any).settings.vaultReadOnly = false;
     p.onunload();
   });
 

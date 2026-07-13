@@ -932,7 +932,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "checking for changes" };
     switch (phase) {
       case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "checking for changes" };
-      case "idle":       return { label: this.realtimeConnected ? "Fully synced" : "Synced (polling)", detail: "" };
+      case "idle":       return this.settings.vaultReadOnly
+        // Read-only vault: Obsidian still lets you EDIT, but those edits never upload — so a plain green
+        // "Fully synced" is a mode error (it implies your changes are safe on the server). Say so.
+        ? { label: "Synced (read-only)", detail: "your edits stay on this device" }
+        : { label: this.realtimeConnected ? "Fully synced" : "Synced (polling)", detail: "" };
       case "connecting": return { label: "Connecting…", detail: "" };
       case "offline":    return { label: "Offline — retrying", detail: "" };
       case "off":        return { label: "Not connected", detail: "" };
@@ -942,12 +946,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     const spec = light(phase, "", this.realtimeConnected); // COLOUR source
     const disp = this.statusDisplay(phase);
     const tip = disp.detail ? `${disp.label} ${disp.detail}` : disp.label;
-    // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). When idle
-    // but the realtime socket is down (polling fallback), show the "reconnecting" glyph, not the check.
-    const glyph = phase === "idle" ? (this.realtimeConnected ? "check" : "refresh-cw")
+    // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). idle is a
+    // RESTING state → a STEADY glyph (a lock for read-only, else a check), NEVER the spinner — a healthy
+    // polling device must not sit at a permanent spinner (that state-vs-motion collision trains alarm
+    // habituation). The spinner (refresh-cw) is reserved for the ACTIVE states (connecting / syncing).
+    const glyph = phase === "idle" ? (this.settings.vaultReadOnly ? "lock" : "check")
       : phase === "offline" ? "alert-triangle"
       : phase === "off" ? "circle-slash"
-      : "refresh-cw"; // connecting / syncing
+      : "refresh-cw"; // connecting / syncing = active
     if (this.statusEl) {
       this.statusEl.empty();
       const dot = this.statusEl.createSpan({ text: "●" });

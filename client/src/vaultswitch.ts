@@ -181,10 +181,12 @@ export class SwitchVaultModal extends Modal {
     // can't be undone — gate them behind a second confirm, naming which side loses files. Merge (the
     // safe default) needs none. (The 'safe' Leave action already confirms; the destructive ones should too.)
     if (mode !== "merge") {
+      // Calibrated wording: local removals go to the vault trash (recoverable — see ObsidianVaultIo.remove),
+      // so don't cry "can't be undone" there; the server-side removal is the genuinely-heavier one.
       const what = mode === "download"
-        ? `local files that aren't in '${this.target}' will be DELETED from this device`
-        : `files in '${this.target}' that aren't on this device will be DELETED on the server`;
-      if (!confirm(`${mode === "download" ? "Download" : "Upload"}: ${what}. This can't be undone. Continue?`)) return;
+        ? `local files that aren't in '${this.target}' will be moved to this device's trash (recoverable there)`
+        : `files in '${this.target}' that aren't on this device will be removed on the server`;
+      if (!confirm(`${mode === "download" ? "Download" : "Upload"}: ${what}. Continue?`)) return;
     }
     this.close();
     const verb = mode === "download" ? "fetching" : mode === "upload" ? "uploading to" : "merging with";
