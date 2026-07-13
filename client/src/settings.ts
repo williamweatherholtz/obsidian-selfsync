@@ -336,11 +336,28 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // pick.) Sorted by display name (manifest name if installed, else the id).
     const ids = [...new Set([...installed, ...onServer])]
       .sort((a, b) => (manifests[a]?.name || a).localeCompare(manifests[b]?.name || b));
-    if (ids.length === 0) return;
     const ro = !!this.plugin.settings.vaultReadOnly;
     const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
     const notInstalledOnServer = [...onServer].filter((id) => !installed.has(id) && !cs.pluginAllow.includes(id));
     const g = new SettingGroup(c).setHeading("Synced community plugins");
+
+    // Standing RESTART reminder: a plugin adopted from the sync but not yet installed locally is on
+    // disk (or downloading), but Obsidian only loads plugins at STARTUP — it stays dormant until a full
+    // restart. The transient sync toast is easy to miss on mobile, so surface it as a persistent banner
+    // here, where the user just tapped "Install." (Closes the "looks done but nothing happened" gap.)
+    const needsRestart = ids.filter((id) => cs.pluginAllow.includes(id) && !installed.has(id));
+    if (needsRestart.length) {
+      g.addSetting((st) => st.setName(`${needsRestart.length} plugin${needsRestart.length > 1 ? "s" : ""} not active yet`).setClass("mod-warning")
+        .setDesc("Downloaded from the sync — fully close and reopen Obsidian (on mobile, swipe the app away) to enable them."));
+    }
+
+    // Fresh vault, before the first full reconcile has reported the server's plugins: don't render an
+    // empty group that reads as "nothing to sync" — say we're still looking.
+    if (ids.length === 0) {
+      g.addSetting((st) => st.setName("Checking the server for plugins…")
+        .setDesc("Plugins synced from your other devices will appear here after the next sync — then tick them to install."));
+      return;
+    }
 
     // Bulk actions. "Install all from the sync" is the fresh-vault bootstrap — adopt every plugin the
     // server holds (download-only for the ones not installed here); shown only when there are such
