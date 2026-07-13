@@ -752,6 +752,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.saveSettings();
     await this.reconnect();
   }
+  // FORK: copy the CURRENT vault's local content into a NEW vault you own, and switch this device to it
+  // (the original is untouched). Especially useful on a read-only shared vault — it yields your own
+  // editable copy. Reuses the tested primitives: create the empty vault, then switch to it in UPLOAD
+  // mode (push everything local into it). Owner is cleared + read-only false → the fork is yours to edit.
+  async forkVault(name: string): Promise<void> {
+    await this.createRemoteVault(name);
+    await this.switchToVault(name, "upload", "", false);
+  }
   // Vaults shared WITH this account (owned by others) — offered in the switch modal.
   async listSharedVaults(): Promise<SharedVaultRef[]> {
     return this.withAuth((t) => HttpTransport.listShared(this.settings.serverUrl, t));

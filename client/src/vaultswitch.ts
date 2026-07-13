@@ -18,6 +18,7 @@ export class SwitchVaultModal extends Modal {
   private target = "";
   private targetOwner = "";      // set when switching to a vault shared BY someone else
   private targetReadOnly = false; // that share is read-only
+  private forkName = "";         // name for a Fork of the current vault
 
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
 
@@ -59,6 +60,13 @@ export class SwitchVaultModal extends Modal {
       .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { const n = sanitizeVaultName(v); this.newName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }));
     new Setting(c).addButton((b) => b.setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
 
+    // Fork: copy THIS vault's current content into a NEW vault you own, and switch to it. The clearest
+    // path to an editable copy of a read-only shared vault (manually = switch to a new vault + upload).
+    new Setting(c).setName("Fork this vault")
+      .setDesc("Copy the current vault's files into a NEW vault you own and switch this device to it. The original is untouched — handy for making an editable copy of a read-only shared vault.")
+      .addText((t) => t.setPlaceholder("new vault name").onChange((v) => { const n = sanitizeVaultName(v); this.forkName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }))
+      .addButton((b) => b.setButtonText("Fork").onClick(() => void this.doFork()));
+
     // Vaults other people have shared with this account.
     if (this.shared.length) {
       new Setting(c).setName("Shared with you").setHeading();
@@ -94,6 +102,18 @@ export class SwitchVaultModal extends Modal {
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`);
     }
+  }
+
+  private async doFork() {
+    const name = sanitizeVaultName(this.forkName);
+    if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
+    this.close();
+    new Notice(`SelfSync: forking into '${name}' (uploading a copy)…`);
+    try {
+      await this.plugin.forkVault(name);
+      new Notice(`SelfSync: now syncing your fork '${name}' (yours to edit)`);
+      this.plugin.settingsRefresh?.();
+    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
   }
 
   // Switch to a vault shared BY someone else. Read-only shares can only be downloaded
