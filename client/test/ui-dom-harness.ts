@@ -27,6 +27,10 @@ export function fakePlugin(over: any = {}) {
     settings,
     saveSettings: vi.fn(async () => {}),
     applyConfigSyncChange: vi.fn(async () => {}),
+    // Mirror the real setConfigSurface: flip the surface + kick applyConfigSyncChange (direction is
+    // recorded via markPendingConfigDir, a no-op here — the modal path drives it in the real plugin).
+    markPendingConfigDir: vi.fn(),
+    setConfigSurface: vi.fn(async (surface: string, on: boolean) => { (settings.configSync as any)[surface] = on; await p.applyConfigSyncChange(); }),
     reconnect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),

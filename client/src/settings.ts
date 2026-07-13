@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
-import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts } from "./configsync";
+import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
+import { ConfigDirectionModal } from "./configdir";
 import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
@@ -190,20 +191,45 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // no-op "always synced" row). Community-plugin code is a further opt-in, its own card below.
   private renderObsidianConfig(c: HTMLElement, s: NewLiveSyncSettings): void {
     const cs = s.configSync;
+    const ro = !!s.vaultReadOnly;
     const g = new SettingGroup(c).setHeading("Obsidian configuration");
     g.addSetting((st) => st.setName("Sync settings, themes, or plugins")
       .setDesc("Sync your Obsidian configuration across devices.")
-      .addToggle((tg) => tg.setValue(cs.enabled).onChange(async (v) => {
-        cs.enabled = v; await this.plugin.applyConfigSyncChange(); this.display();
+      .addToggle((tg) => tg.setValue(cs.enabled).onChange((v) => {
+        if (!v) { cs.enabled = false; void this.plugin.applyConfigSyncChange().then(() => this.display()); return; }
+        cs.enabled = true;
+        if (ro) {
+          // Read-only shared vault: settings sync is opt-in PER SURFACE (download-only) — start every
+          // surface OFF so adopting the owner's config is a deliberate choice, never automatic.
+          cs.core = cs.hotkeys = cs.appearance = cs.snippets = cs.community = false;
+          void this.plugin.applyConfigSyncChange().then(() => this.display());
+          return;
+        }
+        // Read-write: ask ONE first-contact direction for the surfaces that are on by default, then
+        // reveal the per-surface toggles (each asks its own direction when toggled later).
+        const active = (["core", "hotkeys", "appearance", "snippets", "community"] as ConfigSurface[]).filter((k) => cs[k]);
+        if (!active.length) { void this.plugin.applyConfigSyncChange().then(() => this.display()); return; }
+        new ConfigDirectionModal(this.app, "your settings", false,
+          (dir) => { for (const k of active) this.plugin.markPendingConfigDir(k, dir); void this.plugin.applyConfigSyncChange().then(() => this.display()); },
+          () => { cs.enabled = false; this.display(); }, // cancelled → don't enable; revert the toggle
+        ).open();
       })));
     if (!cs.enabled) return;
 
     // A short trust signal — SelfSync never syncs its own credentials.
-    g.addSetting((st) => st.setDesc("🔒 SelfSync's own login is never synced."));
+    g.addSetting((st) => st.setDesc(ro
+      ? "🔒 Read-only vault: settings are adopted from the owner (download only) — SelfSync's own login is never synced."
+      : "🔒 SelfSync's own login is never synced."));
 
-    const cat = (name: string, desc: string, key: "core" | "hotkeys" | "appearance" | "snippets" | "community") =>
-      g.addSetting((st) => st.setName(name).setDesc(desc).addToggle((tg) => tg.setValue(cs[key]).onChange(async (v) => {
-        cs[key] = v; await this.plugin.applyConfigSyncChange(); if (key === "community") this.display();
+    const cat = (name: string, desc: string, key: ConfigSurface) =>
+      g.addSetting((st) => st.setName(name).setDesc(desc).addToggle((tg) => tg.setValue(cs[key]).onChange((v) => {
+        if (!v) { void this.plugin.setConfigSurface(key, false).then(() => this.display()); return; }
+        // Turning a surface ON asks its first-contact direction (download/upload; download-only on a
+        // read-only vault). Cancel leaves it off — display() reverts the visual toggle.
+        new ConfigDirectionModal(this.app, name, ro,
+          (dir) => { void this.plugin.setConfigSurface(key, true, dir).then(() => this.display()); },
+          () => this.display(),
+        ).open();
       })));
     cat("Core settings", "app.json, core-plugins.json", "core");
     cat("Hotkeys", "hotkeys.json", "hotkeys");

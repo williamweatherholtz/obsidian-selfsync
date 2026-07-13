@@ -1,5 +1,38 @@
 import { describe, it, expect } from "vitest";
-import { groupConfigConflicts, configFileLabel } from "../src/configsync";
+import { groupConfigConflicts, configFileLabel, configSurfaceOf, configAutoResolveChoice } from "../src/configsync";
+
+describe("configSurfaceOf — path → the per-category toggle that governs it", () => {
+  it("maps each recognized config file/dir to its surface", () => {
+    expect(configSurfaceOf(".obsidian/app.json")).toBe("core");
+    expect(configSurfaceOf(".obsidian/core-plugins.json")).toBe("core");
+    expect(configSurfaceOf(".obsidian/hotkeys.json")).toBe("hotkeys");
+    expect(configSurfaceOf(".obsidian/appearance.json")).toBe("appearance");
+    expect(configSurfaceOf(".obsidian/themes/Minimal/theme.css")).toBe("appearance");
+    expect(configSurfaceOf(".obsidian/snippets/mine.css")).toBe("snippets");
+    expect(configSurfaceOf(".obsidian/community-plugins.json")).toBe("community");
+    expect(configSurfaceOf(".obsidian/plugins/dataview/main.js")).toBe("community");
+  });
+  it("returns null for a note/attachment or an unrecognized .obsidian file", () => {
+    expect(configSurfaceOf("notes/todo.md")).toBeNull();
+    expect(configSurfaceOf(".obsidian/workspace.json")).toBeNull(); // device-local, no surface
+  });
+});
+
+describe("configAutoResolveChoice — first-contact direction, else prompt", () => {
+  it("auto-resolves ONLY a no-base (conflict-copy) divergence when a direction is set", () => {
+    expect(configAutoResolveChoice("conflict-copy", "appearance", "download")).toBe("remote"); // adopt synced
+    expect(configAutoResolveChoice("conflict-copy", "appearance", "upload")).toBe("local");    // keep this device's
+  });
+  it("falls through to a prompt when it's a LATER edit (has a base), not first contact", () => {
+    expect(configAutoResolveChoice("merge", "appearance", "download")).toBeNull();
+    expect(configAutoResolveChoice("edit-wins-pull", "core", "upload")).toBeNull();
+    expect(configAutoResolveChoice("edit-wins-keep-local", "core", "download")).toBeNull();
+  });
+  it("falls through when no direction is pending, or the path has no surface", () => {
+    expect(configAutoResolveChoice("conflict-copy", "appearance", undefined)).toBeNull();
+    expect(configAutoResolveChoice("conflict-copy", null, "download")).toBeNull();
+  });
+});
 
 describe("groupConfigConflicts — one entry per plugin, labelled by purpose", () => {
   it("collapses all of a plugin's files into ONE entry", () => {

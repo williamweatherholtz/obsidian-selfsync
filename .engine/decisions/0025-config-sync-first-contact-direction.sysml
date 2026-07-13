@@ -1,0 +1,31 @@
+// =====================================================================
+// D0025 — settings (config) sync gets an EXPLICIT first-contact direction per surface, mirroring the
+// vault-switch {download, upload} (merge deliberately dropped for config). Read-only shares: offered,
+// default OFF, download-only. Replaces the reactive per-file "keep local / take remote" prompt-on-
+// divergence with an upfront intent chosen when a surface is turned on. Accepted 2026-07-12 by
+// wweatherholtz (answered the design questions: "per surface" + "read-only offered, default OFF").
+// =====================================================================
+package ProjectDecision0025 {
+    private import EngineElement::*;
+    private import EngineWork::*;
+    private import EngineVerification::*;
+
+    part d0025 : Decision {
+        :>> id = "0d250a1c-7e34-4b55-9a11-2f3c4d5e6a25";
+        :>> title = "D0025: config sync has an explicit first-contact direction (download/upload) per surface; read-only = download-only, default off";
+        :>> createdAt = "2026-07-12";
+        :>> createdBy = "wweatherholtz";
+        :>> status = DecisionStatus::accepted;
+        :>> context = "Data (vault) sync declares an initial direction when instantiated/switched — {download, upload, merge} (switchTo/SwitchMode). SETTINGS (config) sync had no equivalent: enabling a config surface just kicked a rescan, and first-contact resolution was REACTIVE and per-file — any .obsidian/ file that differed on both sides (no common base) surfaced a 'keep local / take remote' adjudication prompt, and non-divergent files propagated by presence. So the initial behaviour was implicit and could spray per-file prompts — exactly the 'surprise' pattern the conflict re-architecture (D0024) set out to eliminate. The user asked for the data-sync intent model applied to settings: when settings sync is turned on, indicate the initial direction, minus merge (which doesn't fit config).";
+        :>> decision = "Give config sync an EXPLICIT first-contact direction, chosen PER SURFACE (Core / Hotkeys / Appearance / Snippets / Community plugins) when it is turned on: {download = adopt the synced copy, overwriting this device's where they differ; upload = make this device's copy canonical, overwriting the synced}. MERGE is intentionally absent — config files are opaque blobs, so a line-merge could yield invalid/nonsense settings; the only sane first-contact resolution is to take one whole side. The direction is asked via ConfigDirectionModal at surface-enable (the master toggle asks ONCE for the surfaces active by default, to avoid a prompt storm; each later per-surface toggle asks its own). READ-ONLY shared vaults: config sync is OFFERED but starts OFF (opt-in per surface) and is DOWNLOAD-ONLY — a reader can adopt the owner's settings deliberately, never push, and it never auto-clobbers the reader's config. Mechanism: a session-transient per-surface direction (pendingConfigDir) that the config-conflict handler consumes to AUTO-RESOLVE a first-contact divergence (decide()=='conflict-copy', i.e. no common base) via the existing resolveConfigConflict, instead of prompting; a LATER concurrent edit (shared base → merge/edit-wins) still prompts — that genuinely needs a human. Decision (download/upload) semantics live in the pure configAutoResolveChoice; surface classification in configSurfaceOf.";
+        :>> rationale = "Parity with the data-sync mental model the user already understands, and it converts an implicit, reactive, per-file behaviour into one explicit intent per surface — the same 'state/intent is declared, views fall out' principle as D0024. Merge is dropped because config isn't line-structured (a 3-way merge of app.json/data.json risks corruption), so upfront {download, upload} is both simpler and safer. PER-SURFACE (over one global pick) was the user's explicit choice: it lets a reader adopt the owner's appearance while keeping their own hotkeys, say. READ-ONLY default-OFF + download-only (user's explicit choice over default-on / not-offered) balances 'a reader can get the owner's plugin/appearance setup so the vault renders as intended' against 'never silently overwrite the reader's own Obsidian config' — opt-in makes adopting the owner's config, INCLUDING community-plugin code, a deliberate act (and it still respects the existing peer-plugin-code-replacement gate, R14 sec#1). Session-transient (not persisted): a mid-enable restart just re-prompts; and because auto-resolve is gated to NO-BASE divergence, a lingering direction only ever governs a genuinely new no-base file in that surface, where reusing the surface's chosen direction is the right intent.";
+        :>> consequences = "New ConfigDirectionModal (configdir.ts). settings.ts: the master + per-surface toggles open it on enable (read-only → download-only, surfaces start off). main.ts: pendingConfigDir map + setConfigSurface/markPendingConfigDir; recordConfigConflict auto-resolves a no-base divergence per the surface direction (reuses resolveConfigConflict) instead of always queuing a prompt. configsync.ts: pure configSurfaceOf + configAutoResolveChoice + ConfigSurface/ConfigDirection types. The per-file adjudication prompt survives ONLY for a genuine later concurrent edit (shared base). Per-plugin allowlist adds inherit the Community surface's direction (no per-plugin prompt). No schema/process change — deliverable behaviour only.";
+    }
+
+    verification d0025Accept : Test {
+        :>> id = "0d25acc7-2b33-4c44-9d55-6e7f80912325";
+        :>> method = VerificationMethod::confirmation;
+        :>> procedureText = "wweatherholtz proposed the feature ('we need the same kind of settings sync … indicate what the initial behavior should be {download, upload, merge} except maybe merge doesn't make sense … so sync-managed should be a toggle on/off for each setting', 2026-07-12), and when the design questions were put, chose 'Per surface' for the direction granularity and 'Offered, default OFF (download-only)' for read-only vaults, then directed implementation to proceed.";
+    }
+    part d0025AcceptR1 : TestResult { :>> id = "0d25ac00-ab22-4c33-9d44-5e6f70819325"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "c75ac61"; :>> judgedAt = "2026-07-12"; :>> judgedBy = "wweatherholtz"; }
+}

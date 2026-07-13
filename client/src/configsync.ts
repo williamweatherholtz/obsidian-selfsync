@@ -85,6 +85,38 @@ export function groupConfigConflicts(paths: string[]): ConflictGroup[] {
   return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+// The config SURFACE a path belongs to (the per-category toggle that governs it), or null for a
+// non-config / unrecognized path. Mirrors shouldSync's category checks — kept in lockstep with it.
+// Used to look up the per-surface first-contact direction when auto-resolving an initial divergence.
+export type ConfigSurface = "core" | "hotkeys" | "appearance" | "snippets" | "community";
+export function configSurfaceOf(path: string): ConfigSurface | null {
+  if (!path.startsWith(CONFIG_PREFIX)) return null;
+  const p = path.slice(CONFIG_PREFIX.length);
+  if (p === "app.json" || p === "core-plugins.json") return "core";
+  if (p === "hotkeys.json") return "hotkeys";
+  if (p === "appearance.json" || p.startsWith("themes/")) return "appearance";
+  if (p.startsWith("snippets/")) return "snippets";
+  if (p === "community-plugins.json" || p.startsWith("plugins/")) return "community";
+  return null;
+}
+
+// First-contact direction for config sync, chosen per surface when it's turned on (parallel to the
+// vault-switch download/upload — MERGE is intentionally absent: config files are opaque blobs, so a
+// line-merge could yield invalid/nonsense settings; the only sane first-contact resolution is to take
+// one whole side). download = adopt the synced copy; upload = make this device's copy canonical.
+export type ConfigDirection = "download" | "upload";
+
+// Decide whether an incoming config divergence should be AUTO-resolved by the surface's chosen
+// first-contact direction, and to which side. Returns "local" (keep this device's) / "remote" (take
+// the synced) for resolveConfigConflict, or null to fall through to the normal per-file human prompt.
+// ONLY a first-contact divergence (no common base → decide() returned "conflict-copy") is auto-resolved;
+// a LATER concurrent edit (both sides changed from a shared base → "merge"/"edit-wins-*") always prompts
+// — that genuinely needs a human. Pure + total for unit testing.
+export function configAutoResolveChoice(reason: string, surface: ConfigSurface | null, dir: ConfigDirection | undefined): "local" | "remote" | null {
+  if (reason !== "conflict-copy" || !surface || !dir) return null;
+  return dir === "download" ? "remote" : "local";
+}
+
 // The plugin id of a given community-plugin path under `.obsidian/plugins/`, or null.
 export function pluginIdOf(path: string): string | null {
   if (!path.startsWith(CONFIG_PREFIX)) return null;

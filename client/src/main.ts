@@ -12,7 +12,7 @@ import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant }
 import { Phase, light, isWsStale } from "./syncstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
-import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC } from "./configsync";
+import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, configSurfaceOf, configAutoResolveChoice, ConfigSurface, ConfigDirection } from "./configsync";
 import { isSafeVaultPath } from "./pathsafe";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
@@ -515,7 +515,35 @@ export default class NewLiveSyncPlugin extends Plugin {
     try { remote = (await this.api?.fileMeta(path)) != null; } catch { remote = false; }
     return { local, remote };
   }
+  // Per-surface FIRST-CONTACT direction, set when the user turns a config surface on (see
+  // setConfigSurface). Session-transient (in-memory): consumed by recordConfigConflict to auto-resolve
+  // the surface's initial divergence in the chosen direction instead of prompting. A later concurrent
+  // edit (which has a shared base) still prompts, so a lingering entry only ever governs a genuinely
+  // NEW no-base file in that surface — where reusing the surface's chosen direction is the right intent.
+  private pendingConfigDir = new Map<ConfigSurface, ConfigDirection>();
+  markPendingConfigDir(surface: ConfigSurface, dir: ConfigDirection): void {
+    // Read-only shares can only ever DOWNLOAD (we never push) — force it regardless of what was asked.
+    this.pendingConfigDir.set(surface, this.settings.vaultReadOnly ? "download" : dir);
+  }
+  // Toggle a config surface on/off from the settings UI. Turning ON records the first-contact direction
+  // (download/upload) so the initial divergence auto-resolves that way rather than prompting per file.
+  async setConfigSurface(surface: ConfigSurface, on: boolean, dir?: ConfigDirection): Promise<void> {
+    (this.settings.configSync as unknown as Record<string, boolean>)[surface] = on;
+    if (on && dir) this.markPendingConfigDir(surface, dir);
+    else this.pendingConfigDir.delete(surface);
+    await this.applyConfigSyncChange();
+  }
+
   private recordConfigConflict(path: string, reason: string): void {
+    // First-contact divergence for a surface the user just enabled with an explicit direction →
+    // auto-resolve that way (adopt synced / keep this device's) instead of queuing a human prompt.
+    const surface = configSurfaceOf(path);
+    const choice = configAutoResolveChoice(reason, surface, surface ? this.pendingConfigDir.get(surface) : undefined);
+    if (choice) {
+      void resolveConfigConflict(this.deps(), path, choice); // reuses the tested adjudication apply
+      this.log(`config first-contact for '${path}': ${choice === "remote" ? "adopted the synced copy" : "kept this device's"} (chosen when enabling ${surface} sync)`);
+      return;
+    }
     if (this.settings.configConflicts.includes(path)) return; // already queued
     this.settings.configConflicts.push(path);
     void this.saveSettings();
