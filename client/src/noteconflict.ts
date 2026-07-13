@@ -94,7 +94,7 @@ export class NoteConflictModal extends Modal {
 
     new Setting(c)
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
-      .addButton((b) => b.setButtonText("Keep the other").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
+      .addButton((b) => b.setButtonText("Keep the other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
       .addButton((b) => b.setButtonText("Keep this device's").setCta().onClick(() => void this.resolve(copy, original, "mine", theirs)));
   }
 

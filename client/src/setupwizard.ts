@@ -66,7 +66,9 @@ export class SetupWizardModal extends Modal {
     onEnter(serverInput, () => { if (this.s.server) void this.doTest(); });
     if (this.serverMsg) {
       c.createEl("p", { text: this.serverMsg })
-        .setAttribute("style", this.s.serverOk ? "font-size:12px;color:var(--color-green);margin:0 0 8px;" : "font-size:12px;opacity:0.85;margin:0 0 8px;");
+        // white-space:pre-wrap so the login/consent banner's line breaks (\n\n) actually render —
+        // without it the "Reachable ✓" tick and the banner text collapse onto one run-on line.
+        .setAttribute("style", `white-space:pre-wrap;${this.s.serverOk ? "font-size:12px;color:var(--color-green);margin:0 0 8px;" : "font-size:12px;opacity:0.85;margin:0 0 8px;"}`);
     }
 
     // ── Account ── (collapses to a "Signed in" line once authenticated)

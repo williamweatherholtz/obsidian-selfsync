@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canLogIn, canFinish, statusTitle, isValidVaultName, sanitizeVaultName, wizardCredentials, WizardState } from "../src/wizardsteps";
+import { canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials, WizardState } from "../src/wizardsteps";
 
 const base: WizardState = {
   server: "", serverOk: false, mode: "login",
@@ -63,15 +63,5 @@ describe("wizardCredentials (P1: token-only-at-rest)", () => {
   });
   it("persists the password only when the user opted into storing it", () => {
     expect(wizardCredentials(loggedIn, "notes", "tok-123", true).password).toBe("secret");
-  });
-});
-
-describe("statusTitle", () => {
-  it("maps each phase to its headline (identity lives under Connection, not here)", () => {
-    expect(statusTitle("off")).toBe("Not connected");
-    expect(statusTitle("connecting")).toBe("Connecting…");
-    expect(statusTitle("syncing")).toBe("Syncing…");
-    expect(statusTitle("idle")).toBe("Fully synced");
-    expect(statusTitle("offline")).toBe("Offline — retrying");
   });
 });

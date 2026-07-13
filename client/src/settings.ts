@@ -276,10 +276,18 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .setDesc(Platform.isMobile
         ? "Files larger than this are skipped ON THIS DEVICE. Mobile buffers files in memory — very large values can crash the app. Larger files still sync on desktop."
         : "Files larger than this are skipped on this device. The server enforces its own ceiling.")
-      .addText((t) => t.setPlaceholder("200").setValue(String(s.maxSyncMB)).onChange(async (v) => {
-        const n = Math.floor(Number(v));
-        if (Number.isFinite(n) && n > 0) { s.maxSyncMB = n; await this.plugin.saveSettings(); }
-      })));
+      .addText((t) => {
+        t.setPlaceholder("200").setValue(String(s.maxSyncMB)).onChange(async (v) => {
+          const n = Math.floor(Number(v));
+          if (Number.isFinite(n) && n > 0) { s.maxSyncMB = n; await this.plugin.saveSettings(); }
+        });
+        // Validate on blur so an invalid/empty entry gives feedback + reverts, instead of silently
+        // keeping the old value (the "I changed it and don't know what happened" trap).
+        t.inputEl.addEventListener("blur", () => {
+          const n = Math.floor(Number(t.inputEl.value));
+          if (!Number.isFinite(n) || n <= 0) { new Notice("SelfSync: enter a whole number of MB greater than 0"); t.setValue(String(s.maxSyncMB)); }
+        });
+      }));
     g.addSetting((st) => st.setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); })));
     g.addSetting((st) => st.setName("Diagnostics")

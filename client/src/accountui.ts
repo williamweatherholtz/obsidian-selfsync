@@ -18,7 +18,7 @@ export class ChangePasswordModal extends Modal {
 
   private render() {
     const c = this.contentEl; c.empty();
-    c.createEl("p", { text: "Changing your password signs out every other device. This one stays signed in." })
+    c.createEl("p", { text: "Changing your password signs out every other device. This one stays signed in — other devices will need the NEW password to sign back in." })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;");
     const pw = (s: Setting, set: (v: string) => void) =>
       s.addText((t) => { t.inputEl.type = "password"; t.onChange((v) => set(v)); });

@@ -1,6 +1,5 @@
 // Pure logic behind the setup wizard + the settings status card. No Obsidian API,
 // so it is fully unit-testable; SetupWizardModal / the settings tab render over it.
-import { Phase } from "./syncstate";
 
 // Mirrors the server's safe_name: letters/numbers/.-_ , 1–64 chars, not "."/"..".
 // Validated client-side so a bad new-vault name gets a clear message, not a raw 400.
@@ -53,17 +52,4 @@ export function wizardCredentials(s: WizardState, vault: string, token: string, 
     vaultId: vault,
     authToken: token,
   };
-}
-
-// The status-card headline for a connection phase. Identity (account, remote vault)
-// and last-synced live under the Connection section, NOT the card — so this is just
-// the state title. The unconfigured "Not set up" case is handled by the renderer.
-export function statusTitle(phase: Phase): string {
-  switch (phase) {
-    case "off":        return "Not connected";
-    case "connecting": return "Connecting…";
-    case "syncing":    return "Syncing…";
-    case "idle":       return "Fully synced";
-    case "offline":    return "Offline — retrying";
-  }
 }

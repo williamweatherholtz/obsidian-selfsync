@@ -78,7 +78,7 @@ describe("NoteConflictModal (adjudication)", () => {
     const plugin = seed();
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    buttonByText(m.contentEl, "Keep the other").click();
+    buttonByText(m.contentEl, "Keep the other device's").click();
     await flush();
     expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "theirs", expect.anything());
   });

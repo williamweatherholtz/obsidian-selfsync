@@ -234,11 +234,11 @@ class LogModal extends Modal {
     bar.setAttribute("style", "display:flex;gap:8px;margin-top:10px;");
     const copyBtn = bar.createEl("button", { text: "Copy to clipboard" });
     copyBtn.onclick = async () => {
-      try { await navigator.clipboard.writeText(this.plugin.getLogText()); new Notice("Sync log copied"); }
-      catch { new Notice("Copy failed — select the text manually"); }
+      try { await navigator.clipboard.writeText(this.plugin.getLogText()); new Notice("SelfSync: sync log copied"); }
+      catch { new Notice("SelfSync: copy failed — select the text manually"); }
     };
     const clearBtn = bar.createEl("button", { text: "Clear log" });
-    clearBtn.onclick = () => { this.plugin.clearLogs(); pre.setText(this.plugin.getLogText()); new Notice("Sync log cleared"); };
+    clearBtn.onclick = () => { this.plugin.clearLogs(); pre.setText(this.plugin.getLogText()); new Notice("SelfSync: sync log cleared"); };
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -588,7 +588,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.settings.configConflicts.includes(path)) return; // already queued
     this.settings.configConflicts.push(path);
     void this.saveSettings();
-    this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in SelfSync settings → Config differences`, true);
+    this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in Settings → Conflicts`, true);
     this.settingsRefresh?.(); this.statusListener?.();
   }
   // C2 guard fired for a path (server manifest empty while we hold it in history — refused to
@@ -891,9 +891,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       // exactly which plugin's code changed — and that it's executable and unapplied until reload —
       // is the barrier before you reload it into Obsidian's un-CSP'd renderer.
       const names = [...pluginIds].sort().join(", ");
-      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT applied until you reload Obsidian, and you should reload ONLY if you trust the source of these changes.`, 15000);
+      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT active until you fully close and reopen Obsidian, and you should do so ONLY if you trust the source of these changes.`, 15000);
     } else if (touchedCss || touchedCore) {
-      new Notice("SelfSync: some synced settings (appearance / core) will apply after you reload Obsidian.");
+      new Notice("SelfSync: some synced settings (appearance / core) will apply after you fully close and reopen Obsidian.");
     } else {
       this.log(`applied synced config (${paths.length} file(s))`);
     }
@@ -1188,9 +1188,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       const em = String(e?.message);
       this.vaultGone = /HTTP 404/.test(em); // the vault was deleted/renamed server-side (D0021 prompt)
       this.lastIssue = /no password stored|session expired/.test(em)
-        ? "Session needs your password again — use “Set up / switch vault” to re-enter it."
+        ? "Session expired — open Settings and tap “Reconfigure” (under Advanced) to sign in again."
         : this.vaultGone
-        ? "This vault no longer exists on the server — re-create it from this device (button below) or pick another in “Set up / switch vault”. Your local files are untouched."
+        ? "This vault no longer exists on the server — re-create it from this device (button below), or tap “Switch” to pick another. Your local files are untouched."
         : (this.lastIssue ?? `Can't reach the server (${e?.message ?? e}). Retrying…`);
       throw e; // → engine: onError logs it, state goes offline, backoff reconnect is scheduled
     }
