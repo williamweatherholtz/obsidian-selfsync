@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
-import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
+import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
 import { ConfigDirectionModal } from "./configdir";
 import { statusTitle } from "./wizardsteps";
 import { light } from "./syncstate";
@@ -72,6 +72,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
 export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
   private statusGroup?: SettingGroup;
+  private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
 
   display(): void {
     const { containerEl } = this; containerEl.empty();
@@ -318,28 +319,46 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .filter((id) => id !== selfId)
       .sort((a, b) => (manifests[a].name || a).localeCompare(manifests[b].name || b));
     if (ids.length === 0) return;
+    const ro = !!this.plugin.settings.vaultReadOnly;
     const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
     const g = new SettingGroup(c).setHeading("Synced community plugins");
 
-    // Bulk actions: sync everything at once (for a full mirror), or clear the set.
+    // Bulk actions: sync everything at once (for a full mirror), or clear the set. setPluginSync
+    // records each added plugin's first-contact direction (default = the Community surface's).
     g.addSetting((st) => st.setName("Sync all installed plugins")
       .setDesc(`${shared} of ${ids.length} plugins synced.`)
       // "Sync none" first, "Sync all" second → Sync all renders on the RIGHT.
       .addButton((b) => b.setButtonText("Sync none").onClick(async () => {
-        cs.pluginAllow = []; await this.plugin.applyConfigSyncChange(); this.display();
+        for (const id of ids) await this.plugin.setPluginSync(id, false); this.display();
       }))
       .addButton((b) => b.setButtonText("Sync all").onClick(async () => {
-        cs.pluginAllow = ids.slice(); await this.plugin.applyConfigSyncChange(); this.display();
+        for (const id of ids) await this.plugin.setPluginSync(id, true); this.display();
       })));
 
+    // Collapsible list — a big plugin roster shouldn't flood the pane. Collapses/expands independently
+    // of each plugin's direction (a mix of download/upload is fine). Expand state persists across the
+    // tab's re-renders (a membership toggle re-renders to show/hide that plugin's direction control).
+    const expanded = this.pluginsExpanded ?? ids.length <= 8;
+    const details = c.createEl("details"); (details as unknown as { open: boolean }).open = expanded;
+    details.addEventListener("toggle", () => { this.pluginsExpanded = (details as unknown as { open: boolean }).open; });
+    details.createEl("summary", { text: `${ids.length} installed plugins` }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
+    const body = details.createDiv();
+
     for (const id of ids) {
-      g.addSetting((st) => st.setName(manifests[id].name || id)
-        .addToggle((tg) => tg.setValue(cs.pluginAllow.includes(id)).onChange(async (v) => {
-          const set = new Set(cs.pluginAllow);
-          if (v) set.add(id); else set.delete(id);
-          cs.pluginAllow = [...set];
-          await this.plugin.applyConfigSyncChange();
-        })));
+      const on = cs.pluginAllow.includes(id);
+      const st = new Setting(body).setName(manifests[id].name || id);
+      st.addToggle((tg) => tg.setValue(on).onChange(async (v) => { await this.plugin.setPluginSync(id, v); this.display(); }));
+      // The per-plugin first-contact direction appears only when the plugin is synced. On a read-only
+      // vault only "download" is possible, so show that as text rather than a choice.
+      if (on && ro) {
+        st.setDesc("download only (read-only vault)");
+      } else if (on) {
+        st.addDropdown((dd) => dd
+          .addOption("download", "Use synced")
+          .addOption("upload", "Use this device's")
+          .setValue(cs.pluginDir?.[id] ?? this.plugin.communityConfigDir() ?? "download")
+          .onChange((v) => void this.plugin.setPluginDir(id, v as ConfigDirection)));
+      }
     }
   }
 }

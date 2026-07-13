@@ -534,11 +534,36 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.applyConfigSyncChange();
   }
 
+  // The Community surface's chosen first-contact direction (transient) — the DEFAULT for a newly-synced
+  // plugin's own direction.
+  communityConfigDir(): ConfigDirection | undefined { return this.pendingConfigDir.get("community"); }
+  // Add/remove a community plugin from the sync allowlist. On add, record its first-contact direction
+  // (defaulting to the Community surface's, else download; a read-only vault can only download).
+  async setPluginSync(id: string, on: boolean, dir?: ConfigDirection): Promise<void> {
+    const cs = this.settings.configSync;
+    const set = new Set(cs.pluginAllow);
+    if (on) set.add(id); else set.delete(id);
+    cs.pluginAllow = [...set];
+    if (on) (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : (dir ?? this.communityConfigDir() ?? "download");
+    await this.applyConfigSyncChange();
+  }
+  // Change an already-synced plugin's first-contact direction (per-plugin override of the surface).
+  async setPluginDir(id: string, dir: ConfigDirection): Promise<void> {
+    const cs = this.settings.configSync;
+    (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : dir;
+    await this.applyConfigSyncChange();
+  }
+
   private recordConfigConflict(path: string, reason: string): void {
     // First-contact divergence for a surface the user just enabled with an explicit direction →
     // auto-resolve that way (adopt synced / keep this device's) instead of queuing a human prompt.
+    // A community-plugin path uses its OWN per-plugin direction when set, else the surface's.
     const surface = configSurfaceOf(path);
-    const choice = configAutoResolveChoice(reason, surface, surface ? this.pendingConfigDir.get(surface) : undefined);
+    let dir = surface ? this.pendingConfigDir.get(surface) : undefined;
+    const pid = pluginIdOf(path);
+    if (pid) { const pd = this.settings.configSync.pluginDir?.[pid]; if (pd) dir = pd; }
+    if (dir && this.settings.vaultReadOnly) dir = "download"; // read-only can only ever download
+    const choice = configAutoResolveChoice(reason, surface, dir);
     if (choice) {
       void resolveConfigConflict(this.deps(), path, choice); // reuses the tested adjudication apply
       this.log(`config first-contact for '${path}': ${choice === "remote" ? "adopted the synced copy" : "kept this device's"} (chosen when enabling ${surface} sync)`);
@@ -1438,6 +1463,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // backfill any categories added since this vault last saved).
     this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
     this.settings.configSync.pluginAllow = [...(s.configSync?.pluginAllow ?? [])]; // fresh array (CS2): never alias DEFAULT_CONFIG_SYNC's
+    this.settings.configSync.pluginDir = { ...(s.configSync?.pluginDir ?? {}) };   // fresh per-plugin first-contact directions
     // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
     this.settings.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
     // noteConflicts array retired (D-conflict-model): note conflicts are now derived from the vault.

@@ -31,6 +31,9 @@ export function fakePlugin(over: any = {}) {
     // recorded via markPendingConfigDir, a no-op here — the modal path drives it in the real plugin).
     markPendingConfigDir: vi.fn(),
     setConfigSurface: vi.fn(async (surface: string, on: boolean) => { (settings.configSync as any)[surface] = on; await p.applyConfigSyncChange(); }),
+    communityConfigDir: vi.fn(() => undefined),
+    setPluginSync: vi.fn(async (id: string, on: boolean) => { const set = new Set(settings.configSync.pluginAllow); if (on) set.add(id); else set.delete(id); settings.configSync.pluginAllow = [...set]; await p.applyConfigSyncChange(); }),
+    setPluginDir: vi.fn(async () => {}),
     reconnect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),

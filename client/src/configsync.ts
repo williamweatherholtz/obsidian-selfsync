@@ -23,6 +23,12 @@ export interface ConfigSyncSelection {
   // Default-OFF, opt-in: installing a plugin on one device never auto-pushes it (and its files
   // overwriting the other devices) before the user decides to share it. (was pluginDeny: default-share)
   pluginAllow: string[];
+  // Per-plugin FIRST-CONTACT direction within the community surface — lets you adopt the owner's copy
+  // of one plugin while pushing your own of another (the "lighter form" of per-plugin control). Absent
+  // → inherit the Community surface's chosen direction, else download (safe). Only governs a plugin's
+  // INITIAL sync (no common base); after that, ongoing changes reconcile like any file. Persisted so the
+  // per-plugin control shows a coherent state; keyed by plugin id.
+  pluginDir?: Record<string, ConfigDirection>;
 }
 
 // Category defaults mirror official Obsidian Sync's "Vault configuration sync": core
