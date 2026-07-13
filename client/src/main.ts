@@ -553,6 +553,22 @@ export default class NewLiveSyncPlugin extends Plugin {
     (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : dir;
     await this.applyConfigSyncChange();
   }
+  // Community-plugin ids the SERVER holds (from the last full reconcile) — lets the settings UI offer
+  // plugins this device hasn't installed yet, so a fresh vault can adopt an existing vault's plugin set.
+  private serverPluginIds = new Set<string>();
+  getServerPluginIds(): string[] { return [...this.serverPluginIds]; }
+  private setServerPluginIds(ids: string[]): void {
+    const self = this.selfFolderId();
+    const next = new Set(ids.filter((id) => id && id !== self));
+    if (next.size === this.serverPluginIds.size && [...next].every((id) => this.serverPluginIds.has(id))) return; // unchanged
+    this.serverPluginIds = next;
+    this.settingsRefresh?.(); // a newly-discovered server plugin should appear in the list
+  }
+  // Adopt EVERY community plugin the server holds (the fresh-vault bootstrap) — download-only for the
+  // ones not installed here (they pull + install). Community surface must be on for these to sync.
+  async installAllServerPlugins(): Promise<void> {
+    for (const id of this.serverPluginIds) await this.setPluginSync(id, true, "download");
+  }
 
   private recordConfigConflict(path: string, reason: string): void {
     // First-contact divergence for a surface the user just enabled with an explicit direction →
@@ -1011,6 +1027,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onDeclined: (paths) => this.noteDeclined(paths),
+      onRemotePlugins: (ids) => this.setServerPluginIds(ids),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
       deleteGuard: this.deleteGuard, // SEC-DATA: cross-pass cumulative delete-rate guard (anti-drain)

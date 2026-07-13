@@ -315,25 +315,29 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderPluginChecklist(c: HTMLElement, cs: NewLiveSyncSettings["configSync"]): void {
     const selfId = this.plugin.selfFolderId();
     const manifests = ((this.app as any).plugins?.manifests ?? {}) as Record<string, { id: string; name: string }>;
-    const ids = Object.keys(manifests)
-      .filter((id) => id !== selfId)
-      .sort((a, b) => (manifests[a].name || a).localeCompare(manifests[b].name || b));
+    const installed = new Set(Object.keys(manifests).filter((id) => id !== selfId));
+    const onServer = new Set(this.plugin.getServerPluginIds().filter((id) => id !== selfId));
+    // UNION of installed + server-side plugins — so a fresh vault (nothing installed yet) can still SEE
+    // and adopt the plugins an existing vault synced: ticking a not-installed one pulls its files, which
+    // installs it. (Previously the list was installed-plugins-only, leaving a new vault with nothing to
+    // pick.) Sorted by display name (manifest name if installed, else the id).
+    const ids = [...new Set([...installed, ...onServer])]
+      .sort((a, b) => (manifests[a]?.name || a).localeCompare(manifests[b]?.name || b));
     if (ids.length === 0) return;
     const ro = !!this.plugin.settings.vaultReadOnly;
     const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
+    const notInstalledOnServer = [...onServer].filter((id) => !installed.has(id) && !cs.pluginAllow.includes(id));
     const g = new SettingGroup(c).setHeading("Synced community plugins");
 
-    // Bulk actions: sync everything at once (for a full mirror), or clear the set. setPluginSync
-    // records each added plugin's first-contact direction (default = the Community surface's).
-    g.addSetting((st) => st.setName("Sync all installed plugins")
-      .setDesc(`${shared} of ${ids.length} plugins synced.`)
-      // "Sync none" first, "Sync all" second → Sync all renders on the RIGHT.
-      .addButton((b) => b.setButtonText("Sync none").onClick(async () => {
-        for (const id of ids) await this.plugin.setPluginSync(id, false); this.display();
-      }))
-      .addButton((b) => b.setButtonText("Sync all").onClick(async () => {
-        for (const id of ids) await this.plugin.setPluginSync(id, true); this.display();
-      })));
+    // Bulk actions. "Install all from the sync" is the fresh-vault bootstrap — adopt every plugin the
+    // server holds (download-only for the ones not installed here); shown only when there are such
+    // plugins. setPluginSync records each added plugin's first-contact direction.
+    g.addSetting((st) => {
+      st.setName("All plugins").setDesc(`${shared} of ${ids.length} synced${notInstalledOnServer.length ? ` · ${notInstalledOnServer.length} available from the sync (not installed here)` : ""}.`);
+      st.addButton((b) => b.setButtonText("Sync none").onClick(async () => { for (const id of ids) await this.plugin.setPluginSync(id, false); this.display(); }));
+      if (notInstalledOnServer.length) st.addButton((b) => b.setButtonText("Install all from the sync").setCta().onClick(async () => { await this.plugin.installAllServerPlugins(); this.display(); }));
+      else st.addButton((b) => b.setButtonText("Sync all").onClick(async () => { for (const id of ids) await this.plugin.setPluginSync(id, true); this.display(); }));
+    });
 
     // Collapsible list — a big plugin roster shouldn't flood the pane. Collapses/expands independently
     // of each plugin's direction (a mix of download/upload is fine). Expand state persists across the
@@ -341,18 +345,23 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const expanded = this.pluginsExpanded ?? ids.length <= 8;
     const details = c.createEl("details"); (details as unknown as { open: boolean }).open = expanded;
     details.addEventListener("toggle", () => { this.pluginsExpanded = (details as unknown as { open: boolean }).open; });
-    details.createEl("summary", { text: `${ids.length} installed plugins` }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
+    details.createEl("summary", { text: `${ids.length} plugins` }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
     const body = details.createDiv();
 
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
-      const st = new Setting(body).setName(manifests[id].name || id);
+      const here = installed.has(id);
+      const st = new Setting(body).setName(manifests[id]?.name || id);
+      // Say where each plugin lives so the choice is legible on a fresh vault.
+      if (!here && onServer.has(id)) st.setDesc("from the sync — will be installed here");
+      else if (here && !onServer.has(id)) st.setDesc("on this device only — will be uploaded");
       st.addToggle((tg) => tg.setValue(on).onChange(async (v) => { await this.plugin.setPluginSync(id, v); this.display(); }));
-      // The per-plugin first-contact direction appears only when the plugin is synced. On a read-only
-      // vault only "download" is possible, so show that as text rather than a choice.
-      if (on && ro) {
-        st.setDesc("download only (read-only vault)");
-      } else if (on) {
+      // First-contact direction appears only when synced AND a divergence is possible — i.e. the plugin
+      // is installed here on a read-write vault. A not-installed plugin can only download (it pulls +
+      // installs); a read-only vault can only download. Both show as text, no choice.
+      if (on && !here) st.setDesc("downloads from the sync (not installed here yet)");
+      else if (on && ro) st.setDesc("download only (read-only vault)");
+      else if (on) {
         st.addDropdown((dd) => dd
           .addOption("download", "Use synced")
           .addOption("upload", "Use this device's")

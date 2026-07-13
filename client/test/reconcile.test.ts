@@ -192,6 +192,18 @@ describe("reconcileAll", () => {
     expect(conf.length).toBe(1);
   });
 
+  it("reports the community-plugin ids present on the server (so a fresh vault can adopt them)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, ".obsidian/plugins/dataview/main.js", "x");
+    await serverPut(api, ".obsidian/plugins/dataview/manifest.json", "{}");
+    await serverPut(api, ".obsidian/plugins/templater/main.js", "y");
+    await serverPut(api, "note.md", "hi"); // a note is not a plugin
+    const io = fakeIo({});
+    const seen: string[][] = [];
+    await reconcileAll(deps(api, io, { onRemotePlugins: (ids: string[]) => seen.push(ids) }));
+    expect(seen.flat().sort()).toEqual(["dataview", "templater"]); // distinct plugin ids, notes excluded
+  });
+
   it("does NOT count a remote file this device DECLINES as pending — reports it as declined instead", async () => {
     const { api } = fakeServer();
     await serverPut(api, "note.md", "hi");                            // accepted (a note)

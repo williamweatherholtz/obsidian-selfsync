@@ -168,6 +168,10 @@ export interface ReconcileDeps {
   // a community plugin isn't in the allowlist). Reported so the UI can tell the user WHAT is waiting and
   // how to adopt it — otherwise these look like "stuck" pending work that never transfers.
   onDeclined?: (paths: string[]) => void;
+  // The community-plugin ids present ON THE SERVER (from the full manifest). Reported so a device that
+  // doesn't have those plugins installed — e.g. a brand-new vault adopting an existing one — can still
+  // SEE and adopt them (ticking one pulls its files, which installs it). Fires on the full-scan path.
+  onRemotePlugins?: (ids: string[]) => void;
   // O(1) local size for one path (RS-3 incremental reconcile), so the size gate works without a
   // whole-vault io.list(). Absent ⇒ 0 (reconcileOne reads the file to hash it anyway).
   localSizeOf?: (path: string) => number;
@@ -362,6 +366,13 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
   for (const f of resp.upserts) remote.set(f.path, f);
+  // Report the community-plugin ids the server holds, so the settings UI can offer plugins this device
+  // doesn't have installed yet (a fresh vault adopting an existing one). Derived from the full manifest.
+  if (d.onRemotePlugins) {
+    const rp = new Set<string>();
+    for (const p of remote.keys()) { const m = /^\.obsidian\/plugins\/([^/]+)\//.exec(p); if (m) rp.add(m[1]); }
+    d.onRemotePlugins([...rp]);
+  }
   const local = await d.io.list();
   // Bulk-delete guard (C2, widened): a server manifest that has LOST a suspicious fraction of our
   // synced history — not only one that is exactly empty — is the signature of index loss (partial

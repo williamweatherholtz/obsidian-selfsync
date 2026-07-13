@@ -34,6 +34,8 @@ export function fakePlugin(over: any = {}) {
     communityConfigDir: vi.fn(() => undefined),
     setPluginSync: vi.fn(async (id: string, on: boolean) => { const set = new Set(settings.configSync.pluginAllow); if (on) set.add(id); else set.delete(id); settings.configSync.pluginAllow = [...set]; await p.applyConfigSyncChange(); }),
     setPluginDir: vi.fn(async () => {}),
+    getServerPluginIds: vi.fn(() => [] as string[]),
+    installAllServerPlugins: vi.fn(async () => {}),
     reconnect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),
