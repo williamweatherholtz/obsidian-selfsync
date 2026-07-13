@@ -192,6 +192,23 @@ describe("reconcileAll", () => {
     expect(conf.length).toBe(1);
   });
 
+  it("does NOT count a remote file this device DECLINES as pending — reports it as declined instead", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "note.md", "hi");                            // accepted (a note)
+    await serverPut(api, ".obsidian/plugins/dataview/main.js", "x");  // declined (config off on this device)
+    const io = fakeIo({});
+    const pend: number[] = []; const declined: string[][] = [];
+    await reconcileAll(deps(api, io, {
+      accepts: (p) => !p.startsWith(".obsidian/"),                    // notes only — decline config
+      onProgress: (n: number) => pend.push(n),
+      onDeclined: (ps: string[]) => declined.push(ps),
+    }));
+    expect(Math.max(...pend)).toBe(1);                                // only note.md is pending, NOT the plugin file
+    expect(declined.flat()).toContain(".obsidian/plugins/dataview/main.js"); // surfaced as declined
+    expect(io.m.has("note.md")).toBe(true);                           // the accepted note pulled
+    expect(io.m.has(".obsidian/plugins/dataview/main.js")).toBe(false); // the declined file did NOT pull
+  });
+
   it("a CONNECTION failure (DNS) ABORTS the pass — one error, not one-per-file", async () => {
     const { api } = fakeServer();
     for (let i = 0; i < 20; i++) await serverPut(api, `n${i}.md`, `v${i}`); // 20 remote files to pull

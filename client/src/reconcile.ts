@@ -164,6 +164,10 @@ export interface ReconcileDeps {
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
+  // Remote files present on the server that this device is set NOT to sync (a config surface is off, or
+  // a community plugin isn't in the allowlist). Reported so the UI can tell the user WHAT is waiting and
+  // how to adopt it — otherwise these look like "stuck" pending work that never transfers.
+  onDeclined?: (paths: string[]) => void;
   // O(1) local size for one path (RS-3 incremental reconcile), so the size gate works without a
   // whole-vault io.list(). Absent ⇒ 0 (reconcileOne reads the file to hash it anyway).
   localSizeOf?: (path: string) => number;
@@ -385,12 +389,19 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // hash vs base hash, real tombstones, brand-new local) — no local hashing. A same-size local edit
   // isn't detectable here and just isn't counted (minor under-count); it drives honestly to 0.
   const pendingPaths = new Set<string>();
+  const declined: string[] = []; // remote files this device is set NOT to sync (config surface off / plugin not allowlisted)
   for (const p of paths) {
+    // Only count work this device will ACTUALLY do. A remote file this device doesn't accept (a config
+    // surface that's off, or a community plugin not in the allowlist) is skipped by reconcileOne, so
+    // counting it as "pending" produced a phantom count that never drains (field: "20+ pending that
+    // never do anything"). Track those separately as DECLINED so we can tell the user what's waiting.
+    if (d.accepts && !d.accepts(p)) { if (remote.has(p)) declined.push(p); continue; }
     const r = remote.get(p); const b = d.base.get(p);
     if (r) { if ((b?.hash ?? null) !== r.hash) pendingPaths.add(p); }        // remote new/changed → pull/merge
     else if (tombstoned.has(p) && local.has(p)) pendingPaths.add(p);         // a real tombstone to apply
     else if (!b && local.has(p)) pendingPaths.add(p);                        // brand-new local → push
   }
+  if (declined.length) d.onDeclined?.(declined); // surface "N files on the server aren't in your sync selection"
   let pending = pendingPaths.size; d.onProgress?.(pending);
   // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
   // errors stay isolated (one bad file never aborts the pass).
@@ -449,7 +460,13 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
-  const changed = [...new Set<string>([...remote.keys(), ...tombstoned])]; // the delta IS the pending set
+  const changedAll = [...new Set<string>([...remote.keys(), ...tombstoned])];
+  // Only count + process what this device will ACTUALLY sync. A remote change this device doesn't
+  // accept (surface off / plugin not allowlisted) would be skipped by reconcileOne anyway; excluding
+  // it here keeps "pending" honest (no phantom count) and surfaces it as DECLINED instead.
+  const changed = changedAll.filter((p) => !d.accepts || d.accepts(p)); // the delta IS the pending set (accepted-only)
+  const declined = changedAll.filter((p) => d.accepts && !d.accepts(p) && remote.has(p));
+  if (declined.length) d.onDeclined?.(declined);
   let pending = changed.length; d.onProgress?.(pending);
   let connAbort: unknown = null; // a server-unreachable error aborts the whole pass (isConnectionError)
   await mapPool(changed, FILE_CONCURRENCY, async (p) => {

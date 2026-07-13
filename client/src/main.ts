@@ -589,6 +589,23 @@ export default class NewLiveSyncPlugin extends Plugin {
     }, 900);
   }
 
+  // Files present on the server that this device is set NOT to sync (a config surface is off, or a
+  // community plugin isn't in the allowlist). These are NOT pending work — they'll never transfer until
+  // the user opts in — so we report them separately (answering "what's it trying to process?" and "how
+  // do I sync a plugin to this vault?"). Logged only when the set CHANGES, so a poll can't spam it.
+  private declinedSig = "";
+  private noteDeclined(paths: string[]): void {
+    const sig = paths.slice().sort().join("|");
+    if (sig === this.declinedSig) return;
+    this.declinedSig = sig;
+    const plugins = new Set<string>(); let files = 0;
+    for (const p of paths) { const id = pluginIdOf(p); if (id) plugins.add(id); else files++; }
+    const parts: string[] = [];
+    if (plugins.size) parts.push(`${plugins.size} community plugin${plugins.size === 1 ? "" : "s"} (${[...plugins].slice(0, 6).join(", ")}${plugins.size > 6 ? "…" : ""})`);
+    if (files) parts.push(`${files} config file${files === 1 ? "" : "s"}`);
+    this.log(`${parts.join(" and ")} on the server ${paths.length === 1 ? "is" : "are"} NOT in this device's sync selection — turn them on in Settings → Obsidian configuration (tick the plugins under “Synced community plugins”) to sync them here. These are not counted as pending.`, false);
+  }
+
   // A config path reconciled cleanly — drop any stale pending entry so the count reflects reality
   // (this is what makes the "Config differences" badge self-clear as things resolve).
   private clearConfigConflict(path: string): void {
@@ -993,6 +1010,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
+      onDeclined: (paths) => this.noteDeclined(paths),
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
       deleteGuard: this.deleteGuard, // SEC-DATA: cross-pass cumulative delete-rate guard (anti-drain)
