@@ -7,6 +7,8 @@ import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
+import { SwitchVaultModal } from "./vaultswitch";
+import { RedeemShareLinkModal } from "./accountui";
 import { encodeSetupLink } from "./connstr";
 import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant } from "./sharelink";
 import { Phase, light, isWsStale } from "./syncstate";
@@ -350,7 +352,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     this.renderLight(this.engine.phase()); // initial: off
 
-    this.addCommand({ id: "setup", name: "Set up / switch vault", callback: () => this.openSetup() });
+    this.addCommand({ id: "setup", name: "Set up / reconfigure connection", callback: () => this.openSetup() });
+    this.addCommand({ id: "switch-vault", name: "Switch vault", callback: () => new SwitchVaultModal(this.app, this).open() });
+    this.addCommand({ id: "redeem", name: "Redeem a share link", callback: () => this.openRedeem() });
+    this.addCommand({ id: "resolve-conflicts", name: "Resolve conflicts", callback: () => this.openConflicts() });
     this.addCommand({ id: "show-log", name: "Show sync log", callback: () => this.showLog() });
     this.addCommand({ id: "clear-log", name: "Clear sync log", callback: () => this.clearLogs() });
     this.addCommand({ id: "reconnect", name: "Reconnect now", callback: () => this.reconnect() });
@@ -454,6 +459,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     return deriveNoteConflicts(paths).filter((c) => present.has(c.original));
   }
   openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
+  openRedeem() { new RedeemShareLinkModal(this.app, this).open(); }
+  // One entry for "resolve conflicts" (command + any surfaced affordance): route to whichever kind is
+  // pending — note conflicts first, else config; if neither, say so rather than opening an empty modal.
+  openConflicts() {
+    if (this.listNoteConflicts().length) return void new NoteConflictModal(this.app, this).open();
+    if (this.getConfigConflicts().length) return void new ConfigConflictModal(this.app, this).open();
+    new Notice("SelfSync: no conflicts to resolve — everything is in sync.");
+  }
   // Text of a file for the conflict preview ("" if gone or unreadable).
   async readTextOrEmpty(path: string): Promise<string> {
     try { return new TextDecoder().decode(await this.io.read(path)); } catch { return ""; }
@@ -819,7 +832,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     try {
       const ref = await this.redeemShareLink(link);
-      new Notice(`SelfSync: you now have ${ref.perm === "readWrite" ? "read-write" : "read-only"} access to ${ref.owner}/${ref.vault}. Open Settings → Switch vault to sync it.`, 9000);
+      // Redeem only ADDS the grant — the user still has to switch this device to it. Don't leave that
+      // second step to a toast they might miss; open the Switch modal (the redeemed vault is in its
+      // "Shared with you" list) so the flow reads to completion, matching the wizard's auto-adopt path.
+      new Notice(`SelfSync: added ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}) — choose it below to sync this device to it.`, 8000);
+      new SwitchVaultModal(this.app, this).open();
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); }
   }
   // Grantee leaves/declines a shared vault — drops THIS account's own access. If we're currently

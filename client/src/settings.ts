@@ -128,8 +128,11 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const phase = this.plugin.statusText(); // FSM Phase
 
     if (!configured) {
-      g.addSetting((st) => st.setName("Not set up").setDesc("Sync your notes to your own server.")
-        .addButton((b) => b.setButtonText("Set up SelfSync").setCta().onClick(() => this.plugin.openSetup())));
+      g.addSetting((st) => st.setName("Not set up").setDesc("Sync your notes to your own server, or accept a vault someone shared with you.")
+        .addButton((b) => b.setButtonText("Set up SelfSync").setCta().onClick(() => this.plugin.openSetup()))
+        // A brand-new recipient's entry point — accepting a shared vault shouldn't require first
+        // knowing to open "Set up" and paste a link into a field labelled for setup links.
+        .addButton((b) => b.setButtonText("Redeem a share link").onClick(() => this.plugin.openRedeem())));
       return;
     }
 
