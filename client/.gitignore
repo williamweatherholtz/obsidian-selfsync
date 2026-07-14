@@ -4,3 +4,4 @@ main.js
 test-results/
 playwright-report/
 .playwright/
+coverage/

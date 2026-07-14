@@ -2,3 +2,8 @@
 # files (D0050), so `keel suspect` flags a task suspect when its source changed since it was
 # verified. One entry per line:  task: <taskName> | <relpath> <relpath> ...
 # Empty for a new project — add an entry when you have a deliverable-source-dependent verification.
+
+# D0026 — the standing deliverable test gate. Any change under the server/client source or test trees
+# means "all tests green + coverage floors met" must be RE-COMPUTED, so this task goes suspect and
+# `keel reverify` re-runs the gate + stamps a fresh judged-at-HEAD TestResult (honest, never prose).
+task: deliverableTestGate | server/src client/src client/test server/tests

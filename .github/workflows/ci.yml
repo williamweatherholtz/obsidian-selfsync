@@ -21,9 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Run the Rust server test suite
+      # D0026: coverage is a COMPUTED, gated fact. llvm-cov runs the whole test suite AND measures
+      # line coverage; --fail-under-lines is the ratcheting FLOOR (baseline 86.4% at 901368e). A run
+      # below it fails. Raise the floor as Phase 2 closes the ws.rs / api.rs / concurrency gaps.
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run the Rust server test suite with a coverage floor
         working-directory: server
-        run: cargo test --locked
+        run: cargo llvm-cov --locked --fail-under-lines 85 --summary-only
 
   cargo-audit:
     runs-on: ubuntu-latest
@@ -58,8 +62,16 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - name: Run the plugin test suite
+      # D0026: build the server binary FIRST so the real-server integration + sharing specs actually
+      # RUN here — previously this job never built it, so `skipIf(!canRun)` silently skipped exactly
+      # the suites most able to catch sync defects, and CI went green without verifying them.
+      - name: Build the server binary (integration specs require it)
+        working-directory: server
+        run: cargo build
+      - name: Run the plugin test suite with coverage floor (integration specs must not skip)
         working-directory: client
+        env:
+          SELFSYNC_REQUIRE_E2E: "1" # a missing binary is now a hard failure, not a silent skip
         run: |
           npm install
-          npm test
+          npm run test:cov

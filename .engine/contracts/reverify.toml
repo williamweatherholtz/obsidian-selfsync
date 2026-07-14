@@ -6,8 +6,15 @@
 # Downstream-overridable (like critique-policy.toml): a fresh `keel init` project edits these to its own
 # reproducible gate. Absent file => `keel reverify` is a no-op that reports "no reverify command configured".
 #
-# This project's gate (mirrors .github/workflows/ci.yml + the pre-commit Rust checks):
+# This project's gate (D0026 — mirrors .github/workflows/ci.yml). Commands run from the repo ROOT via
+# the platform shell (`cmd /C` / `sh -c`) with CARGO_TARGET_DIR redirected to target/reverify, so each
+# `cd <sub>` is required (there is no root Cargo workspace) and cross-platform `&&` chaining is safe.
+# This is the WHOLE deliverable gate — server (tests + clippy) AND client (vitest). It is kept as a
+# "green-at-HEAD" recompute for honest drift-stamping; the ratcheting COVERAGE FLOORS are enforced in
+# CI + `npm run test:cov` / `cargo llvm-cov --fail-under-lines` (a redirected target dir would make the
+# client integration specs skip and undershoot the floor here, so coverage gating stays in CI).
 commands = [
-    "cargo test --workspace --release",
-    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cd server && cargo test --locked",
+    "cd server && cargo clippy --all-targets -- -D warnings",
+    "cd client && npm test",
 ]

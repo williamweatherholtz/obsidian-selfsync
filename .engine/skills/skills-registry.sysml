@@ -58,6 +58,14 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Authoring DoD criteria, acceptance tests, or BDD scenarios for engine items.";
         :>> writePolicy = WritePolicy::prOnly;
     }
+    part testAuthoring : AISkill {
+        :>> id = "a042dce7-59f0-4d2c-b635-5e92e5f0e556";
+        :>> title = "test-authoring";
+        :>> purpose = "Encode the standard for WRITING deliverable tests (D0026/D0047): fail-first regression per fix; test the real code path, never a mock of it; cover the failure/edge classes (binary/EOL/connection/read-only/concurrent/CAS/DoS/token/degraded); no tautological assertions; coverage stays a COMPUTED, floored fact. Codebase specifics in docs/testing.md.";
+        :>> location = ".engine/skills/test-authoring/SKILL.md";
+        :>> triggerCondition = "Writing/expanding/reviewing deliverable unit/integration/e2e tests, or shipping any fix.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part testResult : AISkill {
         :>> id = "b153edf8-6a01-4e3d-c746-6fa3f6f0f666";
         :>> title = "test-result";

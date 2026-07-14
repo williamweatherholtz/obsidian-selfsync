@@ -20,6 +20,17 @@ export const serverBin = path.resolve(
 export const externalUrl = process.env.SYNC_SERVER_URL;
 export const canRun = !!externalUrl || existsSync(serverBin);
 
+// D0026: in CI (or any run that sets SELFSYNC_REQUIRE_E2E=1) a MISSING server binary is a HARD
+// FAILURE, never a silent skip. The integration/sharing specs are the suites most able to catch real
+// sync defects; letting them quietly `skipIf(!canRun)` in CI is exactly how a green build gave false
+// assurance. `canRunOrThrow` is what those specs gate on so the gap is loud, not invisible.
+if (process.env.SELFSYNC_REQUIRE_E2E === "1" && !canRun) {
+  throw new Error(
+    "SELFSYNC_REQUIRE_E2E=1 but no server is available: build it (`cargo build` in server/) so " +
+      `${serverBin} exists, or set SYNC_SERVER_URL. Integration/sharing specs must RUN in CI, not skip.`,
+  );
+}
+
 /** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). Chunk API. */
 export class NodeTransport implements SyncApi {
   // owner "" = own vault (/api/v/{vault}); set = a shared vault (/api/u/{owner}/{vault}).
