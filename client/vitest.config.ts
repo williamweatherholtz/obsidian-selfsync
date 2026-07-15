@@ -36,16 +36,18 @@ export default defineConfig({
       exclude: ["src/**/*.d.ts"],
       reporter: ["text-summary", "json-summary", "html"],
       reportsDirectory: "./coverage",
-      // FLOORS — ratcheted after Phase 1 added the transport + 4 UI-module + merge suites (measured at
-      // HEAD: lines/stmts 74.74%, branches 83.91%, funcs 64.43%), each set a hair below measured to
-      // absorb run-to-run variance. Ratchet UPWARD only as further gaps close; never lower a floor to
-      // make a red run pass. A drop below any floor fails the run — the guard against silent erosion.
-      // (Baseline at 901368e was 67.49/56.33/83.48.) See docs/testing.md.
+      // FLOORS — ratcheted from CI's authoritative measurement (Node 22, full suite incl. the main.ts
+      // action-body tests): lines/stmts 75.96%, branches 84.15%, funcs 66.49%. Each set a hair below
+      // measured to absorb run-to-run variance. Ratchet UPWARD only as further gaps close; never lower a
+      // floor to make a red run pass. A drop below any floor fails the run — the guard against silent
+      // erosion. (Trail: 901368e baseline 67.49/56.33/83.48 → Phase 1 74.74/64.43/83.91 → +batchC now.)
+      // branches held at 83 (not 84): the batch-C gain was only ~0.2pt, and integration-spec timing can
+      // nudge which branches execute run-to-run — too tight a branch floor would flake CI for no benefit.
       thresholds: {
-        lines: 74,
-        functions: 64,
+        lines: 75,
+        functions: 66,
         branches: 83,
-        statements: 74,
+        statements: 75,
       },
     },
   },

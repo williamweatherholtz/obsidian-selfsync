@@ -10,7 +10,7 @@ Coverage and pass-state are **computed, gated facts — never prose attestations
 |---|---|---|
 | Server tests + coverage | `cd server && cargo llvm-cov --locked --fail-under-lines 89 --summary-only` | lines ≥ **89%** |
 | Server lint | `cd server && cargo clippy --all-targets -- -D warnings` | warnings = 0 |
-| Client tests + coverage | `cd client && npm run test:cov` | lines/stmts ≥ **74**, branches ≥ **83**, functions ≥ **64** |
+| Client tests + coverage | `cd client && npm run test:cov` | lines/stmts ≥ **75**, branches ≥ **83**, functions ≥ **66** |
 
 CI (`.github/workflows/ci.yml`) runs all of the above. The client job **builds the server binary first**
 so the real-server integration + sharing specs actually run (`SELFSYNC_REQUIRE_E2E=1` turns a missing
@@ -19,10 +19,9 @@ on source drift and stamps a fresh `TestResult` on `deliverableTestGate`.
 
 ## Coverage (after Phases 1–2, 2026-07-14)
 
-- **Client:** lines/statements **74.74%**, branches **83.91%**, functions **64.43%** — 382 tests
-  (up from the 901368e baseline of 67.49/56.33/83.48 after the transport + 4 UI-module + merge suites).
-  Remaining functions gap = the real `main.ts` modal action bodies still driven only via spies (a
-  future ratchet target).
+- **Client:** lines/statements **75.96%**, branches **84.15%**, functions **66.49%** — 388 tests
+  (CI/Node-22 measurement; up from the 901368e baseline of 67.49/56.33/83.48 after the transport +
+  4 UI-module + merge suites and the real `main.ts` action-body tests). Floors ratcheted to match.
 - **Server:** lines **90.02%** total (up from 86.41%); `ws.rs` **76%** (was 13.5% — the new WebSocket
   suite), `main.rs` 0% (boot). Floors are a hair below measured to absorb run-to-run variance.
 
