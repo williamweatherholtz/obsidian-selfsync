@@ -39,7 +39,7 @@ export const OBSIDIAN_EXECUTABLE = resolveObsidian();
 /** True iff a real Obsidian install was found — specs skip themselves when false (local/nightly gate). */
 export const obsidianAvailable = OBSIDIAN_EXECUTABLE !== null;
 
-const CDP_PORT = 19222; // fixed; workers:1 so no collisions
+const CDP_PORT = 19222; // default; pass a distinct port per instance to run TWO devices concurrently
 
 export interface ObsidianHandle {
   firstWindow(): Promise<Page>;
@@ -74,22 +74,22 @@ async function waitForCDP(port: number, timeoutMs: number): Promise<void> {
  * launch with only --user-data-dir; Obsidian's single-instance lock is keyed to that dir, so a separate
  * instance starts and opens our vault directly — independent of the user's running Obsidian.
  */
-export async function launchObsidian(fakeAppData: string, vaultDir: string): Promise<ObsidianHandle> {
+export async function launchObsidian(fakeAppData: string, vaultDir: string, cdpPort: number = CDP_PORT): Promise<ObsidianHandle> {
   if (!OBSIDIAN_EXECUTABLE) throw new Error("Obsidian executable not found (set OBSIDIAN_PATH)");
-  const vaultId = "e2e" + Date.now().toString(16);
+  const vaultId = "e2e" + Date.now().toString(16) + cdpPort;
   writeFileSync(
     path.join(fakeAppData, "obsidian.json"),
     JSON.stringify({ vaults: { [vaultId]: { path: vaultDir, ts: Date.now(), open: true } } }),
   );
   const proc: ChildProcess = spawn(
     OBSIDIAN_EXECUTABLE,
-    [`--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${fakeAppData}`, "--no-sandbox", "--lang=en"],
+    [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${fakeAppData}`, "--no-sandbox", "--lang=en"],
     { env: { ...process.env, LIBGL_ALWAYS_SOFTWARE: "1" } },
   );
   proc.on("error", (err) => console.error("[launchObsidian] spawn error:", err.message));
 
-  await waitForCDP(CDP_PORT, 60_000);
-  const browser: Browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`);
+  await waitForCDP(cdpPort, 60_000);
+  const browser: Browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
 
   return {
     close: async () => {
@@ -138,4 +138,45 @@ export function enablePluginInObsidian(page: Page, pluginName: string): Promise<
 }
 export function isPluginEnabledInObsidian(page: Page, pluginName: string): Promise<boolean> {
   return page.evaluate(isPluginEnabled, pluginName);
+}
+
+// ---------------------------------------------------------------------------
+// Vault helpers — drive/observe notes through the REAL Obsidian vault API (app.vault), so a create/
+// modify fires the genuine file events the plugin listens on, and a read reflects what actually synced.
+// ---------------------------------------------------------------------------
+
+export function createNote(page: Page, notePath: string, content: string): Promise<void> {
+  return page.evaluate(async ({ notePath, content }) => {
+    await window.app.vault.create(notePath, content);
+  }, { notePath, content });
+}
+
+export function modifyNote(page: Page, notePath: string, content: string): Promise<void> {
+  return page.evaluate(async ({ notePath, content }) => {
+    const f = window.app.vault.getAbstractFileByPath(notePath);
+    if (!f) throw new Error("note not found: " + notePath);
+    await window.app.vault.modify(f as never, content);
+  }, { notePath, content });
+}
+
+/** Content of a note, or null if it isn't present in this vault (used to poll for convergence). */
+export function readNote(page: Page, notePath: string): Promise<string | null> {
+  return page.evaluate(async (notePath) => {
+    const f = window.app.vault.getAbstractFileByPath(notePath);
+    if (!f) return null;
+    return await window.app.vault.read(f as never);
+  }, notePath);
+}
+
+/** Paths of all markdown files in the vault (to detect conflict-copy files by their derived name). */
+export function listNotes(page: Page): Promise<string[]> {
+  return page.evaluate(() => window.app.vault.getMarkdownFiles().map((f) => f.path));
+}
+
+/** The plugin's own computed status phase (idle/syncing/offline/…) — for the status-UI assertion. */
+export function pluginStatus(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const p = window.app.plugins.plugins["selfsync"] as { statusText?: () => string } | undefined;
+    return p?.statusText?.() ?? null;
+  });
 }

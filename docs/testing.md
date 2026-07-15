@@ -64,9 +64,12 @@ with `keel record-measurement` after a meaningful change.
   `obsidian://` URI (which the OS routes to a running Obsidian and would hijack the user's session).
   `helpers/env.ts` spawns a real server + stages a temp vault with the built plugin (settings nested
   under `data.settings` so it auto-connects). `smoke.pwspec.ts` asserts the plugin loads AND a seeded
-  note syncs to the server end-to-end. Needs Obsidian installed (`OBSIDIAN_PATH` to override the
-  auto-detected path) → **local/nightly gate, self-skips when absent, NOT wired into per-PR CI**.
-  Follow-ups on this harness: two-device convergence, conflict resolution, status-UI assertions.
+  note syncs to the server end-to-end. `convergence.pwspec.ts` goes further: TWO isolated Obsidian
+  instances (distinct CDP ports/user-data-dirs) syncing one vault, asserting a note made on device A
+  converges to device B AND a change on B flows back to A (bidirectional), plus a healthy-status check.
+  Needs Obsidian installed (`OBSIDIAN_PATH` to override the auto-detected path) → **local/nightly gate,
+  self-skips when absent, NOT wired into per-PR CI**. Not covered here (flaky through live GUIs, and
+  covered headlessly instead): forced divergent-edit conflicts.
 
 ## Known local caveat: Node 24 + vitest 2.1.9 coverage
 
