@@ -58,7 +58,22 @@ with `keel record-measurement` after a meaningful change.
   `/api/ws`, assert 101 vs 401/404, cap → 503, and that the connection counter returns to 0 on drop.
 - **Playwright (server admin only)** — `client/e2e-admin/*.pwspec.ts` drives the `/admin` page in
   Chromium (`npm run test:admin-e2e`). Not the Obsidian plugin.
-- **Real-Obsidian e2e (Playwright + CDP)** — DEFERRED (D0026). When built, port the CDP launcher from
-  the `test_real_obsidian` branch (`chromium.connectOverCDP()` against `--remote-debugging-port`), and
-  test only what the headless layers can't: `requestUrl`, the real vault adapter, file-event
-  propagation, and the status UI. Needs Obsidian installed → a local/nightly gate, not per-PR.
+- **Real-Obsidian e2e (Playwright + CDP)** — BUILT (Phase 3). `client/e2e-obsidian/` + `npm run
+  test:obsidian-e2e` (config `playwright.obsidian.config.ts`). `helpers/obsidian.ts` launches an
+  ISOLATED Obsidian instance — it pre-seeds the temp `--user-data-dir`'s `obsidian.json` vault registry
+  and uses a fixed `--remote-debugging-port` + `chromium.connectOverCDP()`, deliberately NOT the
+  `obsidian://` URI (which the OS routes to a running Obsidian and would hijack the user's session).
+  `helpers/env.ts` spawns a real server + stages a temp vault with the built plugin (settings nested
+  under `data.settings` so it auto-connects). `smoke.pwspec.ts` asserts the plugin loads AND a seeded
+  note syncs to the server end-to-end. Needs Obsidian installed (`OBSIDIAN_PATH` to override the
+  auto-detected path) → **local/nightly gate, self-skips when absent, NOT wired into per-PR CI**.
+  Follow-ups on this harness: two-device convergence, conflict resolution, status-UI assertions.
+
+## Known local caveat: Node 24 + vitest 2.1.9 coverage
+
+This machine runs Node 24, but vitest 2.1.9 predates it; under `fileParallelism: false` the v8 coverage
+provider can crash nondeterministically (exit 127, no summary) on the full `--coverage` run. **CI is
+unaffected** — it pins Node 22 (`setup-node@v5`), which vitest 2.1.9 supports. Locally, if a coverage
+run dies, either use Node 22, or cap parallelism: `npx vitest run --coverage --fileParallelism
+--poolOptions.forks.maxForks=3` (bounds each worker's native state). Plain `npm test` (no coverage) is
+unaffected. A proper fix (bump vitest / pin Node) is a separate tooling CHANGE, not yet made.

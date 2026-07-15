@@ -13,7 +13,7 @@ describe("DeviceLinkModal", () => {
     const m = new DeviceLinkModal(makeApp(), link);
     m.onOpen();
     const input = m.contentEl.querySelector("input");
-    expect(input).toBeTruthy();
+    if (!input) throw new Error("expected a rendered <input>");
     expect(input.value).toBe(link);
     expect(input.getAttribute("readonly")).toBe("true");
     // The bundled QR encoder renders an inline <svg> (CSP-safe, no external fetch).
@@ -27,6 +27,7 @@ describe("DeviceLinkModal", () => {
     const m = new DeviceLinkModal(makeApp(), link);
     m.onOpen();
     const input = m.contentEl.querySelector("input");
+    if (!input) throw new Error("expected a rendered <input>");
     expect(input.value).toContain("sync.example");
     expect(input.value).toContain("alice");
     expect(input.value).not.toContain(password);
