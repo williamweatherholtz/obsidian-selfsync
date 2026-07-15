@@ -12,9 +12,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/target/release/new-livesync-server /usr/local/bin/new-livesync-server
 ENV DATA_ROOT=/data \
-    BIND_ADDR=0.0.0.0:8080 \
-    SYNC_USER=admin \
-    SYNC_PASSWORD=admin
+    BIND_ADDR=0.0.0.0:8080
+# SYNC_USER / SYNC_PASSWORD are deliberately NOT baked into the image: a password in an ENV instruction
+# is persisted into the image layers (visible via `docker history`/`inspect`) — the SecretsUsedInArgOrEnv
+# hazard. Provide them at RUNTIME (`docker run -e SYNC_PASSWORD=… …`, compose `environment:`, or a
+# secret). The code defaults (admin/admin, config.rs) still apply, and the boot weak-password guard
+# refuses that default unless ALLOW_WEAK_ADMIN=1 — so the operator must set a real password regardless.
 # SEC-DEPLOY (audit): run as a non-root user, not UID 0 — so a future RCE or container escape can't
 # operate with root privileges. Own the data volume so the unprivileged process can still write it.
 RUN useradd --system --uid 10001 --home-dir /data --no-create-home selfsync \

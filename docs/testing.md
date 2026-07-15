@@ -71,11 +71,10 @@ with `keel record-measurement` after a meaningful change.
   self-skips when absent, NOT wired into per-PR CI**. Not covered here (flaky through live GUIs, and
   covered headlessly instead): forced divergent-edit conflicts.
 
-## Known local caveat: Node 24 + vitest 2.1.9 coverage
+## Resolved: local coverage on Node 24
 
-This machine runs Node 24, but vitest 2.1.9 predates it; under `fileParallelism: false` the v8 coverage
-provider can crash nondeterministically (exit 127, no summary) on the full `--coverage` run. **CI is
-unaffected** — it pins Node 22 (`setup-node@v5`), which vitest 2.1.9 supports. Locally, if a coverage
-run dies, either use Node 22, or cap parallelism: `npx vitest run --coverage --fileParallelism
---poolOptions.forks.maxForks=3` (bounds each worker's native state). Plain `npm test` (no coverage) is
-unaffected. A proper fix (bump vitest / pin Node) is a separate tooling CHANGE, not yet made.
+Previously, `vitest 2.1.9` predated Node 24 and its v8 coverage provider crashed nondeterministically
+under `fileParallelism: false` (exit 127, no summary). Fixed by bumping to **vitest 3** (+
+`@vitest/coverage-v8` 3), which supports Node 24 — `npm run test:cov` now runs cleanly locally (388
+tests, EXIT 0). All prior floors held across the major bump (no test-API breakage). CI already ran fine
+on its pinned Node 22; it's now aligned to the same major.
