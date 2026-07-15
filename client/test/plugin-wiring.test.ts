@@ -277,3 +277,76 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 });
+
+// The modal ACTION bodies were previously exercised only against vi.fn() spies (the DOM tests assert
+// "the button calls X(args)"; they never ran X). These drive the REAL main.ts methods over the
+// in-memory io + spy api, so the actual promote/remove/switch/adjudicate logic is covered.
+describe("real modal action bodies (not spies): resolveNoteConflict / switchToVault / forkVault / resolveConfigGroup", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+
+  it("resolveNoteConflict 'mine' promotes the copy onto the original and removes the copy", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("OLD"));
+    await p.io_.write("note (conflict).md", enc("NEW"));
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine")).toBe(true);
+    expect(dec(await p.io_.read("note.md"))).toBe("NEW"); // original now holds this device's content
+    await expect(p.io_.read("note (conflict).md")).rejects.toThrow(); // copy removed
+    p.onunload();
+  });
+
+  it("resolveNoteConflict 'theirs' keeps the original untouched and just removes the copy", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("OLD"));
+    await p.io_.write("note (conflict).md", enc("NEW"));
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "theirs")).toBe(true);
+    expect(dec(await p.io_.read("note.md"))).toBe("OLD"); // original (the other side) kept
+    await expect(p.io_.read("note (conflict).md")).rejects.toThrow();
+    p.onunload();
+  });
+
+  it("resolveNoteConflict 'mine' with a STALE preview REFUSES — never clobbers the newer original", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("ACTUAL-NEWER")); // original moved on since the modal opened
+    await p.io_.write("note (conflict).md", enc("MINE"));
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine", "STALE-PREVIEW")).toBe(false);
+    expect(dec(await p.io_.read("note.md"))).toBe("ACTUAL-NEWER"); // NOT clobbered
+    expect(dec(await p.io_.read("note (conflict).md"))).toBe("MINE"); // copy kept for re-review
+    p.onunload();
+  });
+
+  it("switchToVault records the one-time transition (vaultId/owner/readOnly/pendingSwitch) and reconnects", async () => {
+    const { p, api } = await bootPlugin();
+    const before = api.__calls.status?.length ?? 0;
+    await p.switchToVault("other", "download");
+    expect(p.settings.vaultId).toBe("other");
+    expect(p.settings.vaultOwner).toBeUndefined(); // own vault
+    expect(p.settings.vaultReadOnly).toBe(false);
+    expect(p.settings.pendingSwitch).toBe("download"); // resolution persisted atomically with the vaultId
+    expect(api.__calls.status?.length ?? 0).toBeGreaterThan(before); // reconnected to the new vault
+    await p.switchToVault("shared", "merge", "alice", true); // a read-only shared vault
+    expect(p.settings.vaultOwner).toBe("alice");
+    expect(p.settings.vaultReadOnly).toBe(true);
+    p.onunload();
+  });
+
+  it("forkVault creates the new vault then switches to it in UPLOAD mode (owner cleared, editable)", async () => {
+    // Loopback serverUrl so the static HttpTransport.createVault passes the cleartext-remote guard.
+    const { p } = await bootPlugin(true, { settings: { serverUrl: "http://127.0.0.1:8789" } });
+    await p.forkVault("myfork");
+    expect(p.settings.vaultId).toBe("myfork");
+    expect(p.settings.pendingSwitch).toBe("upload"); // a fork pushes local content into the new vault
+    expect(p.settings.vaultOwner).toBeUndefined(); // the fork is yours
+    expect(p.settings.vaultReadOnly).toBe(false);
+    p.onunload();
+  });
+
+  it("resolveConfigGroup adjudicates the given paths and clears ONLY them from the pending set", async () => {
+    const { p } = await bootPlugin();
+    p.settings.configConflicts = [".obsidian/app.json", ".obsidian/hotkeys.json"];
+    await p.io_.write(".obsidian/app.json", enc("{}"));
+    await p.resolveConfigGroup([".obsidian/app.json"], "local");
+    expect(p.settings.configConflicts).toEqual([".obsidian/hotkeys.json"]); // only the resolved path removed
+    p.onunload();
+  });
+});
