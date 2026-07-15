@@ -39,6 +39,13 @@ export function lcsPairs(base: string[], other: string[]): Array<[number, number
 const MAX_MERGE_LINES = 5000;
 
 export function merge3(base: string, local: string, remote: string): { merged: string; clean: boolean } {
+  // Normalize CRLF→LF before ANY comparison (issueMergeCrlf). Obsidian vaults sync across Windows
+  // (CRLF) and macOS/Linux/mobile (LF); splitLines/LCS compared raw lines, so a CRLF↔LF re-save with
+  // no real content change found ZERO common anchors and collapsed the whole file into one conflict
+  // region — spurious conflicts on nearly every cross-platform merge, undermining "Merge = nothing
+  // lost". Merged output already joins with "\n", so normalizing the inputs is consistent, not lossy.
+  const norm = (s: string) => s.replace(/\r\n/g, "\n");
+  base = norm(base); local = norm(local); remote = norm(remote);
   if (local === remote) return { merged: local, clean: true };
   if (base === local) return { merged: remote, clean: true };
   if (base === remote) return { merged: local, clean: true };

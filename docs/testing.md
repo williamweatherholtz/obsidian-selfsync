@@ -8,21 +8,23 @@ Coverage and pass-state are **computed, gated facts — never prose attestations
 
 | Layer | Command | Floor (constraint) |
 |---|---|---|
-| Server tests + coverage | `cd server && cargo llvm-cov --locked --fail-under-lines 85 --summary-only` | lines ≥ **85%** |
+| Server tests + coverage | `cd server && cargo llvm-cov --locked --fail-under-lines 89 --summary-only` | lines ≥ **89%** |
 | Server lint | `cd server && cargo clippy --all-targets -- -D warnings` | warnings = 0 |
-| Client tests + coverage | `cd client && npm run test:cov` | lines/stmts ≥ **67**, branches ≥ **83**, functions ≥ **56** |
+| Client tests + coverage | `cd client && npm run test:cov` | lines/stmts ≥ **74**, branches ≥ **83**, functions ≥ **64** |
 
 CI (`.github/workflows/ci.yml`) runs all of the above. The client job **builds the server binary first**
 so the real-server integration + sharing specs actually run (`SELFSYNC_REQUIRE_E2E=1` turns a missing
 binary into a hard failure, not a silent skip). `keel reverify` re-runs the reverify contract at HEAD
 on source drift and stamps a fresh `TestResult` on `deliverableTestGate`.
 
-## Baseline (901368e, 2026-07-14)
+## Coverage (after Phases 1–2, 2026-07-14)
 
-- **Client:** lines/statements 67.49%, branches 83.48%, functions 56.33% (functions low — the untested
-  UI modules + spied-away `main.ts` action bodies; Phase 1 target).
-- **Server:** lines 86.41% total; `ws.rs` **13.5%** (no WebSocket test — Phase 2 target), `main.rs` 0%
-  (boot). Floors are set a hair below measured to absorb run-to-run branch-execution variance.
+- **Client:** lines/statements **74.74%**, branches **83.91%**, functions **64.43%** — 382 tests
+  (up from the 901368e baseline of 67.49/56.33/83.48 after the transport + 4 UI-module + merge suites).
+  Remaining functions gap = the real `main.ts` modal action bodies still driven only via spies (a
+  future ratchet target).
+- **Server:** lines **90.02%** total (up from 86.41%); `ws.rs` **76%** (was 13.5% — the new WebSocket
+  suite), `main.rs` 0% (boot). Floors are a hair below measured to absorb run-to-run variance.
 
 ## Ratchet policy
 

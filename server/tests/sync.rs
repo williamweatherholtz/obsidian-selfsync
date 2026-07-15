@@ -97,12 +97,24 @@ fn filemeta_roundtrips_json() {
 #[test]
 fn config_defaults_and_env() {
     use new_livesync_server::config::Config;
-    // Control the environment: clear any ambient value (e.g. BIND_ADDR leaked into
-    // the shell by the e2e harness) so the default assertion is deterministic.
+    // Process-global env is shared across the whole test binary, and cargo runs tests on multiple
+    // threads — so an unguarded set_var/remove_var here races any other test that reads env (UB
+    // against libc getenv, and a false pass/fail if BIND_ADDR/SYNC_USER interleave). Serialize every
+    // env-mutating test on one process-wide lock and SAVE/RESTORE the prior values so this test is
+    // both deterministic and leaves no global state behind. (There is no serial_test dep in
+    // Cargo.toml; a `static Mutex` is the dependency-free equivalent.)
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let prev_bind = std::env::var("BIND_ADDR").ok();
+    let prev_user = std::env::var("SYNC_USER").ok();
+    // Clear any ambient BIND_ADDR (e.g. leaked into the shell by the e2e harness) so the default
+    // assertion is deterministic; drive SYNC_USER to a known value.
     std::env::remove_var("BIND_ADDR");
     std::env::set_var("SYNC_USER", "will");
     let c = Config::from_env();
-    std::env::remove_var("SYNC_USER");
+    // Restore BEFORE asserting, so a failed assertion can never leak the mutated env to another test.
+    match prev_bind { Some(v) => std::env::set_var("BIND_ADDR", v), None => std::env::remove_var("BIND_ADDR") }
+    match prev_user { Some(v) => std::env::set_var("SYNC_USER", v), None => std::env::remove_var("SYNC_USER") }
     assert_eq!(c.user, "will");
     assert_eq!(c.bind_addr, "0.0.0.0:8080");
 }

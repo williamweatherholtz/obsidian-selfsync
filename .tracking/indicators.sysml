@@ -41,4 +41,8 @@ package ProjectIndicators {
     #Measures dependency from clientLineCoverageM1 to clientLineCoverage;
     part serverLineCoverageM1 : Measurement { :>> id = "2b20135b-183b-441c-9a2e-507c613afc24"; :>> value = "86.41"; :>> measuredAt = "2026-07-14"; :>> source = "cargo llvm-cov --summary-only TOTAL lines"; :>> createdBy = "ai"; }
     #Measures dependency from serverLineCoverageM1 to serverLineCoverage;
+    part clientLineCoverageM2 : Measurement { :>> id = "7e0de2ae-264b-48be-91d0-977f3283efba"; :>> value = "74.74"; :>> measuredAt = "2026-07-14"; :>> source = "vitest v8 total.lines.pct; 382 tests incl. integration specs; after Phase 1"; :>> createdBy = "ai"; }
+    #Measures dependency from clientLineCoverageM2 to clientLineCoverage;
+    part serverLineCoverageM2 : Measurement { :>> id = "47384f04-6bcc-4002-91d0-977f38bd2a22"; :>> value = "90.02"; :>> measuredAt = "2026-07-14"; :>> source = "cargo llvm-cov TOTAL lines; after Phase 2 (ws + hardening suites)"; :>> createdBy = "ai"; }
+    #Measures dependency from serverLineCoverageM2 to serverLineCoverage;
 }

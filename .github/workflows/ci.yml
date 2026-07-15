@@ -22,12 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # D0026: coverage is a COMPUTED, gated fact. llvm-cov runs the whole test suite AND measures
-      # line coverage; --fail-under-lines is the ratcheting FLOOR (baseline 86.4% at 901368e). A run
-      # below it fails. Raise the floor as Phase 2 closes the ws.rs / api.rs / concurrency gaps.
+      # line coverage; --fail-under-lines is the ratcheting FLOOR. Ratcheted 85→89 after Phase 2 added
+      # the WebSocket + hardening/concurrency suites (measured 90.0% at HEAD; ws.rs 13.5%→76%). A run
+      # below it fails. Raise again as further gaps close; never lower to make a red run pass.
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run the Rust server test suite with a coverage floor
         working-directory: server
-        run: cargo llvm-cov --locked --fail-under-lines 85 --summary-only
+        run: cargo llvm-cov --locked --fail-under-lines 89 --summary-only
 
   cargo-audit:
     runs-on: ubuntu-latest

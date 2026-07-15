@@ -36,16 +36,16 @@ export default defineConfig({
       exclude: ["src/**/*.d.ts"],
       reporter: ["text-summary", "json-summary", "html"],
       reportsDirectory: "./coverage",
-      // FLOORS = the measured baseline at 901368e (lines/stmts 67.49%, branches 83.48%, funcs 56.33%),
-      // each set a hair below measured to absorb run-to-run branch-execution variance. Ratchet UPWARD as
-      // Phase 1 closes gaps (transport.ts, the 4 untested UI modules, real main.ts action bodies); the
-      // low functions floor reflects exactly those untested surfaces. A drop below any floor fails the
-      // run — the guard against silent coverage erosion. See docs/testing.md.
+      // FLOORS — ratcheted after Phase 1 added the transport + 4 UI-module + merge suites (measured at
+      // HEAD: lines/stmts 74.74%, branches 83.91%, funcs 64.43%), each set a hair below measured to
+      // absorb run-to-run variance. Ratchet UPWARD only as further gaps close; never lower a floor to
+      // make a red run pass. A drop below any floor fails the run — the guard against silent erosion.
+      // (Baseline at 901368e was 67.49/56.33/83.48.) See docs/testing.md.
       thresholds: {
-        lines: 67,
-        functions: 56,
+        lines: 74,
+        functions: 64,
         branches: 83,
-        statements: 67,
+        statements: 74,
       },
     },
   },
