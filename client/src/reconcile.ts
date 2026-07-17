@@ -202,6 +202,22 @@ async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null>
   try { return await io.read(path); } catch { return null; }
 }
 
+// True ONLY when `path` is definitively gone from disk, confirmed by a DIRECT per-path probe
+// (io.exists, else a read) — never the directory LISTING. A listing UNDER-REPORTS when a directory
+// fails to enumerate (io.list swallows a per-dir error), a cloud-drive placeholder (OneDrive
+// Files-On-Demand) isn't hydrated, or an OS/AV lock hides a file — so a file that is STILL THERE looks
+// absent. Returns false on ANY uncertainty (probe throws, or no probe available), so a transient /
+// placeholder absence is never mistaken for a deletion. This is the delete-REMOTE analogue of
+// delete-local's "a real tombstone, not mere absence" rule (issueFalseAbsenceDelete).
+async function confirmedAbsent(io: VaultIo, path: string): Promise<boolean> {
+  try {
+    if (io.exists) return !(await io.exists(path));
+    return (await readOrNull(io, path)) === null;
+  } catch {
+    return false; // couldn't determine → treat as present; never tombstone on uncertainty
+  }
+}
+
 function nowUtc(): Date { return new Date(); }
 
 // RS-4 (Round-7 scale): cap the merge-ancestor TEXT kept in the base. The base stored full text for
@@ -674,6 +690,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "delete-remote":
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't delete on a read-only share
+      // EVIDENCED ABSENCE (issueFalseAbsenceDelete): decide() inferred a deletion because the file was
+      // absent from the local LISTING — but a listing under-reports (a directory that failed to
+      // enumerate, an un-hydrated OneDrive placeholder, an OS/AV lock), so it may still be on disk.
+      // Tombstoning here would delete it FLEET-WIDE. Confirm real absence with a direct per-path probe
+      // first; if it's still present (or unknowable), KEEP it — the next reconcile syncs it correctly.
+      // Mirrors the delete-local "a real tombstone, not mere absence" discipline above; the single-path
+      // route already re-probed via locallyPresent, but the batch route trusts the fallible list().
+      if (!(await confirmedAbsent(d.io, path))) return;
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "edit-wins-keep-local": {
       if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push

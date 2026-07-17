@@ -146,7 +146,12 @@ class ObsidianVaultIo implements VaultIo {
   private async enumerateConfig(dir: string, m: Map<string, { mtime: number; size: number }>): Promise<void> {
     const adapter = this.plugin.app.vault.adapter;
     let listing: { files: string[]; folders: string[] };
-    try { listing = await adapter.list(dir); } catch { return; }
+    // A directory we can't enumerate must NOT be silently treated as empty: that fabricates absence for
+    // every file under it. Reconcile's delete-remote now independently re-confirms absence per file
+    // (confirmedAbsent), so this can no longer cause a false mass-deletion — but LOG the miss so a
+    // cloud-drive placeholder (OneDrive Files-On-Demand) / lock hiccup is diagnosable rather than silent.
+    try { listing = await adapter.list(dir); }
+    catch (e: any) { this.plugin.log(`config enumeration couldn't list '${dir}' (${e?.message ?? e}) — files under it are left as-is, NOT treated as deleted`); return; }
     for (const file of listing.files) {
       if (!this.passes(file)) continue;
       try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0, size: st?.size ?? 0 }); } catch { /* skip unreadable */ }

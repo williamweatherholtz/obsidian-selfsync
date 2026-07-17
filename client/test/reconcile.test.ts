@@ -1294,3 +1294,42 @@ describe("crit-round: a 'download' vault switch cannot mass-delete local files a
     expect(io.m.has("n0.md")).toBe(true);
   });
 });
+
+// issueFalseAbsenceDelete: a file absent from the LOCAL LISTING is not proof it was deleted. A
+// directory that fails to enumerate (io.list swallows a per-dir error) or a cloud-drive placeholder
+// (OneDrive Files-On-Demand not hydrated) drops a still-present file from list() — and the batch route
+// trusted that listing straight into a delete-remote tombstone (which then delete-locals fleet-wide on
+// the next restart: the plugins-vanished-from-the-list incident). delete-remote now requires CONFIRMED
+// absence via a direct per-path probe (confirmedAbsent), not the fallible listing.
+describe("delete-remote requires CONFIRMED absence, not mere absence-from-the-listing", () => {
+  it("does NOT tombstone a file that fails to READ but still EXISTS (unhydrated placeholder / locked dir)", async () => {
+    const { api, deletions, files } = fakeServer();
+    const io = guardedIo({ ".obsidian/plugins/tasks/main.js": "TASKS", "note.md": "hi" });
+    const d = deps(api, io, { accepts: () => true });
+    await reconcileAll(d);                                     // in-sync: both pushed to server + base set
+    expect(files.has(".obsidian/plugins/tasks/main.js")).toBe(true);
+    // Reproduce the real placeholder condition: the dir enumeration drops the file from list() (so the
+    // batch route's locallyPresent=false, defeating the C1 read guard which needs locallyPresent), AND a
+    // direct read FAILS (a OneDrive Files-On-Demand file that won't hydrate) — but the entry EXISTS.
+    const realList = io.list.bind(io);
+    io.list = async () => { const m = await realList(); m.delete(".obsidian/plugins/tasks/main.js"); return m; };
+    const realRead = io.read.bind(io);
+    io.read = async (p: string) => { if (p === ".obsidian/plugins/tasks/main.js") throw new Error("cloud placeholder not hydrated"); return realRead(p); };
+    // io.exists stays truthful (guardedIo.exists = io.m.has → still true).
+    await reconcileAll(d);                                     // batch pass: absent from list + unreadable → decide=delete-remote
+    // The file's ENTRY still exists, so it must NOT be tombstoned or removed server-side.
+    expect(deletions.some((x) => x.path === ".obsidian/plugins/tasks/main.js")).toBe(false);
+    expect(files.has(".obsidian/plugins/tasks/main.js")).toBe(true);
+  });
+
+  it("STILL tombstones a genuinely-deleted file (list omits it AND it's really gone) — real deletes propagate", async () => {
+    const { api, deletions } = fakeServer();
+    const io = guardedIo({ "note.md": "hi", "keep.md": "k" });
+    const d = deps(api, io, { accepts: () => true });
+    await reconcileAll(d);
+    await io.remove("note.md");                                // a REAL local deletion (gone from disk → exists false)
+    await reconcileAll(d);
+    expect(deletions.some((x) => x.path === "note.md")).toBe(true); // legit delete still propagates
+    expect(deletions.some((x) => x.path === "keep.md")).toBe(false);
+  });
+});

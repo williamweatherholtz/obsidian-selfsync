@@ -85,6 +85,13 @@ Caddy provisions a Let's Encrypt certificate for your domain and proxies to the 
 TLS with your own proxy instead? Use [`deploy/docker-compose.noproxy.yml`](deploy/docker-compose.noproxy.yml).
 Full deployment, hardening, and reverse-proxy guidance is in [`docs/deployment.md`](docs/deployment.md).
 
+**Running from source (local dev).** On Windows, `./run.ps1` builds the server and runs it — the
+current binary always lands at `./bin/new-livesync-server.exe`, so you never dig through
+`server/target/`. Release build by default; `-Dev` for a fast debug build, `-BuildOnly` to build
+without running. It applies safe local defaults (`BIND_ADDR=127.0.0.1:8080`, `DATA_ROOT=./.dev-data`,
+and default `admin/admin` credentials unless you set `SYNC_PASSWORD`). Docker still builds `release`
+independently — see [`server/Dockerfile`](server/Dockerfile).
+
 ### 2. Install the plugin with BRAT
 
 SelfSync installs with [BRAT](https://github.com/TfTHacker/obsidian42-brat) and requires
