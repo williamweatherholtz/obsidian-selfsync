@@ -3,6 +3,7 @@ import { sha256hex } from "./chunker";
 import { BaseStore, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
+import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -617,6 +618,41 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     baseEntry ? { hash: baseEntry.hash } : null,
     rmeta ? { hash: rmeta.hash } : null,
   );
+  // community-plugins.json is a SET of enabled plugin ids, not an opaque blob — and it gates whether
+  // installed plugins RUN. Adopting a shorter synced copy whole (pull / divergence) would DISABLE a
+  // plugin that's installed+enabled on THIS device (issueConfigListDisable, the "all my plugins
+  // vanished" class). Merge it as a grow-only UNION instead: keep every locally-enabled id, add the
+  // remote's — so a sync can never disable your plugins. Enables still propagate; a disable does not
+  // (you toggle it off per device) — the correct, catastrophe-proof asymmetry. Only on the branches
+  // that would otherwise overwrite/merge remote INTO local; a plain local-authoritative push is left
+  // alone, and a null merge (not a valid string[]) falls through to normal opaque-config handling.
+  if (isEnabledListConfig(path) && rmeta && (action === "pull" || action === "merge" || action === "conflict-copy" || action === "edit-wins-pull")) {
+    const remoteBytes = await fetchVerified(d, rmeta);
+    const remoteStr = new TextDecoder().decode(remoteBytes);
+    const liveLocal = await readOrNull(d.io, path);
+    const localStr = liveLocal ? new TextDecoder().decode(liveLocal) : "";
+    const merged = mergeEnabledPluginsJson(localStr, remoteStr);
+    if (merged !== null) {
+      const localIds = JSON.parse(localStr.trim() || "[]") as string[];
+      const remoteIds = JSON.parse(remoteStr.trim() || "[]") as string[];
+      const localHasExtra = localIds.some((id) => !remoteIds.includes(id));
+      if (!localHasExtra) {
+        await d.io.write(path, remoteBytes); // remote ⊇ local → adopt it; nothing is disabled, nothing to push
+        setBase(d, path, remoteBytes, rmeta.hash);
+      } else {
+        const mergedBytes = new TextEncoder().encode(merged); // local has ids the server lacks → preserve them
+        await d.io.write(path, mergedBytes);
+        if (d.readOnly) {
+          setBase(d, path, remoteBytes, rmeta.hash); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
+        } else {
+          const { hash: mh, bytes: mb } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version); // converge the server to the union
+          setBase(d, path, mb, mh);
+        }
+      }
+      d.onConfigResolved?.(path);
+      return;
+    }
+  }
   // Config sync: adds, edits, and REMOVALS propagate like ordinary sync (auto-remove everywhere,
   // D0013). This is safe because the accepts() gate above guarantees only a device that genuinely
   // holds a path reaches here, so a delete is an EVIDENCED removal (a real tombstone), never a

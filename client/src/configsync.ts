@@ -123,6 +123,28 @@ export function configAutoResolveChoice(reason: string, surface: ConfigSurface |
   return dir === "download" ? "remote" : "local";
 }
 
+// community-plugins.json is a SET of enabled community-plugin ids (a JSON string[]) that gates whether
+// installed plugins RUN. Synced as an opaque whole-file blob, a SHORTER synced copy could DISABLE a
+// plugin that's installed+enabled on this device (the "all my plugins vanished" class). It must be
+// merged as a grow-only SET (union of enabled ids), never a one-sided overwrite.
+export function isEnabledListConfig(path: string): boolean {
+  return path === CONFIG_PREFIX + "community-plugins.json";
+}
+
+// Union-merge two community-plugins.json bodies into a deterministic sorted array that preserves EVERY
+// id enabled on either side — so a sync can never disable a locally-enabled plugin. Returns null if
+// either body isn't a valid string[] (the caller then falls back to normal opaque-config handling
+// rather than merging garbage). An empty/whitespace body is treated as the empty set.
+export function mergeEnabledPluginsJson(localJson: string, remoteJson: string): string | null {
+  const ids = (s: string): string[] | null => {
+    try { const v = JSON.parse(s.trim() || "[]"); return Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null; }
+    catch { return null; }
+  };
+  const l = ids(localJson), r = ids(remoteJson);
+  if (!l || !r) return null;
+  return JSON.stringify([...new Set([...l, ...r])].sort(), null, 2);
+}
+
 // The plugin id of a given community-plugin path under `.obsidian/plugins/`, or null.
 export function pluginIdOf(path: string): string | null {
   if (!path.startsWith(CONFIG_PREFIX)) return null;

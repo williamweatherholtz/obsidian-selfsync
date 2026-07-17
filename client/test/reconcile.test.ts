@@ -637,7 +637,9 @@ describe("read-only shared vault (never mutates the server)", () => {
 });
 
 describe("config sync: additive + adjudicated (never auto-delete, never resurrect)", () => {
-  const CP = ".obsidian/community-plugins.json";
+  // Use app.json as the GENERIC opaque-config fixture — community-plugins.json now has special
+  // union-merge semantics (tested separately), so it no longer adjudicates on divergence.
+  const CP = ".obsidian/app.json";
   const PLG = ".obsidian/plugins/foo/main.js";
 
   it("accepts=false → a filtered config path is skipped entirely (no write, no base, no delete)", async () => {
@@ -803,7 +805,7 @@ describe("reconcileLocalConfig (config-only scan, R13)", () => {
 });
 
 describe("critique fixes — data integrity + correctness", () => {
-  const CP = ".obsidian/community-plugins.json";
+  const CP = ".obsidian/app.json"; // generic opaque-config fixture (community-plugins.json is union-merged now)
 
   it("CO-1: both-absent clears the stale base, so recreating with identical content is pushed, not deleted", async () => {
     const { api, files } = fakeServer();
@@ -1331,5 +1333,36 @@ describe("delete-remote requires CONFIRMED absence, not mere absence-from-the-li
     await reconcileAll(d);
     expect(deletions.some((x) => x.path === "note.md")).toBe(true); // legit delete still propagates
     expect(deletions.some((x) => x.path === "keep.md")).toBe(false);
+  });
+});
+
+// issueConfigListDisable: community-plugins.json is a SET of enabled ids, not an opaque blob. Adopting
+// a SHORTER synced copy whole would DISABLE a plugin installed+enabled on this device — it must be
+// union-merged so a sync can never disable your plugins (enables propagate; disables don't).
+describe("community-plugins.json is union-merged — a shorter synced list never disables a local plugin", () => {
+  const CP = ".obsidian/community-plugins.json";
+  it("a pull of a shorter enabled-list KEEPS the locally-enabled plugin and converges the server", async () => {
+    const { api, files } = fakeServer();
+    const io = guardedIo({ [CP]: JSON.stringify(["a", "b", "c"], null, 2) });
+    const d = deps(api, io, { accepts: () => true });
+    await reconcileAll(d);                                     // push local → server + base = [a,b,c]
+    await serverPut(api, CP, JSON.stringify(["a", "b"], null, 2)); // another device DISABLES 'c' → server now [a,b]
+    const vBefore = files.get(CP)!.version;
+    await reconcileAll(d);                                     // remote shorter → decide=pull → union-merge (not overwrite)
+    const localNow = JSON.parse(new TextDecoder().decode(io.m.get(CP)!)) as string[];
+    expect(localNow).toContain("c");                          // 'c' NOT disabled — the union preserved it
+    expect([...localNow].sort()).toEqual(["a", "b", "c"]);
+    expect(files.get(CP)!.version).toBeGreaterThan(vBefore);  // the union was pushed → server has 'c' again (converged)
+  });
+
+  it("adopts a LONGER synced list (remote ⊇ local) — enables from other devices still propagate", async () => {
+    const { api } = fakeServer();
+    const io = guardedIo({ [CP]: JSON.stringify(["a"], null, 2) });
+    const d = deps(api, io, { accepts: () => true });
+    await reconcileAll(d);                                     // base = [a]
+    await serverPut(api, CP, JSON.stringify(["a", "b"], null, 2)); // another device ENABLED 'b'
+    await reconcileAll(d);
+    const localNow = JSON.parse(new TextDecoder().decode(io.m.get(CP)!)) as string[];
+    expect([...localNow].sort()).toEqual(["a", "b"]);         // 'b' adopted
   });
 });

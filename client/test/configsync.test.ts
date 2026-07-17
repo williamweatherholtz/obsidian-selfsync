@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldSync, isJunkFile, pluginIdOf, DEFAULT_CONFIG_SYNC, ConfigSyncSelection } from "../src/configsync";
+import { shouldSync, isJunkFile, pluginIdOf, DEFAULT_CONFIG_SYNC, ConfigSyncSelection, isEnabledListConfig, mergeEnabledPluginsJson } from "../src/configsync";
 
 const SELF = "obsidian-selfsync";
 const on = (over: Partial<ConfigSyncSelection> = {}): ConfigSyncSelection =>
@@ -132,5 +132,27 @@ describe("pluginIdOf", () => {
     expect(pluginIdOf(".obsidian/plugins/dataview")).toBe("dataview");
     expect(pluginIdOf(".obsidian/app.json")).toBeNull();
     expect(pluginIdOf("Note.md")).toBeNull();
+  });
+});
+
+describe("community-plugins.json set-merge (never disable a locally-enabled plugin)", () => {
+  it("isEnabledListConfig matches ONLY community-plugins.json", () => {
+    expect(isEnabledListConfig(".obsidian/community-plugins.json")).toBe(true);
+    expect(isEnabledListConfig(".obsidian/core-plugins.json")).toBe(false);
+    expect(isEnabledListConfig(".obsidian/app.json")).toBe(false);
+    expect(isEnabledListConfig(".obsidian/plugins/tasks/main.js")).toBe(false);
+  });
+  it("unions the enabled ids (sorted) — keeps ids from BOTH sides", () => {
+    expect(JSON.parse(mergeEnabledPluginsJson('["a","c"]', '["a","b"]')!)).toEqual(["a", "b", "c"]);
+    expect(JSON.parse(mergeEnabledPluginsJson('["z","a"]', '["a"]')!)).toEqual(["a", "z"]);
+  });
+  it("treats an empty/whitespace body as the empty set", () => {
+    expect(JSON.parse(mergeEnabledPluginsJson("", '["x"]')!)).toEqual(["x"]);
+    expect(JSON.parse(mergeEnabledPluginsJson('["x"]', "   ")!)).toEqual(["x"]);
+  });
+  it("returns null on a non-string[] body so the caller falls back (never merges garbage)", () => {
+    expect(mergeEnabledPluginsJson('{"a":true}', '["b"]')).toBeNull(); // an object (core-plugins.json shape)
+    expect(mergeEnabledPluginsJson("not json", '["b"]')).toBeNull();
+    expect(mergeEnabledPluginsJson("[1,2]", '["b"]')).toBeNull();      // numbers, not ids
   });
 });

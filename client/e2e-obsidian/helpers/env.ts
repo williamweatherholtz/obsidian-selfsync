@@ -69,8 +69,10 @@ export async function serverHasFile(serverUrl: string, vault: string, filePath: 
 
 export interface StagedVault { root: string; vaultDir: string; appDataDir: string; }
 
-/** Create a temp vault dir with the built plugin + data.json + community-plugins.json (auto-enable). */
-export function stageVault(serverUrl: string, vault: string, seedFiles: Record<string, string> = {}): StagedVault {
+/** Create a temp vault dir with the built plugin + data.json + community-plugins.json (auto-enable).
+ * `settings` is merged into data.settings (e.g. to turn config sync on); a `seedFiles` entry for
+ * `.obsidian/community-plugins.json` overrides the default enabled-list. */
+export function stageVault(serverUrl: string, vault: string, seedFiles: Record<string, string> = {}, settings: Record<string, unknown> = {}): StagedVault {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "selfsync-e2e-"));
   const vaultDir = path.join(root, "vault");
   const pluginDir = path.join(vaultDir, ".obsidian", "plugins", "selfsync");
@@ -88,7 +90,7 @@ export function stageVault(serverUrl: string, vault: string, seedFiles: Record<s
   // plugin auto-connects on load (onLayoutReady -> reconnect) instead of opening the setup wizard.
   fs.writeFileSync(
     path.join(pluginDir, "data.json"),
-    JSON.stringify({ settings: { serverUrl, username: "admin", password: "admin", vaultId: vault, storePassword: true } }),
+    JSON.stringify({ settings: { serverUrl, username: "admin", password: "admin", vaultId: vault, storePassword: true, ...settings } }),
   );
   fs.writeFileSync(path.join(vaultDir, ".obsidian", "community-plugins.json"), JSON.stringify(["selfsync"]));
   for (const [rel, content] of Object.entries(seedFiles)) {
