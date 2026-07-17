@@ -85,12 +85,12 @@ Caddy provisions a Let's Encrypt certificate for your domain and proxies to the 
 TLS with your own proxy instead? Use [`deploy/docker-compose.noproxy.yml`](deploy/docker-compose.noproxy.yml).
 Full deployment, hardening, and reverse-proxy guidance is in [`docs/deployment.md`](docs/deployment.md).
 
-**Running from source (local dev).** On Windows, `./run.ps1` builds the server and runs it — the
-current binary always lands at `./bin/new-livesync-server.exe`, so you never dig through
-`server/target/`. Release build by default; `-Dev` for a fast debug build, `-BuildOnly` to build
-without running. It applies safe local defaults (`BIND_ADDR=127.0.0.1:8080`, `DATA_ROOT=./.dev-data`,
-and default `admin/admin` credentials unless you set `SYNC_PASSWORD`). Docker still builds `release`
-independently — see [`server/Dockerfile`](server/Dockerfile).
+**Running locally.** On Windows, `./run.ps1` runs the server via Docker Compose
+([`deploy/docker-compose.noproxy.yml`](deploy/docker-compose.noproxy.yml)) — the same way it runs for
+real, so dev and production share one runtime. Data goes to the `selfsync-data` Docker volume (one
+consistent, backup-able location — `docker volume inspect selfsync-data`). Runs the released image by
+default; `-Local` builds and runs this repo's source instead. `-Down` stops it (keeps data), `-Logs`
+tails logs. Credentials come from `deploy/.env` (auto-generated with a random password on first run).
 
 ### 2. Install the plugin with BRAT
 

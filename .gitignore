@@ -33,10 +33,6 @@ data/
 # local config files
 *.local
 
-# ./run.ps1 output: the current server binary + local dev data root
-/bin/
-/.dev-data/
-
 cov_profile/**
 
 coverage
