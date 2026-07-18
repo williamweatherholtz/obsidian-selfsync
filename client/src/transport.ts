@@ -57,6 +57,31 @@ function tryJson(r: RequestUrlResponse): unknown {
   try { return r.json; } catch { return undefined; }
 }
 
+// Bearer auth header — was spelled out ~12x across the static account calls.
+function bearer(token: string): Record<string, string> { return { authorization: `Bearer ${token}` }; }
+
+// Strip trailing slashes so `${base}/api/…` never becomes `${base}//api/…`. Applied uniformly now —
+// some endpoints normalized the base and others didn't, so a trailing-slash baseUrl behaved differently per call.
+function normBase(url: string): string { return url.replace(/\/+$/, ""); }
+
+// Shared request → 200-check → JSON parse for the many "200 ⇒ JSON" endpoints (the account + sync ops
+// that had copy-pasted this shape with DRIFTING error surfacing — some threw the server's plain-text
+// reason via errText, others a bare "HTTP n"). Uniformly surfaces errText on a non-200, and reads the
+// body through tryJson (the .json getter throws on non-JSON). Endpoints with bespoke status semantics —
+// fileMeta (404→null), commit (409/404), changePassword (401), deleteFile (404), the binary chunk ops —
+// keep their own explicit handling and deliberately do NOT route through here.
+async function apiJson<T>(params: RequestUrlParam, label: string): Promise<T> {
+  const r = await httpReq({ ...params, throw: false });
+  if (r.status !== 200) throw new Error(errText(r, `${label}: HTTP ${r.status}`));
+  return tryJson(r) as T;
+}
+
+// apiJson's contract for endpoints that return no body (just a 200-or-throw).
+async function apiVoid(params: RequestUrlParam, label: string): Promise<void> {
+  const r = await httpReq({ ...params, throw: false });
+  if (r.status !== 200) throw new Error(errText(r, `${label}: HTTP ${r.status}`));
+}
+
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
 // Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
 // someone else → /api/u/{owner}/{vault}/… (owner given). Account ops are static.
@@ -70,13 +95,14 @@ export class HttpTransport implements SyncApi {
     if (isInsecureRemote(baseUrl)) {
       throw new Error("Refusing to sync over an unencrypted http:// connection to a remote server — use an https:// address.");
     }
+    this.baseUrl = normBase(this.baseUrl); // one consistent form for v() + connectWs (no `//api/…`)
   }
 
   // Lightweight reachability probe for the setup wizard's "Test connection" button.
   // Hits the unauthenticated /health endpoint; true iff the server answers 200 "ok".
   static async testConnection(baseUrl: string): Promise<boolean> {
     try {
-      const r = await httpReq({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
+      const r = await httpReq({ url: `${normBase(baseUrl)}/health`, method: "GET", throw: false });
       return r.status === 200;
     } catch {
       return false;
@@ -87,8 +113,8 @@ export class HttpTransport implements SyncApi {
   // this before the user signs in. Best-effort; returns "" on any error.
   static async fetchBanner(baseUrl: string): Promise<string> {
     try {
-      const r = await httpReq({ url: `${baseUrl.replace(/\/+$/, "")}/health`, method: "GET", throw: false });
-      const b = (r.json as { banner?: unknown })?.banner;
+      const r = await httpReq({ url: `${normBase(baseUrl)}/health`, method: "GET", throw: false });
+      const b = (tryJson(r) as { banner?: unknown } | undefined)?.banner;
       return typeof b === "string" ? b : "";
     } catch {
       return "";
@@ -99,7 +125,7 @@ export class HttpTransport implements SyncApi {
   // actionable message. Never throws — a diagnosis is exactly what you want when things are broken.
   // Checks: reachable (DNS/TLS/server) → protocol version → session auth → vault present → not degraded.
   static async diagnose(baseUrl: string, token?: string, vault?: string, owner?: string): Promise<Diagnosis> {
-    const url = baseUrl.replace(/\/+$/, "");
+    const url = normBase(baseUrl);
     // 1) Reachable? /health is unauthenticated.
     let health: RequestUrlResponse;
     try {
@@ -122,7 +148,7 @@ export class HttpTransport implements SyncApi {
     const scope = owner ? `/api/u/${encodeURIComponent(owner)}/${encodeURIComponent(vault)}` : `/api/v/${encodeURIComponent(vault)}`;
     let st: RequestUrlResponse;
     try {
-      st = await httpReq({ url: `${url}${scope}/status`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
+      st = await httpReq({ url: `${url}${scope}/status`, method: "GET", headers: bearer(token), throw: false });
     } catch {
       return { ok: false, layer: "unreachable", detail: "Reached /health but the sync endpoint timed out — a proxy may be dropping the connection." };
     }
@@ -145,12 +171,10 @@ export class HttpTransport implements SyncApi {
     if (isInsecureRemote(baseUrl)) {
       throw new Error("Refusing to send your password over an unencrypted http:// connection to a remote server — anyone on the network could read it. Use an https:// address (put the server behind a TLS reverse proxy).");
     }
-    const r = await httpReq({
-      url: `${baseUrl}/api/login`, method: "POST", contentType: "application/json",
-      body: JSON.stringify({ username, password }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(`login failed: HTTP ${r.status}`);
-    const j = r.json as { token: string; must_change_password?: boolean };
+    const j = await apiJson<{ token: string; must_change_password?: boolean }>({
+      url: `${normBase(baseUrl)}/api/login`, method: "POST", contentType: "application/json",
+      body: JSON.stringify({ username, password }),
+    }, "login");
     return { token: j.token, mustChange: Boolean(j.must_change_password) };
   }
 
@@ -158,106 +182,88 @@ export class HttpTransport implements SyncApi {
     if (isInsecureRemote(baseUrl)) {
       throw new Error("Refusing to send a new password over an unencrypted http:// connection to a remote server. Use an https:// address.");
     }
-    const r = await httpReq({
-      url: `${baseUrl}/api/register`, method: "POST", contentType: "application/json",
-      body: JSON.stringify({ username, password, invite }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(`register failed: HTTP ${r.status}`);
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/register`, method: "POST", contentType: "application/json",
+      body: JSON.stringify({ username, password, invite }),
+    }, "register");
   }
 
   static async listVaults(baseUrl: string, token: string): Promise<string[]> {
-    const r = await httpReq({ url: `${baseUrl}/api/vaults`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
-    if (r.status !== 200) throw new Error(`vaults: HTTP ${r.status}`);
-    return (r.json as { vaults: string[] }).vaults;
+    return (await apiJson<{ vaults: string[] }>({ url: `${normBase(baseUrl)}/api/vaults`, method: "GET", headers: bearer(token) }, "vaults")).vaults;
   }
 
   static async createVault(baseUrl: string, token: string, name: string): Promise<void> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/vaults`, method: "POST", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ name }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `create vault: HTTP ${r.status}`));
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/vaults`, method: "POST", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ name }),
+    }, "create vault");
   }
 
   // Vaults shared WITH this account (owned by others) — the complement of listVaults.
   static async listShared(baseUrl: string, token: string): Promise<SharedVaultRef[]> {
-    const r = await httpReq({ url: `${baseUrl}/api/shared`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
-    if (r.status !== 200) throw new Error(`shared: HTTP ${r.status}`);
-    return r.json as SharedVaultRef[];
+    return apiJson<SharedVaultRef[]>({ url: `${normBase(baseUrl)}/api/shared`, method: "GET", headers: bearer(token) }, "shared");
   }
   // Grantee leaves/declines a share — removes THIS account's own access to someone else's vault.
   static async leaveShare(baseUrl: string, token: string, owner: string, vault: string): Promise<void> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/shared`, method: "DELETE", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ owner, vault }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `leave share: HTTP ${r.status}`));
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/shared`, method: "DELETE", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ owner, vault }),
+    }, "leave share");
   }
 
   // Self-service password change (R14 sec#2): verifies `current`, sets `newPassword`, REVOKES all
   // other sessions server-side, and returns a FRESH token for this device (the old token is now dead).
   static async changePassword(baseUrl: string, token: string, current: string, newPassword: string): Promise<string> {
     const r = await httpReq({
-      url: `${baseUrl}/api/password`, method: "POST", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` },
+      url: `${normBase(baseUrl)}/api/password`, method: "POST", contentType: "application/json",
+      headers: bearer(token),
       body: JSON.stringify({ current, new_password: newPassword }), throw: false,
     });
-    if (r.status === 401) throw new Error("current password is incorrect");
-    if (r.status !== 200) throw new Error(`change password: HTTP ${r.status}`);
-    return (r.json as { token: string }).token;
+    if (r.status === 401) throw new Error("current password is incorrect"); // bespoke: 401 is a specific, actionable message
+    if (r.status !== 200) throw new Error(errText(r, `change password: HTTP ${r.status}`));
+    return (tryJson(r) as { token: string }).token;
   }
 
   // Owner-scoped share management (R14 sec#4). Reachable on the public port now that the endpoints
   // are on the shared surface, so a user can manage THEIR OWN shares from the plugin (was admin-only).
   static async myVaults(baseUrl: string, token: string): Promise<VaultShares[]> {
-    const r = await httpReq({ url: `${baseUrl}/api/admin/vaults`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
-    if (r.status !== 200) throw new Error(`my vaults: HTTP ${r.status}`);
-    return r.json as VaultShares[];
+    return apiJson<VaultShares[]>({ url: `${normBase(baseUrl)}/api/admin/vaults`, method: "GET", headers: bearer(token) }, "my vaults");
   }
   static async shareCreate(baseUrl: string, token: string, vault: string, grantee: string, perm: SharePerm): Promise<void> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/admin/shares`, method: "POST", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, grantee, perm }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `share: HTTP ${r.status}`));
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/admin/shares`, method: "POST", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ vault, grantee, perm }),
+    }, "share");
   }
   static async shareDelete(baseUrl: string, token: string, vault: string, grantee: string): Promise<void> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/admin/shares`, method: "DELETE", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, grantee }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `unshare: HTTP ${r.status}`));
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/admin/shares`, method: "DELETE", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ vault, grantee }),
+    }, "unshare");
   }
 
   // D0023 capability share-links. createShareLink returns the opaque token (the plugin wraps it in a
   // selfsync-share:// link); redeemShareLink binds a grant to the caller and returns what they got.
   static async createShareLink(baseUrl: string, token: string, vault: string, perm: SharePerm, label = "", ttlSecs?: number): Promise<string> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/share-links`, method: "POST", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ vault, perm, label, ttl_secs: ttlSecs ?? null }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `share link: HTTP ${r.status}`));
-    return (r.json as { token: string }).token;
+    return (await apiJson<{ token: string }>({
+      url: `${normBase(baseUrl)}/api/share-links`, method: "POST", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ vault, perm, label, ttl_secs: ttlSecs ?? null }),
+    }, "share link")).token;
   }
   static async listShareLinks(baseUrl: string, token: string): Promise<ShareLinkInfo[]> {
-    const r = await httpReq({ url: `${baseUrl}/api/share-links`, method: "GET", headers: { authorization: `Bearer ${token}` }, throw: false });
-    if (r.status !== 200) throw new Error(`share links: HTTP ${r.status}`);
-    return r.json as ShareLinkInfo[];
+    return apiJson<ShareLinkInfo[]>({ url: `${normBase(baseUrl)}/api/share-links`, method: "GET", headers: bearer(token) }, "share links");
   }
   static async revokeShareLink(baseUrl: string, token: string, id: string): Promise<void> {
-    const r = await httpReq({ url: `${baseUrl}/api/share-links/${encodeURIComponent(id)}`, method: "DELETE", headers: { authorization: `Bearer ${token}` }, throw: false });
-    if (r.status !== 200) throw new Error(`revoke share link: HTTP ${r.status}`);
+    await apiVoid({ url: `${normBase(baseUrl)}/api/share-links/${encodeURIComponent(id)}`, method: "DELETE", headers: bearer(token) }, "revoke share link");
   }
   static async redeemShareLink(baseUrl: string, token: string, linkToken: string): Promise<SharedVaultRef> {
-    const r = await httpReq({
-      url: `${baseUrl}/api/share-redeem`, method: "POST", contentType: "application/json",
-      headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ token: linkToken }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(errText(r, `redeem: HTTP ${r.status}`));
-    return r.json as SharedVaultRef;
+    return apiJson<SharedVaultRef>({
+      url: `${normBase(baseUrl)}/api/share-redeem`, method: "POST", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ token: linkToken }),
+    }, "redeem");
   }
 
-  private auth() { return { authorization: `Bearer ${this.token}` }; }
+  private auth() { return bearer(this.token); }
   private v(suffix: string): string {
     const scope = this.owner
       ? `/api/u/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.vault)}`
@@ -272,15 +278,12 @@ export class HttpTransport implements SyncApi {
   // will 503 until an operator reindexes — checked before reconciling so we surface a
   // clear reason rather than a bare "HTTP 503", and never act on a degraded manifest.
   async status(): Promise<StatusResponse> {
-    const r = await httpReq({ url: this.v("/status"), method: "GET", headers: this.auth(), throw: false });
-    if (r.status !== 200) throw new Error(`status: HTTP ${r.status}`);
-    return validateStatus(r.json); // validates shape + maps snake_case api_version → apiVersion
+    // validateStatus checks the shape + maps snake_case api_version → apiVersion (a malformed 200 throws there).
+    return validateStatus(await apiJson<unknown>({ url: this.v("/status"), method: "GET", headers: this.auth() }, "status"));
   }
 
   async changes(since: number): Promise<ChangesResponse> {
-    const r = await httpReq({ url: this.v(`/changes?since=${since}`), method: "GET", headers: this.auth(), throw: false });
-    if (r.status !== 200) throw new Error(`changes: HTTP ${r.status}`);
-    return validateChanges(r.json);
+    return validateChanges(await apiJson<unknown>({ url: this.v(`/changes?since=${since}`), method: "GET", headers: this.auth() }, "changes"));
   }
   async fileMeta(path: string): Promise<FileMeta | null> {
     const r = await httpReq({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
@@ -289,12 +292,10 @@ export class HttpTransport implements SyncApi {
     return validateFileMeta(r.json);
   }
   async missing(hashes: string[]): Promise<string[]> {
-    const r = await httpReq({
+    const m = (await apiJson<{ missing?: unknown }>({
       url: this.v("/chunks/missing"), method: "POST", contentType: "application/json",
-      headers: this.auth(), body: JSON.stringify({ hashes }), throw: false,
-    });
-    if (r.status !== 200) throw new Error(`missing: HTTP ${r.status}`);
-    const m = (r.json as { missing?: unknown }).missing;
+      headers: this.auth(), body: JSON.stringify({ hashes }),
+    }, "missing")).missing;
     if (!Array.isArray(m) || m.some((h) => typeof h !== "string")) throw new Error("missing: malformed response");
     return m as string[];
   }
