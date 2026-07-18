@@ -1,6 +1,6 @@
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk, mapPool } from "./sync";
 import { sha256hex } from "./chunker";
-import { BaseStore, conflictCopyName, isConflictCopy } from "./base";
+import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
@@ -936,66 +936,72 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   for (const f of resp.upserts) if (accepts(d, f.path)) remote.set(f.path, f);
   const local = await d.io.list();
 
-  // R17 MEDIUM-2: isolate EACH file op (matching reconcileAll/reconcileDelta). Without this, one bad
-  // file — e.g. a large file whose server manifest fails the whole-file hash — throws out of the whole
-  // switch; the caller drives OFFLINE, retries the connect, retries the entire switch, and hits the
-  // same failure: an infinite backoff loop where the vault never finishes switching. Per-file
-  // isolation lets the switch complete and skips only the offending file.
-  const failedRemote: number[] = []; // server versions whose adopt FAILED this switch (R18)
-  if (mode === "download") {
-    for (const [p, meta] of remote) {
-      // DI-6: adopt each remote file via applyPull, which STREAMS a large file straight to disk
-      // (never buffering it whole) and buffer-verifies a small one — the same path reconcileAll
-      // uses. Only a large file we CAN'T stream (no appendWrite) is size-gated + skipped.
-      const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
-      if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
-      try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
-      catch (e) {
-        d.onFileError?.(p, e);
-        const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → clean re-adopt, not a conflict-copy
-        if (holdForRetry(d, p, meta.version)) failedRemote.push(meta.version);
-      }
-    }
-    // BULK-DELETE GUARD (crit-round sync): a "download" switch mirrors the target — it removes local
-    // files the target lacks. But a target that was reindexed over a PARTIAL directory reports
-    // status:"ready" while missing files, so mirroring it would mass-delete legitimate local-only
-    // notes. Apply the SAME ratio guard reconcileAll uses: if removing would wipe an empty target's
-    // worth (remote.size===0) or >= BULK_DELETE_RATIO of the accepted local set, refuse the removals
-    // (the remote files were still adopted above) and surface it — a partial manifest can't silently
-    // delete the user's notes. A genuine populated target (remote has most paths) doesn't trip this.
-    const acceptedLocal = [...local.keys()].filter((p) => accepts(d, p));
-    const toRemove = acceptedLocal.filter((p) => !remote.has(p));
-    // Per-pass ratio only (a switch is a one-shot op — no next pass to accumulate across, so no cumulative guard, A5).
-    const guardMassDelete = isSuspiciousBulkDelete(acceptedLocal.length, toRemove.length, remote.size === 0);
-    for (const p of toRemove) {
-      if (guardMassDelete) { d.onGuard?.(p); continue; } // suspicious mass delete → keep local, don't mirror-delete
-      const info = local.get(p)!;
-      if (info.size > max) { d.onSkip?.(p, info.size); continue; }
-      try { await d.io.remove(p); } catch (e) { d.onFileError?.(p, e); }
-    }
-  } else { // upload
-    for (const [p, info] of local) {
-      if (!accepts(d, p)) continue;
-      if (info.size > max) { d.onSkip?.(p, info.size); continue; }
-      try {
-        const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
-        setBase(d, p, bytes, h); // base from the COMMITTED bytes, not a re-read (DI-5)
-      } catch (e) {
-        // R20: do NOT restore the old-vault base on a failed UPLOAD push (the R19 restore did — it was
-        // right for download but WRONG here). With base restored, if the target already holds this path
-        // with different content, the next full scan sees L==base, R!=base → decide()=pull → the target
-        // SILENTLY overwrites the local file the user chose (via upload) to keep, with no conflict copy.
-        // Leaving base null makes the retry conflict-COPY instead: the local content is preserved (as a
-        // copy) rather than lost — the data-safe pre-R19 behavior. (Download keeps its restore below.)
-        d.onFileError?.(p, e);
-      }
-    }
-    for (const p of remote.keys()) {            // drop remote files this vault lacks
-      if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } } // remote is already accepts-filtered above
-    }
-  }
+  // Server versions whose adopt FAILED this switch (R18); held below the cursor so the next poll retries.
+  const failedRemote: number[] = [];
+  if (mode === "download") await switchDownload(d, remote, local, oldBase, max, failedRemote);
+  else await switchUpload(d, remote, local, max);
   // HOLD the cursor below any remote file whose adopt FAILED this switch (R18) so the next delta poll
-  // re-visits it. Combined with the R19 pre-switch-base RESTORE above (a failed file keeps its old base,
+  // re-visits it. Combined with the R19 pre-switch-base RESTORE (a failed download keeps its old base,
   // not null), the retry re-adopts it via the normal decide() path rather than a spurious conflict copy.
   advanceCursor(d, resp.version, failedRemote);
+}
+
+// "download" switch — mirror the target INTO this device: adopt each accepted remote file (streaming a
+// large one straight to disk, size-gating one we can't stream), then remove local files the target lacks
+// (guarded against a partial-manifest mass delete). Each file op is ISOLATED (R17 MEDIUM-2), so one bad
+// file can't throw out of the whole switch → OFFLINE → infinite retry loop. A failed adopt RESTORES its
+// pre-switch base (R19) so the retry re-adopts cleanly rather than conflict-copying. Populates `failed`.
+async function switchDownload(
+  d: ReconcileDeps, remote: Map<string, FileMeta>, local: Map<string, { mtime: number; size: number }>,
+  oldBase: Map<string, BaseEntry>, max: number, failed: number[],
+): Promise<void> {
+  for (const [p, meta] of remote) {
+    // DI-6: adopt via applyPull — STREAMS a large file straight to disk (never buffered whole) and
+    // buffer-verifies a small one, the same path reconcileAll uses. Only a large file we CAN'T stream
+    // (no appendWrite) is size-gated + skipped.
+    const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
+    if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
+    try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
+    catch (e) {
+      d.onFileError?.(p, e);
+      const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → clean re-adopt, not a conflict-copy
+      if (holdForRetry(d, p, meta.version)) failed.push(meta.version);
+    }
+  }
+  // BULK-DELETE GUARD (crit-round sync): mirroring removes local files the target lacks — but a target
+  // reindexed over a PARTIAL directory reports status:"ready" while missing files, so mirroring it would
+  // mass-delete legitimate local-only notes. Apply the same ratio guard reconcileAll uses (empty target
+  // or >= RATIO of the accepted local set → refuse the removals; the remote files were still adopted).
+  const acceptedLocal = [...local.keys()].filter((p) => accepts(d, p));
+  const toRemove = acceptedLocal.filter((p) => !remote.has(p));
+  // Per-pass ratio only (a switch is a one-shot op — no next pass to accumulate across, so no cumulative guard, A5).
+  const guardMassDelete = isSuspiciousBulkDelete(acceptedLocal.length, toRemove.length, remote.size === 0);
+  for (const p of toRemove) {
+    if (guardMassDelete) { d.onGuard?.(p); continue; } // suspicious mass delete → keep local, don't mirror-delete
+    const info = local.get(p)!;
+    if (info.size > max) { d.onSkip?.(p, info.size); continue; }
+    try { await d.io.remove(p); } catch (e) { d.onFileError?.(p, e); }
+  }
+}
+
+// "upload" switch — make THIS device authoritative: push every accepted local file (base from the
+// COMMITTED bytes, DI-5), then drop remote files this vault lacks. A failed push deliberately leaves
+// base NULL (R20, NOT the download R19 restore) so the retry conflict-COPIES rather than letting the
+// target silently overwrite the local file the user chose to keep. remote is already accepts-filtered.
+async function switchUpload(
+  d: ReconcileDeps, remote: Map<string, FileMeta>, local: Map<string, { mtime: number; size: number }>, max: number,
+): Promise<void> {
+  for (const [p, info] of local) {
+    if (!accepts(d, p)) continue;
+    if (info.size > max) { d.onSkip?.(p, info.size); continue; }
+    try {
+      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
+      setBase(d, p, bytes, h);
+    } catch (e) {
+      d.onFileError?.(p, e); // R20: leave base null → retry conflict-copies, never a silent overwrite
+    }
+  }
+  for (const p of remote.keys()) { // drop remote files this vault lacks
+    if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } }
+  }
 }
