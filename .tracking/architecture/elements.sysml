@@ -1843,4 +1843,414 @@ package ProjectCodeElements {
         :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
+
+    part ceMainDoConnect : CodeElement {
+        :>> id = "4a6d1c78-b572-4359-bf26-3f1f59a1e047";
+        :>> title = "SelfSyncPlugin.doConnect â€” connect effect + initial reconcile";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "doConnect"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:17556f420af04ae5"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "The connect effect: health-check, WS spin-up, and the full initial reconcile; a flaw wedges sync or double-connects.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Health check -> markReconciling -> reconcileAll; re-stamps scan windows on success; teardown-safe.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainDoReconcileAll : CodeElement {
+        :>> id = "0550783e-dfbc-4447-8c6a-82d321801896";
+        :>> title = "SelfSyncPlugin.doReconcileAll â€” reconcile driver";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "doReconcileAll"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:a29e1be4f50e47d3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "The poll/poke effect: idle short-circuit, D0019 history-reset detection, and the full-vs-delta decision; drives every destructive reconcile.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Stamps scan windows AFTER the awaited scan (a mid-scan throw leaves them due); routes reset -> full reconcileAll.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainScheduleReconnect : CodeElement {
+        :>> id = "5c324c63-b8b1-4e06-a552-af9400e7a63e";
+        :>> title = "SelfSyncPlugin.scheduleReconnect â€” backoff reconnect";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "scheduleReconnect"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:7335fd8a42bc4c83"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "Arms the jittered backoff reconnect; stops the poll while offline so the two do not retry in parallel.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Equal-jitter delay; single reconnectTimer; unloading guard.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMainStartPolling : CodeElement {
+        :>> id = "1b10d599-03f4-4e2d-a1bf-2f7fef57a6e1";
+        :>> title = "SelfSyncPlugin.startPolling â€” poll timer";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "startPolling"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:b162da782c24e078"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "The 4s safety-net poll (an event source); must never re-arm during teardown or it leaks a timer per disable/enable.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "unloading guard (critique F4) + clears any prior interval before arming.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMainPersist : CodeElement {
+        :>> id = "c58fcfc3-1669-436a-afe7-0539eb3f2545";
+        :>> title = "SelfSyncPlugin.persist â€” base persistence";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "persist"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:c785d10023b1f8d3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Persists the base (last-synced ancestor); an out-of-order write loses base and reads as mass change.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Single-flight + trailing-write coalescing; snapshots inside the loop so the final write reflects the newest base.";
+        :>> pattern = DesignPattern::singleWriter;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMainEnumerateConfig : CodeElement {
+        :>> id = "8a06004c-c7db-4d5a-b739-04aff21af984";
+        :>> title = "SelfSyncPlugin.enumerateConfig â€” config listing";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "enumerateConfig"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:9b336ccb315ffe6b"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Lists .obsidian/ for the config scan; a swallowed dir-list failure treated as empty is the false-absence enumerate vector.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "LOGS a dir-list failure instead of silently returning empty (post-audit fix).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceMainSwitchToVault : CodeElement {
+        :>> id = "87047ca2-542e-4feb-8ffd-095485429253";
+        :>> title = "SelfSyncPlugin.switchToVault â€” vault-switch orchestration";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "switchToVault"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:9f251215ae3fda8f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Orchestrates a user vault switch (durable pending flag + switchTo); a crash mid-switch must resume, not lose data.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Durable pendingSwitch flag (cleared only after switchTo succeeds); persistent Switching state survives suspend.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainLoadSettings : CodeElement {
+        :>> id = "cfe76ce1-81a5-4182-a315-dcb2f431359c";
+        :>> title = "SelfSyncPlugin.loadSettings â€” settings load/migrate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "loadSettings"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:1be28f7656ab8d06"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Loads + migrates persisted settings; a bad migration loses config or mis-defaults selective sync.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Merges defaults; keeps a fresh per-plugin pluginDir; token-only mode handling.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceMainSaveSettings : CodeElement {
+        :>> id = "c12a447b-185e-4bab-9f33-b69be3be1d5b";
+        :>> title = "SelfSyncPlugin.saveSettings â€” settings persist";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "saveSettings"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:2f94b83c996b4598"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Persists settings; must not drop fields on write.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Obsidian saveData of the settings object.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMainResolveNoteConflict : CodeElement {
+        :>> id = "c5fe4a18-75a8-40f9-9d64-747ec6f2ff9f";
+        :>> title = "SelfSyncPlugin.resolveNoteConflict â€” note conflict resolution";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "resolveNoteConflict"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:b22cb2706d150ea1"; :>> auditRound = "r1"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Applies the user's mine/theirs choice on an irreversible content conflict; a stale-preview accept discards the other side.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Double-checked stale-preview guard (TOCTOU narrowing); theirs shares the tail with no clobber-risk; purely-derived conflict model.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainSpinUpWs : CodeElement {
+        :>> id = "0c090b36-9001-4b12-bb5c-8754ee4b0e81";
+        :>> title = "SelfSyncPlugin.spinUpWs â€” WS lifecycle";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "spinUpWs"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:9cf35809152ac5e9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "Opens/replaces the change-notify socket; a leak pins a socket per reconnect.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "unloading guard; replaces any prior socket; returns false on failure to signal the caller.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMainHistoryReset : CodeElement {
+        :>> id = "cee6fef6-e92f-420a-ac58-964ed503f7e5";
+        :>> title = "SelfSyncPlugin.historyResetDetected â€” D0019 reset detect";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "historyResetDetected"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:acabd0c0d33fed6f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Detects a server deletion-history reset from the persisted floor+version; a false negative silently resurrects pruned deletions.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Compares delta.version/history_floor against the persisted per-vault floor (survives restart).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceMainNoteHistory : CodeElement {
+        :>> id = "7bc80edb-1928-4c51-b265-defa1c1abd3d";
+        :>> title = "SelfSyncPlugin.noteHistory â€” floor/version tracking + notify";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "noteHistory"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:6b79a491fc9276e7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Records the floor/version each pass and turns a reset into ONE user notice (kept-absent batch); a miss loses reset detectability.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Persists floor/version; batches kept-absent files into a single review notice.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainOnload : CodeElement {
+        :>> id = "216345d5-8b53-4fd4-9b33-ecea68a6488e";
+        :>> title = "SelfSyncPlugin.onload â€” plugin bootstrap";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "onload"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:f4aaa0afc819c65c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The plugin entry: wires settings, commands, the engine, and event handlers; a wiring error breaks sync or leaks handlers.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Loads settings, registers commands + vault events, constructs the engine, auto-connects if configured.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMainOnunload : CodeElement {
+        :>> id = "798b5728-468b-4bd5-9b45-f7c9a0ca5336";
+        :>> title = "SelfSyncPlugin.onunload â€” teardown";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/main.ts"; :>> name = "onunload"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:c5f487f5d1d27937"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "Teardown; must stop timers + sockets + the engine or it leaks the plugin instance per disable/enable.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Enqueues unload (synchronous terminal); tears down timers/WS.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+
+    part ceSsTransition : CodeElement {
+        :>> id = "c450ffb2-bd41-4298-81de-0e07dd8ca33e";
+        :>> title = "syncstate::transition â€” engine phase transition";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncstate.ts"; :>> name = "transition"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:90208173143a1508"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The pure phase-transition function of the sync state machine; a wrong transition shows a stale/false status or mis-sequences recovery.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure total (Phase,SyncEvent)->Phase; the testable core the SyncEngine effects wrap.";
+        :>> pattern = DesignPattern::state;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceSsIsWsStale : CodeElement {
+        :>> id = "e087dcb1-3eb7-4114-8c89-827b6b99e6a1";
+        :>> title = "syncstate::isWsStale â€” WS staleness predicate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncstate.ts"; :>> name = "isWsStale"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:9570b18bbb79d355"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Decides whether a websocket is dead (drives fallback to polling); a wrong verdict sits at a permanent spinner or drops a healthy socket.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure predicate over (lastActivity,now,threshold).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceSsSyncMachine : CodeElement {
+        :>> id = "53b0c4c3-f5fc-401d-a523-e6e98015d8a5";
+        :>> title = "syncstate::SyncMachine â€” state-machine wrapper";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncstate.ts"; :>> name = "SyncMachine"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:fa3a4025175a8f91"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Holds the current Phase and applies transition(); the single source of the displayed sync state.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Thin holder over the pure transition(); no effects.";
+        :>> pattern = DesignPattern::state;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceSsLight : CodeElement {
+        :>> id = "47a3deb7-2fac-4ac1-ac1c-2fbe15e25bc8";
+        :>> title = "syncstate::light â€” status light spec";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncstate.ts"; :>> name = "light"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:de23ba609ee71dc0"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "Maps a phase to a status glyph/colour/detail; purely presentational.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure (phase,detail,realtime)->LightSpec.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceRegIssue : CodeElement {
+        :>> id = "53a82132-02b3-4fe0-a8e5-12fa4e8e0d81";
+        :>> title = "RegistrationStore::issue â€” mint invite token";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/registration.rs"; :>> name = "issue"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:819b37ec9bdeb399"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Mints an invite token gating registration; a weak/over-broad token opens registration.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Random token, optional TTL, persisted.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceRegSetMode : CodeElement {
+        :>> id = "12ca0ca9-f948-47e9-835e-8ae45d8ba006";
+        :>> title = "RegistrationStore::set_mode â€” registration policy";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/registration.rs"; :>> name = "set_mode"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:bf010ea2ce304b3d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Sets open/invite/closed registration; wrong mode is open registration.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Persists the policy mode.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminsGrant : CodeElement {
+        :>> id = "194df849-222c-46bd-a098-a4f5e70edd4c";
+        :>> title = "AdminStore::grant â€” promote to server-admin";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admins.rs"; :>> name = "grant"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:cd3ae61aaf307409"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Promotes an account to server-admin (beyond bootstrap); a flaw is privilege escalation.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Persisted admin set; paired with require_admin at the gate.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceThrottleFail : CodeElement {
+        :>> id = "26756284-568a-414d-9332-c706aaeb641f";
+        :>> title = "LoginThrottle::fail_at â€” record a failed login";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/throttle.rs"; :>> name = "fail_at"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:d5fa56e18ae6cb2f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Accrues failed-login counts toward lockout; a miss removes brute-force protection.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Windowed count keyed by user + time.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceThrottleSuccess : CodeElement {
+        :>> id = "a4c5a138-55db-4f49-b432-bcd5107d1e74";
+        :>> title = "LoginThrottle::success â€” reset on success";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/throttle.rs"; :>> name = "success"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:884ce32dfc0492d6"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Clears the failure count on a good login; a miss would keep a legit user locked out.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Resets the per-user window.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceHashSha256 : CodeElement {
+        :>> id = "8b8a30fa-26f3-4d11-a6dc-ae14af277960";
+        :>> title = "hash::sha256_hex â€” server content hash";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/hash.rs"; :>> name = "sha256_hex"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:ccb9c1809bc96fe3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The server content-address primitive (chunk verify, file hash, tokens); a bug breaks integrity + dedup.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure hex of SHA-256.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceAuditRfc3339 : CodeElement {
+        :>> id = "390e3884-6ea1-4d08-af9e-7c7822d2efbe";
+        :>> title = "audit::rfc3339_from_epoch â€” audit timestamp format";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/audit.rs"; :>> name = "rfc3339_from_epoch"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:125dd177c01a2fc1"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "Formats the audit-line timestamp; purely presentational (the civil-from-days math).";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure; verified against known epochs.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceUiSetupWizard : CodeElement {
+        :>> id = "53881e73-17cd-4eb5-a544-6e7853479cf4";
+        :>> title = "setupwizard::SetupWizard â€” connection setup UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/setupwizard.ts"; :>> name = "SetupWizard"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:8fb0cf8dcb1bbaf2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The setup wizard modal; drives login/register but is presentational over the transport.";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiSettings : CodeElement {
+        :>> id = "506e1405-db00-4947-8ead-c003ebe2bc55";
+        :>> title = "settings::SettingsTab â€” settings UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/settings.ts"; :>> name = "SettingsTab"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:82154722c8622d71"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The grouped settings tab; presentational over persisted settings.";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiVaultSwitch : CodeElement {
+        :>> id = "33775f6d-d27c-4d80-939d-c54188e7d96e";
+        :>> title = "vaultswitch::SwitchModal â€” vault switch UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/vaultswitch.ts"; :>> name = "SwitchModal"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:e582a7d6e00978f8"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The switch/fork modal; confirms then delegates to switchToVault (the destructive logic lives there).";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiNoteConflict : CodeElement {
+        :>> id = "121e4098-079a-4ee5-808c-bb23c56aaefc";
+        :>> title = "noteconflict::NoteConflictModal â€” conflict UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/noteconflict.ts"; :>> name = "NoteConflictModal"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:da8af49f4138ddea"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The note-conflict picker; presentational over resolveNoteConflict (which holds the guards).";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiConfigDir : CodeElement {
+        :>> id = "57a3274b-ce16-4df5-ab3a-e78df7c1cc12";
+        :>> title = "configdir::ConfigDirectionModal â€” config direction UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/configdir.ts"; :>> name = "ConfigDirectionModal"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:1d3f8022fd9e95e9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The first-contact config direction modal; sets an intent consumed by the reconcile layer.";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiConfirm : CodeElement {
+        :>> id = "70f7ab3b-d8a0-4bdd-83d9-1673645df074";
+        :>> title = "confirm::confirmModal â€” in-app confirm dialog";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/confirm.ts"; :>> name = "confirmModal"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:634e0219549405fb"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "The styled in-app confirmation (replaced native confirm); presentational guard prompt.";
+        :>> pattern = DesignPattern::none;
+    }
+    part ceUiAccount : CodeElement {
+        :>> id = "9e5fd326-2874-468c-923c-ea5a83d79c54";
+        :>> title = "accountui::AccountModal â€” account UI";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/accountui.ts"; :>> name = "AccountModal"; :>> kind = CodeElementKind::class;
+        :>> codeHash = "sha256:009a7c34bafa68f7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "Account management UI (password change, shares); presentational over the transport.";
+        :>> pattern = DesignPattern::none;
+    }
 }
