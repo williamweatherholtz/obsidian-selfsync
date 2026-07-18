@@ -1139,4 +1139,382 @@ package ProjectCodeElements {
         :>> pattern = DesignPattern::none;
         :>> stpaRole = StpaRole::sensor;
     }
+
+    part ceReconcileMergeConflict : CodeElement {
+        :>> id = "6274ce30-6e59-484a-a303-f6e0e15c5a26";
+        :>> title = "reconcileMergeOrConflict â€” merge/conflict arm";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "reconcileMergeOrConflict"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:0a4f77778097193a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Both-sides-changed handling; a bug drops a racing edit or clobbers a divergence without a conflict copy.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Re-reads live local after fetch (DI-R3#1); cosmetic-EOL adopt; 3-way merge else conflict-copy; read-only preserves reader copy only for a known-base divergence.";
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceReconcilePluginList : CodeElement {
+        :>> id = "890805ed-150f-4a7c-b9ef-0dd1ad5da118";
+        :>> title = "reconcileEnabledPluginList â€” community-plugins union";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "reconcileEnabledPluginList"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:eeb045751ee45b58"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "community-plugins.json is a SET; a whole-side adopt would DISABLE a locally-enabled plugin (the vanish class).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Grow-only union of enabled ids; enables propagate, disables do not; null-merge falls through to opaque handling.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceSwitchTo : CodeElement {
+        :>> id = "515bec30-0835-4e24-b3ac-32e0e91657a9";
+        :>> title = "switchTo â€” vault switch dispatcher";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "switchTo"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:250801ce5e418f63"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "A one-shot authoritative overwrite of local or remote; the highest-blast-radius user action.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Snapshots+clears base (R19), read-only guard, selective-sync filter, dispatches download/upload/merge.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceSwitchDownload : CodeElement {
+        :>> id = "278271a1-ede2-49de-a1e5-49b8644d2198";
+        :>> title = "switchDownload â€” mirror target into local";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "switchDownload"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:0decc731cbf580da"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Mirrors the target, removing local-only files; a partial ready manifest could mass-delete local notes.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Per-file isolation (R17); R19 restore-base on a failed adopt; bulk-delete ratio guard on the removals.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceSwitchUpload : CodeElement {
+        :>> id = "57676a5f-b7a1-44e1-ad3a-75b2a6f9e8d1";
+        :>> title = "switchUpload â€” make local authoritative";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "switchUpload"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:91af157a99652a3c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Overwrites the target with local; a failed push must NOT silently let the target overwrite the kept local file.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "R20 leave-base-null on failed push (retry conflict-copies, no silent overwrite); drops remote files local lacks.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceReconcileLocalConfig : CodeElement {
+        :>> id = "abb8df83-2a33-45ac-bbb9-a134867c7fff";
+        :>> title = "reconcileLocalConfig â€” cheap config scan";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "reconcileLocalConfig"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:2214c4df6a182d77"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Detects local config edits mobile fires no event for; runs often, so must be cheap + not mis-delete.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Stat-skip fast path (baseStatUnchanged); per-file error isolation; sequential (config is small).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceApplyPull : CodeElement {
+        :>> id = "a0d895cd-ea81-4b01-a44e-046ba605950b";
+        :>> title = "applyPull â€” bring a remote file down";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "applyPull"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:1e8a08aafb5ca7e2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Overwrites local with remote; must preserve a racing local edit as a conflict copy and never write unverified bytes.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Streams large / buffers small; conflictCopyIfRaced guard; whole-file hash verified before the atomic rename (R17).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceFetchVerified : CodeElement {
+        :>> id = "bb3d80c7-15f6-42f1-a819-471a55d1d152";
+        :>> title = "fetchVerified â€” verify-before-use fetch";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "fetchVerified"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:cb14f84e78b940d8"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Reassembles + verifies a remote file hash before it is written/merged/adopted; a corrupt blob must never be laundered into base.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Throws on hash mismatch; the per-file guard skips + keeps the good local copy.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceConflictCopyIfRaced : CodeElement {
+        :>> id = "bcb30d21-9fbb-444e-9b97-ad3621a3bd5e";
+        :>> title = "conflictCopyIfRaced â€” preserve a racing edit";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "conflictCopyIfRaced"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:eed0d1050462882f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Detects a local edit that raced a pull and preserves it as a copy; a miss silently loses the racing edit.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Re-reads current bytes; config-race routes to adjudication (marker), never a note-style copy.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceResolveConfigConflict : CodeElement {
+        :>> id = "624de6d1-fd74-4784-9e5c-7b2da71a0a75";
+        :>> title = "resolveConfigConflict â€” user-chosen config resolution";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "resolveConfigConflict"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:339b122c600cafdc"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "The ONLY place a config removal/divergence is acted on destructively/resurrectively â€” and only because the user chose it.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "local: push (or propagate removal); remote: pull (or adopt removal); base set to the winner.";
+        :>> pattern = DesignPattern::command;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceIsolatedPass : CodeElement {
+        :>> id = "e6550fbf-0ba4-4979-a9eb-a7ef4938090a";
+        :>> title = "isolatedPass â€” per-file error-isolation loop";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "isolatedPass"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:d92356534e9f793b"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "The shared reconcile loop: a whole-connection error must ABORT the pass; any other error must stay isolated + hold the cursor.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "connAbort short-circuit; isConnectionError => abort; else per-file hold via holdForRetry. Bounded concurrency (mapPool).";
+        :>> pattern = DesignPattern::boundedPool;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceRunDeleteGuard : CodeElement {
+        :>> id = "482a3b4a-3db1-4d20-9f05-071a85919199";
+        :>> title = "runDeleteGuard â€” bulk-delete guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "runDeleteGuard"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:ac7f7f58f68e9b4d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "The SEC-DATA guard that refuses a mass delete from a partial/empty manifest or a paced drain.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Per-pass ratio OR the cumulative DeleteRateGuard; records deletes only when let through.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceIsConnectionError : CodeElement {
+        :>> id = "0f214070-4c75-4818-8d15-419e6ad6976c";
+        :>> title = "isConnectionError â€” abort-vs-isolate classifier";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "isConnectionError"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:db4b9d755cab04ee"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Decides whether one error aborts the whole pass (server down) or is isolated per-file; a mis-classification floods errors or wrongly aborts.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Deliberately narrow regex (host-resolution/connection only, never a per-file read/timeout).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceSameIgnoringEol : CodeElement {
+        :>> id = "82762ab8-5155-410e-875f-c648e919ecfe";
+        :>> title = "sameIgnoringEol â€” cosmetic-EOL equality";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/reconcile.ts"; :>> name = "sameIgnoringEol"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:ea4c6a95e50c29ca"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Prevents spurious conflict copies for the same note saved with different line endings (the false-conflict class).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Normalizes EOL + trailing newlines; TEXT-only (isMergeable-gated so binaries are not lossily decoded).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part cePushFile : CodeElement {
+        :>> id = "52087ec2-36b9-442f-a39a-76ac823bb0ef";
+        :>> title = "pushFile â€” chunk + upload-missing + commit";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "pushFile"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:c11a35dbaf0197d9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Uploads a local file (chunk, upload only missing, CAS commit); the write path to the server.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "CAS via expectedVersion (409 -> merge); returns COMMITTED bytes (DI-5) so base cannot desync.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part cePushBytes : CodeElement {
+        :>> id = "7101957a-ed82-46fd-841c-14ba585dadfd";
+        :>> title = "pushBytes â€” write bytes then push";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "pushBytes"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:bb0fda45b9ca31d3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Writes merged/conflict bytes then pushes; returns committed bytes so base (bytes,hash) cannot disagree.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "DI-5 committed-bytes contract. (Deferred: 7 positional args -> a SyncCtx bundle, Part-B step 8.)";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceFetchFileBytes : CodeElement {
+        :>> id = "504efe13-b07c-4ad5-b61b-02bf78a624b9";
+        :>> title = "fetchFileBytes â€” fetch + reassemble";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "fetchFileBytes"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:950a3d74958997a2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Reassembles a file from its chunk list (cache-first, order-preserving).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Bounded-concurrency verified fetch; order delegated to mapPool.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceGetVerifiedChunk : CodeElement {
+        :>> id = "b66969ae-136c-4c6a-8d2f-0ec080ad8e59";
+        :>> title = "getVerifiedChunk â€” verify-before-cache chunk fetch";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "getVerifiedChunk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:09334a79b717a030"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Only authenticated bytes enter the cache, so a later cache hit is trusted; a bypass launders a corrupt blob.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Content-address verified before cachePut (DI-2). (Deferred: cache HIT aliases the buffer -> read-only contract note.)";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceMapPool : CodeElement {
+        :>> id = "3e685548-43a7-43d7-84b5-59425264fd1e";
+        :>> title = "mapPool â€” bounded-concurrency pool";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "mapPool"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:fca9d2dc3c1b27bf"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "The shared concurrency primitive; a limit<=0 previously returned a sparse array of undefined (silent-wrong).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Order-preserving pre-sized results; limit clamped >=1.";
+        :>> pattern = DesignPattern::boundedPool;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceStreamFileToDisk : CodeElement {
+        :>> id = "267fe862-7937-49af-9692-a7305c16fa67";
+        :>> title = "streamFileToDisk â€” stream large download to disk";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/sync.ts"; :>> name = "streamFileToDisk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:72e6c752ecbcfb6f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Streams a large file straight to disk (mobile OOM avoidance); a size-preserving bad manifest must never overwrite the target.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Incremental whole-file hash verified BEFORE the atomic rename (R17); mid-stream failure aborts + discards partial.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMerge3 : CodeElement {
+        :>> id = "88126f5e-5f00-430c-9f11-922b84a81713";
+        :>> title = "merge3 â€” diff3 three-way merge";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/merge.ts"; :>> name = "merge3"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:0cc312e0db2e47f0"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The auto-merge; a bug drops an edit or manufactures conflicts (the CRLF class exploded cross-platform merges).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Normalizes CRLF->LF before comparison; LCS anchors; conflict regions on overlap. Pure over its inputs.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceIsMergeable : CodeElement {
+        :>> id = "af6e27fb-dde3-4d8b-8880-f83a88e8621c";
+        :>> title = "isMergeable â€” mergeable-text gate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/merge.ts"; :>> name = "isMergeable"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:d96f0f71ffd2380d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Gates which files may be 3-way merged / EOL-normalized; a binary slipping through is lossily decoded + clobbered.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Extension-gated AND fatal-UTF-8-gated (excludes binaries / invalid UTF-8).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceChunkerChunkClient : CodeElement {
+        :>> id = "1d6713e6-3e89-40cb-9ddb-eecae9d458e5";
+        :>> title = "chunker::chunk (client) â€” CDC chunker";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/chunker.ts"; :>> name = "chunk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:b76c9230aa05596a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The reference CDC chunker; MUST match the Rust port byte-for-byte or dedup breaks.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure; gear-hash boundaries; pinned by the cross-language golden-parity test.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceSha256hexClient : CodeElement {
+        :>> id = "0691dd1f-3af5-4023-b02a-6fd2d3860120";
+        :>> title = "chunker::sha256hex (client) â€” content hash";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/chunker.ts"; :>> name = "sha256hex"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:4cc12db4c34edc7d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The content-address primitive underpinning dedup + integrity verification.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure; subarray hashing without copies.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceShouldSync : CodeElement {
+        :>> id = "e8cf4dcc-9ad6-4580-975f-139429d29273";
+        :>> title = "shouldSync â€” config-surface allowlist";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/configsync.ts"; :>> name = "shouldSync"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:6acac1553ec266b4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Decides which .obsidian/ paths sync; must never sync SelfSync own secrets and fail safe on unknown paths.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Case-insensitive self-folder exclusion; category/allowlist gate; unknown -> false (fail-safe).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceConfigSurfaceOf : CodeElement {
+        :>> id = "89b61afe-af5a-4480-a8ad-b93b97db0dc7";
+        :>> title = "configSurfaceOf â€” surface classifier";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/configsync.ts"; :>> name = "configSurfaceOf"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:b84fc44f832c35d4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Classifies a config path surface (kept in lockstep with shouldSync); drift mis-routes a file.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Total classification of .obsidian/ paths to surfaces.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceMergeEnabledPlugins : CodeElement {
+        :>> id = "0ba2d341-ae14-49b7-979e-0c47e8cedd3d";
+        :>> title = "mergeEnabledPluginsJson â€” enabled-set union";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/configsync.ts"; :>> name = "mergeEnabledPluginsJson"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:a3dee11908be264a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Unions two enabled-plugin id lists so a sync can never disable a locally-enabled plugin.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Grow-only sorted union; null on a non-string[] (falls back to opaque handling).";
+        :>> pattern = DesignPattern::makeIllegalStatesUnrepresentable;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceIsSafeVaultPath : CodeElement {
+        :>> id = "759ec6af-374a-48c9-a8c1-97a5ec28dee1";
+        :>> title = "isSafeVaultPath â€” client path guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/pathsafe.ts"; :>> name = "isSafeVaultPath"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:8f87291b4ba23082"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Refuses a traversing/absolute server-supplied path before the client touches the filesystem.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parse-don't-validate: total predicate mirroring the server safe_rel_path discipline.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceIsInsecureRemote : CodeElement {
+        :>> id = "d01bd6b2-8815-4442-91fb-fc16607688e0";
+        :>> title = "isInsecureRemote â€” cleartext-remote refusal";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/connstr.ts"; :>> name = "isInsecureRemote"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:f3f01be976554e1c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The predicate behind refusing to send tokens/passwords over http to a remote host (SC.3.13.8); loopback allowed.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Total classification of a URL as insecure-remote.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
 }
