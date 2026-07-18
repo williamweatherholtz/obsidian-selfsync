@@ -321,35 +321,13 @@ impl Vault {
         collect_files(&self.vault_dir, &self.vault_dir, &mut rels)?;
         rels.sort(); // deterministic version assignment order
         let present: std::collections::HashSet<&str> = rels.iter().map(|(rel, _)| rel.as_str()).collect();
-        // Round-7 RC-2: files indexed but absent from disk are RECOVERED from the AUTHORITATIVE chunk
-        // store (a best-effort mirror write can fail, leaving content in the store but not on disk).
-        // Only files whose chunks are ALSO gone are truly unrecoverable — those abort the reindex (the
-        // DI-4 no-silent-drop guarantee) UNLESS `force`. Without this, one lost file bricked the
-        // WHOLE-vault repair, escapable only by shelling in.
-        let mut recovered: Vec<String> = Vec::new();
-        let mut lost: Vec<String> = Vec::new();
-        // R14-DI2: reassemble AND verify the recorded hash here, not just "chunks exist". A
-        // present-but-bit-rotted chunk would otherwise be re-materialized onto the mirror and kept in
-        // the rebuilt index as "recovered" — laundering corruption into authoritative state (the index
-        // hash would no longer match the on-disk bytes, and a later disk-rebuild would ingest it). A
-        // file that reassembles to the wrong hash is unrecoverable, exactly like one whose chunks are
-        // gone → route it to `lost` so the existing DI-4 abort-unless-force guard governs it. The
-        // verified body is cached so the materialization loop below doesn't re-fetch/re-hash.
-        let mut recovered_bodies: HashMap<String, Vec<u8>> = HashMap::new();
-        for (k, meta) in &old_files {
-            if present.contains(k.as_str()) { continue; }
-            let mut body = Vec::new();
-            let mut have_all = !meta.chunks.is_empty();
-            for h in &meta.chunks {
-                match self.store.get(h)? { Some(c) => body.extend_from_slice(&c), None => { have_all = false; break; } }
-            }
-            if have_all && sha256_hex(&body) == meta.hash {
-                recovered.push(k.clone());
-                recovered_bodies.insert(k.clone(), body);
-            } else {
-                lost.push(k.clone());
-            }
-        }
+        // Round-7 RC-2 / R14-DI2: classify indexed files ABSENT from disk into RECOVERED (re-materializable
+        // from the AUTHORITATIVE chunk store AND hash-verified) vs truly LOST (chunks gone, or a bit-rotted
+        // chunk reassembling to the wrong hash). A best-effort mirror write can fail, leaving content in the
+        // store but not on disk; a lost file aborts the reindex unless `force` (DI-4 no-silent-drop). Each
+        // recovered entry carries its (key, meta, VERIFIED body) together, so re-materialization below needs
+        // no second lookup and no invariant-asserting expect(). (See classify_missing.)
+        let (recovered, mut lost) = self.classify_missing(&old_files, &present)?;
         if !lost.is_empty() && !force {
             lost.sort();
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound,
@@ -358,7 +336,7 @@ impl Vault {
         // Round-6 DI: reindex must not mint index keys that commit would reject or that collide under
         // filesystem folding — check both on-disk names AND the recovered keys we re-materialize.
         let mut names: Vec<String> = rels.iter().map(|(r, _)| r.clone()).collect();
-        names.extend(recovered.iter().cloned());
+        names.extend(recovered.iter().map(|(k, ..)| k.clone()));
         let bad = conflicting_or_unsafe_rels(&names);
         if !bad.is_empty() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
@@ -367,11 +345,9 @@ impl Vault {
         // Re-materialize recoverable files from the store (keep the authoritative index entry, write
         // the mirror so disk matches). A parse-corrupt index is empty here, so `recovered` is empty
         // then — nothing to recover, and the full disk rebuild below proceeds.
-        for k in &recovered {
-            let meta = old_files.get(k).expect("recovered key present").clone();
-            // Body was reassembled + hash-verified during classification (R14-DI2) and cached.
-            let body = recovered_bodies.remove(k).expect("recovered body cached");
-            if let Some(rel) = safe_rel_path(k) {
+        for (k, meta, body) in recovered {
+            // Body was reassembled + hash-verified during classification (R14-DI2) — no re-fetch, no expect().
+            if let Some(rel) = safe_rel_path(&k) {
                 if let Err(e) = write_mirror(&self.vault_dir.join(&rel), &body) {
                     log::warn!("[reindex] could not re-materialize '{k}': {e} (content remains in the chunk store)");
                 }
@@ -447,6 +423,33 @@ impl Vault {
             if !new_refs.contains(h) { let _ = self.store.remove(h); }
         }
         Ok(())
+    }
+
+    // Classify each indexed file ABSENT from disk (Round-7 RC-2 / R14-DI2). RECOVERED = reassembles from
+    // the authoritative chunk store AND matches its recorded hash — returned with its meta + VERIFIED body
+    // so reindex re-materializes it without a second lookup or an invariant-asserting expect(). Everything
+    // else — chunks gone, or a present-but-bit-rotted chunk reassembling to the wrong hash — is LOST (never
+    // laundered into authoritative state; reindex aborts on it unless `force`). A parse-corrupt index has no
+    // old_files, so both lists come back empty and the full disk rebuild governs.
+    fn classify_missing(
+        &self, old_files: &HashMap<String, FileMeta>, present: &std::collections::HashSet<&str>,
+    ) -> std::io::Result<(Vec<(String, FileMeta, Vec<u8>)>, Vec<String>)> {
+        let mut recovered: Vec<(String, FileMeta, Vec<u8>)> = Vec::new();
+        let mut lost: Vec<String> = Vec::new();
+        for (k, meta) in old_files {
+            if present.contains(k.as_str()) { continue; }
+            let mut body = Vec::new();
+            let mut have_all = !meta.chunks.is_empty();
+            for h in &meta.chunks {
+                match self.store.get(h)? { Some(c) => body.extend_from_slice(&c), None => { have_all = false; break; } }
+            }
+            if have_all && sha256_hex(&body) == meta.hash {
+                recovered.push((k.clone(), meta.clone(), body));
+            } else {
+                lost.push(k.clone());
+            }
+        }
+        Ok((recovered, lost))
     }
 
     // Deliberate operator history prune (tombstonePrune / D0019): drop tombstones below `floor` and
