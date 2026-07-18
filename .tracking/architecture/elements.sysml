@@ -237,4 +237,331 @@ package ProjectCodeElements {
     #Controls dependency from ceReconcileOne to ceVaultCommit;
     #Feedback dependency from ceContentStorePut to ceVaultCommit;     // reports store success/failure upward
     #Feedback dependency from ceConfirmedAbsent to ceReconcileOne;    // presence signal feeds the decision
+
+    part ceIdxPut : CodeElement {
+        :>> id = "0acdeb3f-a29d-437e-9b6c-e3c13ca7e0aa";
+        :>> title = "SqliteIndex::put â€” upsert file version + decref";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "put"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:d9b96f7e95318082"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Upserts a file version + its chunk list and returns now-unreferenced chunks (drives blob GC); an atomicity or decref error loses data or leaks/over-GCs chunks.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Single SQLite tx (all-or-nothing); version-monotonic MAX guard; decref via shared dereferenced_after (old captured before insert, EXISTS probed after). Runtime, not type-enforced.";
+        :>> pattern = DesignPattern::singleWriter;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceIdxChanges : CodeElement {
+        :>> id = "27ecfe99-de30-4031-ab17-f313aae4de2d";
+        :>> title = "SqliteIndex::changes â€” since-delta / full manifest";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "changes"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:8503eabaf0ab8b16"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Produces the upsert+tombstone manifest clients reconcile against; a wrong/incomplete manifest mis-syncs every device.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Batched JOIN groups chunks by path (seq order); output identical to the old per-row path. Version indexes keep it O(changed).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceIdxDelete : CodeElement {
+        :>> id = "aa3a0374-28b4-4232-b9c9-08cb4014ad3c";
+        :>> title = "SqliteIndex::delete â€” tombstone + decref";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "delete"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:1f738781736ce5a2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Removes a file row, records a tombstone, returns unreferenced chunks; a mis-decref leaks or drops shared blobs.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Single tx; presence signalled by DELETE rows-affected (no redundant EXISTS); shared dereferenced_after (empty keep).";
+        :>> pattern = DesignPattern::singleWriter;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceIdxReplaceFiles : CodeElement {
+        :>> id = "44378463-4f8d-419c-a71b-b7f59872184f";
+        :>> title = "SqliteIndex::replace_files â€” reindex rebuild";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "replace_files"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:bfc01846bd4b3019"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Atomically replaces all file rows on reindex; must PRESERVE the deletions table or a rebuild resurrects tombstoned files.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Single tx; deliberately keeps deletions + MAX version bump; shared insert_file (fold single-sourced).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceIdxCollidingKey : CodeElement {
+        :>> id = "aa51c919-42f8-4379-a652-cb961a92b0c3";
+        :>> title = "SqliteIndex::colliding_key â€” fold-collision guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "colliding_key"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:bf81af5026ff1dab"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Detects a case/Unicode-fold collision commit uses to refuse a path that would collapse to another on a folding FS (a phantom-deletion vector).";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "fold=?1 AND path<>?2 LIMIT 1 + .optional(); the stored `fold` column reuses the same to_lowercase as the write path (soundness rests on that lockstep).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceIdxFileMeta : CodeElement {
+        :>> id = "fc518f26-14d5-4236-8d24-799d659ad456";
+        :>> title = "SqliteIndex::file_meta â€” single-path lookup";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "file_meta"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:1ce4a047e7add330"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Reads one file's meta; the idempotent-commit + CAS checks depend on it being accurate.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Row -> typed FileMeta via row_to_meta; .optional() distinguishes absent from error.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceIdxPruneTombstones : CodeElement {
+        :>> id = "3db65f16-8458-4fd6-8f61-81cb5701bfde";
+        :>> title = "SqliteIndex::prune_tombstones â€” history prune";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "prune_tombstones"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:e3f019cedc48ba94"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Operator prune drops tombstones below a floor + raises history_floor; a wrong floor loses deletion history a client needs to converge.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Single tx; caller clamps floor to [current,version]; D0019 horizon semantics.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceIdxSetHistoryFloor : CodeElement {
+        :>> id = "e8eab45e-7097-4f97-94ad-40a2972c0a22";
+        :>> title = "SqliteIndex::set_history_floor â€” floor raise";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "set_history_floor"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:faef17bd70514536"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Raises the persisted history floor (drives client reset detection D0019); a spurious bump causes false 'history reset' churn.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Simple persisted meta write; only reindex-of-empty-index raises it (had_tombstones guard lives in the caller).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceIdxAllRefChunks : CodeElement {
+        :>> id = "42147639-4b7e-49b0-99ee-5d80da2bf80e";
+        :>> title = "SqliteIndex::all_referenced_chunks â€” GC input";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "all_referenced_chunks"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:066e8870a7886dfd"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The referenced-set that reindex/GC diffs against to reclaim blobs; an omission GCs a live chunk (missing-chunk on reboot).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "SELECT DISTINCT chunk -> Vec; total read of the reference relation.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceIdxOpen : CodeElement {
+        :>> id = "c15eb628-ed7a-4aa0-b7cd-82707177b094";
+        :>> title = "SqliteIndex::open â€” open / migrate / quarantine";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/index_store.rs"; :>> name = "open"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:ace861ef0ee76098"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Opens the index, runs migrations, and classifies corruption; a mis-classification either quarantines a healthy index or trusts a corrupt one.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "synchronous=FULL WAL, busy_timeout; migrate() reaches for a distinct ErrorKind so callers can branch on corruption.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+
+    part ceVaultReindex : CodeElement {
+        :>> id = "c077dacc-d9a5-4d02-921b-71be63e82498";
+        :>> title = "Vault::reindex â€” rebuild index from disk/store";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "reindex"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:c7d1371832230237"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "The whole-vault recovery path; a mis-classification drops a recoverable file or resurrects a tombstoned ghost, or rebuilds from a stale mirror.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "classify -> guard -> re-materialize -> rebuild -> publish -> GC; tombstone ghost-skip, prefer-store-over-stale-mirror, DI-4 no-silent-drop (abort-unless-force). Runtime-ordered.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceVaultVerifyGc : CodeElement {
+        :>> id = "373a76ee-3ac8-42a5-8bd8-785388ece7e5";
+        :>> title = "Vault::verify_and_gc â€” corruption + orphan detect";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "verify_and_gc"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:4c3f48c80b6b140e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Classifies the index as healthy/dangling/corrupt on open and reclaims orphans; a wrong verdict trusts a corrupt index or quarantines a healthy one.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Distinguishes dangling-chunk auto-repair (intact rows) from true corruption so the tombstone ghost-skip + prefer-store guards stay active.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceVaultCollectFiles : CodeElement {
+        :>> id = "27cbe621-d408-4192-a3b4-e8a2896b3bc0";
+        :>> title = "collect_files â€” recursive vault walk";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "collect_files"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:805e2c9e124e52ab"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Enumerates on-disk files for reindex; an omission mis-classifies a present file as missing.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Recursive dir walk into (rel,abs) pairs; sorted for deterministic version assignment.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceVaultWriteMirror : CodeElement {
+        :>> id = "8526ceff-2ce1-47aa-aa05-de64f7f3b2b5";
+        :>> title = "write_mirror â€” atomic bind-mount mirror write";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "write_mirror"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:9b123875ab886113"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Writes the bind-mount mirror; a torn/zero-length mirror is ingested as authoritative if the index is ALSO lost.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "R14-DI4 atomic temp -> fsync(file) -> rename -> fsync(dir); best-effort (the store is the authority).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceVaultClassifyMissing : CodeElement {
+        :>> id = "bb0be39f-4a80-4618-8b3a-74aebdc2c290";
+        :>> title = "classify_missing â€” recovered vs lost";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "classify_missing"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:9af7628b72c978cf"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Splits index-present-disk-absent files into recoverable (reassemble+verify from store) vs lost; a false 'recovered' launders corruption into authoritative state.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Returns (key,meta,VERIFIED body) or lost; hash-verifies before calling a file recovered.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceVaultConflicting : CodeElement {
+        :>> id = "6022d5d3-1c32-43f4-b16a-606cb44ea842";
+        :>> title = "conflicting_or_unsafe_rels â€” reindex key guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "conflicting_or_unsafe_rels"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:d90167b763f614b4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Rejects reindex keys that are unsafe or fold-collide (would mint a phantom-deletion collision).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Whole-path to_lowercase matches commit's colliding_key fold; within-batch scope for a full rebuild.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceVaultDelete : CodeElement {
+        :>> id = "5623c0ae-84c7-4cb8-a6c3-965cc3380e65";
+        :>> title = "Vault::delete â€” delete path + tombstone";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vault.rs"; :>> name = "delete"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:3f932351b032f42e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Deletes a file, records a tombstone, mirror-removes; must delete by RAW key (legacy invalid names) or a client's delete 404-loops forever.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Durable-before-mirror-removal; delete-by-exact-key regardless of name validity; mirror removal quiet on NotFound.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controlledProcess;
+    }
+    part ceCsSweepOrphans : CodeElement {
+        :>> id = "fdc99599-99c7-4946-b5e8-55a234588597";
+        :>> title = "ContentStore::sweep_orphans â€” runtime orphan GC";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "sweep_orphans"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:15289dcc8215b6ab"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Reclaims unreferenced blobs; a premature reclaim drops a chunk about to be committed (missing-chunk on reboot).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Fail-safe age gate (mtime error -> spared); safe under the read lock (commit holds the write lock). Correct concurrency reasoning.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsGet : CodeElement {
+        :>> id = "64a4d1ba-6d15-4273-9121-f5e1ad5217fa";
+        :>> title = "ContentStore::get â€” read a blob";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "get"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:3404e574371e5963"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Serves chunk bytes for reassembly; caller content-verifies, so a wrong blob is caught downstream.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Returns Option<Vec<u8>> (absent vs error distinguished).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsHas : CodeElement {
+        :>> id = "c15ff372-3e43-4aa7-803f-3a0d65f01aa3";
+        :>> title = "ContentStore::has â€” presence check";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "has"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:cb0b9e7b5db8b29c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Backs the missing() dedup; a wrong 'has' would skip an upload of an absent chunk (caught by commit's 404).";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure existence check -> bool.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsRemove : CodeElement {
+        :>> id = "bcab82dd-e16b-4284-a686-c28e2fdd115b";
+        :>> title = "ContentStore::remove â€” reclaim a blob";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "remove"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:4b8b12db3871059a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Physically drops a blob; only called for chunks the durable index no longer references (publish-then-GC ordering).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Best-effort remove; the ordering guarantee lives in the caller (index put before GC).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsTouch : CodeElement {
+        :>> id = "967777aa-12d5-44ae-8bde-6d17ad98b723";
+        :>> title = "ContentStore::touch â€” TTL bump (GC deferral)";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "touch"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:d2bb47eb12b525ed"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Bumps a de-referenced chunk's mtime so the sweep's TTL measures age-since-orphaned â€” the rename/dedup TOCTOU dodge.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Best-effort mtime touch; underpins the touch-not-remove decref discipline.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsListHashes : CodeElement {
+        :>> id = "34cf4b5f-1592-42f0-8249-351721562236";
+        :>> title = "ContentStore::list_hashes â€” enumerate blobs";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "list_hashes"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:9f1cb15dc0ef4efb"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The on-disk blob set the startup GC diffs against the referenced set.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Two-level shard walk -> Vec (valid-hash filtered).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceCsOpen : CodeElement {
+        :>> id = "22afa15e-f11f-48fc-bc84-c62677073903";
+        :>> title = "ContentStore::open â€” open + temp sweep";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunkstore.rs"; :>> name = "open"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:f26cf725dc7b8cc0"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::durability;
+        :>> riskRationale = "Opens the store and reclaims leaked temp files from interrupted puts.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "sweep_temp on open reclaims .tmp.* left by a crashed rename.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceChunkerChunk : CodeElement {
+        :>> id = "0041b0f3-3f86-466e-9a43-68605b2f8f2a";
+        :>> title = "chunker::chunk â€” content-defined chunking";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/chunker.rs"; :>> name = "chunk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:110eec4c914d9ee4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Splits bytes into content-defined chunks; MUST match the client chunker byte-for-byte or dedup breaks + a large file stores as one blob.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure total function; pinned to the client by a byte-for-byte golden-parity test.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
 }
