@@ -117,6 +117,10 @@ fn write_mirror(abs: &Path, body: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+// A file recoverable from the authoritative chunk store during reindex: (key, its index meta, the
+// reassembled + hash-verified body). Named so classify_missing's return type stays legible.
+type Recovered = (String, FileMeta, Vec<u8>);
+
 pub struct Vault {
     root: PathBuf,
     vault_dir: PathBuf,
@@ -433,8 +437,8 @@ impl Vault {
     // old_files, so both lists come back empty and the full disk rebuild governs.
     fn classify_missing(
         &self, old_files: &HashMap<String, FileMeta>, present: &std::collections::HashSet<&str>,
-    ) -> std::io::Result<(Vec<(String, FileMeta, Vec<u8>)>, Vec<String>)> {
-        let mut recovered: Vec<(String, FileMeta, Vec<u8>)> = Vec::new();
+    ) -> std::io::Result<(Vec<Recovered>, Vec<String>)> {
+        let mut recovered: Vec<Recovered> = Vec::new();
         let mut lost: Vec<String> = Vec::new();
         for (k, meta) in old_files {
             if present.contains(k.as_str()) { continue; }
