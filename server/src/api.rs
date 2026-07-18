@@ -193,11 +193,11 @@ pub async fn get_chunk(
     }
 }
 
-// @audit r2 2026-07-18 — permit accounting is clean (keyed on req.size; reassembly aborts once
-// body.len() > req.size, so declared size can't diverge from RAM). Deferred (design): the SMALL-commit
-// path (<= COMMIT_LARGE_BYTES) takes NO permit — bounded only by the blocking-pool width (~512 × 16 MiB
-// ≈ 8 GiB transient, 4× the large-commit budget); consider a light semaphore or a lower threshold.
-// (Sibling: put_chunk buffers the ≤16 MiB body before the 1 MiB check — a route-scoped body limit fits.)
+// @audit r2 2026-07-18 — FIXED (design): the SMALL-commit path now takes a permit too (a separate,
+// generous small_commit_slots pool), so aggregate small-commit reassembly RAM is explicitly bounded
+// (~512 MiB) instead of implicitly tied to the ~512-wide blocking pool (~8 GiB). Large commits keep
+// their tight pool. (Sibling put_chunk's ≤16 MiB pre-check-buffer is a separate low item, still // @audit.)
+// @audit-hash sha256:49bebda97232adf1
 pub async fn commit(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,
@@ -221,12 +221,15 @@ pub async fn commit(
     // concurrently and exhaust RAM. Route only LARGE commits through a small permit pool (held across
     // the blocking reassembly); small note commits — the common case — take no permit. A bounded wait
     // sheds load as 503 rather than queueing unboundedly.
-    let _commit_permit = if req.size > crate::state::COMMIT_LARGE_BYTES {
-        match tokio::time::timeout(std::time::Duration::from_secs(30), st.commit_slots.clone().acquire_owned()).await {
-            Ok(Ok(permit)) => Some(permit),
-            _ => return Err(AppError::Unavailable("server busy — too many large uploads in flight; retry shortly".into())),
-        }
-    } else { None };
+    let (pool, kind) = if req.size > crate::state::COMMIT_LARGE_BYTES {
+        (&st.commit_slots, "large uploads")
+    } else {
+        (&st.small_commit_slots, "commits") // @audit r2: small commits are now bounded too (aggregate RAM)
+    };
+    let _commit_permit = match tokio::time::timeout(std::time::Duration::from_secs(30), pool.clone().acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        _ => return Err(AppError::Unavailable(format!("server busy — too many {kind} in flight; retry shortly"))),
+    };
     // commit does journal + mirror IO under the write lock — run it on the blocking pool.
     let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;

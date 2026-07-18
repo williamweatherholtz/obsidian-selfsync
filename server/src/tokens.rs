@@ -108,10 +108,10 @@ impl TokenStore {
     // (AC.3.1.11). On a live resolve the `last_used` timestamp SLIDES (persisted at most once per
     // SLIDE_PERSIST_SECS to avoid a disk write per request); an expired token — absolute OR idle — is
     // pruned. idle_ttl_secs == 0 disables the idle check (absolute cap only).
-    // @audit r2 2026-07-18 — clean + fail-closed (idle/absolute expiry, hashed-at-rest lookup). Deferred
-    // (low): `let _ = self.save()` on the prune/slide paths swallows a disk-write error — direction is
-    // fail-closed (a lost slide only makes idle-expiry MORE likely), but a log::warn would make a
-    // persistently failing .tokens.json write observable.
+    // @audit r2 2026-07-18 — FIXED (observability): the prune/slide save() failures were silently
+    // swallowed (let _ = ...); now a log::warn so a persistently failing .tokens.json write is visible.
+    // Still fail-closed by design (a lost slide only makes idle-expiry MORE likely, never less).
+    // @audit-hash sha256:3eb6050c42dc8347
     pub fn resolve(&mut self, token: &str) -> Option<String> {
         let h = sha256_hex(token);
         let n = now();
@@ -120,12 +120,16 @@ impl TokenStore {
             Some(rec) if rec.expires_at > n && (idle == 0 || n.saturating_sub(rec.last_used) <= idle) => {
                 (Some(rec.user.clone()), n.saturating_sub(rec.last_used) >= SLIDE_PERSIST_SECS)
             }
-            Some(_) => { self.file.tokens.remove(&h); let _ = self.save(); return None; } // expired (absolute or idle)
+            Some(_) => { // expired (absolute or idle) — prune it
+                self.file.tokens.remove(&h);
+                if let Err(e) = self.save() { log::warn!("[tokens] prune-on-expiry save failed: {e}"); }
+                return None;
+            }
             None => return None,
         };
         if slide {
             if let Some(r) = self.file.tokens.get_mut(&h) { r.last_used = n; }
-            let _ = self.save();
+            if let Err(e) = self.save() { log::warn!("[tokens] slide-persist save failed: {e}"); }
         }
         user
     }

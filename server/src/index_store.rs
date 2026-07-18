@@ -16,7 +16,7 @@
 //   deletions(path, version)                            -- tombstones; + idx on version
 
 use crate::protocol::{ChangesResponse, Deletion, FileMeta};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -138,9 +138,41 @@ impl SqliteIndex {
     }
 
     fn chunks_of(conn: &Connection, path: &str) -> std::io::Result<Vec<String>> {
-        let mut stmt = conn.prepare("SELECT chunk FROM file_chunks WHERE path=?1 ORDER BY seq").map_err(io)?;
+        let mut stmt = conn.prepare_cached("SELECT chunk FROM file_chunks WHERE path=?1 ORDER BY seq").map_err(io)?;
         let rows = stmt.query_map(params![path], |r| r.get::<_, String>(0)).map_err(io)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(io)
+    }
+
+    // Insert (or upsert) a file row + its ordered chunk list. Shared by put() and replace_files() so the
+    // `fold` derivation and the chunk-insert loop have ONE home — a drift between the write path and
+    // colliding_key's fold check would be a silent collision-guard hole. prepare_cached: the per-chunk
+    // INSERT is parsed once, not per row. (replace_files wiped the tables first, so the ON CONFLICT
+    // upsert form and the DELETE-then-insert are harmless no-ops there.)
+    fn insert_file(tx: &Transaction, meta: &FileMeta) -> std::io::Result<()> {
+        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)
+                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6",
+                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase()]).map_err(io)?;
+        tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
+        let mut ins = tx.prepare_cached("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)").map_err(io)?;
+        for (i, c) in meta.chunks.iter().enumerate() {
+            ins.execute(params![meta.path, i as i64, c]).map_err(io)?;
+        }
+        Ok(())
+    }
+
+    // The chunks referenced by `old` that are NOT in `keep` and are now referenced by NO file — the
+    // durability-critical decref-collect shared by put() (keep = the new chunk set) and delete() (keep = ∅).
+    // ONE tested implementation so the two callers can't drift on the blob-GC logic. prepare_cached: the
+    // EXISTS probe is parsed once, not per old chunk.
+    fn dereferenced_after(tx: &Transaction, old: &[String], keep: &std::collections::HashSet<&String>) -> std::io::Result<Vec<String>> {
+        let mut probe = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM file_chunks WHERE chunk=?1)").map_err(io)?;
+        let mut out = Vec::new();
+        for c in old {
+            if keep.contains(c) { continue; }
+            let still: i64 = probe.query_row(params![c], |r| r.get(0)).map_err(io)?;
+            if still == 0 { out.push(c.clone()); }
+        }
+        Ok(out)
     }
 
     fn row_to_meta(conn: &Connection, path: String, hash: String, size: i64, mtime: i64, version: i64) -> std::io::Result<FileMeta> {
@@ -162,22 +194,36 @@ impl SqliteIndex {
     // All files with version > since (upserts) + all tombstones with version > since (deletes),
     // via the version indexes — O(changed), not O(all). The empty-since (0) full manifest is the
     // one whole-table scan (bounded by file count), used on first sync / a full reconcile.
-    // @audit r2 2026-07-18 — output clean. Deferred (perf, no fix this round): N+1 chunk fan-out —
-    // row_to_meta→chunks_of runs ONE SELECT per row, so a full manifest (changes(0)) is O(files) queries;
-    // batch the chunk fetch (WHERE path IN …, grouped in Rust) or at least prepare_cached chunks_of.
+    // @audit r2 2026-07-18 — FIXED (perf): the N+1 chunk fan-out is gone — one JOIN query fetches every
+    // changed file's chunks (grouped by path in Rust, ORDER BY seq) instead of a per-row chunks_of SELECT,
+    // so a full manifest (changes(0)) is 3 queries, not O(files). Output identical. (prepare_cached throughout.)
+    // @audit-hash sha256:8503eabaf0ab8b16
     pub fn changes(&self, since: u64) -> std::io::Result<ChangesResponse> {
         let conn = self.conn.lock().map_err(io)?;
         let version = Self::meta_get(&conn, "version")?;
         let history_floor = Self::meta_get(&conn, "history_floor")?;
+        // Batch the chunk lists for ALL changed files in one JOIN query, grouped by path (seq order
+        // preserved), so hydrating the manifest is O(1) queries not O(files). A zero-chunk (empty) file
+        // simply has no rows here → an empty Vec below, matching chunks_of.
+        let mut chunks_by_path: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare_cached("SELECT fc.path, fc.chunk FROM file_chunks fc JOIN files f ON fc.path = f.path WHERE f.version > ?1 ORDER BY fc.path, fc.seq").map_err(io)?;
+            let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(io)?;
+            for row in rows { let (p, c) = row.map_err(io)?; chunks_by_path.entry(p).or_default().push(c); }
+        }
         let mut upserts = Vec::new();
         {
-            let mut stmt = conn.prepare("SELECT path, hash, size, mtime, version FROM files WHERE version > ?1").map_err(io)?;
+            let mut stmt = conn.prepare_cached("SELECT path, hash, size, mtime, version FROM files WHERE version > ?1").map_err(io)?;
             let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).map_err(io)?;
-            for row in rows { let (p, h, s, m, v) = row.map_err(io)?; upserts.push(Self::row_to_meta(&conn, p, h, s, m, v)?); }
+            for row in rows {
+                let (p, h, s, m, v) = row.map_err(io)?;
+                let chunks = chunks_by_path.remove(&p).unwrap_or_default();
+                upserts.push(FileMeta { path: p, hash: h, size: s as u64, mtime: m, version: v as u64, chunks });
+            }
         }
         let mut deletes = Vec::new();
         {
-            let mut stmt = conn.prepare("SELECT path, version FROM deletions WHERE version > ?1").map_err(io)?;
+            let mut stmt = conn.prepare_cached("SELECT path, version FROM deletions WHERE version > ?1").map_err(io)?;
             let rows = stmt.query_map(params![since as i64], |r| Ok(Deletion { path: r.get(0)?, version: r.get::<_, i64>(1)? as u64 })).map_err(io)?;
             for row in rows { deletes.push(row.map_err(io)?); }
         }
@@ -209,31 +255,20 @@ impl SqliteIndex {
     // list, clear any tombstone for the path, and bump the stored version. Returns the chunks that
     // are now UNREFERENCED (were on the old version, not on the new, and used by no other file) so
     // the caller can drop those blobs — mirrors the JSON index's decref-collect.
-    // @audit r2 2026-07-18 — core is clean (version-monotonic MAX guard, single-tx read-old→mutate→decref,
-    // decref ordering verified). Deferred: the insert + EXISTS loops re-parse identical SQL per row
-    // (prepare_cached); the decref-collect loop is duplicated in delete() — extract dereferenced_after()
-    // so the durability-critical GC logic has ONE tested home; the file+chunk insert is dup'd in replace_files.
+    // @audit r2 2026-07-18 — FIXED (DRY + idiom): the file+chunk insert is now insert_file() (shared with
+    // replace_files, fold single-sourced) and the decref-collect is dereferenced_after() (shared with
+    // delete()); both prepare_cached their loop SQL. Core invariants unchanged (version-monotonic MAX guard,
+    // single-tx read-old→mutate→decref, decref ordering: old captured before insert, EXISTS probed after).
+    // @audit-hash sha256:d9b96f7e95318082
     pub fn put(&self, meta: &FileMeta) -> std::io::Result<Vec<String>> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
         let old = Self::chunks_of(&tx, &meta.path)?;
-        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)
-                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6",
-                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase()]).map_err(io)?;
-        tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
-        for (i, c) in meta.chunks.iter().enumerate() {
-            tx.execute("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)", params![meta.path, i as i64, c]).map_err(io)?;
-        }
+        Self::insert_file(&tx, meta)?;
         tx.execute("DELETE FROM deletions WHERE path=?1", params![meta.path]).map_err(io)?;
         tx.execute("UPDATE meta SET value=MAX(value, ?1) WHERE key='version'", params![meta.version as i64]).map_err(io)?;
-        // De-referenced = old chunks not in the new set AND now referenced by no file.
         let newset: std::collections::HashSet<&String> = meta.chunks.iter().collect();
-        let mut dereferenced = Vec::new();
-        for c in &old {
-            if newset.contains(c) { continue; }
-            let still: i64 = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_chunks WHERE chunk=?1)", params![c], |r| r.get(0)).map_err(io)?;
-            if still == 0 { dereferenced.push(c.clone()); }
-        }
+        let dereferenced = Self::dereferenced_after(&tx, &old, &newset)?;
         tx.commit().map_err(io)?;
         Ok(dereferenced)
     }
@@ -266,21 +301,16 @@ impl SqliteIndex {
 
     // Transactionally REPLACE all file rows (+ their chunk lists) with `metas` and set the version —
     // reindex's rebuild. Tombstones (deletions) are left intact (a healthy reindex keeps history).
-    // @audit r2 2026-07-18 — clean: deliberately PRESERVES the deletions table (no wipe) + MAX version bump
-    // — correct for a healthy reindex. Deferred: the file+chunk insert block is dup'd with put() and the
-    // `fold` derivation is hand-copied in both (extract insert_file() to keep the fold rule single-sourced).
+    // @audit r2 2026-07-18 — FIXED (DRY): the file+chunk insert is now the shared insert_file() (fold rule
+    // single-sourced with put + colliding_key). Still deliberately PRESERVES the deletions table (no wipe)
+    // + MAX version bump — correct for a healthy reindex.
+    // @audit-hash sha256:bfc01846bd4b3019
     pub fn replace_files(&self, metas: &[FileMeta], version: u64) -> std::io::Result<()> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
         tx.execute("DELETE FROM file_chunks", []).map_err(io)?;
         tx.execute("DELETE FROM files", []).map_err(io)?;
-        for m in metas {
-            tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)",
-                       params![m.path, m.hash, m.size as i64, m.mtime, m.version as i64, m.path.to_lowercase()]).map_err(io)?;
-            for (i, c) in m.chunks.iter().enumerate() {
-                tx.execute("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)", params![m.path, i as i64, c]).map_err(io)?;
-            }
-        }
+        for m in metas { Self::insert_file(&tx, m)?; }
         tx.execute("UPDATE meta SET value=MAX(value, ?1) WHERE key='version'", params![version as i64]).map_err(io)?;
         tx.commit().map_err(io)?;
         Ok(())
@@ -288,23 +318,20 @@ impl SqliteIndex {
 
     // Delete a path: remove its row + chunks, record a tombstone at `version`, bump the stored
     // version. Returns the Deletion + the chunks now unreferenced (None if the path wasn't present).
-    // @audit r2 2026-07-18 — clean + tx-atomic. Deferred: redundant EXISTS pre-check (DELETE already
-    // returns rows-affected → use that as the presence signal, one fewer query); decref loop dup'd with put().
+    // @audit r2 2026-07-18 — FIXED: dropped the redundant EXISTS pre-check — the DELETE's rows-affected IS
+    // the authoritative presence signal within the tx (one fewer query), and the decref-collect is now the
+    // shared dereferenced_after() (∅ keep). tx auto-rolls back on the early return. Behavior unchanged.
+    // @audit-hash sha256:1f738781736ce5a2
     pub fn delete(&self, path: &str, version: u64) -> std::io::Result<Option<(Deletion, Vec<String>)>> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
-        let present: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE path=?1)", params![path], |r| r.get::<_, i64>(0)).map_err(io)? != 0;
-        if !present { return Ok(None); }
         let old = Self::chunks_of(&tx, path)?;
-        tx.execute("DELETE FROM files WHERE path=?1", params![path]).map_err(io)?;
+        let hit = tx.execute("DELETE FROM files WHERE path=?1", params![path]).map_err(io)?;
+        if hit == 0 { return Ok(None); } // absent (or a bad-name non-key) → nothing to delete; tx drops → rollback
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![path]).map_err(io)?;
         tx.execute("INSERT INTO deletions(path, version) VALUES (?1,?2)", params![path, version as i64]).map_err(io)?;
         tx.execute("UPDATE meta SET value=MAX(value, ?1) WHERE key='version'", params![version as i64]).map_err(io)?;
-        let mut dereferenced = Vec::new();
-        for c in &old {
-            let still: i64 = tx.query_row("SELECT EXISTS(SELECT 1 FROM file_chunks WHERE chunk=?1)", params![c], |r| r.get(0)).map_err(io)?;
-            if still == 0 { dereferenced.push(c.clone()); }
-        }
+        let dereferenced = Self::dereferenced_after(&tx, &old, &std::collections::HashSet::new())?;
         tx.commit().map_err(io)?;
         Ok(Some((Deletion { path: path.to_string(), version }, dereferenced)))
     }

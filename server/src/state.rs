@@ -77,6 +77,7 @@ pub struct AppState {
     // permit pool caps aggregate reassembly RAM for large commits; small note commits don't take a
     // permit. (crit-round: authenticated memory-amplification DoS.)
     pub commit_slots: Arc<tokio::sync::Semaphore>,
+    pub small_commit_slots: Arc<tokio::sync::Semaphore>, // @audit r2: bound aggregate small-commit reassembly RAM
     // SEC-AUTH (FR9): per-account login throttle / lockout — brute-force protection for the
     // internet-facing front door (the design docs promised rate-limiting; it was never built).
     pub login_throttle: Arc<Mutex<crate::throttle::LoginThrottle>>,
@@ -87,6 +88,10 @@ pub const MAX_CONCURRENT_AUTH_HASHES: usize = 8;
 // At most this many LARGE-file reassemblies (req.size > COMMIT_LARGE_BYTES) run at once. Worst-case
 // aggregate transient RAM ≈ this × MAX_FILE_BYTES (512 MiB); 4 → ~2 GiB, safe on a modest box.
 pub const MAX_CONCURRENT_LARGE_COMMITS: usize = 4;
+// @audit r2 2026-07-18: SMALL commits (<= COMMIT_LARGE_BYTES) now also take a permit — bounded but
+// generous. Worst-case transient RAM ≈ this × COMMIT_LARGE_BYTES (16 MiB); 32 → ~512 MiB (most are KiB),
+// so a client firing many concurrent note commits can't reach the ~8 GiB the unthrottled path allowed.
+pub const MAX_CONCURRENT_SMALL_COMMITS: usize = 32;
 // Commits declaring more than this go through the permit pool; smaller ones (the common note-sized
 // case) are unthrottled. 16 MiB matches the buffered-body ceiling.
 pub const COMMIT_LARGE_BYTES: u64 = 16 * 1024 * 1024;
@@ -135,6 +140,7 @@ impl AppState {
             ws_conns_per_user: Arc::new(Mutex::new(HashMap::new())),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
             commit_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LARGE_COMMITS)),
+            small_commit_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SMALL_COMMITS)),
             login_throttle: Arc::new(Mutex::new(crate::throttle::LoginThrottle::new())),
         };
         // Ensure the bootstrap account has a `default` vault to land in.
