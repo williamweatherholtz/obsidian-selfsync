@@ -45,6 +45,10 @@ fn handle_in_use(h: &VaultHandle, now: Instant) -> bool {
         || h.last_access.lock().map(|la| now.duration_since(*la) < IDLE_EVICT).unwrap_or(true)
 }
 
+// Per-(user,vault) open-serialization locks: a tiny per-key mutex the opener holds across Vault::open
+// (see AppState.opens / vault()). Aliased so the field type stays legible (clippy::type_complexity).
+type OpenLocks = Arc<Mutex<HashMap<(String, String), Arc<Mutex<()>>>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
@@ -58,7 +62,7 @@ pub struct AppState {
     // Per-(user,vault) OPEN serialization (Conc-R8 M1, issueDoubleOpenRace): only one thread may run
     // Vault::open/reindex for a given key at a time. NOT the global `ns` lock (that would serialize all
     // opens + block cache hits for other vaults); a tiny per-key mutex the opener holds across open.
-    opens: Arc<Mutex<HashMap<(String, String), Arc<Mutex<()>>>>>,
+    opens: OpenLocks,
     pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
     // Per-user live WS count (crit-round SC.3.13.1): a sub-cap so one authenticated account can't
     // consume the whole global budget and deny change-notifications to every other user.

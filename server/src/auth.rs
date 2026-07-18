@@ -1,3 +1,6 @@
+// The AuthToken request-extractor impl intentionally sits at the file's end (after the test module);
+// suppress clippy's items-after-test-module STYLE lint rather than reorder the file.
+#![allow(clippy::items_after_test_module)]
 use crate::audit::{action, audit, outcome, ClientIp};
 use crate::error::{lock, AppError};
 use crate::protocol::{ChangePasswordRequest, LoginRequest, LoginResponse, RegisterRequest};

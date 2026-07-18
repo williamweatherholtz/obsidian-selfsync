@@ -200,7 +200,7 @@ mod tests {
         // ttl and checking the boundary through a second store isn't trivial — instead test revoke.
         let token = s.create("alice", "notes", Perm::Read, "", None).unwrap();
         let id = s.list("alice")[0].id.clone();
-        assert!(s.revoke("bob", &id).unwrap() == false, "a non-owner can't revoke");
+        assert!(!s.revoke("bob", &id).unwrap(), "a non-owner can't revoke");
         assert!(s.revoke("alice", &id).unwrap(), "owner revokes the pending link");
         assert!(s.redeem(&token, "dana").is_none(), "a revoked link can't be redeemed");
     }

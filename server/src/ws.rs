@@ -176,6 +176,9 @@ fn session_alive(st: &AppState, owner: &str, vault: &str, user: &str, token: &st
 
 // The per-connection loop: fan out change notifications, keepalive-ping on an interval, and
 // drop the socket if the peer misses two consecutive pings (dead/half-open connection).
+// (8 args: the per-connection identity + guards; bundling into a struct buys nothing for a single
+// internal call site, so allow the arg-count lint here.)
+#[allow(clippy::too_many_arguments)]
 async fn serve_socket(mut socket: WebSocket, mut rx: Receiver<u64>, _guard: ConnGuard, st: AppState, owner: String, vault: String, user: String, token: String) {
     let mut ping = tokio::time::interval(WS_PING_INTERVAL);
     // Delay (not the default Burst): if a busy change stream starves the ping branch for a full

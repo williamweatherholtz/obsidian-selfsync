@@ -121,7 +121,7 @@ async fn body_over_16mib_is_rejected_413() {
 async fn chunks_missing_over_cap_is_rejected_400() {
     let base = spawn().await;
     let tok = login(&base, "admin", "admin").await;
-    let hashes: Vec<String> = std::iter::repeat("0".repeat(64)).take(10_001).collect();
+    let hashes: Vec<String> = vec!["0".repeat(64); 10_001];
     let r = reqwest::Client::new()
         .post(format!("{base}/api/v/vault/chunks/missing"))
         .bearer_auth(&tok)

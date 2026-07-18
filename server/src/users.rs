@@ -229,7 +229,7 @@ impl UserStore {
             if let Some(step) = crate::totp::verify_step(&secret, code, now_secs) {
                 // Replay guard (RFC 6238 §5.2): reject a code from a step already consumed, so a
                 // captured code can't be reused within its validity window.
-                if self.file.totp_last_step.get(user).map_or(false, |&last| step <= last) {
+                if self.file.totp_last_step.get(user).is_some_and(|&last| step <= last) {
                     return Ok(false);
                 }
                 self.file.totp_last_step.insert(user.to_string(), step);

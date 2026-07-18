@@ -30,6 +30,18 @@ jobs:
         working-directory: server
         run: cargo llvm-cov --locked --fail-under-lines 89 --summary-only
 
+  # D0047 guard (issueClippyNotInCi): CI now enforces the SAME clippy gate as reverify.toml
+  # (`cargo clippy --all-targets -- -D warnings`). Without this, lint drift accumulated silently —
+  # CI never ran clippy, so a newer toolchain turned `keel reverify` red on warnings nobody caught,
+  # and deliverableTestGate couldn't be re-stamped. This makes any new warning fail the build.
+  server-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Clippy (deny warnings) — matches the reverify gate
+        working-directory: server
+        run: cargo clippy --all-targets --locked -- -D warnings
+
   cargo-audit:
     runs-on: ubuntu-latest
     steps:
