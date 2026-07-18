@@ -78,3 +78,23 @@ under `fileParallelism: false` (exit 127, no summary). Fixed by bumping to **vit
 `@vitest/coverage-v8` 3), which supports Node 24 — `npm run test:cov` now runs cleanly locally (388
 tests, EXIT 0). All prior floors held across the major bump (no test-API breakage). CI already ran fine
 on its pinned Node 22; it's now aligned to the same major.
+
+## Property-based testing (D0030, `property-based-testing` skill)
+
+Beyond example tests, the pure cores carry **property tests** (`client/test/pbt.test.ts`, fast-check) that
+assert INVARIANTS over generated inputs (with shrinking to a minimal counterexample). Properties are curated
+against the code's real invariants — not the implementation restated — and target the classes behind past
+bugs: `decide` (totality, no-destructive-without-absence, no-silent-clobber, one-sided routing), `merge3`
+(identical/one-sided merges + **CRLF-invariance**, the class of the CRLF merge bug), the chunker (lossless
+reassembly round-trip + determinism + hash-correctness), `sameIgnoringEol` (EOL/trailing-newline invariance),
+and `mergeEnabledPluginsJson` (**grow-only union** — a sync can never drop a locally-enabled plugin). Run with
+`npx vitest run test/pbt.test.ts`. Method: Anthropic's Claude-PBT (investigate → properties → tests →
+reflection loop → record). First pass (2026-07-18): 13 properties, **0 counterexamples** — the invariants
+hold; the tests are permanent generative regressions.
+
+## Mutation testing (D0030, `mutation-testing` skill)
+
+Coverage proves lines *ran*; a **mutation score** proves the suite would *fail* on a real fault. Planned:
+`cargo-mutants` (server) + Stryker (client), scoped by `keel arch criticality`; each surviving mutant is a
+concrete test-gap → a fail-first killing test (or a justified accept), with the score recorded as a monitored
+Indicator (floorable in CI once a defensible baseline exists). Not yet run — it's the follow-on to the PBT pass.
