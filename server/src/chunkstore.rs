@@ -181,4 +181,71 @@ mod tests {
         assert_eq!(n2, 0, "young orphan spared by the TTL");
         assert!(s.has(&hc));
     }
+
+    // MUTATION-TESTING (D0030): the following pin behaviors cargo-mutants found untested on the
+    // content-addressed store (the durability core beneath every committed file).
+
+    // open() sweeps leftover `*.tmp.N` files (a crash between write and rename would otherwise leak
+    // them forever, and they are never valid blobs). No test exercised the crash-recovery sweep.
+    #[test]
+    fn open_sweeps_leftover_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let shard = dir.path().join("ab");
+        std::fs::create_dir_all(&shard).unwrap();
+        let leftover = shard.join("deadbeef.tmp.0");
+        std::fs::write(&leftover, b"partial").unwrap();
+        let _s = ContentStore::open(dir.path()).unwrap(); // open() runs sweep_temp()
+        assert!(!leftover.exists(), "a crash-leftover .tmp file must be reclaimed on open");
+    }
+
+    // put() rejects a malformed hash as a FORMAT error (is_valid_hash: len==64 AND all-hex) BEFORE
+    // hashing the bytes. Weakening the `&&` to `||` (valid if EITHER holds) would let a bad-length /
+    // non-hex hash slip past the format gate and fail later as a content mismatch instead.
+    #[test]
+    fn put_rejects_a_malformed_hash_as_a_format_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ContentStore::open(dir.path()).unwrap();
+        // "abcd" is all-hex but only 4 chars — valid ONLY if the length check is dropped.
+        let e = s.put("abcd", b"x").unwrap_err();
+        assert!(e.to_string().contains("invalid chunk hash format"),
+            "a malformed hash must be a FORMAT error, not a content mismatch (got: {e})");
+        // A 64-char string with a non-hex char is the mirror case (right length, not hex).
+        let non_hex = "g".repeat(64);
+        let e2 = s.put(&non_hex, b"x").unwrap_err();
+        assert!(e2.to_string().contains("invalid chunk hash format"), "got: {e2}");
+    }
+
+    // get() returns None only for a genuinely-absent blob (NotFound); any OTHER read error must
+    // PROPAGATE (a permission/IO fault must never be laundered into "chunk absent"). Reading a
+    // directory-at-the-blob-path errors with a kind != NotFound on both Windows and Linux.
+    #[test]
+    fn get_propagates_non_notfound_read_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ContentStore::open(dir.path()).unwrap();
+        let h = sha256_hex(b"z"); // a valid 64-hex hash
+        let blob_path = dir.path().join(&h[0..2]).join(&h);
+        std::fs::create_dir_all(&blob_path).unwrap(); // a DIRECTORY where the blob file would be
+        assert!(s.get(&h).is_err(), "a non-NotFound read error must propagate, not read as absent");
+    }
+
+    // touch() resets a blob's mtime to now, so the orphan sweep measures age-since-ORPHANED (R16): a
+    // long-uploaded chunk that is only just de-referenced must not look instantly reclaimable. Prove
+    // the contract via its EFFECT — a touched old orphan is SPARED by a TTL that would otherwise reap it.
+    #[test]
+    fn touch_resets_the_orphan_age_so_an_old_chunk_is_spared() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = ContentStore::open(dir.path()).unwrap();
+        let a = b"aged"; let ha = sha256_hex(a);
+        s.put(&ha, a).unwrap();
+        // Backdate the blob well past the TTL so it WOULD be reclaimed...
+        let p = dir.path().join(&ha[0..2]).join(&ha);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+        // ...then touch it: the age clock resets to now, so a 1-hour TTL sweep must SPARE it.
+        s.touch(&ha);
+        let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let n = s.sweep_orphans(&empty, std::time::Duration::from_secs(3600)).unwrap();
+        assert_eq!(n, 0, "a touched chunk's age is reset, so the TTL spares it");
+        assert!(s.has(&ha), "the touched chunk survives the sweep");
+    }
 }

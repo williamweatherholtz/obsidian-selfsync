@@ -107,8 +107,15 @@ correct; the *tests* were blind): (1) the retain-then-`if len != before { save()
 survived (a dropped grant would reload after a restart); (2) the exact-match predicates in `revoke` and
 `grants_for` had no *selectivity* test (single-grant fixtures made `&&`→`||` invisible). Killed with 7 fail-first
 tests — reopen-from-disk persistence checks + non-`NotFound`/corrupt-file `open()` checks + multi-grant
-selectivity checks. Confirming re-run: **49 caught / 0 missed / 4 unviable = 100%** over viable mutants
-(`serverMutationScore` M1). Follow-on (not yet run): `index_store` / `chunkstore` / `vault` (the durability core).
+selectivity checks. Confirming re-run: **49 caught / 0 missed / 4 unviable = 100%** over viable mutants (`serverMutationScore` M1).
+
+**Second pass — durability core `index_store` + `chunkstore`, 2026-07-18** (`mutationTestingIndexChunkstore`).
+89 mutants → 7 survivors. `index_store` (SQLite index authority) was already solid (41/42 = 97.6%; the one
+survivor was the latent R12-CC1 `schema_version` stamp a single-version schema never exercises); `chunkstore`
+(content-addressed blob store) had 6 in untested error/validation/recovery paths — crash-leftover `.tmp`
+sweep, the `is_valid_hash` format gate, `get()` swallowing non-`NotFound` errors as "absent", and the R16
+`touch()` orphan-clock reset. Killed with 5 tests. Confirming re-run: **80 caught / 0 missed / 9 unviable =
+100%** (`serverMutationScore` M2 index_store, M3 chunkstore). Follow-on: `vault.rs` (the largest module).
 
 Reproduce: `cargo install cargo-mutants && cd server && cargo mutants --file src/shares.rs --timeout 300`
 (use `--timeout` ≥ ~3× the baseline test time so `-j` contention can't cause false timeouts).

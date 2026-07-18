@@ -366,6 +366,28 @@ mod tests {
         assert_eq!(fold, "a.md");
     }
 
+    // MUTATION-TESTING (D0030): the R12-CC1 migration seam stamps schema_version up to CURRENT after a
+    // migration. With a single schema version the branch was never exercised (a fresh DB is already at
+    // CURRENT), so a mutant flipping `v != CURRENT` to `==` survived. Simulate a stale DB (below current)
+    // and assert the stamp advances it — the contract every future schema bump will depend on.
+    #[test]
+    fn migrate_stamps_a_stale_schema_version_up_to_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL);\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',0),('version',1),('history_floor',1);",
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap();
+        let conn = s.conn.lock().unwrap();
+        let v: i64 = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, SqliteIndex::CURRENT_SCHEMA as i64, "migrate must stamp a below-current schema_version up to CURRENT");
+    }
+
     #[test]
     fn refuses_to_open_a_newer_schema_db() { // R12-CC1 downgrade guard
         let dir = tempfile::tempdir().unwrap();
