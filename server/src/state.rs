@@ -55,6 +55,10 @@ pub struct AppState {
     pub admins: Arc<Mutex<crate::admins::AdminStore>>, // promoted server-admins beyond the bootstrap (.admins.json, D0021)
     pub tokens: Arc<Mutex<TokenStore>>, // durable, expiring, revocable session tokens (.tokens.json)
     ns: Arc<Mutex<HashMap<(String, String), VaultHandle>>>, // (user,vault) -> handle
+    // Per-(user,vault) OPEN serialization (Conc-R8 M1, issueDoubleOpenRace): only one thread may run
+    // Vault::open/reindex for a given key at a time. NOT the global `ns` lock (that would serialize all
+    // opens + block cache hits for other vaults); a tiny per-key mutex the opener holds across open.
+    opens: Arc<Mutex<HashMap<(String, String), Arc<Mutex<()>>>>>,
     pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
     // Per-user live WS count (crit-round SC.3.13.1): a sub-cap so one authenticated account can't
     // consume the whole global budget and deny change-notifications to every other user.
@@ -122,6 +126,7 @@ impl AppState {
             admins: Arc::new(Mutex::new(admins)),
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
+            opens: Arc::new(Mutex::new(HashMap::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
             ws_conns_per_user: Arc::new(Mutex::new(HashMap::new())),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
@@ -152,7 +157,25 @@ impl AppState {
                 return Ok(h.clone());
             }
         }
-        let v = Vault::open(&self.ns_dir(user, vault))?;
+        // MISS. Serialize the OPEN per (user,vault): two concurrent first-accesses to the same cold,
+        // corrupt vault would otherwise both run Vault::open→reindex on separate SQLite connections,
+        // SQLite serializes the writers → one hits SQLITE_BUSY, its reindex errors, and that corrupt=true
+        // handle can win the cache → every op 503s though the DB is fine (Conc-R8 M1, issueDoubleOpenRace).
+        // A per-key mutex lets exactly one thread open; the others wait, then find the cached result.
+        let open_lock = {
+            let mut opens = self.opens.lock().map_err(|_| std::io::Error::other("opens lock poisoned"))?;
+            Arc::clone(opens.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))))
+        };
+        let _open_guard = open_lock.lock().map_err(|_| std::io::Error::other("open lock poisoned"))?;
+        // Double-checked: another thread may have opened + cached it while we waited on the open lock.
+        {
+            let map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
+            if let Some(h) = map.get(&key) {
+                if let Ok(mut la) = h.last_access.lock() { *la = Instant::now(); }
+                return Ok(h.clone());
+            }
+        }
+        let v = Vault::open(&self.ns_dir(user, vault))?; // exactly one thread per key reaches here
         let (tx, _rx) = broadcast::channel(256);
         let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx, last_access: Arc::new(Mutex::new(Instant::now())) };
         let mut map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
@@ -267,5 +290,30 @@ mod tests {
         // Recently accessed -> kept regardless of subscribers.
         *h.last_access.lock().unwrap() = Instant::now();
         assert!(handle_in_use(&h, Instant::now()), "recently accessed -> kept");
+    }
+
+    // Conc-R8 M1 (issueDoubleOpenRace): concurrent FIRST-access to the same cold vault must open it
+    // exactly once behind the per-key open lock and hand every caller the SAME cached handle — never
+    // several racing Vault::open/reindex runs (which serialize as SQLite writers → SQLITE_BUSY → a
+    // corrupt handle can win the cache). Exercises the per-key lock + double-checked cache on my change.
+    #[test]
+    fn concurrent_cold_open_of_one_vault_opens_once_and_shares_a_single_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        { let seed = AppState::for_test(dir.path()); seed.vault("admin", "sharedv").unwrap(); } // create it on disk
+        let st = Arc::new(AppState::for_test(dir.path())); // fresh → cold ns cache, same data on disk
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let s = Arc::clone(&st);
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || { b.wait(); s.vault("admin", "sharedv") }) // all pounce at once
+            })
+            .collect();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(results.iter().all(|r| r.is_ok()), "every concurrent cold open succeeds (no BUSY/corrupt loser)");
+        let first = results[0].as_ref().unwrap().vault.clone();
+        for r in &results {
+            assert!(Arc::ptr_eq(&r.as_ref().unwrap().vault, &first), "all concurrent opens share ONE cached handle");
+        }
     }
 }
