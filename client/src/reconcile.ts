@@ -428,7 +428,7 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
     }
     try {
       const rmeta = await d.api.fileMeta(p);
-      await reconcileOne(d, p, rmeta ?? undefined, false, cur?.length ?? 0, () => false, local.has(p));
+      await reconcileOne(d, p, { rmeta: rmeta ?? undefined, localSize: cur?.length ?? 0, locallyPresent: local.has(p) });
     } catch (e) {
       if (isConnectionError(e)) throw e; // server unreachable → abort the config pass (for-loop) → engine offline
       // Isolate EVERY per-file error (R14 sync#2), matching reconcileAll/reconcileDelta — not only
@@ -509,7 +509,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Hold the cursor below any failed change so it's retried next poll (R14 sync#1) — covering a failed
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => { if (pendingPaths.has(p)) d.onProgress?.(--pending); },
   );
@@ -554,7 +554,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       // destroy; a genuine local deletion still propagates via the event path / full scan (which have
       // authoritative presence). Matches reconcilePath's own io.exists probe.
       const present = d.io.exists ? await d.io.exists(p) : true;
-      await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp), present);
+      await reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: d.localSizeOf?.(p) ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: present });
     },
     versionOf,
     () => d.onProgress?.(--pending),
@@ -591,7 +591,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // deciding. O(1) exists check, only when the server-has-it precondition holds.
   const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
   try {
-    await reconcileOne(d, path, rmeta ?? undefined, guardDelete, localSize, hasTombstone, locallyPresent);
+    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize, hasTombstone, locallyPresent });
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
@@ -603,7 +603,123 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   }
 }
 
-async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | undefined, guardDelete = false, localSize = 0, hasTombstone: (p: string) => boolean = () => false, locallyPresent?: boolean, localStat?: { size: number; mtime: number }): Promise<void> {
+// community-plugins.json is a SET of enabled plugin ids (and gates whether installed plugins RUN), not
+// an opaque blob. Adopting a shorter synced copy whole (pull / divergence) would DISABLE a plugin that's
+// installed+enabled on THIS device (issueConfigListDisable, the "all my plugins vanished" class). On the
+// branches that would overwrite/merge remote INTO local, union-merge it as a grow-only set instead: keep
+// every locally-enabled id, add the remote's — so a sync can never disable your plugins. Enables still
+// propagate; a disable does not (you toggle it off per device) — the correct, catastrophe-proof asymmetry.
+// Returns true if it handled the path (caller returns); false ⇒ wrong action or not a valid string[], so
+// fall through to normal opaque-config handling. (Caller pre-checks isEnabledListConfig + rmeta present.)
+async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta: FileMeta, action: Action): Promise<boolean> {
+  if (!(action === "pull" || action === "merge" || action === "conflict-copy" || action === "edit-wins-pull")) return false;
+  const remoteBytes = await fetchVerified(d, rmeta);
+  const remoteStr = new TextDecoder().decode(remoteBytes);
+  const liveLocal = await readOrNull(d.io, path);
+  const localStr = liveLocal ? new TextDecoder().decode(liveLocal) : "";
+  const merged = mergeEnabledPluginsJson(localStr, remoteStr);
+  if (merged === null) return false; // not a valid string[] → fall through to normal opaque-config handling
+  const localIds = JSON.parse(localStr.trim() || "[]") as string[];
+  const remoteIds = JSON.parse(remoteStr.trim() || "[]") as string[];
+  const localHasExtra = localIds.some((id) => !remoteIds.includes(id));
+  if (!localHasExtra) {
+    await d.io.write(path, remoteBytes); // remote ⊇ local → adopt it; nothing is disabled, nothing to push
+    setBase(d, path, remoteBytes, rmeta.hash);
+  } else {
+    const mergedBytes = new TextEncoder().encode(merged); // local has ids the server lacks → preserve them
+    await d.io.write(path, mergedBytes);
+    if (d.readOnly) {
+      setBase(d, path, remoteBytes, rmeta.hash); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
+    } else {
+      const { hash: mh, bytes: mb } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version); // converge the server to the union
+      setBase(d, path, mb, mh);
+    }
+  }
+  d.onConfigResolved?.(path);
+  return true;
+}
+
+// Both sides changed (action "merge") or diverged with no common base (action "conflict-copy"): verify
+// the remote, re-read the CURRENT local (a save may have raced the multi-chunk fetch), adopt-on-cosmetic-
+// EOL-only, else attempt a clean 3-way merge, else conflict-copy (remote becomes canonical, the current
+// local is preserved as a copy). Read-only shares keep the reader's version as a LOCAL copy only for a
+// genuine both-sides divergence (action "merge"), never for a no-base first-contact reconciliation.
+async function reconcileMergeOrConflict(
+  d: ReconcileDeps, path: string, rmeta: FileMeta, action: Action,
+  baseEntry: { hash: string; text?: string } | null, localBytes: Uint8Array | null,
+): Promise<void> {
+  const remoteBytes = await fetchVerified(d, rmeta); // verify before merge/write (a corrupt blob must not be merged in)
+  // DI-R3#1: re-read the CURRENT on-disk local AFTER the (multi-chunk, possibly slow) remote fetch and
+  // use it for the WHOLE decision — a save that raced the fetch must feed both the auto-merge (latest
+  // edit, not a stale snapshot) AND the conflict copy (so it's preserved).
+  const liveLocal = (await readOrNull(d.io, path)) ?? localBytes!;
+  // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT a stale
+  // pre-fetch hash — a save racing the fetch changes liveLocal, and a stale tag would mislabel the copy.
+  const liveLocalHash = await sha256hex(liveLocal);
+  // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict — adopt remote,
+  // record base, spawn NO copy. TEXT ONLY: isMergeable is extension- AND fatal-UTF-8-gated, so a binary
+  // attachment is excluded (else the lossy TextDecoder could map two different binaries to one string
+  // and silently clobber a local attachment — critique F1 / issueFalseEolConflict).
+  if (isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && sameIgnoringEol(liveLocal, remoteBytes)) {
+    await d.io.write(path, remoteBytes);
+    setBase(d, path, remoteBytes, rmeta.hash);
+    return;
+  }
+  if (d.readOnly) {
+    // Read-only share: the owner's version is canonical and we push nothing. Preserve the reader's
+    // version as a LOCAL copy ONLY for a genuine both-sides divergence against a KNOWN base ("merge").
+    // A NO-BASE divergence ("conflict-copy") is first-contact reconciliation — adopt the owner's bytes
+    // with NO copy (a read-only copy can never sync, so one just litters the vault permanently).
+    if (action === "merge") {
+      const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
+      await d.io.write(copy, liveLocal);
+      d.onReadOnly?.(path); d.onConflict?.(path, copy);
+    }
+    await d.io.write(path, remoteBytes);
+    setBase(d, path, remoteBytes, rmeta.hash);
+    return;
+  }
+  // Both sides changed: attempt a clean three-way merge; fall through to a conflict copy only when it
+  // can't merge cleanly (overlapping edits) or the file isn't mergeable text.
+  const canMerge = action === "merge"
+    && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
+  if (canMerge) {
+    const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes));
+    if (clean) {
+      // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
+      // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
+      const mergedBytes = new TextEncoder().encode(merged);
+      const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version);
+      setBase(d, path, committed, h);
+      return;
+    }
+  }
+  // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
+  const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
+  await d.io.write(copy, liveLocal);
+  // C4 (R10): register the conflict NOW — the copy is on disk and preserved. pushFile below can throw
+  // (network); if onConflict fired only after it, the copy would never reach the "needs review" list.
+  d.onConflict?.(path, copy);
+  await d.io.write(path, remoteBytes);
+  const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
+  d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
+  setBase(d, path, remoteBytes, rmeta.hash);
+}
+
+interface ReconcileOneOpts {
+  rmeta?: FileMeta;                            // the server's meta for this path (undefined = server-absent)
+  guardDelete?: boolean;                       // a suspicious MASS delete was detected this pass → guard destructive removals
+  localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
+  hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
+  locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
+  localStat?: { size: number; mtime: number }; // on-disk stat, for the scan-skip fast path
+}
+
+// Reconcile ONE path against the server — a dispatcher: selective-sync + size gate, decide(), then the
+// enabled-plugin-list special-case, the config-divergence adjudication, and the per-action switch (the
+// two large arms — plugin-list union and merge/conflict-copy — live in the helpers above).
+async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
+  const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -656,41 +772,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
     baseEntry ? { hash: baseEntry.hash } : null,
     rmeta ? { hash: rmeta.hash } : null,
   );
-  // community-plugins.json is a SET of enabled plugin ids, not an opaque blob — and it gates whether
-  // installed plugins RUN. Adopting a shorter synced copy whole (pull / divergence) would DISABLE a
-  // plugin that's installed+enabled on THIS device (issueConfigListDisable, the "all my plugins
-  // vanished" class). Merge it as a grow-only UNION instead: keep every locally-enabled id, add the
-  // remote's — so a sync can never disable your plugins. Enables still propagate; a disable does not
-  // (you toggle it off per device) — the correct, catastrophe-proof asymmetry. Only on the branches
-  // that would otherwise overwrite/merge remote INTO local; a plain local-authoritative push is left
-  // alone, and a null merge (not a valid string[]) falls through to normal opaque-config handling.
-  if (isEnabledListConfig(path) && rmeta && (action === "pull" || action === "merge" || action === "conflict-copy" || action === "edit-wins-pull")) {
-    const remoteBytes = await fetchVerified(d, rmeta);
-    const remoteStr = new TextDecoder().decode(remoteBytes);
-    const liveLocal = await readOrNull(d.io, path);
-    const localStr = liveLocal ? new TextDecoder().decode(liveLocal) : "";
-    const merged = mergeEnabledPluginsJson(localStr, remoteStr);
-    if (merged !== null) {
-      const localIds = JSON.parse(localStr.trim() || "[]") as string[];
-      const remoteIds = JSON.parse(remoteStr.trim() || "[]") as string[];
-      const localHasExtra = localIds.some((id) => !remoteIds.includes(id));
-      if (!localHasExtra) {
-        await d.io.write(path, remoteBytes); // remote ⊇ local → adopt it; nothing is disabled, nothing to push
-        setBase(d, path, remoteBytes, rmeta.hash);
-      } else {
-        const mergedBytes = new TextEncoder().encode(merged); // local has ids the server lacks → preserve them
-        await d.io.write(path, mergedBytes);
-        if (d.readOnly) {
-          setBase(d, path, remoteBytes, rmeta.hash); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
-        } else {
-          const { hash: mh, bytes: mb } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version); // converge the server to the union
-          setBase(d, path, mb, mh);
-        }
-      }
-      d.onConfigResolved?.(path);
-      return;
-    }
-  }
+  // community-plugins.json is the enabled-plugin SET — union-merge it so a sync can never disable a
+  // locally-enabled plugin (issueConfigListDisable). Handled in reconcileEnabledPluginList; on false
+  // (wrong action or not a valid string[]) fall through to normal opaque-config handling below.
+  if (isEnabledListConfig(path) && rmeta && await reconcileEnabledPluginList(d, path, rmeta, action)) return;
   // Config sync: adds, edits, and REMOVALS propagate like ordinary sync (auto-remove everywhere,
   // D0013). This is safe because the accepts() gate above guarantees only a device that genuinely
   // holds a path reaches here, so a delete is an EVIDENCED removal (a real tombstone), never a
@@ -785,77 +870,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
       await applyPull(d, path, rmeta!, localHash, true); // guard a local edit racing the fetch (DI-3)
       return;
     case "merge":
-    case "conflict-copy": {
-      const remoteBytes = await fetchVerified(d, rmeta!); // verify before merge/write (a corrupt blob must not be merged in)
-      // DI-R3#1: re-read the CURRENT on-disk local content AFTER the (multi-chunk, possibly slow)
-      // remote fetch and use it for the whole merge/conflict decision. A save that raced the fetch
-      // must feed BOTH the auto-merge (so the latest edit is merged, not a stale snapshot) AND the
-      // conflict copy (so it's preserved) — the DI-R2#5 fix covered the copies but the clean-merge
-      // branch still used the stale pre-fetch localBytes, silently dropping the racing edit.
-      const liveLocal = (await readOrNull(d.io, path)) ?? localBytes!;
-      // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT
-      // the pre-fetch localHash — a save that raced the multi-chunk fetch changes liveLocal, and a
-      // stale tag would mislabel the copy (issueConflictCopyCosmetic).
-      const liveLocalHash = await sha256hex(liveLocal);
-      // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict — adopt the
-      // remote bytes, record base, and spawn NO conflict copy. Runs before the read-only + merge
-      // branches so it covers every path. (Fixes the false conflicts on a first sync of two identical
-      // copies authored on different OSes — issueFalseEolConflict.) TEXT ONLY: isMergeable is
-      // extension-gated AND fatal-UTF-8-gated, so a binary attachment (or invalid-UTF-8 bytes) is
-      // EXCLUDED — otherwise the lossy TextDecoder in sameIgnoringEol could map two DIFFERENT binaries'
-      // invalid bytes to the same U+FFFD string and silently clobber a local attachment (critique F1).
-      if (isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && sameIgnoringEol(liveLocal, remoteBytes)) {
-        await d.io.write(path, remoteBytes);
-        setBase(d, path, remoteBytes, rmeta!.hash);
-        return;
-      }
-      if (d.readOnly) {
-        // Read-only share: the owner's version is canonical and we push nothing. Preserve the reader's
-        // version as a LOCAL conflict copy ONLY for a genuine both-sides divergence against a KNOWN base
-        // (action "merge"). A NO-BASE divergence (action "conflict-copy") is first-contact reconciliation
-        // — NOT a reader edit — so adopt the owner's bytes with NO copy: a read-only copy can never sync
-        // (it's pushed nowhere), so manufacturing one just litters the vault with a permanently-flagged,
-        // unsyncable file (field report: read-only PNGs spuriously conflict-copied on every sync).
-        if (action === "merge") {
-          const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
-          await d.io.write(copy, liveLocal);
-          d.onReadOnly?.(path); d.onConflict?.(path, copy);
-        }
-        await d.io.write(path, remoteBytes);
-        setBase(d, path, remoteBytes, rmeta!.hash);
-        return;
-      }
-      // Both sides changed: always attempt a clean three-way merge; fall through to a conflict copy
-      // only when it can't merge cleanly (overlapping edits) or the file isn't mergeable text.
-      const canMerge = action === "merge"
-        && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
-      if (canMerge) {
-        const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes));
-        if (clean) {
-          const mergedBytes = new TextEncoder().encode(merged);
-          // DI-R2#3: record base from the COMMITTED bytes pushBytes returns, not the pre-write
-          // merged bytes — a racing save between write and re-read would otherwise desync base.
-          // CAS base = the remote version we merged against; if the server advanced again between
-          // our fetch and this push, the commit 409s and the next reconcile re-merges the newer remote.
-          const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta!.version);
-          setBase(d, path, committed, h);
-          return;
-        }
-      }
-      // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
-      const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
-      await d.io.write(copy, liveLocal);
-      // C4 (R10): register the conflict NOW — the copy is on disk and preserved. pushFile below can
-      // throw (network), and if onConflict fired only after it, the copy would never reach the
-      // "needs review" list (the resolver would never surface it). The copy still pushes later via
-      // its own create event; this just guarantees it's tracked.
-      d.onConflict?.(path, copy);
-      await d.io.write(path, remoteBytes);
-      const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
-      d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
-      setBase(d, path, remoteBytes, rmeta!.hash);
+    case "conflict-copy":
+      await reconcileMergeOrConflict(d, path, rmeta!, action, baseEntry, localBytes);
       return;
-    }
   }
 }
 
