@@ -82,6 +82,22 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Asked to audit/critique the top-N or next-N programmatic functions line by line, or to re-audit drifted @audit-hash functions.";
         :>> writePolicy = WritePolicy::direct;
     }
+    part propertyBasedTesting : AISkill {
+        :>> id = "7569d191-64f4-4e11-86df-013025d420aa";
+        :>> title = "property-based-testing";
+        :>> purpose = "Find correctness bugs by testing INVARIANTS not examples (Anthropic's Claude-PBT method): investigate -> propose properties grounded in the code's contracts -> write property tests (fast-check TS / proptest Rust) -> reflect genuine bugs from wrong properties -> record findings as Issues + permanent regressions. Targets pure high-criticality cores (decide/merge3/chunker/...). Deploys .engine/processes/property-based-testing.sysml.";
+        :>> location = ".engine/skills/property-based-testing/SKILL.md";
+        :>> triggerCondition = "Asked to property-test / find edge-case bugs / harden a pure function beyond examples.";
+        :>> writePolicy = WritePolicy::direct;
+    }
+    part mutationTesting : AISkill {
+        :>> id = "c69d21ec-d2d3-4c2e-8c9f-c6c56c445c9c";
+        :>> title = "mutation-testing";
+        :>> purpose = "Measure whether the test suite actually CATCHES bugs (cargo-mutants / Stryker): a surviving mutant is a concrete test-gap; turn each into a killing test (or justified accept) and record the mutation score as a monitored Indicator (D0089) — the computed answer to 'are tests really being carried out?'. Deploys .engine/processes/mutation-testing.sysml.";
+        :>> location = ".engine/skills/mutation-testing/SKILL.md";
+        :>> triggerCondition = "Asked to assess test efficacy, after a test-hardening pass, or to prove a module's tests bite.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part testResult : AISkill {
         :>> id = "b153edf8-6a01-4e3d-c746-6fa3f6f0f666";
         :>> title = "test-result";
