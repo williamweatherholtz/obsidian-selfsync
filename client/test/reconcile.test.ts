@@ -66,11 +66,11 @@ function deps(api: SyncApi, io: VaultIo, extra: Partial<ReconcileDeps> = {}): Re
   return { api, io, base: new BaseStore(), cache: new Map() as ChunkCache, state: { version: 0 }, device: "Dev", ...extra };
 }
 async function serverPut(api: SyncApi, path: string, text: string) {
-  await pushFile(api, fakeIo({ [path]: text }), { version: 0 }, new Map() as ChunkCache, path);
+  await pushFile({ api, io: fakeIo({ [path]: text }), state: { version: 0 }, cache: new Map() as ChunkCache }, path);
 }
 async function serverPutBytes(api: SyncApi, path: string, bytes: Uint8Array) {
   const io = fakeIo(); io.m.set(path, bytes);
-  await pushFile(api, io, { version: 0 }, new Map() as ChunkCache, path);
+  await pushFile({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, path);
 }
 // A VaultIo that applies the production path guard (mirrors ObsidianVaultIo, R24): read/exists/write/
 // remove refuse a traversing/absolute server-supplied path so it can never touch the "filesystem".
@@ -136,7 +136,7 @@ describe("R24: a compromised server cannot exfiltrate an out-of-vault file via a
     expect(files.has("../../../.ssh/id_rsa")).toBe(false);
     for (const b of chunks.values()) expect(dec(b)).not.toContain("SUPER SECRET");
     // A subsequent normal push of a real note still works (guard doesn't break legit paths).
-    await pushFile(api, io, { version: 0 }, new Map() as ChunkCache, "note.md");
+    await pushFile({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "note.md");
     expect(files.has("note.md")).toBe(true);
   });
 });
@@ -892,7 +892,7 @@ describe("critique fixes — data integrity + correctness", () => {
     const { api } = fakeServer();
     const io = fakeIo({ "a.md": "hi" });
     const state = { version: 5 };
-    await pushFile(api, io, state, new Map() as ChunkCache, "a.md"); // commits, bumps the SERVER version
+    await pushFile({ api, io, state, cache: new Map() as ChunkCache }, "a.md"); // commits, bumps the SERVER version
     expect(state.version).toBe(5); // our poll cursor must stay put, so changes(5) still returns any remote commit
   });
 

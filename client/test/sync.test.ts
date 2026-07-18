@@ -42,7 +42,7 @@ describe("chunk sync engine", () => {
     const { api, chunks } = fakeServer();
     const io = fakeIo({ "a.md": "hello world" });
     const cache: ChunkCache = new Map();
-    const { hash: h } = await pushFile(api, io, { version: 0 }, cache, "a.md");
+    const { hash: h } = await pushFile({ api, io, state: { version: 0 }, cache }, "a.md");
     expect(h).toBe(await sha256hex(enc("hello world")));
     const cs = await chunk(enc("hello world"));
     for (const c of cs) expect(chunks.has(c.hash)).toBe(true);
@@ -52,12 +52,12 @@ describe("chunk sync engine", () => {
     const { api } = fakeServer();
     const io = fakeIo({ "a.md": "hello world" });
     const cache: ChunkCache = new Map();
-    await pushFile(api, io, { version: 0 }, cache, "a.md");
+    await pushFile({ api, io, state: { version: 0 }, cache }, "a.md");
     // spy: count putChunk calls on a second push of identical content
     let puts = 0;
     const origPut = api.putChunk;
     api.putChunk = async (h, b) => { puts++; return origPut(h, b); };
-    await pushFile(api, io, { version: 0 }, cache, "a.md");
+    await pushFile({ api, io, state: { version: 0 }, cache }, "a.md");
     expect(puts).toBe(0); // all chunks already on the server
   });
 
@@ -77,7 +77,7 @@ describe("chunk sync engine", () => {
     let maxBatch = 0; let totalSeen = 0;
     const orig = api.missing.bind(api);
     api.missing = async (hashes) => { maxBatch = Math.max(maxBatch, hashes.length); totalSeen += hashes.length; return orig(hashes); };
-    await pushFile(api, io, { version: 0 }, new Map(), "big.bin");
+    await pushFile({ api, io, state: { version: 0 }, cache: new Map() }, "big.bin");
     expect(maxBatch).toBeLessThanOrEqual(10000);    // no single call exceeds the server cap → no HTTP 400
     expect(totalSeen).toBe(cs.length);              // every chunk queried exactly once, none dropped
     for (const c of cs) expect(chunks.has(c.hash)).toBe(true); // and all uploaded
@@ -86,7 +86,7 @@ describe("chunk sync engine", () => {
   it("fetchFileBytes reassembles a file from its chunk list", async () => {
     const { api } = fakeServer();
     const ioA = fakeIo({ "n.md": "the quick brown fox" });
-    await pushFile(api, ioA, { version: 0 }, new Map(), "n.md");
+    await pushFile({ api, io: ioA, state: { version: 0 }, cache: new Map() }, "n.md");
     const meta = (await api.changes(0)).upserts.find((f) => f.path === "n.md")!;
     const bytes = await fetchFileBytes(api, new Map(), meta.chunks);
     expect(dec(bytes)).toBe("the quick brown fox");
@@ -96,7 +96,7 @@ describe("chunk sync engine", () => {
     const { api } = fakeServer();
     const bin = new Uint8Array(40000); for (let i = 0; i < bin.length; i++) bin[i] = (i * 37) & 0xff;
     const ioA = fakeIo(); ioA.m.set("img.bin", bin);
-    await pushFile(api, ioA, { version: 0 }, new Map(), "img.bin");
+    await pushFile({ api, io: ioA, state: { version: 0 }, cache: new Map() }, "img.bin");
     const meta = (await api.changes(0)).upserts.find((f) => f.path === "img.bin")!;
     expect(await fetchFileBytes(api, new Map(), meta.chunks)).toEqual(bin);
   });
@@ -132,7 +132,7 @@ describe("chunk sync engine", () => {
       },
     } as unknown as VaultIo;
     const fileHash = await sha256hex(enc("111223333"));
-    const ok = await streamFileToDisk(api, new Map() as ChunkCache, io, "big.bin", hs, 9, fileHash); // "111223333" = 9 bytes
+    const ok = await streamFileToDisk({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "big.bin", hs, 9, fileHash); // "111223333" = 9 bytes
     expect(ok).toBe(true);
     expect(closed).toBe(true);
     expect(dec(written)).toBe("111223333");
@@ -153,7 +153,7 @@ describe("chunk sync engine", () => {
     } as unknown as VaultIo;
     const declared = await sha256hex(enc("AAAABBBB"));   // correct order
     const reordered = [hs[1], hs[0]];                     // server manifest reversed → "BBBBAAAA", same size
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", reordered, 8, declared)).rejects.toThrow(/whole-file hash/);
+    await expect(streamFileToDisk({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "f.bin", reordered, 8, declared)).rejects.toThrow(/whole-file hash/);
     expect(aborted).toBe(true); expect(closed).toBe(false); // aborted before the rename → path untouched
   });
 
@@ -168,7 +168,7 @@ describe("chunk sync engine", () => {
       async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {},
       async appendWrite() { return { append: async () => {}, close: async () => { closed = true; }, abort: async () => { aborted = true; } }; },
     } as unknown as VaultIo;
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [h], good.length + 5, "0".repeat(64))).rejects.toThrow(/expected/);
+    await expect(streamFileToDisk({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "f.bin", [h], good.length + 5, "0".repeat(64))).rejects.toThrow(/expected/);
     expect(aborted).toBe(true); expect(closed).toBe(false);
   });
 
@@ -184,14 +184,14 @@ describe("chunk sync engine", () => {
         return { append: async () => {}, close: async () => {}, abort: async () => { aborted = true; } };
       },
     } as unknown as VaultIo;
-    await expect(streamFileToDisk(api, new Map() as ChunkCache, io, "f.bin", [goodHash], good.length, "0".repeat(64))).rejects.toThrow(/content verification/);
+    await expect(streamFileToDisk({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "f.bin", [goodHash], good.length, "0".repeat(64))).rejects.toThrow(/content verification/);
     expect(aborted).toBe(true);
   });
 
   it("streamFileToDisk returns false when the io can't stream (mobile fallback)", async () => {
     const api = { async getChunk() { return enc("x"); } } as unknown as SyncApi;
     const io = { async list() { return new Map(); }, async read() { throw new Error("no"); }, async write() {}, async remove() {} } as unknown as VaultIo;
-    expect(await streamFileToDisk(api, new Map() as ChunkCache, io, "f", ["a"], 1, "0".repeat(64))).toBe(false);
+    expect(await streamFileToDisk({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "f", ["a"], 1, "0".repeat(64))).toBe(false);
   });
 
   it("fetchFileBytes reassembles in order despite out-of-order chunk completion (B11)", async () => {

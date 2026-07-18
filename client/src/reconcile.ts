@@ -390,7 +390,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
       // streamFileToDisk now verifies the whole-file hash INCREMENTALLY, BEFORE its atomic rename
       // (R17), so a bad manifest aborts without ever overwriting `path` — no post-write re-read (which
       // regressed racing-write/conflict-copy safety) and no full-file re-buffer.
-      if (await streamFileToDisk(d.api, d.cache, d.io, path, rmeta.chunks, rmeta.size, rmeta.hash)) {
+      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash)) {
         d.base.set(path, { hash: rmeta.hash });
         d.onBaseChanged?.();
         return;
@@ -669,7 +669,7 @@ async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta:
     if (d.readOnly) {
       setBase(d, path, remoteBytes, rmeta.hash); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
     } else {
-      const { hash: mh, bytes: mb } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version); // converge the server to the union
+      const { hash: mh, bytes: mb } = await pushBytes(d, path, mergedBytes, rmeta.version); // converge the server to the union
       setBase(d, path, mb, mh);
     }
   }
@@ -727,7 +727,7 @@ async function reconcileMergeOrConflict(
       // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
       // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
       const mergedBytes = new TextEncoder().encode(merged);
-      const { hash: h, bytes: committed } = await pushBytes(d.api, d.io, d.state, d.cache, path, mergedBytes, rmeta.version);
+      const { hash: h, bytes: committed } = await pushBytes(d, path, mergedBytes, rmeta.version);
       setBase(d, path, committed, h);
       return;
     }
@@ -739,7 +739,7 @@ async function reconcileMergeOrConflict(
   // (network); if onConflict fired only after it, the copy would never reach the "needs review" list.
   d.onConflict?.(path, copy);
   await d.io.write(path, remoteBytes);
-  const { hash: ch, bytes: cb } = await pushFile(d.api, d.io, d.state, d.cache, copy);
+  const { hash: ch, bytes: cb } = await pushFile(d, copy);
   d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
   setBase(d, path, remoteBytes, rmeta.hash);
 }
@@ -760,7 +760,7 @@ interface ReconcileOneOpts {
 // tagged LocalContent (present/absent/unreadable) so "present-but-unreadable" is a named state that can't
 // be forged into the deletion decide() draws from a null local (the C1/R10 guard, now expressed at the
 // read boundary instead of a null + a separate presence flag + a runtime if).
-// @audit-hash sha256:cc069ff77206bdb6
+// @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
   const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
@@ -861,7 +861,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // CAS: base this write on the remote version we saw (0 if this is a local-only create). If a
       // concurrent commit advanced the server past it, the commit 409s → CommitConflictError →
       // per-file skip → the next reconcile decides merge instead of a silent lost-update overwrite.
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path, rmeta?.version ?? 0);
+      const { hash: h, bytes } = await pushFile(d, path, rmeta?.version ?? 0);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
       if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file is unchanged on disk → cache the hint
       return;
@@ -887,7 +887,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
         // precondition this decision was made on (remote had no copy). If a peer created this path
         // meanwhile, the commit 409s → CommitConflictError → per-file skip → the next reconcile MERGES
         // instead of the restore silently overwriting the peer's just-created content (lost update).
-        const { hash: rh, bytes: rb } = await pushFile(d.api, d.io, d.state, d.cache, path, 0);
+        const { hash: rh, bytes: rb } = await pushFile(d, path, 0);
         setBase(d, path, rb, rh);
         return;
       }
@@ -908,7 +908,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push
       // Remote is absent (someone deleted it) but we edited — re-create it. CAS base = 0 (absent):
       // if a peer re-created it first, this 409s and the next reconcile merges the two versions.
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path, rmeta?.version ?? 0);
+      const { hash: h, bytes } = await pushFile(d, path, rmeta?.version ?? 0);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
       return;
     }
@@ -932,7 +932,7 @@ export async function resolveConfigConflict(d: ReconcileDeps, path: string, choi
   if (choice === "local") {
     const exists = await readOrNull(d.io, path);
     if (exists === null) { await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return; }
-    const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, path);
+    const { hash: h, bytes } = await pushFile(d, path);
     setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
   } else {
     const rmeta = await d.api.fileMeta(path);
@@ -1041,7 +1041,7 @@ async function switchUpload(
     if (!accepts(d, p)) continue;
     if (info.size > max) { d.onSkip?.(p, info.size); continue; }
     try {
-      const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
+      const { hash: h, bytes } = await pushFile(d, p);
       setBase(d, p, bytes, h);
     } catch (e) {
       d.onFileError?.(p, e); // R20: leave base null → retry conflict-copies, never a silent overwrite

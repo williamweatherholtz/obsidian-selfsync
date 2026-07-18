@@ -35,6 +35,11 @@ export interface SyncApi {
 export type SyncState = { version: number };
 export type ChunkCache = Map<string, Uint8Array>;
 
+// The ambient sync context a write/transfer needs — bundled so a call site passes ONE value instead of
+// four positional deps (misordering them is no longer possible). ReconcileDeps has exactly these fields,
+// so callers pass `d` directly. (CA-F1: the pushFile/pushBytes/streamFileToDisk parameter-object fix.)
+export interface SyncCtx { api: SyncApi; io: VaultIo; state: SyncState; cache: ChunkCache; }
+
 // Bound the in-session chunk cache. Chunks arrive as subarray VIEWS into a whole file
 // buffer; caching the view would pin the entire source file in RAM (2048 views from
 // 2048 files ≈ 2048 whole files, not ~128 MiB — a mobile OOM). We copy each chunk
@@ -114,9 +119,9 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
 // instead of buffering + concatenating the whole file. Returns false if the io can't stream
 // (mobile) so the caller falls back to the buffered path. Chunks are appended in list order,
 // so reassembly is correct. A mid-stream failure aborts (discards the partial) and rethrows.
-export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: VaultIo, path: string, chunks: string[], expectedSize: number, expectedHash: string): Promise<boolean> {
-  if (!io.appendWrite) return false;
-  const h = await io.appendWrite(path);
+export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: string[], expectedSize: number, expectedHash: string): Promise<boolean> {
+  if (!ctx.io.appendWrite) return false;
+  const h = await ctx.io.appendWrite(path);
   try {
     let written = 0;
     const hasher = new Sha256();
@@ -124,7 +129,7 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
       // DI-2/DI-R2#1: getVerifiedChunk verifies a freshly-fetched chunk before caching, and a
       // cache hit is authentic by construction — so a streamed file is never assembled from an
       // unverified (possibly bit-rotted) blob, even one another file cached earlier.
-      const b = await getVerifiedChunk(api, cache, hash);
+      const b = await getVerifiedChunk(ctx.api, ctx.cache, hash);
       await h.append(b); written += b.length; hasher.update(b);
     }
     // Reject a chunk list that doesn't reassemble to the declared SIZE (truncated/extra chunk)…
@@ -153,13 +158,12 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
 // Returns the PushResult (committed bytes + hash), NOT just the hash: a caller recording a base
 // must use the COMMITTED bytes, since a racing local save between io.write and pushFile's re-read
 // would otherwise leave base.text and base.hash describing different content. (DI-5 / DI-R2#3)
-// @audit r2 2026-07-18 — DI-5 committed-bytes return contract is exemplary (base can't desync). Deferred
-// (design, no fix): 7 positional params, 4 of which are the fixed {api,io,state,cache} bundle every caller
-// splats off `d` — misordering two same-typed args typechecks clean. Group into a SyncCtx (mirroring
-// ReconcileDeps) as a follow-up so call sites shrink and transposition becomes impossible.
-export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
-  await io.write(path, bytes);
-  return pushFile(api, io, state, cache, path, expectedVersion);
+// @audit r3 2026-07-18 — FIXED (design): the {api,io,state,cache} 4-tuple is now a SyncCtx bundle, so
+// pushBytes/pushFile/streamFileToDisk take (ctx, path, …) and callers pass `d` — call sites shrink and
+// the positional-args transposition the r2 note flagged is gone. DI-5 committed-bytes contract preserved.
+export async function pushBytes(ctx: SyncCtx, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
+  await ctx.io.write(path, bytes);
+  return pushFile(ctx, path, expectedVersion);
 }
 
 // The result of a push: the committed file's SHA-256 AND the exact bytes that were hashed +
@@ -172,10 +176,10 @@ export interface PushResult { hash: string; bytes: Uint8Array; }
 // `expectedVersion` (optional) is the CAS precondition: the server version this write is based
 // on, so the server rejects (409 → CommitConflictError) if it advanced meanwhile. Omitted for
 // authoritative overwrites (switch/adjudication) where adopting-over-remote IS the intent.
-export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, expectedVersion?: number): Promise<PushResult> {
-  const bytes = await io.read(path);
+export async function pushFile(ctx: SyncCtx, path: string, expectedVersion?: number): Promise<PushResult> {
+  const bytes = await ctx.io.read(path);
   const chunks = await chunk(bytes);
-  for (const c of chunks) cachePut(cache, c.hash, c.bytes);
+  for (const c of chunks) cachePut(ctx.cache, c.hash, c.bytes);
   const hashes = chunks.map((c) => c.hash);
   // Batch the missing() query under the server's per-request hash cap (MAX_MISSING_HASHES=10000).
   // A file in the ~160–200 MiB band chunks into >10k pieces at the ~16 KiB average chunk size, so a
@@ -184,12 +188,12 @@ export async function pushFile(api: SyncApi, io: VaultIo, state: SyncState, cach
   // stays a single call: ~0.8 MiB at 11.5k hashes, well under the 16 MiB body limit.)
   const missing = new Set<string>();
   for (let i = 0; i < hashes.length; i += MISSING_BATCH) {
-    for (const h of await api.missing(hashes.slice(i, i + MISSING_BATCH))) missing.add(h);
+    for (const h of await ctx.api.missing(hashes.slice(i, i + MISSING_BATCH))) missing.add(h);
   }
   const toPush = chunks.filter((c) => missing.has(c.hash));
-  await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => api.putChunk(c.hash, c.bytes));
+  await mapPool(toPush, TRANSFER_CONCURRENCY, (c) => ctx.api.putChunk(c.hash, c.bytes));
   const fileHash = await sha256hex(bytes);
-  await api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes, expectedVersion });
+  await ctx.api.commit({ path, hash: fileHash, size: bytes.length, mtime: Date.now(), chunks: hashes, expectedVersion });
   // NB: do NOT advance state.version here. The commit's returned version can be higher than
   // remote commits we haven't pulled yet; advancing the poll cursor to it would skip them
   // (changes(since) is exclusive), silently missing a concurrent remote change until some

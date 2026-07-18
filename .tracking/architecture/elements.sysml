@@ -136,7 +136,7 @@ package ProjectCodeElements {
         :>> title = "reconcileOne — per-path reconcile dispatcher";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "reconcileOne"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:cc069ff77206bdb6"; :>> auditRound = "r3"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:b688b74935495e56"; :>> auditRound = "r3"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "The per-path action executor: every destructive op (delete-local/delete-remote/overwrite) flows through its switch. A wrong branch or a defeated guard is direct data loss.";
         :>> invariantSafety = InvariantSafety::parsed;
@@ -1145,7 +1145,7 @@ package ProjectCodeElements {
         :>> title = "reconcileMergeOrConflict â€” merge/conflict arm";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "reconcileMergeOrConflict"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:0a4f77778097193a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:64380719db878242"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::correctness;
         :>> riskRationale = "Both-sides-changed handling; a bug drops a racing edit or clobbers a divergence without a conflict copy.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1158,7 +1158,7 @@ package ProjectCodeElements {
         :>> title = "reconcileEnabledPluginList â€” community-plugins union";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "reconcileEnabledPluginList"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:eeb045751ee45b58"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:54827b3bb3f8cf69"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "community-plugins.json is a SET; a whole-side adopt would DISABLE a locally-enabled plugin (the vanish class).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1197,7 +1197,7 @@ package ProjectCodeElements {
         :>> title = "switchUpload â€” make local authoritative";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "switchUpload"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:91af157a99652a3c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:6707b40d5eda75a3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "Overwrites the target with local; a failed push must NOT silently let the target overwrite the kept local file.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1223,7 +1223,7 @@ package ProjectCodeElements {
         :>> title = "applyPull â€” bring a remote file down";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "applyPull"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:1e8a08aafb5ca7e2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:2f41c5d301ac034d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "Overwrites local with remote; must preserve a racing local edit as a conflict copy and never write unverified bytes.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1262,7 +1262,7 @@ package ProjectCodeElements {
         :>> title = "resolveConfigConflict â€” user-chosen config resolution";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "resolveConfigConflict"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:339b122c600cafdc"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:5a17cfdb4cc781db"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "The ONLY place a config removal/divergence is acted on destructively/resurrectively â€” and only because the user chose it.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1327,7 +1327,7 @@ package ProjectCodeElements {
         :>> title = "pushFile â€” chunk + upload-missing + commit";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/sync.ts"; :>> name = "pushFile"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:c11a35dbaf0197d9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:296d89cdb6667783"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::correctness;
         :>> riskRationale = "Uploads a local file (chunk, upload only missing, CAS commit); the write path to the server.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
@@ -1340,11 +1340,11 @@ package ProjectCodeElements {
         :>> title = "pushBytes â€” write bytes then push";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/sync.ts"; :>> name = "pushBytes"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:bb0fda45b9ca31d3"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:9f4325519fa6835e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::correctness;
         :>> riskRationale = "Writes merged/conflict bytes then pushes; returns committed bytes so base (bytes,hash) cannot disagree.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
-        :>> invariantNotes = "DI-5 committed-bytes contract. (Deferred: 7 positional args -> a SyncCtx bundle, Part-B step 8.)";
+        :>> invariantNotes = "DI-5 committed-bytes contract. (FIXED r3: {api,io,state,cache} bundled into SyncCtx; callers pass d.)";
         :>> pattern = DesignPattern::none;
         :>> stpaRole = StpaRole::actuator;
     }
@@ -1392,7 +1392,7 @@ package ProjectCodeElements {
         :>> title = "streamFileToDisk â€” stream large download to disk";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/sync.ts"; :>> name = "streamFileToDisk"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:72e6c752ecbcfb6f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> codeHash = "sha256:4fe50d8c636e7061"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::correctness;
         :>> riskRationale = "Streams a large file straight to disk (mobile OOM avoidance); a size-preserving bad manifest must never overwrite the target.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
