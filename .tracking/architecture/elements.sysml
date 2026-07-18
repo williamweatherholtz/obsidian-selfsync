@@ -1517,4 +1517,330 @@ package ProjectCodeElements {
         :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
+
+    part ceTxCommit : CodeElement {
+        :>> id = "adbbbdca-598c-4ae3-bcdb-166c71a0ef2b";
+        :>> title = "HttpTransport.commit â€” commit wire call";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "commit"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:f025b45ddf1f500c"; :>> auditRound = "r1"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The client write call; must distinguish 409 (CAS conflict -> merge) from 404 (missing chunk -> re-upload) from a real error, or the engine flaps OFFLINE on a routine conflict.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "409/404 -> CommitConflictError (retryable, isolatable); snake_case expected_version wired only when set.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTxDiagnose : CodeElement {
+        :>> id = "d2e75ff9-e99e-4fe3-9ed0-eb99ac268721";
+        :>> title = "HttpTransport.diagnose â€” layered connection diagnosis";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "diagnose"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:215a2e0d7eca6816"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The never-throws diagnostic; must survive a non-JSON 200 (proxy/captive-portal HTML) since that is exactly when it is run.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Layered ladder (unreachable/version/auth/vault/degraded); reads bodies via tryJson so a non-JSON 200 does not throw.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceTxApiJson : CodeElement {
+        :>> id = "4d35f3e3-2f7c-4f61-b61c-e662fd87b41e";
+        :>> title = "apiJson â€” shared request/status/parse";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "apiJson"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:2602e4a0467c7bec"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "The shared 200-or-throw JSON path; centralizes errText surfacing + the safe .json read across ~15 endpoints.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "errText on non-200; tryJson body read (getter throws on non-JSON). Bespoke-status endpoints opt out.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTxHttpReq : CodeElement {
+        :>> id = "9e8adf46-b8a8-46e7-8559-216865057857";
+        :>> title = "httpReq â€” timeout race + cleartext backstop";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "httpReq"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:7c0324a9fe52d6ad"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "Every request goes through here; without the timeout a half-open connection wedges the serial engine forever.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "30s timeout race -> a stall becomes a normal rejection; centralized cleartext-remote refusal (SC.3.13.8).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTxLogin : CodeElement {
+        :>> id = "1bd6e480-2ca4-448e-8965-f97861877162";
+        :>> title = "HttpTransport.login â€” client login";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "login"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:a31787a5fb315cf0"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Sends the password; must refuse cleartext-remote before transmitting it.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "isInsecureRemote refusal at the top + httpReq backstop; returns token + mustChange.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTxChangePassword : CodeElement {
+        :>> id = "801a09b4-a60d-433d-b4a1-067eb0d6532b";
+        :>> title = "HttpTransport.changePassword â€” change password";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "changePassword"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:8f041398d690b90b"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Changes the password + returns a fresh token; 401 must map to a clear message.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "401 -> specific message; bearer auth; errText fallback.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTxStatus : CodeElement {
+        :>> id = "5c809cc5-8233-4843-9fc0-c29c12a5aaf7";
+        :>> title = "HttpTransport.status â€” vault status";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "status"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:f07c8da9a277ed3e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Fetches vault health the engine gates on (degraded -> pause).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "validateStatus (shape + api_version mapping) on the 200 body.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceTxChanges : CodeElement {
+        :>> id = "5dcb541e-3294-48b0-b99c-bb94102c4510";
+        :>> title = "HttpTransport.changes â€” fetch manifest/delta";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "changes"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:66c520dafbba5018"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Fetches the reconcile manifest; a malformed body must be rejected, not acted on.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "validateChanges on the 200 body.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceTxFileMeta : CodeElement {
+        :>> id = "e04ce250-d0f7-4181-bd15-da37901929ac";
+        :>> title = "HttpTransport.fileMeta â€” single-path meta";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "fileMeta"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:36aae9abdd3a582c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "404 vs meta drives the event path's delete-vs-sync decision.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "404 -> null (bespoke); validateFileMeta on 200.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceTxMissing : CodeElement {
+        :>> id = "2c885532-c00f-480c-932d-7b158f2228c7";
+        :>> title = "HttpTransport.missing â€” which chunks to upload";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "missing"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:cb18217fe6a8edb6"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Drives dedup (upload only missing chunks); a malformed response must be rejected.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Rejects a non-string[] response explicitly.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTxGetChunk : CodeElement {
+        :>> id = "16dfabb6-c9d2-4754-a56c-cc9e70393a65";
+        :>> title = "HttpTransport.getChunk â€” fetch a chunk";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "getChunk"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:b3148a45aedd7e4b"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Fetches chunk bytes; the caller content-verifies before use.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Binary arrayBuffer; non-200 throws.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTxPutChunk : CodeElement {
+        :>> id = "6602829c-51ae-47eb-90c9-09e0e9557635";
+        :>> title = "HttpTransport.putChunk â€” upload a chunk";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "putChunk"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:6083e5b24ad50c53"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Uploads a chunk; content-addressed so a corrupt upload is caught server-side.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Binary body; non-200 throws.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTxDeleteFile : CodeElement {
+        :>> id = "37334c16-f184-45d3-9628-6316f44e149d";
+        :>> title = "HttpTransport.deleteFile â€” delete call";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "deleteFile"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:a224de6104157c2e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "Issues the remote delete; 404 is acceptable (idempotent).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "200-or-404 accepted; other -> throw.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTxConnectWs : CodeElement {
+        :>> id = "6087ae39-503d-4617-a088-354bc2a8aaf6";
+        :>> title = "HttpTransport.connectWs â€” change-notify socket";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "connectWs"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:adea1c9ba879979f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Opens the WS; the token must not land in URLs/logs.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Token via Sec-WebSocket-Protocol subprotocol (SEC-1), never the URL; onmessage guarded.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTxTestConnection : CodeElement {
+        :>> id = "5f64ac94-232e-4721-9c9d-1ff76a1024e4";
+        :>> title = "HttpTransport.testConnection â€” setup probe";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/transport.ts"; :>> name = "testConnection"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:227e05ae40b7ac8e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::cosmetic;
+        :>> riskRationale = "A best-effort setup-wizard reachability probe.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Returns true iff /health answers 200; swallows errors.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceEngEnqueue : CodeElement {
+        :>> id = "087c0a3d-4ea6-4a3a-96a8-9c0637722eee";
+        :>> title = "SyncEngine.enqueue â€” event coalescing";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncengine.ts"; :>> name = "enqueue"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:a2d4edee4c8b574c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "Bounds the queue by coalescing; a path keeps the larger size (so a grow-past-cap is not judged on a stale small size).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Coalesces remote/connect/rews/path; terminal states swallow input; typed path-variant predicate.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceEngPump : CodeElement {
+        :>> id = "0328abd0-758e-4004-acca-0703171679fa";
+        :>> title = "SyncEngine.pump â€” run-to-completion processor";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncengine.ts"; :>> name = "pump"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:58e604032dacf6e9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "The single processor; the running guard is what kills the redial-vs-reconnect race class.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "One processor at a time (running flag); settles to idle only when connected + queue empty.";
+        :>> pattern = DesignPattern::serializedActor;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceEngFailToOffline : CodeElement {
+        :>> id = "69a6f33b-541c-4960-9eae-91c1d4a0019e";
+        :>> title = "SyncEngine.failToOffline â€” recovery collapse";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/syncengine.ts"; :>> name = "failToOffline"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:19faff0c2fb0f81e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::concurrency;
+        :>> riskRationale = "On any effect failure: go offline, drop in-flight path/remote/rews (the reconnect subsumes them), keep disconnect/unload; a wrong drop loses recovery or double-recovers.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Sets connected=false (load-bearing), filters the queue, schedules one backoff reconnect.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceBaseToJson : CodeElement {
+        :>> id = "e4167a3b-9f1e-46a3-9b67-c563ebee9dfc";
+        :>> title = "BaseStore.toJSON â€” persist base";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/base.ts"; :>> name = "toJSON"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:cf51b498ceae2c8d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Persists the last-synced ancestor; must not persist a stale scan-skip stat hint across a restart.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Persists only hash+text; drops the (size,mtime) hint so a restart rebuilds it from a fresh scan.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceBaseStampStat : CodeElement {
+        :>> id = "e5cdda76-1aa3-47bb-ac75-d663731e0dd9";
+        :>> title = "BaseStore.stampStat â€” cache scan-skip hint";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/base.ts"; :>> name = "stampStat"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:694c3641dda26c80"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Records the (size,mtime) at which a file equalled base, so a later scan can skip re-hashing it.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Session-only stat stamp (dropped by toJSON); the scan-skip fast path input.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceConflictCopyName : CodeElement {
+        :>> id = "840a288d-7e4f-4186-bd01-90baa3251910";
+        :>> title = "conflictCopyName â€” conflict-copy naming";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/base.ts"; :>> name = "conflictCopyName"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:e21a356484137fba"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Names a conflict copy deterministically (device + timestamp + hash tag) so it round-trips to its original.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure; the 14-digit-timestamp anchor lets originalOfConflictCopy invert it without false matches.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceOriginalOfConflictCopy : CodeElement {
+        :>> id = "af8f0ec8-6cc6-458b-b874-9b56289c2640";
+        :>> title = "originalOfConflictCopy â€” conflict derivation";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/base.ts"; :>> name = "originalOfConflictCopy"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:75ba3087132b1750"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Derives the conflict set from the vault file list (no cached array to go stale).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Pure total inverse of conflictCopyName; anchored regex avoids matching a user's own (conflict ...) file.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceValidateChanges : CodeElement {
+        :>> id = "325f6e0e-a684-4616-8f63-5b7653196d61";
+        :>> title = "validateChanges â€” wire-shape parser";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/protocol.ts"; :>> name = "validateChanges"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:07153715c0e0aeb4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Parses the untrusted changes response into a typed ChangesResponse; a bad shape must be rejected, not reconciled on.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parse-don't-validate the wire into a proven type at the boundary.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceValidateFileMeta : CodeElement {
+        :>> id = "a17dc1fd-1470-45f9-b271-cdf9ee7b5cee";
+        :>> title = "validateFileMeta â€” wire-shape parser";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/protocol.ts"; :>> name = "validateFileMeta"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:bc9901d25f8446a7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Parses an untrusted FileMeta; a malformed meta must not drive a sync decision.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parse-don't-validate at the boundary.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceValidateStatus : CodeElement {
+        :>> id = "ba44b9c7-c5ec-4acc-a594-c97809af084d";
+        :>> title = "validateStatus â€” wire-shape parser";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "client/src/protocol.ts"; :>> name = "validateStatus"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:5c7e1d70b9c4c7be"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Parses status + maps snake_case api_version -> apiVersion.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parse-don't-validate + field mapping at the boundary.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
 }
