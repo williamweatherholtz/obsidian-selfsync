@@ -66,6 +66,14 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Writing/expanding/reviewing deliverable unit/integration/e2e tests, or shipping any fix.";
         :>> writePolicy = WritePolicy::direct;
     }
+    part architectureAudit : AISkill {
+        :>> id = "c2a12ce8-45b7-4d22-a194-ebef17cdcac3";
+        :>> title = "architecture-audit";
+        :>> purpose = "Audit a deliverable's source ARCHITECTURE (D0029): maintain the authored CodeElement registry (.tracking/architecture/), rank elements by accepted-risk against Needs, assess invariant-safety + coupling as the PRIMARY lens (design patterns are a descriptive tag, never a compliance gate), capture STPA control-structure INPUTS for a later STPA process (no analysis here), and detect drift via the D0028 @audit-hash. Deploys .engine/processes/architecture-audit.sysml. Distinct from function-audit (per-function code quality), element-critique (tracked model elements), architectural-critique (the engine's own architecture).";
+        :>> location = ".engine/skills/architecture-audit/SKILL.md";
+        :>> triggerCondition = "Asked to audit the architecture / catalogue code elements / rank by criticality, or to work the keel arch drift/coverage frontier.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part functionAudit : AISkill {
         :>> id = "a1c9d2e3-4b5f-4a60-9c71-8d2e3f4a5b60";
         :>> title = "function-audit";

@@ -154,3 +154,29 @@ This makes the registry self-maintaining: change a function, its registry row go
 - Coupling metrics are only as good as the authored `#DependsOn` edges — the recording pass must be disciplined
   about capturing real dependencies (a future keel-assisted seed could help; deferred).
 - `riskClass` and `invariantSafety` are judgments — recorded with rationale so they're reviewable, not oracles.
+
+## 12. Implementation plan (follow-on, post-framework)
+
+The framework (schema + catalog + criticality def + process + skill + Decision D0029 + a 6-element proof seed)
+is built this session. The remainder, in order:
+
+**Phase 1 — keel `arch` views (Rust, in `sysmlv2-ai-toolkit`):** teach keel to read `EngineCodeAudit` instances
+and compute: `arch elements`, `arch criticality` (risk-tier × Need-trace bump), `arch coupling` (Ca/Ce/
+instability/distance + cycles from the `#DependsOn` graph), `arch drift` (reuse `audit_hash.py`: each
+`CodeElement.codeHash` vs the live in-code `@audit-hash`), `arch stpa-inputs [--render]` (the control-structure
+hand-off), `arch coverage` (heuristic top-level-def enumeration → un-catalogued elements, non-blocking). Register
+each as a declared viewpoint. Ship with a coverage-floored test per command.
+
+**Phase 2 — full per-element registry:** run the `architecture-audit` process file-by-file over `client/src`
++ `server/src`, authoring a `CodeElement` for every separable element (the ~40 already-audited ones extend the
+seed; the rest are new). `arch criticality` orders the work High → Low.
+
+**Phase 3 — restructure + invariant-tightening passes:** steps 6–8 — apply only the restructurings that pass the
+objective test, then tighten `runtimeGuarded`/`unguarded` High-criticality elements toward `typeEnforced`/`parsed`.
+
+**Phase 4 — the STPA analysis process (separate):** a new process consumes the captured `stpaRole`/`actions`/
+`#Controls`/`#Feedback` inputs (+ the existing `.tracking/safety/control-structure.sysml`) to build the control
+diagram + UCAs for the debugging work — out of scope here, enabled by the inputs this capability records.
+
+Until Phase 1 ships, the views are computed by hand / `audit_hash.py verify` (drift) — the model is usable now,
+just not yet ergonomic.
