@@ -19,7 +19,10 @@ const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 // The owner comes from the path on owner-qualified routes (/api/u/:owner/:vault/…) or
 // defaults to the caller on the legacy own-vault routes (/api/v/:vault/…). The isolation
 // invariant is enforced here: no access without ownership or a matching grant (403);
-// reads accept any grant, writes require read-write. 404 if the vault can't be opened.
+// reads accept any grant, writes require read-write. A non-existent vault is 404 (checked
+// via vault_exists below); a genuine open failure AFTER that check is an unexpected server
+// condition (IO / DB open error) → 500, not 404 (which would mislead the client into thinking
+// the vault was deleted and hide the real fault).
 async fn scoped(
     st: &AppState, pp: &HashMap<String, String>, user: &str, access: Access,
 ) -> Result<(String, String, VaultHandle), AppError> {
@@ -46,7 +49,9 @@ async fn scoped(
     let (st2, o2, v2) = (st.clone(), owner.clone(), vault.clone());
     let h = tokio::task::spawn_blocking(move || st2.vault(&o2, &v2))
         .await.map_err(|e| AppError::Internal(format!("vault open join failed: {e}")))?
-        .map_err(|_| AppError::NotFound)?;
+        // vault_exists already confirmed the dir + safe names, so reaching here with an Err is an
+        // UNEXPECTED open failure (IO / SQLite), not "not found" — surface it as 500 with the cause.
+        .map_err(|e| AppError::Internal(format!("vault open failed: {e}")))?;
     Ok((owner, vault, h))
 }
 

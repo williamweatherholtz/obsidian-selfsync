@@ -143,6 +143,29 @@ describe("diagnose() layered ladder — reports the FIRST failing hop", () => {
   });
 });
 
+describe("diagnose() never throws even when the body isn't JSON (A1)", () => {
+  // A reverse proxy / captive portal can answer 200 with an HTML body; the REAL RequestUrlResponse.json
+  // is a getter that THROWS on non-JSON. diagnose() is documented "never throws" — it must swallow that
+  // and keep laddering, not blow up exactly when the user is diagnosing a broken proxy. Fail-first: with
+  // the old raw `health.json` / `st.json` reads these threw a SyntaxError instead of resolving.
+  function resHtml200() {
+    return {
+      status: 200, text: "<html>captive portal</html>", arrayBuffer: new ArrayBuffer(0),
+      get json(): unknown { throw new SyntaxError("Unexpected token < in JSON"); },
+    };
+  }
+  it("a 200 /health with a non-JSON body does not throw; the version check is skipped", async () => {
+    req.mockResolvedValueOnce(resHtml200());
+    // token but no vault → after the (skipped) version check it returns ok-no-vault; the point is it RESOLVES.
+    await expect(HttpTransport.diagnose(HTTPS, "tok")).resolves.toMatchObject({ ok: true });
+  });
+  it("a 200 /status with a non-JSON body does not throw; unreadable body is not treated as degraded", async () => {
+    const health = res(200, { json: { apiVersion: CLIENT_API_VERSION } });
+    req.mockResolvedValueOnce(health).mockResolvedValueOnce(resHtml200());
+    await expect(HttpTransport.diagnose(HTTPS, "tok", "v")).resolves.toMatchObject({ ok: true, layer: "ok" });
+  });
+});
+
 describe("login() mustChange gate + testConnection", () => {
   it("returns mustChange=true iff must_change_password, throws on non-200", async () => {
     req.mockResolvedValueOnce(res(200, { json: { token: "T", must_change_password: true } }));

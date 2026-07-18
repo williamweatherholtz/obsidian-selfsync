@@ -50,6 +50,13 @@ function errText(r: RequestUrlResponse, fallback: string): string {
   return t && t.length <= 300 ? t : fallback;
 }
 
+// RequestUrlResponse.json is a getter that JSON-parses .text and THROWS on a non-JSON body — and a
+// reverse proxy / captive portal can answer 200 with an HTML error page. Read it defensively so a
+// "never throws" path (diagnose) actually never throws: returns undefined on an absent/invalid body.
+function tryJson(r: RequestUrlResponse): unknown {
+  try { return r.json; } catch { return undefined; }
+}
+
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
 // Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
 // someone else → /api/u/{owner}/{vault}/… (owner given). Account ops are static.
@@ -103,8 +110,9 @@ export class HttpTransport implements SyncApi {
     if (health.status !== 200) {
       return { ok: false, layer: "unreachable", detail: `The server answered HTTP ${health.status} on /health — it may be starting up or misconfigured behind the reverse proxy.` };
     }
-    // 2) Protocol version match?
-    const serverVersion = (health.json as { apiVersion?: unknown })?.apiVersion;
+    // 2) Protocol version match? (tryJson: a 200 with a non-JSON body — proxy/captive-portal HTML —
+    // must NOT throw out of this never-throws diagnostic; an unreadable body just skips the check.)
+    const serverVersion = (tryJson(health) as { apiVersion?: unknown } | undefined)?.apiVersion;
     if (typeof serverVersion === "number" && serverVersion !== CLIENT_API_VERSION) {
       return { ok: false, layer: "version", detail: `Version mismatch: the server speaks protocol v${serverVersion}, this plugin speaks v${CLIENT_API_VERSION}. Update whichever is older so both match.` };
     }
@@ -121,8 +129,8 @@ export class HttpTransport implements SyncApi {
     if (st.status === 401) return { ok: false, layer: "auth", detail: "Your saved session was rejected. Sign in again — your token may have expired or been revoked." };
     if (st.status === 404) return { ok: false, layer: "vault", detail: `The vault '${vault}'${owner ? ` owned by ${owner}` : ""} isn't on the server — it may have been deleted, or the share was revoked.` };
     if (st.status !== 200) return { ok: false, layer: "unreachable", detail: `The sync endpoint answered HTTP ${st.status}.` };
-    // 4) Vault healthy (not a degraded/corrupt index)?
-    const body = st.json as { status?: string };
+    // 4) Vault healthy (not a degraded/corrupt index)? (tryJson: same non-JSON-200 guard as above.)
+    const body = tryJson(st) as { status?: string } | undefined;
     if (body?.status === "error") return { ok: false, layer: "degraded", detail: "The server's index for this vault needs repair — run a reindex from the admin page. Sync is paused so it won't act on a partial manifest." };
     return { ok: true, layer: "ok", detail: "All good: server reachable, protocol matches, signed in, and the vault is ready." };
   }

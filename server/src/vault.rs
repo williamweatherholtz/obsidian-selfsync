@@ -529,12 +529,16 @@ impl Vault {
         if body.len() as u64 != req.size || sha256_hex(&body) != req.hash {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file hash/size mismatch"));
         }
+        // Read the current row ONCE and reuse it for both the idempotent short-circuit and the CAS
+        // check below — the row can't change between them (this commit holds the write lock via
+        // &mut self), so a second query would be a redundant round-trip and a second read to reconcile.
+        let existing = self.index.file_meta(&req.path)?;
         // Idempotent re-commit: identical path+hash+chunks already recorded → return it unchanged,
         // with no version bump, no persist, and no broadcast — so a client retry after a transient
         // error is a genuine no-op instead of version churn + a spurious "changed". (protocol-5)
-        if let Some(existing) = self.index.file_meta(&req.path)? {
-            if existing.hash == req.hash && existing.chunks == req.chunks {
-                return Ok(existing);
+        if let Some(m) = &existing {
+            if m.hash == req.hash && m.chunks == req.chunks {
+                return Ok(m.clone());
             }
         }
         // Optimistic concurrency (CAS): if the client declared the version it based this write on,
@@ -546,7 +550,7 @@ impl Vault {
         // is a no-op, never a conflict) and only when the client opted in (an authoritative
         // switch/adjudication omits it). AlreadyExists → 409 in the API layer.
         if let Some(expected) = req.expected_version {
-            let current = self.index.file_meta(&req.path)?.map(|m| m.version).unwrap_or(0);
+            let current = existing.as_ref().map(|m| m.version).unwrap_or(0);
             if expected != current {
                 return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
                     format!("version conflict on '{}': client based on v{expected}, server at v{current}", req.path)));
