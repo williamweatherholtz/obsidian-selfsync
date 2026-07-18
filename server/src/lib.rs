@@ -7,6 +7,7 @@ pub mod atomicfile;
 pub mod api;
 pub mod audit;
 pub mod auth;
+pub mod chunker;
 pub mod chunkstore;
 pub mod config;
 pub mod hash;

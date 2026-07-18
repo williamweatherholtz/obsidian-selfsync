@@ -408,7 +408,14 @@ impl Vault {
             }
             let body = std::fs::read(&abs)?;
             let hash = sha256_hex(&body);
-            self.store.put(&hash, &body)?; // content-addressed; idempotent
+            // Content-defined chunking (matches the client chunker exactly, chunker.rs) so a reindexed
+            // file dedups against client-uploaded chunks and a large file is NOT stored as one giant blob
+            // that getVerifiedChunk buffers whole (OOM risk on mobile) — issueReindexSingleChunk. The
+            // whole-file `hash` stays FileMeta.hash (integrity + version key); the manifest references the
+            // per-chunk hashes, and each chunk (content-addressed, idempotent) is stored + GC-referenced.
+            let parts = crate::chunker::chunk(&body);
+            for (ch, bytes) in &parts { self.store.put(ch, bytes)?; new_refs.insert(ch.clone()); }
+            let chunk_hashes: Vec<String> = parts.into_iter().map(|(h, _)| h).collect();
             let mtime = std::fs::metadata(&abs)
                 .and_then(|m| m.modified())
                 .ok()
@@ -420,9 +427,7 @@ impl Vault {
                 Some(old) if old.hash == hash => old.version,
                 _ => { max_version += 1; max_version }
             };
-            new_refs.insert(hash.clone());
-            // disk-ingested file = a single whole-file chunk (its own hash).
-            new_files.push(FileMeta { path: rel, hash: hash.clone(), size: body.len() as u64, mtime, version, chunks: vec![hash] });
+            new_files.push(FileMeta { path: rel, hash, size: body.len() as u64, mtime, version, chunks: chunk_hashes });
         }
         // Publish the rebuilt manifest FIRST (the new index becomes authoritative), THEN GC chunks it
         // no longer references — so a GC'd blob is never still cited by the live index.
@@ -863,6 +868,25 @@ mod tests {
         v.reindex(false).unwrap();
         let map2: HashMap<_, _> = v.changes(0).upserts.iter().map(|m| (m.path.clone(), m.hash.clone())).collect();
         assert_eq!(map1, map2, "same files -> same path->hash mapping");
+    }
+
+    // issueReindexSingleChunk: a large reindexed file must be content-defined-chunked (many chunks that
+    // dedup + stream), NOT stored as one giant blob. Verifies the chunk list, the preserved whole-file
+    // hash, and that the stored chunks reassemble to the original.
+    #[test]
+    fn reindex_chunks_a_large_file_into_many_chunks_that_reassemble() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s: u32 = 0x9e3779b9; // deterministic pseudo-random so CDC actually finds boundaries
+        let big: Vec<u8> = (0..200_000).map(|_| { s = s.wrapping_mul(1103515245).wrapping_add(12345); ((s >> 16) & 0xff) as u8 }).collect();
+        write_vault_file(dir.path(), "big.bin", &big);
+        let mut v = Vault::open(dir.path()).unwrap();
+        v.reindex(false).unwrap();
+        let meta = v.changes(0).upserts.into_iter().find(|m| m.path == "big.bin").expect("big.bin indexed");
+        assert!(meta.chunks.len() > 1, "a large reindexed file must be MANY chunks, not one blob (got {})", meta.chunks.len());
+        assert_eq!(meta.hash, sha256_hex(&big), "whole-file hash preserved");
+        let mut joined = Vec::new();
+        for ch in &meta.chunks { joined.extend_from_slice(&v.get_chunk(ch).unwrap().expect("chunk stored")); }
+        assert_eq!(joined, big, "stored chunks reassemble to the original file");
     }
 
     // A failed commit is atomic: a commit that fails validation must not bump the version, drop the
