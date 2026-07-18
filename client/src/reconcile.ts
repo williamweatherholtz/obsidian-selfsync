@@ -271,6 +271,16 @@ function baseStatUnchanged(be: { size?: number; mtime?: number } | null | undefi
   return !!(be && st && be.size === st.size && be.mtime === st.mtime);
 }
 
+// decide() yields pull / edit-wins-pull / merge / conflict-copy ONLY when the remote is present, but it
+// returns an opaque Action string, so the compiler can't correlate that with rmeta. Assert the invariant
+// with a clear message (B3) instead of a bare `rmeta!` — which would throw a cryptic "cannot read
+// properties of undefined" if the invariant ever broke. Keeps decide() a pure hash-only truth table
+// (carrying the FileMeta in a discriminated Action would degrade that; the value here is a CHECKED access).
+function requireRemote(rmeta: FileMeta | undefined, action: Action): FileMeta {
+  if (!rmeta) throw new Error(`reconcile invariant: decide()=${action} requires a remote file, but none was present`);
+  return rmeta;
+}
+
 // The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
 // from the note reconcile's auto-delete/conflict-copy behavior (see reconcileOne).
 const CONFIG_PREFIX = ".obsidian/";
@@ -821,7 +831,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     }
     case "pull":
-      await applyPull(d, path, rmeta!, localHash, true); // guard a local edit/create racing the fetch (DI-3)
+      await applyPull(d, path, requireRemote(rmeta, action), localHash, true); // guard a local edit/create racing the fetch (DI-3)
       return;
     case "delete-local":
       // DATA-SAFETY (durable delete guard): only delete a local file when the server has a real
@@ -867,11 +877,11 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     }
     case "edit-wins-pull":
-      await applyPull(d, path, rmeta!, localHash, true); // guard a local edit racing the fetch (DI-3)
+      await applyPull(d, path, requireRemote(rmeta, action), localHash, true); // guard a local edit racing the fetch (DI-3)
       return;
     case "merge":
     case "conflict-copy":
-      await reconcileMergeOrConflict(d, path, rmeta!, action, baseEntry, localBytes);
+      await reconcileMergeOrConflict(d, path, requireRemote(rmeta, action), action, baseEntry, localBytes);
       return;
   }
 }
