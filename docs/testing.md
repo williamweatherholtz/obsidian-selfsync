@@ -94,7 +94,21 @@ hold; the tests are permanent generative regressions.
 
 ## Mutation testing (D0030, `mutation-testing` skill)
 
-Coverage proves lines *ran*; a **mutation score** proves the suite would *fail* on a real fault. Planned:
-`cargo-mutants` (server) + Stryker (client), scoped by `keel arch criticality`; each surviving mutant is a
-concrete test-gap → a fail-first killing test (or a justified accept), with the score recorded as a monitored
-Indicator (floorable in CI once a defensible baseline exists). Not yet run — it's the follow-on to the PBT pass.
+Coverage proves lines *ran*; a **mutation score** proves the suite would *fail* on a real fault. Tooling:
+`cargo-mutants` (server) + Stryker (client, planned), scoped by `keel arch criticality`; each surviving mutant is
+a concrete test-gap → a fail-first killing test (or a justified accept), with the score recorded as the
+`serverMutationScore` monitored Indicator (`keel indicators`; floorable in CI once a defensible baseline across
+modules exists — D0088, no arbitrary threshold).
+
+**First pass — `shares.rs` (authz keystone), 2026-07-18** (`mutationTestingSharesPass`). `cargo mutants --file
+src/shares.rs --timeout 300`: 53 mutants → 4 real survivors exposed a systemic test-gap class (the code was
+correct; the *tests* were blind): (1) the retain-then-`if len != before { save() }` deletion methods
+(`revoke`/`purge_vault`/`purge_user`) were asserted only in-memory, so a mutant skipping the durable `save()`
+survived (a dropped grant would reload after a restart); (2) the exact-match predicates in `revoke` and
+`grants_for` had no *selectivity* test (single-grant fixtures made `&&`→`||` invisible). Killed with 7 fail-first
+tests — reopen-from-disk persistence checks + non-`NotFound`/corrupt-file `open()` checks + multi-grant
+selectivity checks. Confirming re-run: **49 caught / 0 missed / 4 unviable = 100%** over viable mutants
+(`serverMutationScore` M1). Follow-on (not yet run): `index_store` / `chunkstore` / `vault` (the durability core).
+
+Reproduce: `cargo install cargo-mutants && cd server && cargo mutants --file src/shares.rs --timeout 300`
+(use `--timeout` ≥ ~3× the baseline test time so `-j` contention can't cause false timeouts).

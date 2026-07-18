@@ -7,6 +7,7 @@ node_modules
 package-lock.json
 
 # build
+/target
 main.js
 main_org.js
 main_org_*.js

@@ -292,4 +292,110 @@ mod tests {
         assert!(s.shared_with("bob").is_empty());
         assert_eq!(s.grants_for("bob", "mine").len(), 0);
     }
+
+    // MUTATION-TESTING (D0030): the retain-then-`if len != before { save() }` methods (revoke /
+    // purge_vault / purge_user) drop grants IN MEMORY, but the durable-write is a separate step. The
+    // original tests asserted only against the live store, so a mutant that SKIPS save() (e.g. `!=`→`==`
+    // at shares.rs:161) survived: the deletion appeared to work but never hit disk, so a restart would
+    // reload the dropped grants — the exact "dangling grant silently reactivates, re-exposing content to
+    // a prior grantee" hazard the purge_vault comment warns about. These reopen from disk to prove the
+    // security-critical deletion is PERSISTED, killing that mutant class.
+    fn reopen(p: &std::path::Path) -> ShareStore {
+        ShareStore::open(p).unwrap()
+    }
+
+    #[test]
+    fn purge_user_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join(".shares.json");
+        {
+            let mut s = ShareStore::open(&p).unwrap();
+            s.grant("alice", "notes", "bob", Perm::Read).unwrap();
+            s.grant("bob", "mine", "carol", Perm::Read).unwrap();
+            s.purge_user("bob").unwrap();
+        }
+        let s = reopen(&p);
+        assert!(s.shared_with("bob").is_empty(), "purge must survive a restart (as grantee)");
+        assert_eq!(s.grants_for("bob", "mine").len(), 0, "purge must survive a restart (as owner)");
+    }
+
+    #[test]
+    fn purge_vault_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join(".shares.json");
+        {
+            let mut s = ShareStore::open(&p).unwrap();
+            s.grant("alice", "notes", "bob", Perm::Read).unwrap();
+            s.grant("alice", "docs", "bob", Perm::ReadWrite).unwrap();
+            s.purge_vault("alice", "notes").unwrap();
+        }
+        let s = reopen(&p);
+        assert_eq!(s.permission("alice", "notes", "bob"), None, "purged vault's grant stays gone after restart");
+        assert_eq!(s.permission("alice", "docs", "bob"), Some(Perm::ReadWrite), "other vault kept after restart");
+    }
+
+    #[test]
+    fn revoke_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join(".shares.json");
+        {
+            let mut s = ShareStore::open(&p).unwrap();
+            s.grant("alice", "notes", "bob", Perm::ReadWrite).unwrap();
+            s.revoke("alice", "notes", "bob").unwrap();
+        }
+        let s = reopen(&p);
+        assert_eq!(s.permission("alice", "notes", "bob"), None, "revoke must survive a restart");
+    }
+
+    // MUTATION-TESTING (D0030): open() falls back to an EMPTY store only on NotFound; any OTHER read
+    // error must PROPAGATE (a transient IO/permission error must never silently drop every grant). No
+    // test exercised a non-NotFound error, so a mutant weakening the guard to `true` survived. Reading a
+    // directory-as-a-file errors with a kind != NotFound on both Windows and Linux, so open() must Err.
+    #[test]
+    fn open_propagates_non_notfound_read_errors() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("a_dir");
+        std::fs::create_dir(&p).unwrap();
+        assert!(ShareStore::open(&p).is_err(), "a non-NotFound read error must propagate, not yield an empty store");
+    }
+
+    // A corrupt .shares.json must error (InvalidData), never be silently treated as an empty grant set.
+    #[test]
+    fn open_rejects_a_corrupt_shares_file() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join(".shares.json");
+        std::fs::write(&p, b"{ not valid json ]").unwrap();
+        assert!(ShareStore::open(&p).is_err(), "a corrupt .shares.json must error, not start empty");
+    }
+
+    // MUTATION-TESTING (D0030): revoke matches the EXACT (owner, vault, grantee) triple. Every prior test
+    // used a single grant, so weakening any `&&` to `||` (revoke anything sharing owner OR vault OR
+    // grantee) was invisible. Fixture: three decoys each sharing exactly one field with the target.
+    #[test]
+    fn revoke_is_selective_to_the_exact_triple() {
+        let (_d, mut s) = store();
+        s.grant("alice", "notes", "bob", Perm::Read).unwrap(); // the target
+        s.grant("alice", "notes", "carol", Perm::Read).unwrap(); // same owner+vault, other grantee
+        s.grant("alice", "docs", "bob", Perm::Read).unwrap(); // same owner+grantee, other vault
+        s.grant("dave", "notes", "bob", Perm::Read).unwrap(); // same vault+grantee, other owner
+        s.revoke("alice", "notes", "bob").unwrap();
+        assert_eq!(s.permission("alice", "notes", "bob"), None, "the exact grant is revoked");
+        assert_eq!(s.permission("alice", "notes", "carol"), Some(Perm::Read), "a co-vault grantee is untouched");
+        assert_eq!(s.permission("alice", "docs", "bob"), Some(Perm::Read), "the same grantee on another vault is untouched");
+        assert_eq!(s.permission("dave", "notes", "bob"), Some(Perm::Read), "another owner's grant is untouched");
+    }
+
+    // MUTATION-TESTING (D0030): grants_for returns grants matching BOTH owner AND vault. The prior tests
+    // only ever held same-(owner,vault) grants, so weakening the `&&` to `||` (return owner OR vault
+    // matches) was invisible. Decoys share exactly one of the two fields.
+    #[test]
+    fn grants_for_matches_only_the_exact_owner_and_vault() {
+        let (_d, mut s) = store();
+        s.grant("alice", "notes", "bob", Perm::Read).unwrap(); // the match
+        s.grant("alice", "docs", "carol", Perm::Read).unwrap(); // same owner, other vault
+        s.grant("dave", "notes", "eve", Perm::Read).unwrap(); // same vault, other owner
+        let g = s.grants_for("alice", "notes");
+        assert_eq!(g.len(), 1, "only the exact (owner,vault) grant is returned");
+        assert_eq!(g[0].grantee, "bob");
+    }
 }
