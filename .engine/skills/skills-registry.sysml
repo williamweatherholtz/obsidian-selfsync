@@ -66,6 +66,14 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Writing/expanding/reviewing deliverable unit/integration/e2e tests, or shipping any fix.";
         :>> writePolicy = WritePolicy::direct;
     }
+    part functionAudit : AISkill {
+        :>> id = "a1c9d2e3-4b5f-4a60-9c71-8d2e3f4a5b60";
+        :>> title = "function-audit";
+        :>> purpose = "Line-by-line SOURCE-CODE audit of the most critical programmatic functions (idiom / design patterns / concision, never terseness), leaving an in-code provenance trail: an // @audit finding comment on every audited function and an // @audit-hash code-hash stamp (via .engine/tools/audit_hash.py) on every function actually fixed, so a later pass detects drift (keel-style suspect for functions) and re-audits only what changed. Distinct from element-critique (model elements) and architectural-critique (engine architecture).";
+        :>> location = ".engine/skills/function-audit/SKILL.md";
+        :>> triggerCondition = "Asked to audit/critique the top-N or next-N programmatic functions line by line, or to re-audit drifted @audit-hash functions.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part testResult : AISkill {
         :>> id = "b153edf8-6a01-4e3d-c746-6fa3f6f0f666";
         :>> title = "test-result";
