@@ -40,6 +40,9 @@ fn is_reserved_win_name(component: &str) -> bool {
             && stem.as_bytes()[3] != b'0')
 }
 
+// @audit r2 2026-07-18 — EXEMPLARY, no change: the canonical round-trip equality (segs.join("/") == path)
+// rejects the whole //, ./, trailing-slash, and separator-alias class on top of the per-component
+// Normal-only / `..` / absolute / control-char / reserved-name gates — a tight defense-in-depth boundary.
 pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.contains('\\') || path.starts_with('/') { return None; }
     let p = PathBuf::from(path);
@@ -82,6 +85,8 @@ pub fn safe_rel_path(path: &str) -> Option<PathBuf> {
 // a pair that folds to the same lowercase key (would collapse to one file on a case-insensitive
 // client FS, causing overwrite + phantom-delete churn). Pure over the rel names so it's testable
 // cross-platform (the real collision only materializes on a case-sensitive server FS).
+// @audit r2 2026-07-18 — clean, no change: whole-path to_lowercase matches commit's colliding_key fold,
+// and within-batch collision detection is the right scope for a full reindex rebuild.
 fn conflicting_or_unsafe_rels(rels: &[String]) -> Vec<String> {
     let mut fold: HashMap<String, String> = HashMap::new();
     let mut bad: Vec<String> = Vec::new();
@@ -595,6 +600,10 @@ impl Vault {
         Ok(meta)
     }
 
+    // @audit r2 2026-07-18 — FIXED (idiom): the mirror removal was exists()-then-remove_file (a double
+    // stat + a TOCTOU window); now a single remove_file that stays quiet on NotFound. The DI-R5#4
+    // delete-by-raw-key + durable-before-mirror-removal design is correct — left as-is.
+    // @audit-hash sha256:3f932351b032f42e
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
         // DI-R5#4: a file committed BEFORE safe_rel_path was tightened (or ingested via the bind mount
         // + reindex, which doesn't apply safe_rel_path) may be an index key that no longer passes
@@ -612,8 +621,8 @@ impl Vault {
                 // legacy invalid-name key has no on-disk target).
                 if let Some(rel) = rel {
                     let abs = self.vault_dir.join(rel);
-                    if abs.exists() {
-                        if let Err(e) = std::fs::remove_file(&abs) {
+                    if let Err(e) = std::fs::remove_file(&abs) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
                             log::warn!("[vault] delete persisted but bind-mount file {} not removed: {e}", abs.display());
                         }
                     }

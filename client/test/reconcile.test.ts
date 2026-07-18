@@ -407,6 +407,22 @@ describe("reconcileAll", () => {
     expect(files.has("big.md")).toBe(false);
   });
 
+  it("reconcilePath refreshes the size gate from the LIVE stat, not the stale queued hint (CB-F1)", async () => {
+    // The queued size can be stale in the WRONG direction: event coalescing keeps the LARGER of two
+    // queued sizes, so after a grow-then-shrink the small file inherits the large hint. Fail-first: the
+    // old code trusted the passed size (100 > max 10) and SKIPPED, stranding the file until the full scan.
+    const { api, files } = fakeServer();
+    const io = fakeIo({ "note.md": "small" }); // actually 5 bytes on disk now
+    const skipped: string[] = [];
+    await reconcilePath(deps(api, io, {
+      maxSyncBytes: 10,
+      localSizeOf: (p) => (io as any).m.get(p)?.length ?? 0, // live O(1) size = 5
+      onSkip: (p) => skipped.push(p),
+    }), "note.md", 100); // stale-large queued hint
+    expect(skipped).not.toContain("note.md"); // live size (5) <= max (10) → NOT gated
+    expect(files.has("note.md")).toBe(true);   // it actually synced
+  });
+
   it("reconcilePath (event path): RESTORES a file the empty server has no tombstone for", async () => {
     const { api, files } = fakeServer(); // empty (lost index → /meta 404 for everything)
     const io = fakeIo({ "keep.md": "data" });

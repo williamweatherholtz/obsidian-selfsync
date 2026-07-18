@@ -65,6 +65,12 @@ export const TRANSFER_CONCURRENCY = 6;
 
 // Run `fn` over `items` with at most `limit` in flight; results keep input order. A pool
 // of workers pulls the next index until the list is exhausted (no unbounded fan-out).
+// @audit r2 2026-07-18 — FIXED (robustness): a `limit <= 0` (e.g. a future caller deriving it from a
+// setting) spawned ZERO workers → Promise.all([]) resolved and the fn NEVER ran, returning a fully
+// sparse array of undefined that reads as success. Clamp limit to >= 1 (0 workers only for empty input).
+// (Order-preservation via pre-sized results is exemplary; the on-reject continued-work is idempotent/
+// content-addressed — a real non-issue, not fixed.)
+// @audit-hash sha256:fca9d2dc3c1b27bf
 export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
@@ -73,7 +79,7 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
       results[i] = await fn(items[i], i);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
   return results;
 }
 
@@ -81,9 +87,14 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
 // BEFORE it enters the cache, so the cache only ever holds authentic bytes and a later cache HIT
 // is safe to trust. Without this, a corrupt blob cached during a (later-aborted) buffered fetch
 // could be laundered into a streamed file on a dedup cache hit. (DI-2 / DI-R2#1)
+// @audit r2 2026-07-18 — verify-before-cache invariant is exemplary. Two deferred, no fix: (1) a cache
+// HIT returns the internal buffer by REFERENCE — every current caller treats it read-only, but a future
+// mutator would corrupt the shared content-addressed entry (and every file dedup'ing on that hash), so
+// callers MUST NOT mutate the returned buffer; (2) no in-flight dedup for concurrent identical hashes
+// (redundant fetch+verify, correctness-safe via idempotent cachePut) — only worth a Map<hash,Promise> if profiled.
 async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string): Promise<Uint8Array> {
   const hit = cache.get(hash);
-  if (hit) return hit;
+  if (hit) return hit; // NOTE: aliases the cache entry — callers must treat it as read-only (see @audit above)
   const b = await api.getChunk(hash);
   if ((await sha256hex(b)) !== hash) throw new Error(`chunk ${hash.slice(0, 8)} failed content verification`);
   cachePut(cache, hash, b);
@@ -92,6 +103,8 @@ async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string): 
 
 // Fetch + reassemble a single file's bytes from its chunk list (cache-first). Chunks are
 // fetched with bounded concurrency but reassembled in order (mapPool preserves it).
+// @audit r2 2026-07-18 — clean, no change: near-perfect concision; the order guarantee is correctly
+// delegated to mapPool. (Shares the 6-7-arg positional-list smell of pushBytes/pushFile — see below.)
 export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[]): Promise<Uint8Array> {
   const parts = await mapPool(chunks, TRANSFER_CONCURRENCY, (h) => getVerifiedChunk(api, cache, h));
   return concat(parts);
@@ -140,6 +153,10 @@ export async function streamFileToDisk(api: SyncApi, cache: ChunkCache, io: Vaul
 // Returns the PushResult (committed bytes + hash), NOT just the hash: a caller recording a base
 // must use the COMMITTED bytes, since a racing local save between io.write and pushFile's re-read
 // would otherwise leave base.text and base.hash describing different content. (DI-5 / DI-R2#3)
+// @audit r2 2026-07-18 — DI-5 committed-bytes return contract is exemplary (base can't desync). Deferred
+// (design, no fix): 7 positional params, 4 of which are the fixed {api,io,state,cache} bundle every caller
+// splats off `d` — misordering two same-typed args typechecks clean. Group into a SyncCtx (mirroring
+// ReconcileDeps) as a follow-up so call sites shrink and transposition becomes impossible.
 export async function pushBytes(api: SyncApi, io: VaultIo, state: SyncState, cache: ChunkCache, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
   await io.write(path, bytes);
   return pushFile(api, io, state, cache, path, expectedVersion);

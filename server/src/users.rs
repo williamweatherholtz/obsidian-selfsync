@@ -38,6 +38,8 @@ pub fn safe_name(s: &str) -> bool {
 
 // Pure argon2 verify of a password against a stored PHC string. Kept free-standing (no lock,
 // no self) so the caller can run it on a blocking thread with the users mutex already released. (SEC-2)
+// @audit r2 2026-07-18 — clean, no change: free-standing SO the caller runs it on spawn_blocking (SEC-2,
+// never blocking the async worker); the dummy-hash timing-oracle defense for absent users is correct.
 pub fn verify_password(phc: &str, password: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(phc) else { return false; };
     Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
@@ -160,6 +162,8 @@ impl UserStore {
     // IA.3.5.8: true if `password` matches the user's CURRENT or any RETAINED previous password —
     // used by the self-service change path to reject reuse. Runs argon2 verifies (call off the async
     // worker). Unknown user -> false (no history to match).
+    // @audit r2 2026-07-18 — clean: idiomatic chain(current, prev.flatten()); the caller runs the argon2
+    // verifies on the blocking pool under the auth permit (honors the doc-comment). No change.
     pub fn is_password_reused(&self, user: &str, password: &str) -> bool {
         let current = self.file.users.get(user);
         let prev = self.file.prev_hashes.get(user);
@@ -266,6 +270,11 @@ impl UserStore {
         }
     }
 
+    // @audit r2 2026-07-18 — a critic flagged this as dead inline-argon2, but VERIFY-BEFORE-BELIEVING
+    // corrected it: `verify` is a TEST-ONLY convenience (used by tests/sync.rs, 3 call sites) — NOT dead
+    // code. The src auth path (login/change-password) correctly uses phc_for + the free-standing
+    // verify_password on spawn_blocking, so the "blocking on the async worker" hazard does not apply to a
+    // test helper. Kept as-is; no production duplication. (Finding downgraded to not-a-defect.)
     pub fn verify(&self, user: &str, password: &str) -> bool {
         // Always run an argon2 verify — against the real hash if the user exists, else a
         // dummy — so timing doesn't reveal whether the username is valid.

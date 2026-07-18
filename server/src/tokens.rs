@@ -43,8 +43,16 @@ pub struct TokenStore {
     idle_ttl_secs: u64, // 0 = idle expiry disabled
 }
 
+// @audit r2 2026-07-18 — FIXED (concision): was a format!("{b:02x}") heap alloc PER BYTE on the token
+// hot path (resolve/issue/revoke); now one 64-char buffer written in place.
+// @audit-hash sha256:00d039a93ab3db00
 fn sha256_hex(s: &str) -> String {
-    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    let mut out = String::with_capacity(64);
+    for b in Sha256::digest(s.as_bytes()) {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -100,6 +108,10 @@ impl TokenStore {
     // (AC.3.1.11). On a live resolve the `last_used` timestamp SLIDES (persisted at most once per
     // SLIDE_PERSIST_SECS to avoid a disk write per request); an expired token — absolute OR idle — is
     // pruned. idle_ttl_secs == 0 disables the idle check (absolute cap only).
+    // @audit r2 2026-07-18 — clean + fail-closed (idle/absolute expiry, hashed-at-rest lookup). Deferred
+    // (low): `let _ = self.save()` on the prune/slide paths swallows a disk-write error — direction is
+    // fail-closed (a lost slide only makes idle-expiry MORE likely), but a log::warn would make a
+    // persistently failing .tokens.json write observable.
     pub fn resolve(&mut self, token: &str) -> Option<String> {
         let h = sha256_hex(token);
         let n = now();

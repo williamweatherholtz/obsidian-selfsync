@@ -29,6 +29,9 @@ export class BaseStore {
   // connect reconcile does that anyway) and re-stamps in memory, so the missed-event backstop is
   // fully restored on restart rather than weakened by a stale persisted stamp — while the recurring
   // in-session 15-min re-hash (the actual perf win) is still eliminated.
+  // @audit r2 2026-07-18 — EXEMPLARY, no change: deliberately persists only hash+text, DROPPING the
+  // (size,mtime) scan-skip hint — so a restart rebuilds the stamp from a fresh full pass rather than
+  // trusting a stale persisted hint. Correct instinct: never let a perf hint outlive its verifying session.
   toJSON(): Record<string, { hash: string; text?: string }> {
     return Object.fromEntries([...this.m].map(([p, e]) => [p, e.text !== undefined ? { hash: e.hash, text: e.text } : { hash: e.hash }]));
   }
@@ -56,6 +59,9 @@ export function conflictCopyName(path: string, device: string, when: Date, tag =
 // null if it isn't one. Matches the exact "<orig> (conflict <device> <14-digit ts>[-tag])" shape
 // (the 14-digit timestamp keeps a user's own "(conflict …)"-named file from false-matching). Used to
 // DERIVE the set of unresolved conflicts from the vault, so it can never go stale.
+// @audit r2 2026-07-18 — EXEMPLARY, no change: pure, total, single-source-of-truth derivation of note
+// conflicts from the vault file list (no cached array to go stale); the 14-digit-timestamp anchor avoids
+// false-matching a user's own "(conflict …)" file, and it round-trips dotted/extensionless stems.
 export function originalOfConflictCopy(path: string): string | null {
   const slash = path.lastIndexOf("/");
   const dir = slash >= 0 ? path.slice(0, slash + 1) : "";

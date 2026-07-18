@@ -572,9 +572,17 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   advanceCursor(d, delta.version, failed); // authoritative delta version, held below the earliest failure
 }
 
+// @audit r2 2026-07-18 — FIXED (correctness, bounded): the queued `localSize` hint can be stale in the
+// WRONG direction — event coalescing keeps the LARGER of two queued sizes (so a grow-past-cap isn't
+// judged on a stale small size), but a subsequent shrink/delete then inherits that large size and the
+// SYMMETRIC size gate in reconcileOne skips propagating it until the next full scan. Refresh the gate
+// from the live O(1) stat here so it's correct in both directions (still no read). Self-healed before,
+// but now immediate. (Was delayed up to FULL_SCAN_INTERVAL_MS.)
+// @audit-hash sha256:e9a08a0dfa9d3dbf
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);
+  const liveSize = d.localSizeOf?.(path) ?? localSize; // refresh from the live stat; the queued hint can be coalesce-stale
   // C2 on the event path too: if this would delete a previously-synced file, first
   // confirm the server isn't wholesale-empty (server data loss) — only then does the
   // extra manifest fetch happen, so the common case stays a single /meta call.
@@ -601,7 +609,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // deciding. O(1) exists check, only when the server-has-it precondition holds.
   const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
   try {
-    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize, hasTombstone, locallyPresent });
+    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, locallyPresent });
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such

@@ -66,14 +66,13 @@ export class SyncEngine {
   getState(): EngineState { return this.state; }
   phase(): Phase { return engineStateToPhase(this.state); }
 
-  // Called by the connect EFFECT once the connection is established (token + health OK) but BEFORE the
-  // initial reconcile, so the initial sync shows "Syncing…" not "Connecting…" (the connect effect does
-  // the full initial reconcile, which is the bulk of the time). Only upgrades the `connecting` phase;
-  // never overrides offline/unloading/idle.
-  // Called by connect() AFTER the health check passes — so the connection is confirmed reachable.
-  // Upgrades from either "connecting" (fresh connect) or "offline" (a backoff retry that just
-  // succeeded in reaching the server) to "reconciling", so recovery shows "Syncing…", not a stale
-  // "offline"/"connecting".
+  // @audit r2 2026-07-18 — FIXED (comment drift): two stacked, CONTRADICTORY doc blocks (one said "only
+  // upgrades connecting", the other "connecting OR offline") — a merge artifact. Collapsed to the accurate
+  // one matching the code. (Body unchanged → no @audit-hash.)
+  // Called AFTER the connect effect's health check passes (connection confirmed reachable), BEFORE the
+  // initial reconcile — so recovery shows "Syncing…" not a stale "offline"/"connecting". Upgrades from
+  // either "connecting" (fresh connect) or "offline" (a backoff retry that just reached the server) to
+  // "reconciling"; never overrides idle/unloading.
   markReconciling(): void { if (this.state === "connecting" || this.state === "offline") this.setState("reconciling"); }
 
   // Called by the reconcile EFFECT the instant it has genuine work — a non-empty delta, a history
@@ -87,6 +86,11 @@ export class SyncEngine {
   // Enqueue an event and kick the processor. Coalescing keeps the queue bounded and idempotent:
   // one pending `remote` reconciles everything, one `connect`/`rews` is enough, and a path dedups
   // by path. Terminal states swallow further input.
+  // @audit r2 2026-07-18 — FIXED (idiom): the path-coalesce used a hand-retyped `as {kind;path;size}` cast
+  // that bypassed the checker and would drift if EngineEvent's path variant changed; now a typed predicate
+  // narrowing on the union itself. (The keep-the-larger-size coalesce is correct — its stale-in-the-wrong-
+  // direction interaction with the size gate is fixed in reconcilePath, not here.)
+  // @audit-hash sha256:a2d4edee4c8b574c
   enqueue(ev: EngineEvent): void {
     if (this.state === "unloading") return;
     if (ev.kind === "unload") { this.state = "unloading"; this.queue = []; this.fx.teardown(); this.fx.onPhase(this.phase()); return; }
@@ -94,7 +98,7 @@ export class SyncEngine {
     // that grew the file past the RAM/size gate between the two events isn't judged on the stale
     // smaller size (which would bypass the pre-read skip). (Round-6 CONC)
     if (ev.kind === "path") {
-      const q = this.queue.find((x) => x.kind === "path" && x.path === ev.path) as { kind: "path"; path: string; size: number } | undefined;
+      const q = this.queue.find((x): x is Extract<EngineEvent, { kind: "path" }> => x.kind === "path" && x.path === ev.path);
       if (q) { if (ev.size > q.size) q.size = ev.size; return; }
     }
     const dup =
@@ -143,6 +147,11 @@ export class SyncEngine {
     }
   }
 
+  // @audit r2 2026-07-18 — FIXED (concision): the connect catch set `this.connected = false` redundantly —
+  // failToOffline already does it as a documented, load-bearing step. Dropped the local assignment so the
+  // offline transition has one source. The overall state machine (run-to-completion pump, coalescing,
+  // injected effects, failToOffline's drop-in-flight-preserve-terminal) is exemplary — left as-is.
+  // @audit-hash sha256:2c9ea45b2a8cd0de
   private async handle(ev: EngineEvent): Promise<void> {
     switch (ev.kind) {
       case "unload":
@@ -154,7 +163,7 @@ export class SyncEngine {
         // "Offline — retrying" so the light doesn't flash connecting↔offline every attempt.
         this.setState(this.retrying ? "offline" : "connecting");
         try { await this.fx.connect(); this.connected = true; this.retrying = false; this.setState(this.queue.length ? "reconciling" : "idle"); }
-        catch (e) { this.connected = false; this.failToOffline("connect", e); }
+        catch (e) { this.failToOffline("connect", e); } // failToOffline sets connected=false (its load-bearing step)
         return;
       }
       case "rews":

@@ -1306,8 +1306,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
 
   // Arm the backoff reconnect: after a jittered delay, enqueue {connect}. Stops the poll while
-  // offline (the connect restarts it) so the two don't retry in parallel. Full jitter avoids a
-  // thundering-herd reconnect after a server restart / LAN blip (CONC-10).
+  // offline (the connect restarts it) so the two don't retry in parallel.
+  // @audit r2 2026-07-18 — FIXED (accuracy): the comment claimed "full jitter" but the formula is EQUAL
+  // jitter (base/2 + random·base/2 — a fixed floor of base/2 plus half-random). Relabeled to match; equal
+  // jitter still disperses a fleet's reconnects after a server restart while keeping a sane minimum delay.
+  // (Doc above the body → no @audit-hash.)
   private scheduleReconnect(): void {
     if (this.reconnectTimer !== undefined || this.unloading) return;
     if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
@@ -1335,6 +1338,12 @@ export default class NewLiveSyncPlugin extends Plugin {
   // when the version advanced or a periodic config scan is due. THROWS on failure → the engine goes
   // offline and schedules the backoff reconnect. (No applying/remoteDirty here: a poke arriving
   // mid-reconcile is just another queued {remote} the engine runs next — CONC-R3#3/R4#1 for free.)
+  // @audit r2 2026-07-18 — FIXED (correctness): lastConfigScanAt/lastFullScanAt were stamped to `now`
+  // BEFORE the awaited reconcile, so a mid-scan throw left the window marked "done" and the retry never
+  // re-armed it — correctness leaned on doConnect re-stamping on recovery. Moved the stamps to AFTER the
+  // awaited scan succeeds, so a failure leaves the window still due. (The idle-poll early-return is only
+  // reached when NOT forced, so it correctly stamps nothing.)
+  // @audit-hash sha256:a29e1be4f50e47d3
   private async doReconcileAll(): Promise<void> {
     if (!this.api) throw new Error("not connected");
     // Local CONFIG edits fire no reliable event (mobile has no `raw` watcher) → a CONFIG-ONLY re-hash
@@ -1343,8 +1352,6 @@ export default class NewLiveSyncPlugin extends Plugin {
     const now = Date.now();
     const forceConfigScan = this.settings.configSync.enabled && now - this.lastConfigScanAt >= CONFIG_SCAN_INTERVAL_MS;
     const forceFullScan = now - this.lastFullScanAt >= FULL_SCAN_INTERVAL_MS;
-    if (forceConfigScan) this.lastConfigScanAt = now;
-    if (forceFullScan) this.lastFullScanAt = now;
     const delta = await this.api.changes(this.state.version);
     // D0019 (critique-R8): detect a server DELETION-HISTORY RESET from the PERSISTED per-vault floor +
     // last-version (both survive a restart, unlike the ephemeral state.version). A reset routes to the
@@ -1382,6 +1389,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       await reconcileDelta(d, delta);
       if (forceConfigScan) await reconcileLocalConfig(d);
     }
+    // Mark the scan windows done ONLY now that the awaited scan actually completed — a mid-scan throw
+    // above leaves them due so the next poll re-arms (rather than trusting doConnect to re-stamp). (@audit r2)
+    if (forceConfigScan) this.lastConfigScanAt = now;
+    if (forceFullScan) this.lastFullScanAt = now;
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);

@@ -62,6 +62,8 @@ impl ShareStore {
 
     // The effective permission `user` has on (owner, vault): the owner always has full
     // access; otherwise the matching grant's perm, else None (no access).
+    // @audit r2 2026-07-18 — clean: single matching-grant lookup; the Perm(stored) vs Access(requested)
+    // two-enum split prevents category confusion. No change.
     pub fn permission(&self, owner: &str, vault: &str, user: &str) -> Option<Perm> {
         if user == owner {
             return Some(Perm::ReadWrite);
@@ -75,6 +77,8 @@ impl ShareStore {
 
     // Is `user` authorized for `access` on (owner, vault)? Server-enforced on every
     // vault request — the isolation invariant becomes "no access without ownership/grant".
+    // @audit r2 2026-07-18 — EXEMPLARY, no change: textbook fail-closed authZ (owner short-circuit, a
+    // Read grant strictly gates Access::Write, exhaustive match with None => false). The security keystone.
     pub fn authorized(&self, owner: &str, vault: &str, user: &str, access: Access) -> bool {
         match self.permission(owner, vault, user) {
             Some(Perm::ReadWrite) => true,

@@ -193,6 +193,11 @@ pub async fn get_chunk(
     }
 }
 
+// @audit r2 2026-07-18 — permit accounting is clean (keyed on req.size; reassembly aborts once
+// body.len() > req.size, so declared size can't diverge from RAM). Deferred (design): the SMALL-commit
+// path (<= COMMIT_LARGE_BYTES) takes NO permit — bounded only by the blocking-pool width (~512 × 16 MiB
+// ≈ 8 GiB transient, 4× the large-commit budget); consider a light semaphore or a lower threshold.
+// (Sibling: put_chunk buffers the ≤16 MiB body before the 1 MiB check — a route-scoped body limit fits.)
 pub async fn commit(
     AuthToken(user): AuthToken, State(st): State<AppState>,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,

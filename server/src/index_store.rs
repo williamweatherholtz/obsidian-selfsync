@@ -162,6 +162,9 @@ impl SqliteIndex {
     // All files with version > since (upserts) + all tombstones with version > since (deletes),
     // via the version indexes — O(changed), not O(all). The empty-since (0) full manifest is the
     // one whole-table scan (bounded by file count), used on first sync / a full reconcile.
+    // @audit r2 2026-07-18 — output clean. Deferred (perf, no fix this round): N+1 chunk fan-out —
+    // row_to_meta→chunks_of runs ONE SELECT per row, so a full manifest (changes(0)) is O(files) queries;
+    // batch the chunk fetch (WHERE path IN …, grouped in Rust) or at least prepare_cached chunks_of.
     pub fn changes(&self, since: u64) -> std::io::Result<ChangesResponse> {
         let conn = self.conn.lock().map_err(io)?;
         let version = Self::meta_get(&conn, "version")?;
@@ -206,6 +209,10 @@ impl SqliteIndex {
     // list, clear any tombstone for the path, and bump the stored version. Returns the chunks that
     // are now UNREFERENCED (were on the old version, not on the new, and used by no other file) so
     // the caller can drop those blobs — mirrors the JSON index's decref-collect.
+    // @audit r2 2026-07-18 — core is clean (version-monotonic MAX guard, single-tx read-old→mutate→decref,
+    // decref ordering verified). Deferred: the insert + EXISTS loops re-parse identical SQL per row
+    // (prepare_cached); the decref-collect loop is duplicated in delete() — extract dereferenced_after()
+    // so the durability-critical GC logic has ONE tested home; the file+chunk insert is dup'd in replace_files.
     pub fn put(&self, meta: &FileMeta) -> std::io::Result<Vec<String>> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
@@ -248,6 +255,9 @@ impl SqliteIndex {
     // NOT `path` — the case/Unicode-collision guard commit uses (a folding FS would collapse them).
     // Uses the `fold` column (computed in Rust with to_lowercase, so it matches Rust's fold, not
     // SQLite's ASCII-only lower()).
+    // @audit r2 2026-07-18 — clean: `fold=?1 AND path<>?2 LIMIT 1` + .optional() is exactly right, and it
+    // reuses the same to_lowercase fold as the write path (soundness depends on that lockstep). (Note:
+    // to_lowercase is lowercasing, not true Unicode case-fold — documented + internally consistent; fine.)
     pub fn colliding_key(&self, path: &str) -> std::io::Result<Option<String>> {
         let conn = self.conn.lock().map_err(io)?;
         conn.query_row("SELECT path FROM files WHERE fold=?1 AND path<>?2 LIMIT 1",
@@ -256,6 +266,9 @@ impl SqliteIndex {
 
     // Transactionally REPLACE all file rows (+ their chunk lists) with `metas` and set the version —
     // reindex's rebuild. Tombstones (deletions) are left intact (a healthy reindex keeps history).
+    // @audit r2 2026-07-18 — clean: deliberately PRESERVES the deletions table (no wipe) + MAX version bump
+    // — correct for a healthy reindex. Deferred: the file+chunk insert block is dup'd with put() and the
+    // `fold` derivation is hand-copied in both (extract insert_file() to keep the fold rule single-sourced).
     pub fn replace_files(&self, metas: &[FileMeta], version: u64) -> std::io::Result<()> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
@@ -275,6 +288,8 @@ impl SqliteIndex {
 
     // Delete a path: remove its row + chunks, record a tombstone at `version`, bump the stored
     // version. Returns the Deletion + the chunks now unreferenced (None if the path wasn't present).
+    // @audit r2 2026-07-18 — clean + tx-atomic. Deferred: redundant EXISTS pre-check (DELETE already
+    // returns rows-affected → use that as the presence signal, one fewer query); decref loop dup'd with put().
     pub fn delete(&self, path: &str, version: u64) -> std::io::Result<Option<(Deletion, Vec<String>)>> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;

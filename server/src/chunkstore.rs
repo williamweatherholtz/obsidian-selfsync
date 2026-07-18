@@ -42,6 +42,11 @@ impl ContentStore {
         if !Self::is_valid_hash(hash) { return false; }
         self.path_for(hash).exists()
     }
+    // @audit r2 2026-07-18 — FIXED: rename published the blob but never fsync'd the shard DIR, so an
+    // acked commit's chunk dir-entry could vanish on power loss (write_mirror does the dir-fsync + falsely
+    // claimed parity). Added the post-rename dir-fsync. (Also: shard-walk duplicated across sweep_temp/
+    // list_hashes/sweep_orphans — a for_each_blob visitor could DRY it; deferred.)
+    // @audit-hash sha256:d32e5537318339bd
     pub fn put(&self, hash: &str, bytes: &[u8]) -> std::io::Result<()> {
         if !Self::is_valid_hash(hash) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk hash format"));
@@ -68,7 +73,15 @@ impl ContentStore {
             f.write_all(bytes)?;
             f.sync_all()?;
         }
-        std::fs::rename(tmp, p)
+        std::fs::rename(&tmp, &p)?;
+        // R10-D1: fsync the SHARD DIR after the rename too. sync_all made the bytes durable, but under
+        // POSIX the directory entry created by the rename is not guaranteed to survive power loss without
+        // this — so an acked commit could still reference a chunk whose dir-entry was lost. Best-effort
+        // (the bytes are the authority), matching write_mirror's dir-fsync so the two paths truly agree.
+        if let Some(dir) = p.parent() {
+            if let Ok(d) = std::fs::File::open(dir) { let _ = d.sync_all(); }
+        }
+        Ok(())
     }
     pub fn get(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
         if !Self::is_valid_hash(hash) { return Ok(None); }
@@ -121,13 +134,18 @@ impl ContentStore {
     // Returns the number reclaimed. Best-effort per file (a remove failure is logged by the caller
     // via the count delta, never fatal). Safe under the shared read lock: it races no commit (that
     // holds the write lock) and never touches a referenced chunk.
+    // @audit r2 2026-07-18 — FIXED (concision): dropped the per-entry String alloc on the hot GC path
+    // (HashSet<String>::contains takes &str). Concurrency + fail-safe age-gate reasoning is exemplary —
+    // left as-is. (Shard-walk still duplicated across sweep_temp/list_hashes/sweep_orphans — deferred.)
+    // @audit-hash sha256:15289dcc8215b6ab
     pub fn sweep_orphans(&self, referenced: &std::collections::HashSet<String>, older_than: std::time::Duration) -> std::io::Result<usize> {
         let mut reclaimed = 0usize;
         for shard in std::fs::read_dir(&self.root)?.flatten() {
             if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
             for f in std::fs::read_dir(shard.path())?.flatten() {
-                let Some(name) = f.file_name().to_str().map(|s| s.to_string()) else { continue; };
-                if !Self::is_valid_hash(&name) || referenced.contains(&name) { continue; }
+                let fname = f.file_name();
+                let Some(name) = fname.to_str() else { continue; };
+                if !Self::is_valid_hash(name) || referenced.contains(name) { continue; }
                 // Age gate: spare anything modified within the TTL (an in-flight upload). elapsed()
                 // errs only if mtime is in the future → treat as age 0 (spared), never reclaim early.
                 let age = f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
