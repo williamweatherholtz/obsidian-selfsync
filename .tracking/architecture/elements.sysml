@@ -564,4 +564,579 @@ package ProjectCodeElements {
         :>> pattern = DesignPattern::none;
         :>> stpaRole = StpaRole::channel;
     }
+
+    part ceAuthLogin : CodeElement {
+        :>> id = "391ee4a3-d672-46e3-801b-96a0a85a2529";
+        :>> title = "auth::login â€” credential + MFA login handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/auth.rs"; :>> name = "login"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:a8ce63b72108e87c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The internet-facing front door; a flaw is account takeover. Must not leak user existence via timing and must enforce lockout + MFA.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "dummy-hash timing-oracle defense (absent user does equal argon2 work); login throttle; must_change gate; TOTP second factor. Runtime-enforced.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAuthRegister : CodeElement {
+        :>> id = "e64094f5-63d6-435d-ad29-06ab88e3ac7e";
+        :>> title = "auth::register â€” account creation handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/auth.rs"; :>> name = "register"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:a4ac280fec8b47e1"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Creates accounts; must enforce the invite/registration policy + password policy or it's open registration / weak creds.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Registration policy + validate_password_policy + argon2 on the blocking pool.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAuthLogout : CodeElement {
+        :>> id = "3cce15b7-a648-41ec-8234-58c8dc536ec6";
+        :>> title = "auth::logout â€” session revoke handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/auth.rs"; :>> name = "logout"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:671d24cfa5c26c26"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Server-side session termination; a no-op leaves a revoked device authenticated.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Resolves + revokes the bearer token; audited.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceAuthChangePassword : CodeElement {
+        :>> id = "42cf3cbc-d013-43ff-8d00-84c5e88590fe";
+        :>> title = "auth::change_password â€” self-service change";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/auth.rs"; :>> name = "change_password"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:c033e6d572ce3fc5"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Changes a password, checks reuse history, and REVOKES other sessions; a flaw allows reuse or leaves stale sessions live.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Verifies current (argon2), is_password_reused cap, rotate + revoke-others, returns a fresh token.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAuthPolicy : CodeElement {
+        :>> id = "0f479fcd-a573-44fb-83ab-79f03a8e12c0";
+        :>> title = "validate_password_policy â€” strength gate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/auth.rs"; :>> name = "validate_password_policy"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:b3bf1cfffc2c0c1d"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The password-strength predicate; too weak admits guessable creds.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Length + composition (or long-passphrase) -> Result; total predicate at the boundary.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTokIssueTtl : CodeElement {
+        :>> id = "756fdad1-120d-47c2-9bee-b831fb264659";
+        :>> title = "TokenStore::issue_ttl â€” mint session token";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/tokens.rs"; :>> name = "issue_ttl"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:c66dfc930b683a85"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Mints a bearer token with absolute expiry; a weak token or wrong TTL is a session-security failure.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Random token, hashed at rest; absolute + idle expiry enforced in resolve.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTokRevoke : CodeElement {
+        :>> id = "2b08838a-9d12-47c2-868d-ce5f455c5964";
+        :>> title = "TokenStore::revoke â€” single-session revoke";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/tokens.rs"; :>> name = "revoke"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:2bdbae5ef78e25a2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Revokes one session; idempotent so an unknown token is a no-op success.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Removes the hashed token; persists.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceTokRevokeUser : CodeElement {
+        :>> id = "5873c3c0-0137-48c4-b118-7f40c77e797b";
+        :>> title = "TokenStore::revoke_user â€” revoke all sessions";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/tokens.rs"; :>> name = "revoke_user"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:94b69c392737d7c7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Revokes every session for a user (account delete / password change); a miss leaves live sessions.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Drops all of a user's hashed tokens at once.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceUsersVerifyPassword : CodeElement {
+        :>> id = "be6515f3-2c0c-491b-976c-c43987cbb642";
+        :>> title = "verify_password â€” argon2 verify";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "verify_password"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:ea53cc5315a924fb"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The password check; free-standing SO the caller runs it on spawn_blocking (never blocks the async worker).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parses the stored PHC then Argon2::verify_password; total over (phc,password).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceUsersRegister : CodeElement {
+        :>> id = "a337cc8e-e033-4118-bfd5-021861887325";
+        :>> title = "UserStore::register â€” persist a new user";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "register"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:4f81f97ed44dd68c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Persists a user with an argon2id hash; a weak hash config or plaintext leak is catastrophic.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "argon2id PHC at rest; name validated by safe_name.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceUsersSetPassword : CodeElement {
+        :>> id = "13808d5b-148c-4e21-ad5e-c19a933dc52f";
+        :>> title = "UserStore::set_password â€” rotate hash";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "set_password"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:0551702c1fb101ec"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Rotates the stored hash; feeds reuse history.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "New argon2id PHC; history append (reuse cap enforced by caller).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceUsersVerify : CodeElement {
+        :>> id = "447f8f7d-f874-43ac-b9ad-e614d3a7a0b8";
+        :>> title = "UserStore::verify â€” test-only convenience";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "verify"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:ec95aa4b7d4c6f2c"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Test-only helper (tests/sync.rs); NOT on the production auth path (which uses phc_for + verify_password on spawn_blocking).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Same dummy-hash timing discipline as the live path; kept for tests.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceUsersSafeName : CodeElement {
+        :>> id = "8aa4ac0d-ca3b-4a83-af86-5c7a87fdb2e0";
+        :>> title = "safe_name â€” user/vault name validator";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "safe_name"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:4f87225c0efe9eda"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Gates every user/vault name that becomes a filesystem path segment / namespace key; a bypass is path traversal / namespace collision.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Parse-don't-validate: total predicate rejecting unsafe names before they reach the FS.";
+        :>> pattern = DesignPattern::parseDontValidate;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceUsersTotpVerify : CodeElement {
+        :>> id = "00485e29-d1e8-43ed-b2f9-c35bdbb11fb7";
+        :>> title = "totp_verify_second_factor â€” MFA verify + replay guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/users.rs"; :>> name = "totp_verify_second_factor"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:4a22b70c9b727ad6"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The MFA second-factor check; a replay window or accepted stale code weakens MFA.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "RFC6238 verify_step + a last-step replay guard (reject a code from a consumed step) + single-use recovery codes.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceTotpVerifyStep : CodeElement {
+        :>> id = "16f9ce40-27aa-4161-b85a-4ad2b60293d8";
+        :>> title = "totp::verify_step â€” RFC6238 window verify";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/totp.rs"; :>> name = "verify_step"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:752888389ad0aa4e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The TOTP time-window check; too wide a window or wrong math accepts invalid codes.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Pure; pinned to RFC6238 vectors; returns the matched step (for the replay guard).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceTotpHotp : CodeElement {
+        :>> id = "bf3aec59-5cdb-44a4-bdd2-cb5213507074";
+        :>> title = "totp::hotp â€” HMAC-OTP core";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/totp.rs"; :>> name = "hotp"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:57afe3a70a770b35"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The HOTP/HMAC-SHA1 primitive underpinning TOTP; a bug silently weakens MFA.";
+        :>> invariantSafety = InvariantSafety::typeEnforced;
+        :>> invariantNotes = "Pure total function; pinned to RFC4231/6238 test vectors.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceThrottleCheck : CodeElement {
+        :>> id = "b6d5df86-f789-43b4-8c3a-a95aab5417ab";
+        :>> title = "LoginThrottle::check â€” brute-force lockout";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/throttle.rs"; :>> name = "check"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:34f65268aea147cf"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Per-account login throttle; a flaw removes brute-force protection on the front door.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Windowed failure count -> lockout; the FR9 rate-limit.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAudit : CodeElement {
+        :>> id = "7acdbe82-a31c-4234-abf0-efe1418405d7";
+        :>> title = "audit::audit â€” security audit trail";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/audit.rs"; :>> name = "audit"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:c395538ecb9df86a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The attributable AU.3.3.x audit log; unsanitized fields allow log-forgery / injection, and a miss loses the security signal.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Structured line with control-char stripping on WHO/WHAT (R20/R21 log-injection defense).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+
+    part ceAdminRequire : CodeElement {
+        :>> id = "f64647e1-9fb1-4dec-875a-a0fa05dd3b60";
+        :>> title = "require_admin â€” admin authZ + MFA gate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "require_admin"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:7eb5c6bb76d65517"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "The admin choke-point; a bypass grants server-admin. Enforces MFA for privileged accounts (REQUIRE_ADMIN_MFA).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Checks admin membership + (when required) TOTP enrollment before any admin action.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminShareCreate : CodeElement {
+        :>> id = "2669bc50-aae0-47a9-9fd1-3f476753d1e9";
+        :>> title = "admin::share_create â€” grant vault access";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "share_create"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:d6fa46fbeda29942"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Grants another account access to a vault; a flaw is unauthorized sharing / privilege grant.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Owner-scoped; writes a grant via the (rollback-guarded) ShareStore.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminShareDelete : CodeElement {
+        :>> id = "8b682348-f1a2-49cd-a8b1-6c4ff8c628c1";
+        :>> title = "admin::share_delete â€” revoke vault access";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "share_delete"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:5ee54afb486da6c8"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Revokes a grant; a miss leaves stale access to another user's vault.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Owner-scoped revoke.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminLinkCreate : CodeElement {
+        :>> id = "515512d1-a4cd-4d06-98cd-c6fa0b5113d8";
+        :>> title = "admin::share_link_create â€” mint capability link";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "share_link_create"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:e237e7f7187ef84f"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Mints a capability share-link (bearer grant); a weak/over-scoped link leaks vault access.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Owner-scoped; opaque token, optional TTL; stored hashed.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminLinkRedeem : CodeElement {
+        :>> id = "b1ef6ce6-42e5-44f9-be71-8854e483f4f1";
+        :>> title = "admin::share_link_redeem â€” redeem link";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "share_link_redeem"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:9725bcea98edab62"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Binds a link to the caller as a grant; must be single-use or a link is replayable.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Delegates to the single-use redeem (unredeem rollback on a failed grant).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceAdminLinkRevoke : CodeElement {
+        :>> id = "af3f7cf9-f4b3-4a92-b0dc-3986afe828c2";
+        :>> title = "admin::share_link_revoke â€” revoke link";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/admin.rs"; :>> name = "share_link_revoke"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:0a5c4943b141f396"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Revokes a pending link; a miss leaves a live capability outstanding.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Owner-scoped revoke.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceMfaEnroll : CodeElement {
+        :>> id = "9285a811-2910-4c01-be8c-5e46d39a7c42";
+        :>> title = "mfa::enroll â€” begin TOTP enrollment";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/mfa.rs"; :>> name = "enroll"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:1afbb1b239f3e0db"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Starts MFA enrollment (secret + recovery codes); a flaw weakens or bypasses MFA setup.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Self-service; audited (AU.3.3.1).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMfaConfirm : CodeElement {
+        :>> id = "2268fb23-c1b5-47c6-8fd7-a2af0e526b84";
+        :>> title = "mfa::confirm â€” confirm TOTP enrollment";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/mfa.rs"; :>> name = "confirm"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:5cffaa9a4bfc148a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Confirms enrollment by verifying a code; a flaw enrolls an unverified factor.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Requires a valid TOTP before activating the factor.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceMfaDisable : CodeElement {
+        :>> id = "8ccad57f-6b45-4bd0-b811-6b116cb87a3d";
+        :>> title = "mfa::disable â€” disable MFA";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/mfa.rs"; :>> name = "disable"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:fd96213dc21932ce"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Disables MFA; must be authenticated + audited or it's an MFA-removal bypass.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Audited MFA disable (AU.3.3.1).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceLinkCreate : CodeElement {
+        :>> id = "71e1882e-bd9a-46f7-ba03-a5d8d4f2469c";
+        :>> title = "ShareLinkStore::create â€” persist a link";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/sharelinks.rs"; :>> name = "create"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:88473b00fabb4e71"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Persists a capability link; the token must be unguessable + stored safely.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Random token; optional expiry; owner-scoped record.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceLinkRedeem : CodeElement {
+        :>> id = "bdb49f68-9cf1-4e9b-8629-4feeafffb630";
+        :>> title = "ShareLinkStore::redeem â€” single-use redeem";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/sharelinks.rs"; :>> name = "redeem"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:d227b40f96ec85b1"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Consumes a link exactly once; a double-redeem or expired-accept is a capability-replay.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Marks redeemed_by atomically; expiry + revoke checked; paired with unredeem rollback.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceLinkRevoke : CodeElement {
+        :>> id = "ada64180-0830-4fb1-850d-034c5539e5b1";
+        :>> title = "ShareLinkStore::revoke â€” revoke a link";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/sharelinks.rs"; :>> name = "revoke"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:f15dd90441bbb9d4"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Revokes a pending link; only the owner may.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Owner-checked; returns false for a non-owner (tested).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceLinkUnredeem : CodeElement {
+        :>> id = "34af8052-11b2-4117-b52d-b110b73548ea";
+        :>> title = "ShareLinkStore::unredeem â€” redeem rollback";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/sharelinks.rs"; :>> name = "unredeem"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:5b9c8e42a7b12811"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Rolls back a claim so a FAILED grant does not burn the link (the redeem's compensating action).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Restores pending state; the tested single-use-with-rollback contract.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceConfigFromEnv : CodeElement {
+        :>> id = "a98a80fe-8825-401d-9f1e-1efa3371938c";
+        :>> title = "Config::from_env â€” load config + weak-cred guard";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/config.rs"; :>> name = "from_env"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:3ab087264b55c9fa"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Loads deployment config; MUST refuse a weak/default admin password at boot (CM.3.4.2) or the front door ships with known creds.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Refuses the known-weak/short bootstrap-password class unless ALLOW_WEAK_ADMIN=1.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part cePurgeUserData : CodeElement {
+        :>> id = "2f3dfbe2-ca57-4798-9059-1c9b2b0cb636";
+        :>> title = "AppState::purge_user_data â€” account-delete purge";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/state.rs"; :>> name = "purge_user_data"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:fd9b98087116e32a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Removes ALL of a user's data (cached handles + disk) so a recreated username can't inherit prior notes (SEC-MED-2 data remanence).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Drops ns + opens entries + removes the dir; best-effort on the dir.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part cePurgeVault : CodeElement {
+        :>> id = "bde33137-7f0e-49d0-b9e9-7b22adb69790";
+        :>> title = "AppState::purge_vault â€” per-vault purge";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/state.rs"; :>> name = "purge_vault"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:5f079ce2bcf647da"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Removes one vault's data AND its share grants FIRST, or a lingering grant silently reactivates if a same-named vault is recreated (re-exposure).";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Fails loud on a poisoned shares lock (no half-state); drops grants -> ns -> opens -> dir.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceVaultExists : CodeElement {
+        :>> id = "f6f7dbfa-4409-4258-831f-ac92bac448d1";
+        :>> title = "AppState::vault_exists â€” provisioning gate";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/state.rs"; :>> name = "vault_exists"; :>> kind = CodeElementKind::method;
+        :>> codeHash = "sha256:b681b368bb78df28"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Gates sync routes to EXISTING vaults so a GET can't lazily provision an arbitrary vault dir in the caller's namespace (protocol-6).";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "safe_name + is_dir; total predicate.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+
+    part ceApiStatus : CodeElement {
+        :>> id = "ff330b66-2338-4b20-8587-b5e1de618f70";
+        :>> title = "api::status â€” per-vault health handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "status"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:a80f2d903fae69d7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Reports vault health; clients pause on 'error' â€” a wrong status acts on a degraded manifest or blocks a healthy vault.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped authZ + ensure_ready; surfaces corrupt-index as error.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceApiChanges : CodeElement {
+        :>> id = "d417fd28-5116-4a80-9665-c01abec6c4bf";
+        :>> title = "api::changes â€” manifest/delta handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "changes"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:0fe37fab40da6805"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Serves the upsert+tombstone manifest clients reconcile against; must refuse a degraded index.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped authZ + ensure_ready (503 not an empty manifest on degraded).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceApiFileMeta : CodeElement {
+        :>> id = "d46b2408-2d0b-4124-a9a6-e939ee7bc797";
+        :>> title = "api::file_meta â€” single-path meta handler";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "file_meta"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:c174217f7a151e2e"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Backs the client event path's single-path fetch; 404 vs meta drives delete-vs-sync decisions.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped authZ; 404 for absent.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
+    part ceApiGetChunk : CodeElement {
+        :>> id = "cd32cbb5-3ae4-4946-a04a-563a2f9c2a6d";
+        :>> title = "api::get_chunk â€” serve a blob";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "get_chunk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:cd3d09aa429a67e2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "Serves chunk bytes for reassembly; the client content-verifies, so integrity is enforced downstream.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped Read authZ; blocking-pool read; 404 for absent.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::channel;
+    }
+    part ceApiPutChunk : CodeElement {
+        :>> id = "09f72feb-6d81-4a78-a0b0-2275189c115f";
+        :>> title = "api::put_chunk â€” accept a blob upload";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "put_chunk"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:98dc33174abac12a"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Accepts client-uploaded chunk bytes; must bound size + content-address or a client stores giant/forged blobs.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped Write authZ; 1 MiB in-handler cap; content-addressed store on the blocking pool. (Deferred: a route-scoped body limit so the â‰¤16 MiB pre-check buffer matches the semantic 1 MiB.)";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::actuator;
+    }
+    part ceApiDeleteFile : CodeElement {
+        :>> id = "d3aa3961-990d-4869-92f3-9a32c547ed82";
+        :>> title = "api::delete_file â€” delete endpoint";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/api.rs"; :>> name = "delete_file"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:c2a23e02d958c745"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::dataLoss;
+        :>> riskRationale = "The remote-delete endpoint; a flaw deletes another tenant's file or accepts an unsafe path.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "scoped Write authZ; Vault::delete (delete-by-raw-key, durable-before-mirror); 404-or-200 idempotent.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceWsServeSocket : CodeElement {
+        :>> id = "e9dfecef-2d28-423c-a15f-4b5f7289b430";
+        :>> title = "ws::serve_socket â€” per-connection WS loop";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/ws.rs"; :>> name = "serve_socket"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:a6bd31335e193859"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::availability;
+        :>> riskRationale = "The change-notification socket loop; a ping/pong or teardown bug drops healthy clients or leaks sockets/tasks.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "Keepalive ping with MissedTickBehavior::Delay (CONC-4 no false-drop); ConnGuard teardown; per-user cap.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceVaultsCreate : CodeElement {
+        :>> id = "fee65cd4-7340-44c1-81a7-1bd72a2980f6";
+        :>> title = "vaults::create_vault â€” provision a vault";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vaults.rs"; :>> name = "create_vault"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:ab89313b0203884b"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::security;
+        :>> riskRationale = "Provisions a vault in the caller's namespace; must validate the name + enforce the per-user vault cap.";
+        :>> invariantSafety = InvariantSafety::runtimeGuarded;
+        :>> invariantNotes = "safe_name + per-user cap; the ONLY provisioning path (sync routes never lazily create).";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::controller;
+    }
+    part ceVaultsList : CodeElement {
+        :>> id = "90e0c31c-3fda-40b0-926d-13949963561d";
+        :>> title = "vaults::list_vaults â€” list own vaults";
+        :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
+        :>> file = "server/src/vaults.rs"; :>> name = "list_vaults"; :>> kind = CodeElementKind::function;
+        :>> codeHash = "sha256:f21e92053c6c9c64"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
+        :>> riskClass = RiskClass::correctness;
+        :>> riskRationale = "Lists the caller's vaults for the switcher.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "Namespace-scoped dir listing.";
+        :>> pattern = DesignPattern::none;
+        :>> stpaRole = StpaRole::sensor;
+    }
 }
