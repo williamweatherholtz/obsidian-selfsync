@@ -290,6 +290,26 @@ async function readOrNull(io: VaultIo, path: string): Promise<Uint8Array | null>
   try { return await io.read(path); } catch { return null; }
 }
 
+// The three DISTINGUISHABLE outcomes of reading a local file for reconciliation. Modeling them as a
+// TAGGED union (not `Uint8Array | null` + a separate presence flag) makes the C1/R10 invariant a
+// first-class, named state: "present but unreadable" (an AV lock / unhydrated cloud placeholder / FS
+// hiccup on a file the vault reports PRESENT) is `unreadable`, NEVER `absent` — so it can't be silently
+// forged into the deletion decide() would draw from a null local. The dangerous case now has a name the
+// reconcile boundary must branch on, instead of a null that reads identically to a real deletion.
+type LocalContent =
+  | { kind: "present"; bytes: Uint8Array }
+  | { kind: "absent" }
+  | { kind: "unreadable" };
+
+// Read a local file into a LocalContent. `reportedPresent` is the vault's own presence answer (io.exists):
+// a null read while the vault says PRESENT is `unreadable` (transient, never a deletion); a null read
+// while genuinely absent is `absent`. The type-level form of the old C1 read-failure guard.
+async function readLocalContent(io: VaultIo, path: string, reportedPresent: boolean | undefined): Promise<LocalContent> {
+  const bytes = await readOrNull(io, path);
+  if (bytes !== null) return { kind: "present", bytes };
+  return reportedPresent ? { kind: "unreadable" } : { kind: "absent" };
+}
+
 // True ONLY when `path` is definitively gone from disk, confirmed by a DIRECT per-path probe
 // (io.exists, else a read) — never the directory LISTING. A listing UNDER-REPORTS when a directory
 // fails to enumerate (io.list swallows a per-dir error), a cloud-drive placeholder (OneDrive
@@ -736,6 +756,11 @@ interface ReconcileOneOpts {
 // Reconcile ONE path against the server — a dispatcher: selective-sync + size gate, decide(), then the
 // enabled-plugin-list special-case, the config-divergence adjudication, and the per-action switch (the
 // two large arms — plugin-list union and merge/conflict-copy — live in the helpers above).
+// @audit r3 2026-07-18 — IMPROVED (invariant-safety, runtimeGuarded->parsed): the local read is now a
+// tagged LocalContent (present/absent/unreadable) so "present-but-unreadable" is a named state that can't
+// be forged into the deletion decide() draws from a null local (the C1/R10 guard, now expressed at the
+// read boundary instead of a null + a separate presence flag + a runtime if).
+// @audit-hash sha256:cc069ff77206bdb6
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
   const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
@@ -774,15 +799,18 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     localBytes = null;              // present + unchanged → content is baseEntry.hash; not read
     localHash = baseEntry!.hash;
   } else {
-    localBytes = await readOrNull(d.io, path);
-    // C1 (R10): a read that FAILS on a file the vault reports PRESENT is a transient error (antivirus
-    // lock, unhydrated OneDrive/Dropbox placeholder, FS hiccup) — NOT a deletion. Left unguarded it
-    // feeds decide() a null local and yields delete-remote (which has no tombstone/bulk-delete guard),
-    // propagating a phantom deletion to every peer. Skip the path this pass instead; the per-file
-    // handler logs it and the next reconcile retries. Only relevant for a previously-synced file.
-    if (localBytes === null && baseEntry && locallyPresent) {
+    // C1 (R10): read into a TAGGED LocalContent so "present-but-unreadable" is a distinct, named state,
+    // not a null that reads identically to a deletion. `unreadable` (a file the vault reports PRESENT that
+    // fails to read — AV lock / unhydrated cloud placeholder / FS hiccup) fed to decide() as absent would
+    // yield the unguarded delete-remote, propagating a phantom deletion to every peer. It is DANGEROUS only
+    // with a base (decide draws delete-remote from base==remote), so: skip the path this pass when a base
+    // exists (the per-file handler logs + retries); a base-less unreadable is safely treated as absent (no
+    // destructive branch is reachable). The type makes this case impossible to handle by accident.
+    const local = await readLocalContent(d.io, path, locallyPresent);
+    if (local.kind === "unreadable" && baseEntry) {
       throw new Error(`'${path}' is present but couldn't be read right now — skipping (won't be treated as deleted)`);
     }
+    localBytes = local.kind === "present" ? local.bytes : null;
     localHash = localBytes ? await sha256hex(localBytes) : null;
   }
   const action = decide(

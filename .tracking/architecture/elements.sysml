@@ -136,11 +136,11 @@ package ProjectCodeElements {
         :>> title = "reconcileOne — per-path reconcile dispatcher";
         :>> createdAt = "2026-07-18"; :>> createdBy = "ai";
         :>> file = "client/src/reconcile.ts"; :>> name = "reconcileOne"; :>> kind = CodeElementKind::function;
-        :>> codeHash = "sha256:4ed0f4047d933671"; :>> auditRound = "r1"; :>> auditedAt = "2026-07-17";
+        :>> codeHash = "sha256:cc069ff77206bdb6"; :>> auditRound = "r3"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::dataLoss;
         :>> riskRationale = "The per-path action executor: every destructive op (delete-local/delete-remote/overwrite) flows through its switch. A wrong branch or a defeated guard is direct data loss.";
-        :>> invariantSafety = InvariantSafety::runtimeGuarded;
-        :>> invariantNotes = "Decision itself is via the pure decide(); the destructive arms are runtime-guarded (accepts() gate, size gate, C1 present-but-unreadable guard, tombstone requirement, confirmedAbsent). Not type-enforced — a Presence type that can't be forged from a failed read would raise it to typeEnforced.";
+        :>> invariantSafety = InvariantSafety::parsed;
+        :>> invariantNotes = "IMPROVED r3: the local read is parsed into a tagged LocalContent (present/absent/UNREADABLE) so a present-but-unreadable file is a named state that can't be forged into the deletion decide() draws from a null local (the C1/R10 guard, now at the read boundary). Remaining runtime guards: bulk-delete ratio + tombstone requirement + confirmedAbsent (inherently I/O-time).";
         :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::controller;
         :>> actions = "in-sync, push, pull, delete-local, delete-remote, merge, conflict-copy";
