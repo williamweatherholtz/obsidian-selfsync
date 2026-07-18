@@ -17,8 +17,10 @@
 > for privileged/admin accounts), IA.3.5.8 (password-reuse history — last 5 hashes) and IA.3.5.9
 > (forced-change-on-reset — `must_change` enforced in the auth extractor), all real-tested; their POA&M
 > Issues are now resolved. **FIPS (3.13.11) is DEFERRED** — this deployment stores no genuine CUI, so
-> FIPS-validated crypto is not required. **Remaining POA&M:** CUI-at-rest (3.13.16, operator volume
-> encryption / E2EE deferred) and FIPS (deferred). Both are deliberate decisions, not unfinished work.
+> FIPS-validated crypto is not required. SC.3.13.11 (FIPS) and SC.3.13.16 (CUI-at-rest) are **Not
+> Applicable** — no CUI in scope — recorded as the accepted scope decision **D0027** (`.engine/decisions/
+> 0027-no-cui-cmmc-scope.sysml`); both reopen only if a deployment ever stores CUI. Deliberate decisions,
+> not unfinished work.
 
 
 > **Scope & honesty note.** CMMC 2.0 Level 2 = the 110 practices of NIST SP 800-171 rev2 across 14

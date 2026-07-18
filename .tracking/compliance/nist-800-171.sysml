@@ -720,7 +720,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f62-4a10-9b20-a1b2c3d48f62"; :>> title = "3.13.11 FIPS-validated cryptography";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Employ FIPS-validated cryptography when used to protect the confidentiality of CUI.";
-        :>> rationale = "NIST SP 800-171 rev2 3.13.11 (paraphrased). Disposition: poam. DEFERRED (accepted): this deployment stores NO genuine CUI, so FIPS-validated crypto is not required; revisit only if CUI is ever stored (issueCmmcFips).";
+        :>> rationale = "NIST SP 800-171 rev2 3.13.11 (paraphrased). Disposition: poam → NOT APPLICABLE per D0027 (accepted 2026-07-15): this deployment stores NO CUI, so FIPS-validated crypto has no in-scope asset; formally accepted-deferred, reopen only if CUI is ever stored (issueCmmcFips, mooted by D0027).";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::analyze;
     }
     requirement sr_3_13_12 : SystemRequirement {
@@ -755,7 +755,7 @@ package ProjectCompliance {
         :>> id = "c0f1a5cc-8f67-4a10-9b20-a1b2c3d48f67"; :>> title = "3.13.16 Protect CUI at rest";
         :>> createdAt = "2026-07-10"; :>> createdBy = "wweatherholtz";
         :>> statement = "Protect the confidentiality of CUI at rest.";
-        :>> rationale = "NIST SP 800-171 rev2 3.13.16 (paraphrased). Disposition: poam. Notes stored plaintext (no E2EE); operator volume encryption is the near-term control (issueCmmcAtRest).";
+        :>> rationale = "NIST SP 800-171 rev2 3.13.16 (paraphrased). Disposition: poam → NOT APPLICABLE per D0027 (accepted 2026-07-15): no CUI stored, so CUI-at-rest encryption has no in-scope asset. If CUI is ever stored, operator volume encryption is the near-term control / E2EE evaluated vs the dedup+merge tradeoff (issueCmmcAtRest, mooted by D0027).";
         :>> kind = RequirementKind::security; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::analyze;
     }
     // ---- 3.14 System and Information Integrity (SI) ----

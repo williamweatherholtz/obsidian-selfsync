@@ -7,6 +7,7 @@ package ProjectIssues {
     private import EngineWork::*;
     private import ProjectDelivery::*; // requirementTraceabilityBackfill — the resolver
     private import ProjectDecision0020::*; // d0020 — the mooting Decision for the accepted inherent/cosmetic findings
+    private import ProjectDecision0027::*; // d0027 — no-CUI scope decision that moots the two CMMC CUI-controls
 
     // The test-escape retrospective (2026-07-05): "plugin sync doesn't work at all" shipped
     // despite a large test suite. Root cause is two-layered and recorded here so the class is
@@ -385,8 +386,10 @@ package ProjectIssues {
     #Resolves dependency from cmmcMfa to issueCmmcMfa;                        // DONE (real-tested)
     #Resolves dependency from cmmcForcedChangeReuse to issueCmmcPwReuse;      // DONE (real-tested)
     #Resolves dependency from cmmcForcedChangeReuse to issueCmmcForcedChange; // DONE (real-tested)
-    #Resolves dependency from cmmcComplianceBacklog to issueCmmcFips;
-    #Resolves dependency from cmmcComplianceBacklog to issueCmmcAtRest;
+    // Mooted by D0027 (no CUI → these two CUI-DATA-specific controls are Not Applicable), NOT by an
+    // implementation action. Re-homed off cmmcComplianceBacklog onto the mooting Decision (D0077).
+    #Resolves dependency from d0027 to issueCmmcFips;
+    #Resolves dependency from d0027 to issueCmmcAtRest;
 
     // ---- UI functional-correctness audit (2026-07): 9 wiring defects found by tracing every control in
     // BOTH UIs end-to-end. All RESOLVED by the DONE, real-tested uiFunctionalAudit action. ----
