@@ -194,6 +194,83 @@ export interface ReconcileDeps {
   onPullExhausted?: (path: string) => void; // a file's server copy failed to download MAX times — surface it
 }
 
+// ---- Shared reconcile primitives (B1: these were copy-pasted across reconcileAll / reconcileDelta /
+// reconcilePath / switchTo / reconcileLocalConfig with subtle drift; one home each so the safety-critical
+// contracts — selective sync, bulk-delete guarding, cursor holding, per-file error isolation — can't diverge.)
+
+// Selective-sync predicate: a path is accepted unless a per-device filter is set and rejects it. A path
+// this device doesn't accept is skipped ENTIRELY (no pull, no base, no delete) — see ReconcileDeps.accepts.
+function accepts(d: ReconcileDeps, path: string): boolean { return !d.accepts || d.accepts(path); }
+
+// The STATELESS per-pass bulk-delete ratio predicate (C2, widened): true when this pass would delete a
+// suspicious fraction of the accepted `universe` (base or local set) — a wholesale-empty manifest
+// (`emptyManifest`, a strong index-loss signal) or >= BULK_DELETE_RATIO of a non-tiny universe. Callers
+// OR this with the cumulative DeleteRateGuard where a paced drain is possible (runDeleteGuard).
+function isSuspiciousBulkDelete(universe: number, deletes: number, emptyManifest: boolean): boolean {
+  return universe > 0 && (emptyManifest
+    || (universe >= BULK_DELETE_MIN && deletes / universe >= BULK_DELETE_RATIO));
+}
+
+// SEC-DATA: combine the stateless per-pass predicate with the cross-pass cumulative DeleteRateGuard on
+// the POLLING paths (reconcileAll/reconcileDelta) — feed the guard this pass's universe, OR its verdict
+// in (catches a paced drain the per-pass ratio alone misses), and RECORD the deletes only when we let
+// them through. Returns the final verdict (true ⇒ refuse the deletions this pass). The event/one-shot
+// paths (reconcilePath, switchTo) use isSuspiciousBulkDelete alone — a paced server drain doesn't route
+// through them, and a switch is a single operation with no next pass to accumulate across.
+function runDeleteGuard(d: ReconcileDeps, universe: number, deletes: number, emptyManifest: boolean): boolean {
+  d.deleteGuard?.observe(universe);
+  const suspicious = isSuspiciousBulkDelete(universe, deletes, emptyManifest)
+    || (d.deleteGuard?.wouldExceed(deletes) ?? false);
+  if (!suspicious && deletes > 0) d.deleteGuard?.record(deletes);
+  return suspicious;
+}
+
+// Set the poll cursor to the server's authoritative version, but NEVER advance past the earliest change
+// that FAILED this pass — hold it just below so the next incremental poll re-fetches + retries it (R14
+// sync#1). ASSIGN, not max: a server rewind (reindex/restore, V_s < V_c) must converge, not pin the
+// cursor high forever and re-run a full reconcile every idle poll (CONC-R2#3).
+function advanceCursor(d: ReconcileDeps, authoritativeVersion: number, failedVersions: number[]): void {
+  const minFailed = failedVersions.length ? Math.min(...failedVersions) : Infinity;
+  d.state.version = Number.isFinite(minFailed) ? Math.min(authoritativeVersion, minFailed - 1) : authoritativeVersion;
+}
+
+// Run each file op under the shared error-isolation contract (Finding 1 / R14 / R18): a whole-CONNECTION
+// failure ABORTS the pass (isConnectionError → the engine goes offline+backoff ONCE, not one-error-per-
+// file); any other per-file error is ISOLATED (logged, and the cursor held below it for retry until its
+// budget runs out). `run` does the work for one path; `versionOf` maps a failed path to the server
+// version to hold; `onDone` fires per completed path (progress). Held versions are pushed into `failed`.
+async function isolatedPass(
+  d: ReconcileDeps,
+  items: string[],
+  failed: number[],
+  run: (p: string) => Promise<void>,
+  versionOf: (p: string) => number | undefined,
+  onDone: (p: string) => void,
+): Promise<void> {
+  let connAbort: unknown = null; // a server-unreachable error aborts the whole pass
+  await mapPool(items, FILE_CONCURRENCY, async (p) => {
+    if (connAbort) throw connAbort; // server unreachable — stop; don't per-file-log the remaining files
+    try {
+      await run(p);
+      d.retryBudget?.delete(p); // reconciled cleanly → reset any failure budget for this path (R18)
+    } catch (e) {
+      if (isConnectionError(e)) { connAbort = e; throw e; } // whole-connection failure → abort → engine offline+backoff
+      d.onFileError?.(p, e);
+      const v = versionOf(p);
+      if (v !== undefined && holdForRetry(d, p, v)) failed.push(v); // hold below a failed change; stop after MAX (R18)
+    } finally {
+      onDone(p);
+    }
+  });
+}
+
+// (size,mtime) match the base's stamp ⇒ the file is unchanged since we last confirmed it equals base,
+// so its content is still base.hash — the scan-skip heuristic shared by reconcileLocalConfig + reconcileOne
+// (a write bumps mtime). Lets a pass run OFTEN without re-hashing every synced file.
+function baseStatUnchanged(be: { size?: number; mtime?: number } | null | undefined, st: { size: number; mtime: number } | undefined): boolean {
+  return !!(be && st && be.size === st.size && be.mtime === st.mtime);
+}
+
 // The hidden config surface. Config paths follow additive + adjudicated semantics, distinct
 // from the note reconcile's auto-delete/conflict-copy behavior (see reconcileOne).
 const CONFIG_PREFIX = ".obsidian/";
@@ -333,14 +410,14 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
   for (const p of local.keys()) if (isConfig(p)) candidates.add(p);
   for (const p of d.base.paths()) if (isConfig(p)) candidates.add(p); // catch a LOCAL removal (base present, file gone)
   for (const p of candidates) {
-    if (d.accepts && !d.accepts(p)) continue;
+    if (!accepts(d, p)) continue;
     const be = d.base.get(p);
     const st = local.get(p);
     // Fast-path (perf): if the on-disk (size, mtime) match the stamp from the last time we confirmed
     // this file equals its base, it hasn't changed — skip the read + SHA-256 entirely. This is what
     // lets the scan run OFTEN (mobile has no live `raw` event) without re-hashing every synced plugin's
     // bytes each pass. Same (size,mtime) heuristic the whole-vault scan uses (a write bumps mtime).
-    if (be && st && be.size === st.size && be.mtime === st.mtime) continue;
+    if (baseStatUnchanged(be, st)) continue;
     const cur = await readOrNull(d.io, p);
     const curHash = cur ? await sha256hex(cur) : null;
     if (curHash === (be?.hash ?? null)) {
@@ -399,15 +476,11 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Ratio denominator counts only ACCEPTED base paths: a stale base entry for a path this device
   // no longer accepts is never a deletion candidate, so including it would dilute the ratio and let
   // a genuine mass delete slip under the guard. (DI-R2 note)
-  const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p));
+  const basePaths = d.base.paths().filter((p) => accepts(d, p));
   const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
-  // SEC-DATA: feed the cumulative guard this pass's accepted-base size, then OR its verdict with the
-  // stateless per-pass ratio so a paced drain (which never trips the per-pass ratio) is still caught.
-  d.deleteGuard?.observe(basePaths.length);
-  const guardBulkDelete = (basePaths.length > 0 && (remote.size === 0
-    || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO)))
-    || (d.deleteGuard?.wouldExceed(wouldDelete) ?? false);
-  if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
+  // SEC-DATA: per-pass ratio OR'd with the cumulative cross-pass guard (a paced drain never trips the
+  // per-pass ratio); the guard records the deletes only when it lets them through (see runDeleteGuard).
+  const guardBulkDelete = runDeleteGuard(d, basePaths.length, wouldDelete, remote.size === 0);
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
@@ -423,7 +496,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     // surface that's off, or a community plugin not in the allowlist) is skipped by reconcileOne, so
     // counting it as "pending" produced a phantom count that never drains (field: "20+ pending that
     // never do anything"). Track those separately as DECLINED so we can tell the user what's waiting.
-    if (d.accepts && !d.accepts(p)) { if (remote.has(p)) declined.push(p); continue; }
+    if (!accepts(d, p)) { if (remote.has(p)) declined.push(p); continue; }
     const r = remote.get(p); const b = d.base.get(p);
     if (r) { if ((b?.hash ?? null) !== r.hash) pendingPaths.add(p); }        // remote new/changed → pull/merge
     else if (tombstoned.has(p) && local.has(p)) pendingPaths.add(p);         // a real tombstone to apply
@@ -431,37 +504,16 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   }
   if (declined.length) d.onDeclined?.(declined); // surface "N files on the server aren't in your sync selection"
   let pending = pendingPaths.size; d.onProgress?.(pending);
-  // Files are reconciled with bounded CONCURRENCY (Finding 1) — independent per path; per-file
-  // errors stay isolated (one bad file never aborts the pass).
-  let connAbort: unknown = null; // a server-unreachable error aborts the whole pass (isConnectionError)
-  await mapPool(paths, FILE_CONCURRENCY, async (p) => {
-    if (connAbort) throw connAbort; // server unreachable — stop; don't per-file-log the remaining files
-    try {
-      await reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p));
-      d.retryBudget?.delete(p); // reconciled cleanly → reset any failure budget for this path (R18)
-    }
-    catch (e) {
-      if (isConnectionError(e)) { connAbort = e; throw e; } // whole-connection failure → abort → engine offline+backoff
-      d.onFileError?.(p, e);
-      // Hold the cursor below a failed change so it's retried next poll (R14 sync#1). Cover a failed
-      // TOMBSTONE (delete-local) path too (R15 sync#2). But once a file has failed MAX_PULL_RETRIES
-      // times at the same version, STOP holding (R18) — a corrupt server copy would otherwise
-      // re-download every poll forever; let the cursor advance past it (the full scan still retries it).
-      const rv = remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version;
-      if (rv !== undefined && holdForRetry(d, p, rv)) failedRemote.push(rv);
-    }
-    finally { if (pendingPaths.has(p)) d.onProgress?.(--pending); }
-  });
-  const minFailedRemote = failedRemote.length ? Math.min(...failedRemote) : Infinity;
-  // Set the cursor to the server's authoritative version (a full changes(0) reconcile just made
-  // us consistent with it). ASSIGN, not max: if the server REWOUND (reindex/restore, V_s < V_c),
-  // max would pin the cursor high forever, so every idle poll sees a mismatch and re-runs a full
-  // reconcile indefinitely. Assigning lets the incremental poll path converge again. (CONC-R2#3)
-  // But NEVER advance past a remote file whose pull FAILED this pass (R14 sync#1): a transient error
-  // (chunk 500 / momentary orphan-sweep) would otherwise drop that file below the cursor, so it never
-  // reappears in a future changes(since) delta and stays stale until the 15-min full scan. Hold the
-  // cursor just below the earliest failure so the next incremental poll re-fetches + retries it.
-  d.state.version = Number.isFinite(minFailedRemote) ? Math.min(resp.version, minFailedRemote - 1) : resp.version;
+  // Files are reconciled with bounded CONCURRENCY (Finding 1) under the shared error-isolation contract:
+  // per-file errors stay isolated (one bad file never aborts the pass); a whole-connection failure aborts.
+  // Hold the cursor below any failed change so it's retried next poll (R14 sync#1) — covering a failed
+  // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
+  await isolatedPass(d, paths, failedRemote,
+    (p) => reconcileOne(d, p, remote.get(p), guardBulkDelete, local.get(p)?.size ?? 0, (pp) => tombstoned.has(pp), local.has(p), local.get(p)),
+    (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
+    (p) => { if (pendingPaths.has(p)) d.onProgress?.(--pending); },
+  );
+  advanceCursor(d, resp.version, failedRemote); // authoritative server version, held below the earliest failure
   return resp;
 }
 
@@ -477,29 +529,23 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const remote = new Map<string, FileMeta>();
   for (const f of delta.upserts) remote.set(f.path, f);
   const tombstoned = new Set(delta.deletes.map((x) => x.path));
-  const baseSet = new Set(d.base.paths().filter((p) => !d.accepts || d.accepts(p)));
+  const baseSet = new Set(d.base.paths().filter((p) => accepts(d, p)));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
-  // SEC-DATA: same cumulative-guard wiring as reconcileAll — the delta path also delete-locals on
-  // tombstones, so a paced drain must be caught here too (the per-pass ratio alone can't, and the
-  // <BULK_DELETE_MIN small-vault tail had no throttle at all).
-  d.deleteGuard?.observe(baseSet.size);
-  const guardBulkDelete = (baseSet.size >= BULK_DELETE_MIN && wouldDelete / baseSet.size >= BULK_DELETE_RATIO)
-    || (d.deleteGuard?.wouldExceed(wouldDelete) ?? false);
-  if (!guardBulkDelete && wouldDelete > 0) d.deleteGuard?.record(wouldDelete);
+  // SEC-DATA: same guard as reconcileAll — the delta path also delete-locals on tombstones, so a paced
+  // drain must be caught here too (emptyManifest=false: a delta never reports the whole manifest empty).
+  const guardBulkDelete = runDeleteGuard(d, baseSet.size, wouldDelete, false);
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   const changedAll = [...new Set<string>([...remote.keys(), ...tombstoned])];
   // Only count + process what this device will ACTUALLY sync. A remote change this device doesn't
   // accept (surface off / plugin not allowlisted) would be skipped by reconcileOne anyway; excluding
   // it here keeps "pending" honest (no phantom count) and surfaces it as DECLINED instead.
-  const changed = changedAll.filter((p) => !d.accepts || d.accepts(p)); // the delta IS the pending set (accepted-only)
-  const declined = changedAll.filter((p) => d.accepts && !d.accepts(p) && remote.has(p));
+  const changed = changedAll.filter((p) => accepts(d, p)); // the delta IS the pending set (accepted-only)
+  const declined = changedAll.filter((p) => !accepts(d, p) && remote.has(p));
   if (declined.length) d.onDeclined?.(declined);
   let pending = changed.length; d.onProgress?.(pending);
-  let connAbort: unknown = null; // a server-unreachable error aborts the whole pass (isConnectionError)
-  await mapPool(changed, FILE_CONCURRENCY, async (p) => {
-    if (connAbort) throw connAbort;
-    try {
+  await isolatedPass(d, changed, failed,
+    async (p) => {
       // crit-round (data-integrity + sync critics, same root cause): the delta path MUST supply
       // `locallyPresent`, or the C1 "present-but-unreadable ≠ deleted" guard in reconcileOne is inert
       // here — a momentarily-unreadable file (AV lock / unhydrated cloud placeholder) during a poll
@@ -509,20 +555,11 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       // authoritative presence). Matches reconcilePath's own io.exists probe.
       const present = d.io.exists ? await d.io.exists(p) : true;
       await reconcileOne(d, p, remote.get(p), guardBulkDelete, d.localSizeOf?.(p) ?? 0, (pp) => tombstoned.has(pp), present);
-      d.retryBudget?.delete(p); // applied cleanly → reset any failure budget (R18)
-    }
-    catch (e) {
-      if (isConnectionError(e)) { connAbort = e; throw e; } // whole-connection failure → abort → engine offline+backoff
-      d.onFileError?.(p, e);
-      const v = versionOf(p);
-      if (v !== undefined && holdForRetry(d, p, v)) failed.push(v); // stop pinning a permanently-failing file (R18)
-    }
-    finally { d.onProgress?.(--pending); }
-  });
-  // Assign, not max (rewind convergence) — but hold the cursor below the earliest change that FAILED
-  // this pass so it's retried on the next poll, not dropped until the 15-min full scan (R14 sync#1).
-  const minFailed = failed.length ? Math.min(...failed) : Infinity;
-  d.state.version = Number.isFinite(minFailed) ? Math.min(delta.version, minFailed - 1) : delta.version;
+    },
+    versionOf,
+    () => d.onProgress?.(--pending),
+  );
+  advanceCursor(d, delta.version, failed); // authoritative delta version, held below the earliest failure
 }
 
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
@@ -542,10 +579,12 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     const remoteSet = new Set(manifest.upserts.map((f) => f.path));
     const tombstoned = new Set(manifest.deletes.map((x) => x.path));
     hasTombstone = (p) => tombstoned.has(p); // delete-local requires a real deletion tombstone
-    const basePaths = d.base.paths().filter((p) => !d.accepts || d.accepts(p)); // accepted-only denominator (DI-R2 note)
+    const basePaths = d.base.paths().filter((p) => accepts(d, p)); // accepted-only denominator (DI-R2 note)
     const wouldDelete = basePaths.filter((p) => !remoteSet.has(p)).length;
-    guardDelete = basePaths.length > 0 && (remoteSet.size === 0
-      || (basePaths.length >= BULK_DELETE_MIN && wouldDelete / basePaths.length >= BULK_DELETE_RATIO));
+    // Per-pass ratio ONLY, no cumulative DeleteRateGuard (A5): a paced SERVER drain propagates via the
+    // poll/delta/full-scan paths (which feed the cumulative guard), not this local-event path — so the
+    // per-pass partial-index-loss guard is the applicable protection here. emptyManifest = server empty.
+    guardDelete = isSuspiciousBulkDelete(basePaths.length, wouldDelete, remoteSet.size === 0);
   }
   // C1 (R10): if the server still has this path (rmeta present), a null local read could yield a
   // destructive delete-remote — so confirm the file is truly gone (not just unreadable) before
@@ -569,7 +608,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
   // read base-present + local-absent as a deletion and destroy it on the device that holds it.
-  if (d.accepts && !d.accepts(path)) return;
+  if (!accepts(d, path)) return;
   // Size gate: skip a file too large to hold in RAM — BEFORE reading it — and skip the
   // path ENTIRELY (no push, no pull, no delete), so a skipped huge file is never mistaken
   // for a deletion. A large DOWNLOAD (no local file → resolves to a pull) can be STREAMED
@@ -594,8 +633,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, rmeta: FileMeta | un
   // conflictCopyIfRaced and conflict-copies a masked edit rather than clobbering it). A real edit
   // updates mtime AND fires a vault event → reconcilePath (always reads), so this only weakens the
   // missed-event backstop for a same-size-AND-same-mtime edit — the standard rsync/Syncthing residual.
-  const scanHit = !!(locallyPresent && rmeta && baseEntry && localStat
-    && baseEntry.size === localStat.size && baseEntry.mtime === localStat.mtime);
+  const scanHit = !!(locallyPresent && rmeta && baseStatUnchanged(baseEntry, localStat));
   let localBytes: Uint8Array | null;
   let localHash: string | null;
   if (scanHit) {
@@ -876,10 +914,9 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
   // wiping another device's plugins/themes/settings; and on a "download" switch it would record a
   // base for a filtered path it never wrote, later reading base-present + local-absent as a
   // delete-remote. A path this device doesn't accept must be untouched by a switch.
-  const accepted = (p: string) => !d.accepts || d.accepts(p);
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
-  for (const f of resp.upserts) if (accepted(f.path)) remote.set(f.path, f);
+  for (const f of resp.upserts) if (accepts(d, f.path)) remote.set(f.path, f);
   const local = await d.io.list();
 
   // R17 MEDIUM-2: isolate EACH file op (matching reconcileAll/reconcileDelta). Without this, one bad
@@ -909,10 +946,10 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
     // worth (remote.size===0) or >= BULK_DELETE_RATIO of the accepted local set, refuse the removals
     // (the remote files were still adopted above) and surface it — a partial manifest can't silently
     // delete the user's notes. A genuine populated target (remote has most paths) doesn't trip this.
-    const acceptedLocal = [...local.keys()].filter(accepted);
+    const acceptedLocal = [...local.keys()].filter((p) => accepts(d, p));
     const toRemove = acceptedLocal.filter((p) => !remote.has(p));
-    const guardMassDelete = acceptedLocal.length > 0 && (remote.size === 0
-      || (acceptedLocal.length >= BULK_DELETE_MIN && toRemove.length / acceptedLocal.length >= BULK_DELETE_RATIO));
+    // Per-pass ratio only (a switch is a one-shot op — no next pass to accumulate across, so no cumulative guard, A5).
+    const guardMassDelete = isSuspiciousBulkDelete(acceptedLocal.length, toRemove.length, remote.size === 0);
     for (const p of toRemove) {
       if (guardMassDelete) { d.onGuard?.(p); continue; } // suspicious mass delete → keep local, don't mirror-delete
       const info = local.get(p)!;
@@ -921,7 +958,7 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
     }
   } else { // upload
     for (const [p, info] of local) {
-      if (!accepted(p)) continue;
+      if (!accepts(d, p)) continue;
       if (info.size > max) { d.onSkip?.(p, info.size); continue; }
       try {
         const { hash: h, bytes } = await pushFile(d.api, d.io, d.state, d.cache, p);
@@ -940,10 +977,8 @@ export async function switchTo(d: ReconcileDeps, mode: SwitchMode): Promise<void
       if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } } // remote is already accepts-filtered above
     }
   }
-  // Assign, not max (CONC-R2#3) — but HOLD the cursor below any remote file whose adopt FAILED this
-  // switch (R18), so the next delta poll re-visits it. Combined with the R19 pre-switch-base RESTORE
-  // above (a failed file keeps its old base, not null), the retry re-adopts it via the normal
-  // decide() path rather than producing a spurious conflict copy that contradicts the chosen mode.
-  const minFailed = failedRemote.length ? Math.min(...failedRemote) : Infinity;
-  d.state.version = Number.isFinite(minFailed) ? Math.min(resp.version, minFailed - 1) : resp.version;
+  // HOLD the cursor below any remote file whose adopt FAILED this switch (R18) so the next delta poll
+  // re-visits it. Combined with the R19 pre-switch-base RESTORE above (a failed file keeps its old base,
+  // not null), the retry re-adopts it via the normal decide() path rather than a spurious conflict copy.
+  advanceCursor(d, resp.version, failedRemote);
 }
