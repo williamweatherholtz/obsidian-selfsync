@@ -55,16 +55,23 @@ export function engineStateToPhase(s: EngineState): Phase {
 
 export class SyncEngine {
   private queue: EngineEvent[] = [];
-  private running = false;                 // is the processor loop active? (replaces `applying`)
+  // `running` is the pump's run-to-completion guard (exactly one processor loop at a time) — a CONCURRENCY
+  // control, NOT lifecycle state: it spans many events while `state` changes per-event, so it is deliberately
+  // NOT folded into EngineState. The other two former aux booleans WERE redundant with the state and are now
+  // DERIVED from it (D4, issueStateMachineOrphanedAndImplicit), eliminating the flag-vs-state desync class:
+  //   connected ⟺ state ∈ {reconciling, idle}  (a connect() completed → one of those two post-connect states)
+  //   retrying  ⟺ state === "offline"           (failToOffline sets offline; connect-success/disconnect clear it)
+  private running = false;
   private state: EngineState = "off";
-  private connected = false;               // has a connect() completed? gates path/remote/rews
-  private retrying = false;                // in a backoff-reconnect cycle after a failure — so doomed
-                                           // retry attempts keep showing "offline", not flashing "connecting"
 
   constructor(private fx: EngineEffects) {}
 
   getState(): EngineState { return this.state; }
   phase(): Phase { return engineStateToPhase(this.state); }
+
+  // Has a connect() completed? DERIVED from the state — the two post-connect states are exactly the
+  // connected ones. Gates path/remote/rews (an event before/after a live connection is dropped).
+  private isConnected(): boolean { return this.state === "reconciling" || this.state === "idle"; }
 
   // @audit r2 2026-07-18 — FIXED (comment drift): two stacked, CONTRADICTORY doc blocks (one said "only
   // upgrades connecting", the other "connecting OR offline") — a merge artifact. Collapsed to the accurate
@@ -79,7 +86,7 @@ export class SyncEngine {
   // reset, or a config scan that actually mutates a file. A routine no-op poll never calls it, so a
   // settled "idle" ("Fully synced") STAYS idle instead of blipping "Syncing…" every few seconds.
   // Escalates only from a settled idle while connected; pump() returns it to idle when work drains.
-  beginReconcile(): void { if (this.connected && this.state === "idle") this.setState("reconciling"); }
+  beginReconcile(): void { if (this.state === "idle") this.setState("reconciling"); } // idle ⟹ connected
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 
@@ -119,14 +126,13 @@ export class SyncEngine {
   // it (local edits are recovered via base comparison, remote via changes(0)). No tight retry loop,
   // no lost data. disconnect/unload events are preserved.
   private failToOffline(where: string, e: unknown): void {
+    // Going to "offline" IS the whole state change now: it encodes both "we're in a backoff loop"
+    // (retrying — so the next connect stays "offline", not flashing "connecting") AND "not connected"
+    // (isConnected() is false in "offline"), so the path/remote/rews guards short-circuit during the
+    // offline→reconnect window. Without that, a WS `close` firing after the failure would enqueue {rews},
+    // pass the guard, and re-dial a socket while the backoff reconnect is ALSO pending — two live recovery
+    // paths (Round-6 CONC). Only the backoff {connect} recovers now; success moves us to a connected state.
     this.setState("offline");
-    this.retrying = true; // we're now in a backoff loop; further connect attempts stay "offline"
-    // Drop `connected` so the path/remote/rews guards short-circuit during the offline→reconnect
-    // window. Without this, a WS `close` firing after the failure would enqueue {rews}, pass the
-    // `if (!connected) return` guard (connected was still true), and re-dial a socket while the
-    // backoff reconnect is ALSO pending — two live recovery paths (Round-6 CONC). Only the
-    // backoff {connect} recovers now; it sets connected=true again on success.
-    this.connected = false;
     this.fx.onError(where, e);
     this.queue = this.queue.filter((q) => q.kind === "disconnect" || q.kind === "unload");
     this.fx.scheduleReconnect();
@@ -140,45 +146,49 @@ export class SyncEngine {
         const ev = this.queue.shift()!;
         await this.handle(ev);
       }
-      // Settle to idle only if we're connected and nothing failed us into offline.
-      if (this.connected && this.state === "reconciling" && this.queue.length === 0) this.setState("idle");
+      // Settle to idle only if we're connected and nothing failed us into offline. "reconciling" is a
+      // connected state, so the old `connected &&` guard is subsumed (a failure would have left "offline").
+      if (this.state === "reconciling" && this.queue.length === 0) this.setState("idle");
     } finally {
       this.running = false;
     }
   }
 
-  // @audit r2 2026-07-18 — FIXED (concision): the connect catch set `this.connected = false` redundantly —
-  // failToOffline already does it as a documented, load-bearing step. Dropped the local assignment so the
-  // offline transition has one source. The overall state machine (run-to-completion pump, coalescing,
-  // injected effects, failToOffline's drop-in-flight-preserve-terminal) is exemplary — left as-is.
+  // @audit r2 2026-07-18 — the state machine (run-to-completion pump, coalescing, injected effects,
+  // failToOffline's drop-in-flight-preserve-terminal) is exemplary. (D4 2026-07-19: the connect success/
+  // catch no longer touch aux booleans — `connected`/`retrying` are now DERIVED from the state, so the
+  // offline/connected transitions have exactly one source, the state itself. @audit-hash intentionally
+  // stale until re-audited.)
   // @audit-hash sha256:2c9ea45b2a8cd0de
   private async handle(ev: EngineEvent): Promise<void> {
     switch (ev.kind) {
       case "unload":
         this.setState("unloading"); this.queue = []; this.fx.teardown(); return;
       case "disconnect":
-        this.connected = false; this.retrying = false; this.queue = []; this.fx.teardown(); this.setState("off"); return;
+        this.queue = []; this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
       case "connect": {
         // A fresh connect shows "Connecting…"; a backoff RETRY (server was down) keeps showing
-        // "Offline — retrying" so the light doesn't flash connecting↔offline every attempt.
-        this.setState(this.retrying ? "offline" : "connecting");
-        try { await this.fx.connect(); this.connected = true; this.retrying = false; this.setState(this.queue.length ? "reconciling" : "idle"); }
-        catch (e) { this.failToOffline("connect", e); } // failToOffline sets connected=false (its load-bearing step)
+        // "Offline — retrying" so the light doesn't flash connecting↔offline every attempt. "Already
+        // offline at connect time" IS exactly the retry case (failToOffline left us there), so it reads
+        // straight off the state — no separate `retrying` flag.
+        this.setState(this.state === "offline" ? "offline" : "connecting");
+        try { await this.fx.connect(); this.setState(this.queue.length ? "reconciling" : "idle"); } // → a connected state
+        catch (e) { this.failToOffline("connect", e); }
         return;
       }
       case "rews":
-        if (!this.connected) return;
+        if (!this.isConnected()) return;
         try { await this.fx.rews(); } catch (e) { this.fx.onError("rews", e); this.enqueue({ kind: "connect" }); }
         return;
       case "remote":
-        if (!this.connected) return;       // ignored until connected; connect() reconciles anyway
+        if (!this.isConnected()) return;   // ignored until connected; connect() reconciles anyway
         // Do NOT flip to "reconciling" up front — a routine poll is usually a no-op. The reconcile
         // effect calls beginReconcile() the moment it has genuine work, so an idle poll stays "idle"
         // (the light doesn't blip "Syncing…" every few seconds). pump() settles back to idle after.
         try { await this.fx.reconcileAll(); } catch (e) { this.failToOffline("remote", e); }
         return;
       case "path":
-        if (!this.connected) return;       // a local edit while disconnected is caught by connect()'s reconcileAll
+        if (!this.isConnected()) return;   // a local edit while disconnected is caught by connect()'s reconcileAll
         this.setState("reconciling");
         try { await this.fx.reconcilePath(ev.path, ev.size); } catch (e) { this.failToOffline("path", e); }
         return;
