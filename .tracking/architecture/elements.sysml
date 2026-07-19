@@ -222,6 +222,7 @@ package ProjectCodeElements {
         :>> invariantNotes = "Per-key open mutex + double-checked cache (correct DCL); the per-key `opens` lock is now bounded (release-when-last-holder). Runtime-enforced concurrency; not type-level.";
         :>> stpaRole = StpaRole::controller;
         :>> actions = "open, cache-hit, evict, serialize-open";
+        :>> pattern = DesignPattern::singleWriter;
     }
 
     // ---- coupling (#DependsOn) + STPA-input (#Controls/#Feedback) edges ----
@@ -287,7 +288,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Atomically replaces all file rows on reindex; must PRESERVE the deletions table or a rebuild resurrects tombstoned files.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Single tx; deliberately keeps deletions + MAX version bump; shared insert_file (fold single-sourced).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controlledProcess;
     }
     part ceIdxCollidingKey : CodeElement {
@@ -326,7 +327,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Operator prune drops tombstones below a floor + raises history_floor; a wrong floor loses deletion history a client needs to converge.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Single tx; caller clamps floor to [current,version]; D0019 horizon semantics.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controlledProcess;
     }
     part ceIdxSetHistoryFloor : CodeElement {
@@ -339,7 +340,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Raises the persisted history floor (drives client reset detection D0019); a spurious bump causes false 'history reset' churn.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Simple persisted meta write; only reindex-of-empty-index raises it (had_tombstones guard lives in the caller).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controlledProcess;
     }
     part ceIdxAllRefChunks : CodeElement {
@@ -457,7 +458,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Deletes a file, records a tombstone, mirror-removes; must delete by RAW key (legacy invalid names) or a client's delete 404-loops forever.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Durable-before-mirror-removal; delete-by-exact-key regardless of name validity; mirror removal quiet on NotFound.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controlledProcess;
     }
     part ceCsSweepOrphans : CodeElement {
@@ -561,7 +562,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Splits bytes into content-defined chunks; MUST match the client chunker byte-for-byte or dedup breaks + a large file stores as one blob.";
         :>> invariantSafety = InvariantSafety::typeEnforced;
         :>> invariantNotes = "Pure total function; pinned to the client by a byte-for-byte golden-parity test.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
 
@@ -640,7 +641,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Mints a bearer token with absolute expiry; a weak token or wrong TTL is a session-security failure.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Random token, hashed at rest; absolute + idle expiry enforced in resolve.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceTokRevoke : CodeElement {
@@ -653,7 +654,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Revokes one session; idempotent so an unknown token is a no-op success.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Removes the hashed token; persists.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceTokRevokeUser : CodeElement {
@@ -666,7 +667,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Revokes every session for a user (account delete / password change); a miss leaves live sessions.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Drops all of a user's hashed tokens at once.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceUsersVerifyPassword : CodeElement {
@@ -679,7 +680,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The password check; free-standing SO the caller runs it on spawn_blocking (never blocks the async worker).";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Parses the stored PHC then Argon2::verify_password; total over (phc,password).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceUsersRegister : CodeElement {
@@ -692,7 +693,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Persists a user with an argon2id hash; a weak hash config or plaintext leak is catastrophic.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "argon2id PHC at rest; name validated by safe_name.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceUsersSetPassword : CodeElement {
@@ -705,7 +706,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Rotates the stored hash; feeds reuse history.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "New argon2id PHC; history append (reuse cap enforced by caller).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceUsersVerify : CodeElement {
@@ -744,7 +745,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The MFA second-factor check; a replay window or accepted stale code weakens MFA.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "RFC6238 verify_step + a last-step replay guard (reject a code from a consumed step) + single-use recovery codes.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceTotpVerifyStep : CodeElement {
@@ -757,7 +758,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The TOTP time-window check; too wide a window or wrong math accepts invalid codes.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Pure; pinned to RFC6238 vectors; returns the matched step (for the replay guard).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceTotpHotp : CodeElement {
@@ -770,7 +771,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The HOTP/HMAC-SHA1 primitive underpinning TOTP; a bug silently weakens MFA.";
         :>> invariantSafety = InvariantSafety::typeEnforced;
         :>> invariantNotes = "Pure total function; pinned to RFC4231/6238 test vectors.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceThrottleCheck : CodeElement {
@@ -927,7 +928,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Persists a capability link; the token must be unguessable + stored safely.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Random token; optional expiry; owner-scoped record.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceLinkRedeem : CodeElement {
@@ -940,7 +941,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Consumes a link exactly once; a double-redeem or expired-accept is a capability-replay.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Marks redeemed_by atomically; expiry + revoke checked; paired with unredeem rollback.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceLinkRevoke : CodeElement {
@@ -953,7 +954,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Revokes a pending link; only the owner may.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Owner-checked; returns false for a non-owner (tested).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceLinkUnredeem : CodeElement {
@@ -966,7 +967,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Rolls back a claim so a FAILED grant does not burn the link (the redeem's compensating action).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Restores pending state; the tested single-use-with-rollback contract.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceConfigFromEnv : CodeElement {
@@ -979,7 +980,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Loads deployment config; MUST refuse a weak/default admin password at boot (CM.3.4.2) or the front door ships with known creds.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Refuses the known-weak/short bootstrap-password class unless ALLOW_WEAK_ADMIN=1.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::controller;
     }
     part cePurgeUserData : CodeElement {
@@ -1005,7 +1006,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Removes one vault's data AND its share grants FIRST, or a lingering grant silently reactivates if a same-named vault is recreated (re-exposure).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Fails loud on a poisoned shares lock (no half-state); drops grants -> ns -> opens -> dir.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceVaultExists : CodeElement {
@@ -1032,7 +1033,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Reports vault health; clients pause on 'error' â€” a wrong status acts on a degraded manifest or blocks a healthy vault.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped authZ + ensure_ready; surfaces corrupt-index as error.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceApiChanges : CodeElement {
@@ -1045,7 +1046,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Serves the upsert+tombstone manifest clients reconcile against; must refuse a degraded index.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped authZ + ensure_ready (503 not an empty manifest on degraded).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceApiFileMeta : CodeElement {
@@ -1058,7 +1059,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Backs the client event path's single-path fetch; 404 vs meta drives delete-vs-sync decisions.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped authZ; 404 for absent.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceApiGetChunk : CodeElement {
@@ -1071,7 +1072,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Serves chunk bytes for reassembly; the client content-verifies, so integrity is enforced downstream.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped Read authZ; blocking-pool read; 404 for absent.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::channel;
     }
     part ceApiPutChunk : CodeElement {
@@ -1084,7 +1085,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Accepts client-uploaded chunk bytes; must bound size + content-address or a client stores giant/forged blobs.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped Write authZ; 1 MiB in-handler cap; content-addressed store on the blocking pool. (Deferred: a route-scoped body limit so the â‰¤16 MiB pre-check buffer matches the semantic 1 MiB.)";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceApiDeleteFile : CodeElement {
@@ -1097,7 +1098,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The remote-delete endpoint; a flaw deletes another tenant's file or accepts an unsafe path.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "scoped Write authZ; Vault::delete (delete-by-raw-key, durable-before-mirror); 404-or-200 idempotent.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::adapter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceWsServeSocket : CodeElement {
@@ -1110,7 +1111,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The change-notification socket loop; a ping/pong or teardown bug drops healthy clients or leaks sockets/tasks.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Keepalive ping with MissedTickBehavior::Delay (CONC-4 no false-drop); ConnGuard teardown; per-user cap.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::serializedActor;
         :>> stpaRole = StpaRole::controller;
     }
     part ceVaultsCreate : CodeElement {
@@ -1176,7 +1177,7 @@ package ProjectCodeElements {
         :>> riskRationale = "A one-shot authoritative overwrite of local or remote; the highest-blast-radius user action.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Snapshots+clears base (R19), read-only guard, selective-sync filter, dispatches download/upload/merge.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::strategy;
         :>> stpaRole = StpaRole::controller;
     }
     part ceSwitchDownload : CodeElement {
@@ -1241,7 +1242,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Reassembles + verifies a remote file hash before it is written/merged/adopted; a corrupt blob must never be laundered into base.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Throws on hash mismatch; the per-file guard skips + keeps the good local copy.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
     part ceConflictCopyIfRaced : CodeElement {
@@ -1319,7 +1320,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Prevents spurious conflict copies for the same note saved with different line endings (the false-conflict class).";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Normalizes EOL + trailing newlines; TEXT-only (isMergeable-gated so binaries are not lossily decoded).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part cePushFile : CodeElement {
@@ -1371,7 +1372,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Only authenticated bytes enter the cache, so a later cache hit is trusted; a bypass launders a corrupt blob.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Content-address verified before cachePut (DI-2). (Deferred: cache HIT aliases the buffer -> read-only contract note.)";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
     part ceMapPool : CodeElement {
@@ -1397,7 +1398,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Streams a large file straight to disk (mobile OOM avoidance); a size-preserving bad manifest must never overwrite the target.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Incremental whole-file hash verified BEFORE the atomic rename (R17); mid-stream failure aborts + discards partial.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::raiiGuard;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceMerge3 : CodeElement {
@@ -1410,7 +1411,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The auto-merge; a bug drops an edit or manufactures conflicts (the CRLF class exploded cross-platform merges).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Normalizes CRLF->LF before comparison; LCS anchors; conflict regions on overlap. Pure over its inputs.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceIsMergeable : CodeElement {
@@ -1436,7 +1437,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The reference CDC chunker; MUST match the Rust port byte-for-byte or dedup breaks.";
         :>> invariantSafety = InvariantSafety::typeEnforced;
         :>> invariantNotes = "Pure; gear-hash boundaries; pinned by the cross-language golden-parity test.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceSha256hexClient : CodeElement {
@@ -1462,7 +1463,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Decides which .obsidian/ paths sync; must never sync SelfSync own secrets and fail safe on unknown paths.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Case-insensitive self-folder exclusion; category/allowlist gate; unknown -> false (fail-safe).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceConfigSurfaceOf : CodeElement {
@@ -1475,7 +1476,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Classifies a config path surface (kept in lockstep with shouldSync); drift mis-routes a file.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Total classification of .obsidian/ paths to surfaces.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
     part ceMergeEnabledPlugins : CodeElement {
@@ -1528,7 +1529,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The client write call; must distinguish 409 (CAS conflict -> merge) from 404 (missing chunk -> re-upload) from a real error, or the engine flaps OFFLINE on a routine conflict.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "409/404 -> CommitConflictError (retryable, isolatable); snake_case expected_version wired only when set.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceTxDiagnose : CodeElement {
@@ -1567,7 +1568,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Every request goes through here; without the timeout a half-open connection wedges the serial engine forever.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "30s timeout race -> a stall becomes a normal rejection; centralized cleartext-remote refusal (SC.3.13.8).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::decorator;
         :>> stpaRole = StpaRole::channel;
     }
     part ceTxLogin : CodeElement {
@@ -1606,7 +1607,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Fetches vault health the engine gates on (degraded -> pause).";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "validateStatus (shape + api_version mapping) on the 200 body.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceTxChanges : CodeElement {
@@ -1619,7 +1620,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Fetches the reconcile manifest; a malformed body must be rejected, not acted on.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "validateChanges on the 200 body.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceTxFileMeta : CodeElement {
@@ -1632,7 +1633,7 @@ package ProjectCodeElements {
         :>> riskRationale = "404 vs meta drives the event path's delete-vs-sync decision.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "404 -> null (bespoke); validateFileMeta on 200.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::sensor;
     }
     part ceTxMissing : CodeElement {
@@ -1645,7 +1646,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Drives dedup (upload only missing chunks); a malformed response must be rejected.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Rejects a non-string[] response explicitly.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
     part ceTxGetChunk : CodeElement {
@@ -1723,7 +1724,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Bounds the queue by coalescing; a path keeps the larger size (so a grow-past-cap is not judged on a stale small size).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Coalesces remote/connect/rews/path; terminal states swallow input; typed path-variant predicate.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::serializedActor;
         :>> stpaRole = StpaRole::controller;
     }
     part ceEngPump : CodeElement {
@@ -1749,7 +1750,7 @@ package ProjectCodeElements {
         :>> riskRationale = "On any effect failure: go offline, drop in-flight path/remote/rews (the reconnect subsumes them), keep disconnect/unload; a wrong drop loses recovery or double-recovers.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Sets connected=false (load-bearing), filters the queue, schedules one backoff reconnect.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::state;
         :>> stpaRole = StpaRole::controller;
     }
     part ceBaseToJson : CodeElement {
@@ -1801,7 +1802,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Derives the conflict set from the vault file list (no cached array to go stale).";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Pure total inverse of conflictCopyName; anchored regex avoids matching a user's own (conflict ...) file.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::parseDontValidate;
         :>> stpaRole = StpaRole::channel;
     }
     part ceValidateChanges : CodeElement {
@@ -2102,7 +2103,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Mints an invite token gating registration; a weak/over-broad token opens registration.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Random token, optional TTL, persisted.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::actuator;
     }
     part ceRegSetMode : CodeElement {
@@ -2115,7 +2116,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Sets open/invite/closed registration; wrong mode is open registration.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Persists the policy mode.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceAdminsGrant : CodeElement {
@@ -2128,7 +2129,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Promotes an account to server-admin (beyond bootstrap); a flaw is privilege escalation.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "Persisted admin set; paired with require_admin at the gate.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::singleWriter;
         :>> stpaRole = StpaRole::controller;
     }
     part ceThrottleFail : CodeElement {
@@ -2191,7 +2192,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:8fb0cf8dcb1bbaf2"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The setup wizard modal; drives login/register but is presentational over the transport.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
     part ceUiSettings : CodeElement {
         :>> id = "506e1405-db00-4947-8ead-c003ebe2bc55";
@@ -2201,7 +2202,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:82154722c8622d71"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The grouped settings tab; presentational over persisted settings.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::observer;
     }
     part ceUiVaultSwitch : CodeElement {
         :>> id = "33775f6d-d27c-4d80-939d-c54188e7d96e";
@@ -2211,7 +2212,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:e582a7d6e00978f8"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The switch/fork modal; confirms then delegates to switchToVault (the destructive logic lives there).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
     part ceUiNoteConflict : CodeElement {
         :>> id = "121e4098-079a-4ee5-808c-bb23c56aaefc";
@@ -2221,7 +2222,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:da8af49f4138ddea"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The note-conflict picker; presentational over resolveNoteConflict (which holds the guards).";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
     part ceUiConfigDir : CodeElement {
         :>> id = "57a3274b-ce16-4df5-ab3a-e78df7c1cc12";
@@ -2231,7 +2232,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:1d3f8022fd9e95e9"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The first-contact config direction modal; sets an intent consumed by the reconcile layer.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
     part ceUiConfirm : CodeElement {
         :>> id = "70f7ab3b-d8a0-4bdd-83d9-1673645df074";
@@ -2241,7 +2242,7 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:634e0219549405fb"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "The styled in-app confirmation (replaced native confirm); presentational guard prompt.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
     part ceUiAccount : CodeElement {
         :>> id = "9e5fd326-2874-468c-923c-ea5a83d79c54";
@@ -2251,6 +2252,6 @@ package ProjectCodeElements {
         :>> codeHash = "sha256:009a7c34bafa68f7"; :>> auditRound = "r2"; :>> auditedAt = "2026-07-18";
         :>> riskClass = RiskClass::cosmetic;
         :>> riskRationale = "Account management UI (password change, shares); presentational over the transport.";
-        :>> pattern = DesignPattern::none;
+        :>> pattern = DesignPattern::templateMethod;
     }
 }
