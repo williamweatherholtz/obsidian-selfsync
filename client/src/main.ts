@@ -16,7 +16,7 @@ import { transportTransition, TransportState, TransportEvent } from "./transport
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, configSurfaceOf, configAutoResolveChoice, ConfigSurface, ConfigDirection } from "./configsync";
-import { isSafeVaultPath } from "./pathsafe";
+import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -92,13 +92,15 @@ class ObsidianVaultIo implements VaultIo {
     if (!this.passes(path)) throw new Error(`refusing to stream-write an excluded path: '${path}'`);
     // R23 SEC: reject a server-supplied path that could escape the vault (traversal/absolute). Fail
     // loud (per-file isolated via onFileError) rather than write outside the vault via unsandboxed fs.
-    if (!isSafeVaultPath(path)) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
+    // Parse into SafeVaultPath so the raw-fs join below can only be built from a checked path.
+    const safe = asSafeVaultPath(path);
+    if (!safe) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
     const req = (window as unknown as { require: (m: string) => any }).require;
     const fs = req("fs");
     const nodePath = req("path");
     const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
     const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
-    const abs = nodePath.join(base, normalizePath(path));
+    const abs = this.rawFsAbs(nodePath, base, safe);
     await fs.promises.mkdir(nodePath.dirname(abs), { recursive: true });
     const tmp = abs + ".selfsync-part";
     const fh = await fs.promises.open(tmp, "w");
@@ -166,24 +168,27 @@ class ObsidianVaultIo implements VaultIo {
     // `..` escapes the vault via the adapter; that read then feeds decide()→push, EXFILTRATING the
     // out-of-vault file to a malicious/compromised server. Fail loud (per-file isolated) so the read
     // never happens and decide() sees the file as absent.
-    if (!isSafeVaultPath(path)) throw new Error(`refusing to read an unsafe/traversing path: '${path}'`);
-    return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(path)));
+    const safe = asSafeVaultPath(path);
+    if (!safe) throw new Error(`refusing to read an unsafe/traversing path: '${path}'`);
+    return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(safe)));
   }
   async exists(path: string): Promise<boolean> {
     // A traversing path is treated as "not present" — never probe outside the vault (R24 SEC).
-    if (!isSafeVaultPath(path)) return false;
-    return this.plugin.app.vault.adapter.exists(normalizePath(path));
+    const safe = asSafeVaultPath(path);
+    if (!safe) return false;
+    return this.plugin.app.vault.adapter.exists(normalizePath(safe));
   }
   async write(path: string, bytes: Uint8Array): Promise<void> {
     // R23 SEC: reject a traversing/absolute server-supplied path before touching the FS (see openAppend).
-    if (!isSafeVaultPath(path)) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
+    const safe = asSafeVaultPath(path);
+    if (!safe) throw new Error(`refusing to write an unsafe/traversing path: '${path}'`);
     if (!this.passes(path)) {
       // A synced config file this device hasn't opted into — dropped by design. Log it so
       // "plugins aren't syncing" is diagnosable: enable the matching category on THIS device.
       if (path.startsWith(".obsidian/")) this.plugin.log(`config write skipped — '${path}' isn't in this device's sync selection (enable the matching category here to receive it)`);
       return;
     }
-    const p = normalizePath(path);
+    const p = normalizePath(safe);
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -194,31 +199,40 @@ class ObsidianVaultIo implements VaultIo {
     // window: base persisted while the note sits in the page cache → on crash the note is absent but
     // base==remote → unguarded delete-remote fleet-wide. Best-effort, desktop-only (Obsidian's adapter
     // and mobile expose no fsync — mobile remains a documented residual).
-    await this.fsyncDurable(p);
+    await this.fsyncDurable(safe);
     this.plugin.onConfigWritten(path); // best-effort live-reload of the affected surface
+  }
+
+  // The ONLY place a server-supplied path is turned into an absolute UNSANDBOXED-fs path (openAppend +
+  // fsyncDurable — the two raw Node-fs sinks; read/exists/write/remove go through Obsidian's vault-scoped
+  // adapter). Takes SafeVaultPath, not string, so the vault-escape guard PROVABLY ran before any `..` can
+  // be joined onto the vault base — the type makes "forgot to check" a compile error at the danger point.
+  private rawFsAbs(nodePath: { join: (...p: string[]) => string }, base: string, safe: SafeVaultPath): string {
+    return nodePath.join(base, normalizePath(safe));
   }
   // Desktop-only best-effort fsync of a vault-relative file + its parent directory, mirroring the
   // server's atomic_write/write_mirror durability bar. No-op (silently) on mobile / when Node fs is
   // unavailable, and swallows errors — the file content is already written; this only upgrades its
   // durability, so a failure here must never abort the write.
-  private async fsyncDurable(relPath: string): Promise<void> {
+  private async fsyncDurable(safe: SafeVaultPath): Promise<void> {
     const require = (window as unknown as { require?: (m: string) => any }).require;
     if (!Platform.isDesktop || !require) return;
     try {
       const fs = require("fs"); const nodePath = require("path");
       const adapter = this.plugin.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
       const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
-      const abs = nodePath.join(base, relPath);
+      const abs = this.rawFsAbs(nodePath, base, safe);
       await fsyncHandle(() => fs.promises.open(abs, "r+")); // fsync the note contents
       await fsyncHandle(() => fs.promises.open(nodePath.dirname(abs))); // and its parent dir entry
     } catch { /* Node fs unavailable — mobile fallback, documented residual */ }
   }
   async remove(path: string): Promise<void> {
     // R23 SEC: never let a traversing server-supplied path drive a local delete outside the vault.
-    if (!isSafeVaultPath(path)) throw new Error(`refusing to remove an unsafe/traversing path: '${path}'`);
+    const safe = asSafeVaultPath(path);
+    if (!safe) throw new Error(`refusing to remove an unsafe/traversing path: '${path}'`);
     if (!this.passes(path)) return;
     this.plugin.markConfigSelfWrite(path); // suppress the "raw" echo of our own removal
-    const p = normalizePath(path);
+    const p = normalizePath(safe);
     if (!(await this.plugin.app.vault.adapter.exists(p))) return;
     // SEC-DATA (audit): a sync-driven deletion goes to the vault's `.trash`, NOT a hard unlink. The
     // server is the most likely thing to be compromised on an internet-facing deployment; if a

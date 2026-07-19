@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { encodeSetupLink, parseSetupLink, normalizeServer, isInsecureRemote } from "../src/connstr";
+import { encodeSetupLink, parseSetupLink, normalizeServer, isInsecureRemote, parseServerOrigin } from "../src/connstr";
 
 describe("isInsecureRemote — block cleartext credentials to a remote host (SEC-AUTH)", () => {
   it("flags http:// to a remote host (interceptable credentials)", () => {
@@ -12,6 +12,21 @@ describe("isInsecureRemote — block cleartext credentials to a remote host (SEC
                      "http://127.0.0.1:8080", "http://foo.localhost:8080"]) {
       expect(isInsecureRemote(s), s).toBe(false);
     }
+  });
+});
+
+describe("parseServerOrigin — refined origin carrying the cleartext verdict once (parse-don't-validate)", () => {
+  it("carries href (== normalizeServer) AND insecureRemote (== isInsecureRemote) computed at parse", () => {
+    for (const s of ["https://sync.example.com", "http://sync.example.com", "http://localhost:8080",
+                     "https://s.example.com:443", "http://127.0.0.1:8080/base/"]) {
+      const o = parseServerOrigin(s);
+      expect(o.href).toBe(normalizeServer(s));           // href agrees with the string normalizer
+      expect(o.insecureRemote).toBe(isInsecureRemote(s)); // verdict agrees with the string predicate
+    }
+  });
+  it("rejects the same inputs normalizeServer rejects (single parse boundary)", () => {
+    expect(() => parseServerOrigin("ftp://s.example.com")).toThrow(/http/i);
+    expect(() => parseServerOrigin("not a url")).toThrow();
   });
 });
 

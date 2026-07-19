@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isSafeVaultPath } from "../src/pathsafe";
+import { isSafeVaultPath, asSafeVaultPath } from "../src/pathsafe";
 
 const NUL = String.fromCharCode(0);
 const NL = String.fromCharCode(10);
@@ -51,5 +51,22 @@ describe("isSafeVaultPath — receive-side traversal guard (R23)", () => {
 
   it("rejects an absurdly long path", () => {
     expect(isSafeVaultPath("a/".repeat(600) + "x.md")).toBe(false);
+  });
+
+  // asSafeVaultPath is the branded constructor: it agrees with isSafeVaultPath, returns the SAME string
+  // value (identity — the brand is phantom, not a copy) on accept, and null on reject. This is the parse
+  // boundary that carries the "checked" fact into the fs sinks (issueBoolPredicatesNoRefinedType).
+  it("asSafeVaultPath returns the path (branded) on accept, null on reject, agreeing with the predicate", () => {
+    for (const p of ["note.md", "folder/deep/img.png", ".obsidian/plugins/foo/main.js"]) {
+      expect(asSafeVaultPath(p)).toBe(p); // identity on the accepted string
+    }
+    for (const p of ["../secret.md", "/etc/passwd", "a//b.md", "CON", "", ".."]) {
+      expect(asSafeVaultPath(p), `must reject: ${JSON.stringify(p)}`).toBeNull();
+    }
+    // exhaustive agreement with the boolean predicate across the whole corpus above
+    for (const p of ["note.md", "日本語/メモ.md", "../../../.config/autostart/x.desktop",
+                     "folder\\note.md", "note.md.", "console.md"]) {
+      expect(asSafeVaultPath(p) === null).toBe(!isSafeVaultPath(p));
+    }
   });
 });

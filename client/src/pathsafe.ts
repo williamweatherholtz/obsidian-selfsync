@@ -11,6 +11,20 @@
 // This mirrors the server's safe_rel_path: reject empty/oversize, backslash, control chars,
 // absolute paths (unix root, Windows drive letter, UNC), and any `.`/`..`/empty path segment.
 // Legitimate vault keys (forward-slash, canonical, no traversal) always pass.
+// A vault-relative path that has PASSED isSafeVaultPath — a branded string so "this path can't escape the
+// vault" is carried in the TYPE, not re-asserted from a bare string at every fs sink (parse-don't-validate,
+// issueBoolPredicatesNoRefinedType). `asSafeVaultPath` is the only constructor; a raw-`fs` join therefore
+// cannot be built without first parsing the server-supplied path. Assignable to string, so it flows into
+// the Obsidian adapter / Node fs APIs (which take string) unchanged — the guarantee is one-directional.
+export type SafeVaultPath = string & { readonly __safeVaultPath: unique symbol };
+
+// Parse a server-supplied path INTO the SafeVaultPath type, or null if it could escape the vault. Callers
+// branch on null (throw / treat-as-absent) and then use the returned value where the path drives an fs op —
+// so the "checked" fact is the value's type, not a separate boolean that could drift from the string.
+export function asSafeVaultPath(path: string): SafeVaultPath | null {
+  return isSafeVaultPath(path) ? (path as SafeVaultPath) : null;
+}
+
 export function isSafeVaultPath(path: string): boolean {
   if (!path || path.length > 1024) return false;
   if (path.includes("\\")) return false;                 // backslash: Windows sep / traversal smuggling
