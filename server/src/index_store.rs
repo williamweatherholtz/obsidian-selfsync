@@ -95,10 +95,20 @@ impl SqliteIndex {
             .query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='fold'", [], |r| r.get(0))
             .map_err(io)?;
         if has_fold == 0 {
-            conn.execute_batch(
-                "ALTER TABLE files ADD COLUMN fold TEXT NOT NULL DEFAULT '';\n\
-                 UPDATE files SET fold = lower(path);",
-            ).map_err(io)?;
+            conn.execute("ALTER TABLE files ADD COLUMN fold TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+            // Backfill fold in RUST (to_lowercase = full Unicode), NOT SQLite's lower(): the bundled
+            // rusqlite lower() is ASCII-ONLY, but the write path (insert_file) and colliding_key both fold
+            // with Rust to_lowercase(). An ASCII-only backfill would leave a legacy non-ASCII row's fold
+            // (e.g. "CAFÉ.md" -> "cafÉ.md") disagreeing with the guard's probe ("café.md"), silently
+            // missing the case-collision it exists to catch (the very drift the fold column single-sources).
+            let paths: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT path FROM files").map_err(io)?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(io)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(io)?
+            };
+            for p in &paths {
+                conn.execute("UPDATE files SET fold=?1 WHERE path=?2", params![p.to_lowercase(), p]).map_err(io)?;
+            }
         }
         // Create the fold index here (moved out of SCHEMA) — now that the column is guaranteed to
         // exist on both a fresh and a just-healed DB. Idempotent on an already-indexed DB.
@@ -386,6 +396,29 @@ mod tests {
         let conn = s.conn.lock().unwrap();
         let v: i64 = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, SqliteIndex::CURRENT_SCHEMA as i64, "migrate must stamp a below-current schema_version up to CURRENT");
+    }
+
+    // CRITIQUE R+1 (issueFoldBackfillAsciiOnly): healing a pre-fold DB must backfill fold with the SAME
+    // fold the write path + colliding_key use (Rust to_lowercase, full Unicode) — NOT SQLite's ASCII-only
+    // lower(), which would leave a legacy non-ASCII row's fold disagreeing with the guard's probe.
+    #[test]
+    fn migrate_backfills_non_ascii_fold_so_the_collision_guard_still_fires() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        // A pre-fold DB (no fold column) holding an uppercase NON-ASCII path.
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL);\n\
+                 INSERT INTO files VALUES ('CAFÉ.md','h',1,0,1);\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',1),('version',1),('history_floor',1);",
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap(); // heals: adds + backfills fold
+        // The Unicode-case variant must be detected as a collision (fold matches via Rust to_lowercase).
+        assert_eq!(s.colliding_key("café.md").unwrap().as_deref(), Some("CAFÉ.md"),
+            "a healed non-ASCII fold must match the guard's Rust to_lowercase probe (ASCII lower() would miss it)");
     }
 
     #[test]

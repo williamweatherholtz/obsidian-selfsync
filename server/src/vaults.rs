@@ -32,6 +32,9 @@ pub async fn create_vault(
     if existing.contains(&req.name) {
         return Err(AppError::Conflict("vault exists".into()));
     }
+    // A deliberate (re)create clears any delete-tombstone for this key, so vault() will materialize it
+    // (crit R+1, issueVaultDeleteOpenRace: the tombstone refuses only AUTO recreation via a raced open).
+    st.allow_vault_recreate(&user, &req.name);
     st.vault(&user, &req.name).map_err(|e| AppError::BadRequest(e.to_string()))?;
     log::info!("[vault create] user='{}' vault='{}'", user, req.name);
     audit(action::VAULT_CREATE, &user, &format!("{user}/{}", req.name), outcome::SUCCESS, &ip);

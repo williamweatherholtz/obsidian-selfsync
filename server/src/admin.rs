@@ -518,21 +518,22 @@ pub async fn users_delete(
     // after remove_dir_all). Only then purge data.
     lock(&st.tokens)?.revoke_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     audit(action::SESSION_REVOKE, &user, &name, outcome::SUCCESS, &ip);
-    // SEC-R3#2 / SEC-MED-2: purge the vault data (drops cached handles + the dir) and treat failure
-    // as a HARD error. If the account row were removed first and the purge then failed (e.g. a
-    // Windows-locked chunk file), the account would be gone while DATA_ROOT/<name>/ remained — a
-    // same-name recreation would inherit the prior owner's notes. Purging before removing the row
-    // means a failure leaves the account intact + retryable, and the row is removed only once the
-    // data is provably gone.
+    // SEC-R3#2 / SEC-MED-2 (+ crit R+1, issuePurgeDirNotBestEffort ordering): remove the account row
+    // LAST — only after EVERY remanence vector is cleared, so a failure at any step leaves the account
+    // intact + retryable rather than gone-but-with-residue a same-name recreation would inherit. Order:
+    // (1) data dir + handles, (2) share GRANTS (as owner or grantee — a dangling grantee grant would
+    // re-grant access to OTHERS' shared vaults), (3) share-LINKS (crit R+1: a leaked link would re-grant
+    // access to a recreated vault), (4) server-admin membership (a dangling admin bit would re-grant
+    // admin, D0021), then (5) the row. Previously shares/links/admin ran AFTER remove — a failure there
+    // left the row gone but the grant/link/admin residue live (SEC-3).
     st.purge_user_data(&name).map_err(|e| AppError::Internal(format!("could not purge vault data: {e}")))?;
+    lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    lock(&st.share_links)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
+    lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     let removed = lock(&st.users)?.remove(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     if !removed {
         return Err(AppError::NotFound);
     }
-    // Drop the account's shares (as owner or grantee). Tokens were already revoked up front.
-    lock(&st.shares)?.purge_user(&name).map_err(|e| AppError::Internal(e.to_string()))?;
-    // Drop any server-admin membership so a re-created same-name account doesn't inherit admin (D0021).
-    lock(&st.admins)?.revoke(&name).map_err(|e| AppError::Internal(e.to_string()))?;
     audit(action::ACCOUNT_DELETE, &user, &name, outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }

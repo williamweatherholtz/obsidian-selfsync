@@ -64,14 +64,22 @@ fn now_secs() -> u64 {
 
 impl ShareLinkStore {
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file: LinksFile = match std::fs::read(path) {
+        let mut file: LinksFile = match std::fs::read(path) {
             Ok(b) => serde_json::from_slice(&b).map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!(".share-links.json is corrupt ({e})"))
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => LinksFile::default(),
             Err(e) => return Err(e),
         };
-        Ok(Self { path: path.to_path_buf(), file })
+        // R22-parity expiry sweep (crit R+1): drop UNREDEEMED links whose expiry has passed so the
+        // globally-scanned file doesn't accrete dead entries (an expired link is provably unusable —
+        // redeem() already rejects it). Redeemed links are kept as historical redemption records.
+        let now = now_secs();
+        let before = file.links.len();
+        file.links.retain(|l| l.redeemed_by.is_some() || l.expires_at.map(|e| e > now).unwrap_or(true));
+        let store = Self { path: path.to_path_buf(), file };
+        if store.file.links.len() != before { store.save()?; }
+        Ok(store)
     }
 
     fn save(&self) -> std::io::Result<()> {
@@ -149,6 +157,26 @@ impl ShareLinkStore {
         if removed { self.save()?; }
         Ok(removed)
     }
+
+    // Drop EVERY link for a specific (owner, vault) — used when the vault is DELETED (crit R+1). Without
+    // this, a leaked no-expiry link SURVIVES the delete and re-grants access if the owner later recreates
+    // a vault of the same name — the exact grant-remanence hazard ShareStore::purge_vault closes (R17),
+    // reopened for the link layer. Mirror of that method.
+    pub fn purge_vault(&mut self, owner: &str, vault: &str) -> std::io::Result<()> {
+        let before = self.file.links.len();
+        self.file.links.retain(|l| !(l.owner == owner && l.vault == vault));
+        if self.file.links.len() != before { self.save() } else { Ok(()) }
+    }
+
+    // Drop every link OWNED BY a user — used when the account is removed. A link is only ever minted by
+    // its owner, so owner-scoped removal covers the account-delete reactivation vector (mirror of
+    // ShareStore::purge_user). Redeemed links the user consumed already minted a grant that shares'
+    // purge_user handles; the link record itself is not a standing credential.
+    pub fn purge_user(&mut self, user: &str) -> std::io::Result<()> {
+        let before = self.file.links.len();
+        self.file.links.retain(|l| l.owner != user);
+        if self.file.links.len() != before { self.save() } else { Ok(()) }
+    }
 }
 
 #[cfg(test)]
@@ -203,6 +231,43 @@ mod tests {
         assert!(!s.revoke("bob", &id).unwrap(), "a non-owner can't revoke");
         assert!(s.revoke("alice", &id).unwrap(), "owner revokes the pending link");
         assert!(s.redeem(&token, "dana").is_none(), "a revoked link can't be redeemed");
+    }
+
+    // CRITIQUE R+1 (issueShareLinkRemanence): deleting a vault/account must drop its links so a leaked
+    // no-expiry link can't re-grant access across a delete+recreate (mirror of ShareStore's R17 purge).
+    #[test]
+    fn purge_vault_and_user_drop_links_so_a_delete_recreate_cannot_reactivate() {
+        let (_d, mut s) = store();
+        let t1 = s.create("alice", "notes", Perm::ReadWrite, "", None).unwrap();
+        s.create("alice", "docs", Perm::Read, "", None).unwrap();
+        s.create("bob", "notes", Perm::Read, "", None).unwrap();
+        s.purge_vault("alice", "notes").unwrap(); // vault delete
+        assert!(s.redeem(&t1, "dana").is_none(), "a deleted vault's link is gone — no reactivation on recreate");
+        assert_eq!(s.list("alice").len(), 1, "alice's other-vault link kept");
+        assert_eq!(s.list("bob").len(), 1, "another owner's link untouched");
+        s.purge_user("alice").unwrap(); // account delete
+        assert_eq!(s.list("alice").len(), 0, "all of the deleted account's links are dropped");
+        assert_eq!(s.list("bob").len(), 1, "still owner-scoped");
+    }
+
+    #[test]
+    fn open_sweeps_expired_unredeemed_links() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".share-links.json");
+        {
+            let mut s = ShareLinkStore::open(&path).unwrap();
+            s.create("alice", "notes", Perm::Read, "live", None).unwrap(); // no expiry → kept
+        }
+        // Hand-write an already-expired unredeemed link into the file, then reopen → it's swept.
+        let mut raw: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["links"].as_array_mut().unwrap().push(serde_json::json!({
+            "id": "x", "owner": "alice", "vault": "old", "perm": "read", "hash": "deadbeef",
+            "label": "", "created_at": 0, "expires_at": 1, "redeemed_by": null, "redeemed_at": null
+        }));
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        let s = ShareLinkStore::open(&path).unwrap();
+        assert_eq!(s.list("alice").len(), 1, "the expired unredeemed link is swept; the live one kept");
+        assert_eq!(s.list("alice")[0].vault, "notes");
     }
 
     #[test]

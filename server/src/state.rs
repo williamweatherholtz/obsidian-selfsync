@@ -63,6 +63,10 @@ pub struct AppState {
     // Vault::open/reindex for a given key at a time. NOT the global `ns` lock (that would serialize all
     // opens + block cache hits for other vaults); a tiny per-key mutex the opener holds across open.
     opens: OpenLocks,
+    // (user,vault) keys that were just PURGED (crit R+1, issueVaultDeleteOpenRace): vault() refuses to
+    // auto-recreate a tombstoned key so a concurrent open that raced past vault_exists() can't resurrect a
+    // just-deleted vault via create_dir_all. An explicit create_vault clears the tombstone.
+    deleted_vaults: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     pub ws_conns: Arc<AtomicUsize>, // live WebSocket count (bounded by MAX_WS_CONNECTIONS)
     // Per-user live WS count (crit-round SC.3.13.1): a sub-cap so one authenticated account can't
     // consume the whole global budget and deny change-notifications to every other user.
@@ -136,6 +140,7 @@ impl AppState {
             tokens: Arc::new(Mutex::new(tokens)),
             ns: Arc::new(Mutex::new(HashMap::new())),
             opens: Arc::new(Mutex::new(HashMap::new())),
+            deleted_vaults: Arc::new(Mutex::new(std::collections::HashSet::new())),
             ws_conns: Arc::new(AtomicUsize::new(0)),
             ws_conns_per_user: Arc::new(Mutex::new(HashMap::new())),
             auth_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_AUTH_HASHES)),
@@ -187,6 +192,15 @@ impl AppState {
                 self.release_open_lock(&key, &open_lock);
                 return Ok(h);
             }
+        }
+        // crit R+1 (issueVaultDeleteOpenRace): refuse to auto-recreate a JUST-PURGED vault. A request that
+        // passed vault_exists()==true and then blocked here while purge_vault deleted the vault would
+        // otherwise reach Vault::open → create_dir_all and resurrect it as an empty vault. purge_vault
+        // tombstones the key under this same per-key open lock, so by the time we hold the lock the
+        // tombstone is visible → return NotFound (the delete stands). A later create_vault clears it.
+        if self.deleted_vaults.lock().map_err(|_| std::io::Error::other("deleted_vaults lock poisoned"))?.contains(&key) {
+            self.release_open_lock(&key, &open_lock);
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "vault was deleted"));
         }
         // Exactly one thread per key reaches here. Release the per-key open lock on the error path too,
         // so a failed open never leaks its entry in `opens`.
@@ -263,7 +277,13 @@ impl AppState {
             opens.retain(|(u, _), _| u != user); // and the per-key open locks — don't retain a deleted user's keys
         }
         let dir = self.cfg.data_root.join(user);
-        if dir.exists() { std::fs::remove_dir_all(&dir)?; }
+        // Best-effort on the dir (crit R+1, issuePurgeDirNotBestEffort): matches the comment above and
+        // purge_vault — a locked file must not wedge the account delete into a half-state; log + retry.
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                log::warn!("[purge_user_data] {user}: data dir not removed ({e}); retry to reclaim disk");
+            }
+        }
         Ok(())
     }
 
@@ -271,19 +291,50 @@ impl AppState {
     // (Round-7 RC-4), the finer-grained complement to purge_user_data. Best-effort on the dir.
     pub fn purge_vault(&self, owner: &str, vault: &str) -> std::io::Result<()> {
         if !safe_name(owner) || !safe_name(vault) { return Ok(()); }
+        let key = (owner.to_string(), vault.to_string());
+        // Serialize against a concurrent OPEN (crit R+1, issueVaultDeleteOpenRace): hold the SAME per-key
+        // open lock vault() takes across Vault::open, so our teardown (tombstone + drop handle + remove
+        // dir) can't interleave with a create_dir_all that would resurrect the vault.
+        let open_lock = {
+            let mut opens = self.opens.lock().map_err(|_| std::io::Error::other("opens lock poisoned"))?;
+            Arc::clone(opens.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))))
+        };
+        let _open_guard = open_lock.lock().map_err(|_| std::io::Error::other("open lock poisoned"))?;
         // Drop this vault's share grants FIRST (R17). Otherwise a grant lingers invisibly (my_vaults
         // only lists existing vaults) and silently REACTIVATES if the owner later recreates a vault of
         // the same name — re-exposing new content to a prior grantee. Account-delete already purges
-        // grants (purge_user); vault-delete must too. FAIL LOUD on a poisoned lock (R18): skipping the
-        // purge but still removing the dir + returning Ok would silently reopen the reactivation
-        // window — so propagate the error and DON'T remove the dir (no half-state), matching every
-        // other shares access.
+        // grants (purge_user); vault-delete must too. FAIL LOUD on a poisoned lock (R18): propagate the
+        // error and DON'T touch anything else (no half-state) — the vault stays fully intact + retryable.
         self.shares.lock().map_err(|_| std::io::Error::other("shares lock poisoned"))?.purge_vault(owner, vault)?;
-        if let Ok(mut map) = self.ns.lock() { map.remove(&(owner.to_string(), vault.to_string())); }
-        if let Ok(mut opens) = self.opens.lock() { opens.remove(&(owner.to_string(), vault.to_string())); } // don't retain the purged vault's open lock
+        // ...and its share-LINKS (crit R+1, issueShareLinkRemanence): only GRANTS were purged, so a leaked
+        // no-expiry link SURVIVED the delete and re-granted access to a recreated same-name vault — the
+        // identical R17 reactivation hazard, for the link layer. Fail loud like the grant purge.
+        self.share_links.lock().map_err(|_| std::io::Error::other("share_links lock poisoned"))?.purge_vault(owner, vault)?;
+        // Grants + links are gone; NOW commit the delete under the open lock: tombstone the key (so any
+        // waiting/subsequent open refuses to auto-recreate — issueVaultDeleteOpenRace), drop the cached
+        // handle, remove the dir. The tombstone is set BEFORE the dir removal so an opener that already
+        // holds this lock can't be mid-create; a later create_vault clears it.
+        self.deleted_vaults.lock().map_err(|_| std::io::Error::other("deleted_vaults lock poisoned"))?.insert(key.clone());
+        if let Ok(mut map) = self.ns.lock() { map.remove(&key); }
         let dir = self.ns_dir(owner, vault);
-        if dir.exists() { std::fs::remove_dir_all(&dir)?; }
+        // Best-effort on the dir (crit R+1, issuePurgeDirNotBestEffort): grants+links are already revoked
+        // (the security-relevant part) and the handle is evicted + tombstoned (a stale index can't be
+        // served), so a Windows file lock (an in-flight request still holding the index DB) must NOT wedge
+        // the delete into a half-state 500 — the leftover dir is retryable. Log, don't propagate.
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                log::warn!("[purge_vault] {owner}/{vault}: data dir not removed ({e}); grants+links revoked, retry to reclaim disk");
+            }
+        }
+        if let Ok(mut opens) = self.opens.lock() { opens.remove(&key); } // drop the tombstoned key's open-lock entry
         Ok(())
+    }
+
+    // Clear a vault's delete-tombstone so an explicit create_vault can re-materialize a same-name vault
+    // that was previously purged (crit R+1, issueVaultDeleteOpenRace — the tombstone only refuses AUTO
+    // recreation via a raced open; a deliberate create is legitimate).
+    pub fn allow_vault_recreate(&self, owner: &str, vault: &str) {
+        if let Ok(mut d) = self.deleted_vaults.lock() { d.remove(&(owner.to_string(), vault.to_string())); }
     }
 
     pub fn for_test(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false) }
@@ -314,6 +365,29 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // CRITIQUE R+1 (issueVaultDeleteOpenRace): a purged vault must NOT be silently auto-recreated by an
+    // open that raced past vault_exists() — vault() refuses a tombstoned key (create_dir_all would else
+    // resurrect it empty). A deliberate create_vault (allow_vault_recreate) clears the tombstone.
+    #[test]
+    fn purged_vault_is_not_auto_recreated_by_a_raced_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = AppState::for_test(dir.path());
+        st.vault("alice", "notes").unwrap();
+        assert!(st.vault_exists("alice", "notes"));
+        st.purge_vault("alice", "notes").unwrap();
+        // A stale open (the CONC-1 race: passed vault_exists true, then the vault was deleted) must not
+        // resurrect it — the tombstone makes vault() return NotFound instead of create_dir_all'ing.
+        match st.vault("alice", "notes") {
+            Ok(_) => panic!("a purged vault must NOT be auto-recreated by a raced open"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+        }
+        assert!(!st.vault_exists("alice", "notes"), "the delete stands (no empty resurrection)");
+        // A deliberate recreate clears the tombstone and materializes a fresh vault.
+        st.allow_vault_recreate("alice", "notes");
+        st.vault("alice", "notes").unwrap();
+        assert!(st.vault_exists("alice", "notes"));
+    }
 
     // RS-1: the eviction predicate keeps a subscribed or recently-accessed handle and drops an
     // idle, unsubscribed one — so a busy/connected vault is never evicted while idle ones bound RAM.

@@ -188,7 +188,13 @@ impl Vault {
                 (SqliteIndex::open(&db_path)?, true) // fresh empty DB
             }
         };
-        let version = index.version()?;
+        // crit R+1 (issueVersionEpochRewind): the index version RESETS to 1 on a quarantine/empty rebuild
+        // (the index is the only home of the counter). An already-synced client at a higher cursor would
+        // then never see the rebuilt versions in any incremental delta, and the RC-1 floor (which only
+        // protects a BELOW-floor client) stays inert. A monotonic high-water mark in a separate fsync'd
+        // sidecar (.version-hwm) survives an index corruption; seed from the max so the counter — and any
+        // rebuild below, which assigns from self.version upward — never drops below the true high-water.
+        let version = index.version()?.max(Self::read_version_hwm(root));
         let history_floor = index.history_floor()?;
         // A MISSING/empty index is only "fresh" when there are NO materialized files. Committed files
         // live in vault/; if any exist but the index is empty (e.g. a backup restored without the DB),
@@ -221,6 +227,23 @@ impl Vault {
             }
         }
         Ok(v)
+    }
+
+    // crit R+1 (issueVersionEpochRewind): the monotonic version high-water sidecar. A tiny fsync'd file
+    // next to the index, read on open to floor the version and rewritten on every bump — so a quarantine
+    // that resets the index counter can't rewind the vault's version below an already-synced client.
+    fn version_hwm_path(root: &Path) -> PathBuf { root.join(".version-hwm") }
+    fn read_version_hwm(root: &Path) -> u64 {
+        std::fs::read_to_string(Self::version_hwm_path(root)).ok()
+            .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
+    }
+    // Persist self.version as the high-water (fsync-durable via atomic_write). Best-effort: the index is
+    // the primary record of the current version; the sidecar is the anti-rewind backstop, so a write
+    // failure is logged, not fatal to an already-durable commit.
+    fn write_version_hwm(&self) {
+        if let Err(e) = crate::atomicfile::atomic_write(&Self::version_hwm_path(&self.root), self.version.to_string().as_bytes()) {
+            log::warn!("[vault] {}: version high-water sidecar not persisted ({e}); index still authoritative", self.root.display());
+        }
     }
 
     // Move a corrupt index DB (+ its WAL/SHM sidecars) aside so a fresh one can be created; the
@@ -418,6 +441,7 @@ impl Vault {
         // no longer references — so a GC'd blob is never still cited by the live index.
         self.index.replace_files(&new_files, max_version)?;
         self.version = max_version;
+        self.write_version_hwm(); // crit R+1: persist the high-water so a future rebuild can't rewind below it
         // D0019 + critique-R8 DI-M3: raise the floor ONLY when tombstones were genuinely lost — a
         // rebuild-from-disk of an empty/quarantined index (no tombstones to preserve). A rebuild that
         // PRESERVED tombstones (a dangling-chunk auto-repair on an intact index — was_corrupt set by
@@ -580,6 +604,7 @@ impl Vault {
         };
         let dereferenced = self.index.put(&meta)?;
         self.version = new_version;
+        self.write_version_hwm(); // crit R+1 (issueVersionEpochRewind): advance the monotonic version sidecar
         // Index is durable. NOW mirror to the bind-mount file — AFTER the index, via atomic
         // temp+rename, so disk is never ahead of the durable index. A crash before this leaves the
         // OLD file, and reindex recovers the committed content from the authoritative chunk store
@@ -617,6 +642,7 @@ impl Vault {
             None => Ok(None), // absent (or a bad name that isn't an index key) → nothing to delete
             Some((d, dereferenced)) => {
                 self.version = new_version;
+                self.write_version_hwm(); // crit R+1 (issueVersionEpochRewind): advance the monotonic version sidecar
                 // Durable; now remove the materialized file. Only when the name has a valid rel path (a
                 // legacy invalid-name key has no on-disk target).
                 if let Some(rel) = rel {
@@ -935,6 +961,36 @@ mod tests {
         assert_eq!(v.changes(0).history_floor, 1, "precondition: genesis floor");
         v.reindex(false).unwrap(); // healthy + zero tombstones → the floor must not move
         assert_eq!(v.changes(0).history_floor, 1, "426: a healthy, tombstone-free reindex must not raise the floor");
+    }
+
+    // CRITIQUE R+1 (issueVersionEpochRewind): the version counter must NOT rewind below its high-water
+    // when a corrupt index is quarantined + rebuilt — else an already-synced client's cursor sits ABOVE
+    // the server version and the rebuilt changes are invisible in every incremental delta. A persisted
+    // fsync'd .version-hwm sidecar survives the index corruption and floors the rebuilt version.
+    #[test]
+    fn version_does_not_rewind_below_the_high_water_after_a_quarantine_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |v: &mut Vault, name: &str, body: &[u8]| {
+            let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
+            v.commit(CommitRequest { path: name.into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None }).unwrap();
+        };
+        let hwm;
+        {
+            let mut v = Vault::open(root).unwrap();
+            put(&mut v, "a.md", b"1"); // v2
+            v.delete("a.md").unwrap();  // v3 (many edits/deletes push version well past the file count)
+            put(&mut v, "b.md", b"2"); // v4
+            put(&mut v, "c.md", b"3"); // v5
+            hwm = v.version();
+            assert!(hwm >= 5, "precondition: version advanced past the 2 surviving files");
+        }
+        // Corrupt the index DB so the next open QUARANTINEs it → a fresh index whose counter resets to 1.
+        std::fs::write(root.join(".sync-index.db"), b"not a sqlite database at all").unwrap();
+        let _ = std::fs::remove_file(root.join(".sync-index.db-wal"));
+        let _ = std::fs::remove_file(root.join(".sync-index.db-shm"));
+        let v2 = Vault::open(root).unwrap(); // quarantine → fresh index (would be version 1) → auto-reindex
+        assert!(v2.version() >= hwm, "version rewound to {} below the high-water {hwm} — a synced client's cursor would sit above it", v2.version());
     }
 
     #[test]
