@@ -118,6 +118,43 @@ describe("SEC-DATA: DeleteRateGuard defeats a paced-tombstone vault drain", () =
   });
 });
 
+describe("SEC-DATA (critique R+1): a vanished LOCAL vault does not wipe the server (mass delete-remote guard)", () => {
+  it("guards mass delete-remote when the whole local listing has vanished", async () => {
+    const { api, files } = fakeServer();
+    const seed: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) seed[`n${i}.md`] = `content ${i}`;
+    const io = fakeIo(seed);
+    const guarded: string[] = [];
+    const d = deps(api, io, { onGuard: (p) => guarded.push(p) });
+    // Pass 1: 10 brand-new local files → pushed to the server + base recorded (a synced steady state).
+    await reconcileAll(d);
+    expect(files.size).toBe(10);
+    // The ENTIRE local vault vanishes (cloud de-hydration / partial backup restore / cleared storage) —
+    // NOT a user deletion. Base + server still hold all 10; the local listing is now empty.
+    io.m.clear();
+    await reconcileAll(d);
+    // Without the guard every file decides delete-remote and is wiped from the server (then tombstoned
+    // fleet-wide). The guard must refuse the batch and leave the server intact. (delete-LOCAL was guarded
+    // since DI-1; this is the mirror direction.)
+    expect(files.size).toBe(10);               // server untouched
+    expect(guarded.length).toBeGreaterThan(0); // the mass delete-remote was guarded
+  });
+
+  it("still lets a normal single-file delete-remote through (a genuine user deletion, below the ratio)", async () => {
+    const { api, files } = fakeServer();
+    const seed: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) seed[`n${i}.md`] = `content ${i}`;
+    const io = fakeIo(seed);
+    const d = deps(api, io);
+    await reconcileAll(d);                      // push 10, base recorded
+    expect(files.size).toBe(10);
+    io.m.delete("n3.md");                       // user deletes ONE file locally (1/10 = 10% < ratio)
+    await reconcileAll(d);
+    expect(files.has("n3.md")).toBe(false);     // the single delete-remote propagates (not guarded)
+    expect(files.size).toBe(9);
+  });
+});
+
 describe("R24: a compromised server cannot exfiltrate an out-of-vault file via a traversing tombstone", () => {
   it("a traversing tombstone path is never read or pushed; a real file still syncs", async () => {
     const { api, chunks, files } = fakeServer();

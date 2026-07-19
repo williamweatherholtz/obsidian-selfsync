@@ -511,6 +511,21 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // SEC-DATA: per-pass ratio OR'd with the cumulative cross-pass guard (a paced drain never trips the
   // per-pass ratio); the guard records the deletes only when it lets them through (see runDeleteGuard).
   const guardBulkDelete = runDeleteGuard(d, basePaths.length, wouldDelete, remote.size === 0);
+  // SEC-DATA (symmetric): the MIRROR direction — a mass delete-REMOTE. Count accepted base paths that
+  // decide() would delete-remote: gone from the local listing but still present+unchanged on the server
+  // (r.hash === base.hash). A suspicious FRACTION (>= BULK_DELETE_RATIO of a non-tiny base) vanishing at
+  // once is the local-loss signature (cloud de-hydration / partial restore / cleared storage), which the
+  // per-file confirmedAbsent probe can't distinguish from an intentional wipe. Ratio+min-size ONLY (no
+  // "empty local listing" override — unlike an empty server MANIFEST, an empty local vault can be a
+  // legitimate "user deleted their last file"; a tiny vault isn't second-guessed, mirroring the
+  // delete-local BULK_DELETE_MIN floor). Stateless per-pass gate: a mass local loss lands in ONE full
+  // reconcile, it doesn't drain across passes like a paced server drain.
+  const wouldDeleteRemote = basePaths.filter((p) => {
+    if (local.has(p)) return false;
+    const r = remote.get(p); const b = d.base.get(p);
+    return r != null && b != null && r.hash === b.hash;
+  }).length;
+  const guardRemoteDelete = isSuspiciousBulkDelete(basePaths.length, wouldDeleteRemote, false);
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
@@ -539,7 +554,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Hold the cursor below any failed change so it's retried next poll (R14 sync#1) — covering a failed
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardRemoteDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => { if (pendingPaths.has(p)) d.onProgress?.(--pending); },
   );
@@ -746,7 +761,8 @@ async function reconcileMergeOrConflict(
 
 interface ReconcileOneOpts {
   rmeta?: FileMeta;                            // the server's meta for this path (undefined = server-absent)
-  guardDelete?: boolean;                       // a suspicious MASS delete was detected this pass → guard destructive removals
+  guardDelete?: boolean;                       // a suspicious MASS delete-LOCAL was detected this pass → guard destructive local removals
+  guardRemoteDelete?: boolean;                 // a suspicious MASS delete-REMOTE (local vault vanished) → guard the server-side wipe
   localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
   hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
@@ -762,7 +778,7 @@ interface ReconcileOneOpts {
 // read boundary instead of a null + a separate presence flag + a runtime if).
 // @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
-  const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
+  const { rmeta, guardDelete = false, guardRemoteDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -895,6 +911,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
     case "delete-remote":
       if (d.readOnly) { d.onReadOnly?.(path); return; } // can't delete on a read-only share
+      // SEC-DATA (symmetric to the delete-local guard): a MASS delete-remote — a suspicious fraction of
+      // the vault (or the WHOLE listing) gone locally while still present+unchanged on the server — is
+      // the signature of a LOCAL loss (cloud de-hydration, a partial backup restore, cleared storage),
+      // NOT the user deleting everything. Per-file confirmedAbsent below passes for every truly-gone
+      // file, so without this bulk gate a vanished vault would wipe the server + tombstone it fleet-wide
+      // (the delete-LOCAL direction was guarded since DI-1; this closes the mirror direction). A refused
+      // batch is recoverable (re-delete once genuinely intended); an unguarded one is not.
+      if (guardRemoteDelete) { d.onGuard?.(path); return; }
       // EVIDENCED ABSENCE (issueFalseAbsenceDelete): decide() inferred a deletion because the file was
       // absent from the local LISTING — but a listing under-reports (a directory that failed to
       // enumerate, an un-hydrated OneDrive placeholder, an OS/AV lock), so it may still be on disk.

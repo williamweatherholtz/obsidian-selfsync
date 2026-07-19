@@ -163,7 +163,12 @@ export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: strin
 // the positional-args transposition the r2 note flagged is gone. DI-5 committed-bytes contract preserved.
 export async function pushBytes(ctx: SyncCtx, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
   await ctx.io.write(path, bytes);
-  return pushFile(ctx, path, expectedVersion);
+  // Commit the IN-HAND bytes, NOT a re-read (crit R+1): a local save racing between io.write and a
+  // re-read would otherwise be committed in place of the merge/union result, silently discarding the
+  // REMOTE edit the merge folded in (DI-5 fixed base CONSISTENCY — text/hash agree — but not this LOSS).
+  // Committing the exact bytes we hold means a racing save lands on disk and is caught as a fresh local
+  // edit on the NEXT reconcile (local ≠ base=merged → push/merge), never overwriting the merge result.
+  return commitBytes(ctx, path, bytes, expectedVersion);
 }
 
 // The result of a push: the committed file's SHA-256 AND the exact bytes that were hashed +
@@ -178,6 +183,13 @@ export interface PushResult { hash: string; bytes: Uint8Array; }
 // authoritative overwrites (switch/adjudication) where adopting-over-remote IS the intent.
 export async function pushFile(ctx: SyncCtx, path: string, expectedVersion?: number): Promise<PushResult> {
   const bytes = await ctx.io.read(path);
+  return commitBytes(ctx, path, bytes, expectedVersion);
+}
+
+// Chunk, upload the missing chunks, and commit EXACTLY `bytes` (no disk re-read) — the shared core of
+// pushFile (reads first) and pushBytes (writes first). Keeping the committed content = the bytes in hand
+// is what makes the merge/union push race-safe (see pushBytes).
+async function commitBytes(ctx: SyncCtx, path: string, bytes: Uint8Array, expectedVersion?: number): Promise<PushResult> {
   const chunks = await chunk(bytes);
   for (const c of chunks) cachePut(ctx.cache, c.hash, c.bytes);
   const hashes = chunks.map((c) => c.hash);

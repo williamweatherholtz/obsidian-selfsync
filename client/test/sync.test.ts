@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pushFile, fetchFileBytes, mapPool, streamFileToDisk, SyncApi, VaultIo, ChunkCache } from "../src/sync";
+import { pushFile, pushBytes, fetchFileBytes, mapPool, streamFileToDisk, SyncApi, VaultIo, ChunkCache } from "../src/sync";
 import { chunk, sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
 
@@ -38,6 +38,19 @@ function fakeIo(seed: Record<string, string> = {}) {
 }
 
 describe("chunk sync engine", () => {
+  it("pushBytes commits the EXACT bytes given, not a racing on-disk re-read (crit R+1: no merge-result loss)", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo();
+    // Simulate a local save landing right after io.write: the on-disk content diverges from the merged
+    // bytes we asked to push. A re-read-based push would commit the raced content, silently discarding
+    // the remote edit the merge folded in. pushBytes must commit the merged bytes it holds.
+    io.write = async (_p, _b) => { io.m.set("n.md", enc("RACED-LOCAL-SAVE")); };
+    const merged = enc("MERGED: local + remote edits");
+    const res = await pushBytes({ api, io, state: { version: 0 }, cache: new Map() as ChunkCache }, "n.md", merged);
+    expect(dec(res.bytes)).toBe("MERGED: local + remote edits");
+    expect(files.get("n.md")!.hash).toBe(await sha256hex(merged)); // committed == merged, NOT the raced save
+  });
+
   it("pushFile uploads only missing chunks then commits", async () => {
     const { api, chunks } = fakeServer();
     const io = fakeIo({ "a.md": "hello world" });
