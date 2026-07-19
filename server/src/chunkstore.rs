@@ -2,6 +2,22 @@ use crate::hash::sha256_hex;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Content-addressed blob store (chunks keyed by their SHA-256).
+///
+/// CONCURRENCY CONTRACT (made explicit per the boundedPool/contentAddressed audit,
+/// issueFunctionalCoreShellsReDecide item 4). Each SINGLE operation here is self-consistent:
+/// `put` publishes atomically (unique temp + rename + fsync) and `get`/`has`/`remove` act on the
+/// final path, so no caller ever observes a torn blob. What this store does NOT provide is ORDERING
+/// between operations on the same hash — there is no internal lock coupling `put` against a concurrent
+/// `remove`/orphan-sweep. That ordering safety is deliberately BORROWED from two outer mechanisms and
+/// is NOT re-enforced here (a second lock inside the store would only contend with — or deadlock
+/// against — the Vault's `RwLock`):
+///   1. The owning `Vault` holds its `RwLock` around the commit/dereference sequence, so a re-referencing
+///      commit and the index update that records the reference are serialized.
+///   2. The orphan sweep reclaims a de-referenced blob only after a TTL measured from when it was
+///      orphaned (`touch` bumps the mtime on de-reference), giving a concurrent rename/dedup commit a
+///      window to re-reference it before it can be collected.
+/// Callers on the raw store (outside a Vault) MUST uphold #1/#2 themselves; the store assumes it.
 pub struct ContentStore {
     root: PathBuf,
     // Monotonic counter for unique temp-file names, so concurrent puts of the SAME

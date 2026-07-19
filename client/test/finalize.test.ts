@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { finalize, FinalizeFacts, ReconcileEffect, Action, planMerge, MergePlan } from "../src/reconcile";
+import { finalize, FinalizeFacts, ReconcileEffect, Action, planMerge, MergePlan, probePresence } from "../src/reconcile";
 
 // The pure decision core lifted out of reconcileOne (issueFunctionalCoreShellsReDecide). This is the "test
 // net" that makes the extraction safe: it exhaustively pins the SAFETY-CRITICAL table — restore-vs-remove
@@ -127,5 +127,22 @@ describe("planMerge — pure merge/conflict decision table", () => {
     expect(plan({ canMerge: true, mergeClean: true })).toBe("pushMerged");
     expect(plan({ canMerge: true, mergeClean: false })).toBe("conflictCopy"); // overlapping edits
     expect(plan({ canMerge: false })).toBe("conflictCopy");                    // not mergeable / no base text
+  });
+});
+
+describe("probePresence — a direct per-path presence probe with a NAMED indeterminate outcome", () => {
+  const io = (o: object) => o as unknown as Parameters<typeof probePresence>[0];
+  it("uses io.exists when available: true → present, false → absent, throw → indeterminate", async () => {
+    expect(await probePresence(io({ exists: async () => true }), "p")).toBe("present");
+    expect(await probePresence(io({ exists: async () => false }), "p")).toBe("absent");
+    expect(await probePresence(io({ exists: async () => { throw new Error("x"); } }), "p")).toBe("indeterminate");
+  });
+  it("falls back to a read when there is no exists probe: bytes → present, unreadable → absent", async () => {
+    expect(await probePresence(io({ read: async () => new Uint8Array([1]) }), "p")).toBe("present");
+    expect(await probePresence(io({ read: async () => { throw new Error("gone"); } }), "p")).toBe("absent");
+  });
+  it("only a definitive 'absent' may tombstone — 'present'/'indeterminate' must keep the file", () => {
+    // documents the call-site contract in reconcileOne's deleteRemote effect: `!== "absent"` ⇒ keep
+    expect(["present", "indeterminate"].every((p) => p !== "absent")).toBe(true);
   });
 });

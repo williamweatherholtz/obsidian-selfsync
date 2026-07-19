@@ -73,15 +73,27 @@ export const TRANSFER_CONCURRENCY = 6;
 // @audit r2 2026-07-18 — FIXED (robustness): a `limit <= 0` (e.g. a future caller deriving it from a
 // setting) spawned ZERO workers → Promise.all([]) resolved and the fn NEVER ran, returning a fully
 // sparse array of undefined that reads as success. Clamp limit to >= 1 (0 workers only for empty input).
-// (Order-preservation via pre-sized results is exemplary; the on-reject continued-work is idempotent/
-// content-addressed — a real non-issue, not fixed.)
+// (Order-preservation via pre-sized results is exemplary.)
+// @audit r3 2026-07-19 — FIXED (boundedPool contract): added a shared abort flag. Previously, when one
+// worker's fn threw, Promise.all rejected but the OTHER workers kept pulling next++ and running fn on the
+// remaining items — harmless for today's idempotent/content-addressed callers, but a latent trap for any
+// future NON-idempotent caller (its remaining ops would run after a sibling had already failed). Now the
+// first throw sets `aborted`, so no NEW item starts (in-flight ones settle); the rejection still propagates
+// via Promise.all. This makes fail-fast the pool's contract instead of a per-caller bolt-on (isolatedPass's
+// own connAbort now rides it), so a non-idempotent caller is safe by construction.
 // @audit-hash sha256:fca9d2dc3c1b27bf
 export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
+  let aborted = false; // set by the first fn rejection → sibling workers stop pulling new items (fail-fast)
   const worker = async () => {
-    for (let i = next++; i < items.length; i = next++) {
-      results[i] = await fn(items[i], i);
+    for (let i = next++; i < items.length && !aborted; i = next++) {
+      try {
+        results[i] = await fn(items[i], i);
+      } catch (e) {
+        aborted = true; // don't start further items once one has failed
+        throw e;        // still propagate via Promise.all (behaviour preserved for the caller)
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));

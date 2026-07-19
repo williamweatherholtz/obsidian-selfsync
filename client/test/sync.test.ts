@@ -128,6 +128,20 @@ describe("chunk sync engine", () => {
     expect(peak).toBeGreaterThan(1);               // genuinely concurrent
   });
 
+  it("mapPool FAILS FAST: once one fn throws, no NEW item is started (boundedPool abort contract)", async () => {
+    // The safety property for a non-idempotent caller: after a sibling fails, the pool must not begin
+    // further work. With a single worker (limit 1) and a throw on item 3, items 4..9 must never run.
+    const started: number[] = [];
+    const items = Array.from({ length: 10 }, (_, i) => i);
+    await expect(mapPool(items, 1, async (n) => {
+      started.push(n);
+      if (n === 3) throw new Error("boom");
+      return n;
+    })).rejects.toThrow("boom");
+    expect(started).toEqual([0, 1, 2, 3]);   // stopped at the failure — 4..9 never started
+    expect(started).not.toContain(9);
+  });
+
   it("streamFileToDisk appends chunks in order and returns true (B9 streaming)", async () => {
     const parts = [enc("111"), enc("22"), enc("3333")];
     const hs = await Promise.all(parts.map((p) => sha256hex(p))); // content-addressed, like the real server

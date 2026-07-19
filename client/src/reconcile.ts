@@ -37,7 +37,7 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
 // (read-only share? real tombstone? a bulk-delete guard tripped? confirmed local-absence?). Lifting that
 // choice out of the imperative switch makes the SAFETY-CRITICAL decisions — restore-vs-remove, delete-
 // remote-vs-guard, the read-only refusals — an exhaustively unit-testable table (finalize.test), while the
-// shell keeps only the awaited IO. The shell resolves the async probes (io.exists / confirmedAbsent) to
+// shell keeps only the awaited IO. The shell resolves the async probes (io.exists / probePresence) to
 // booleans as needed and executes the returned effect; no decision is re-made in the shell.
 export type ReconcileEffect =
   | { kind: "noop" }                          // nothing to do (e.g. both sides absent, no stale base)
@@ -412,19 +412,25 @@ async function readLocalContent(io: VaultIo, path: string, reportedPresent: bool
   return reportedPresent ? { kind: "unreadable" } : { kind: "absent" };
 }
 
-// True ONLY when `path` is definitively gone from disk, confirmed by a DIRECT per-path probe
-// (io.exists, else a read) — never the directory LISTING. A listing UNDER-REPORTS when a directory
-// fails to enumerate (io.list swallows a per-dir error), a cloud-drive placeholder (OneDrive
-// Files-On-Demand) isn't hydrated, or an OS/AV lock hides a file — so a file that is STILL THERE looks
-// absent. Returns false on ANY uncertainty (probe throws, or no probe available), so a transient /
-// placeholder absence is never mistaken for a deletion. This is the delete-REMOTE analogue of
-// delete-local's "a real tombstone, not mere absence" rule (issueFalseAbsenceDelete).
-async function confirmedAbsent(io: VaultIo, path: string): Promise<boolean> {
+// The three distinguishable outcomes of a DIRECT per-path presence probe — the delete-REMOTE analogue of
+// LocalContent (issueBoolPredicatesNoRefinedType). `indeterminate` (the probe threw, or none is available)
+// is a NAMED state, never folded into `present` via a bool: it means "couldn't tell", which is DISTINCT
+// from "confirmed here". Only a definitive `absent` may drive a tombstone, so the caller branches on the
+// type rather than on a boolean that had erased that difference.
+export type ProbedPresence = "present" | "absent" | "indeterminate";
+
+// Probe whether `path` is on disk via a DIRECT per-path check (io.exists, else a read) — NEVER the
+// directory LISTING. A listing UNDER-REPORTS when a directory fails to enumerate (io.list swallows a
+// per-dir error), a cloud-drive placeholder (OneDrive Files-On-Demand) isn't hydrated, or an OS/AV lock
+// hides a file — so a file that is STILL THERE looks absent. Any uncertainty (probe throws, or no probe
+// available) is `indeterminate`, so a transient / placeholder absence is never mistaken for a deletion.
+// This is the delete-REMOTE analogue of delete-local's "a real tombstone, not mere absence" (issueFalseAbsenceDelete).
+export async function probePresence(io: VaultIo, path: string): Promise<ProbedPresence> {
   try {
-    if (io.exists) return !(await io.exists(path));
-    return (await readOrNull(io, path)) === null;
+    if (io.exists) return (await io.exists(path)) ? "present" : "absent";
+    return (await readOrNull(io, path)) === null ? "absent" : "present";
   } catch {
-    return false; // couldn't determine → treat as present; never tombstone on uncertainty
+    return "indeterminate"; // couldn't determine → treat as present; never tombstone on uncertainty
   }
 }
 
@@ -619,7 +625,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // decide() would delete-remote: gone from the local listing but still present+unchanged on the server
   // (r.hash === base.hash). A suspicious FRACTION (>= BULK_DELETE_RATIO of a non-tiny base) vanishing at
   // once is the local-loss signature (cloud de-hydration / partial restore / cleared storage), which the
-  // per-file confirmedAbsent probe can't distinguish from an intentional wipe. Ratio+min-size ONLY (no
+  // per-file presence probe can't distinguish from an intentional wipe. Ratio+min-size ONLY (no
   // "empty local listing" override — unlike an empty server MANIFEST, an empty local vault can be a
   // legitimate "user deleted their last file"; a tiny vault isn't second-guessed, mirroring the
   // delete-local BULK_DELETE_MIN floor). Stateless per-pass gate: a mass local loss lands in ONE full
@@ -964,7 +970,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
   }
   // Decide the effect PURELY (finalize), then execute only the IO here. Every safety-critical branch
   // (restore-vs-remove, delete-remote-vs-guard, the read-only refusals) lives in finalize's table; the
-  // shell resolves the async absence probe (confirmedAbsent) inside the one effect that needs it, so it
+  // shell resolves the async absence probe (probePresence) inside the one effect that needs it, so it
   // stays conditional. The rich per-branch rationale now lives beside finalize + on the effect variants.
   const eff = finalize(action, {
     readOnly: !!d.readOnly,
@@ -1027,7 +1033,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // enumerate, an un-hydrated placeholder, an OS/AV lock), so re-probe real absence before tombstoning
       // FLEET-WIDE. Still present/unknowable ⇒ KEEP; the next reconcile syncs it. (Bulk-loss already guarded
       // by guardRemoteDelete in finalize; this is the per-file confirmation.)
-      if (!(await confirmedAbsent(d.io, path))) return;
+      if ((await probePresence(d.io, path)) !== "absent") return; // present OR indeterminate → keep; only definitive absence tombstones
       await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.();
       return;
     case "mergeOrConflict":
