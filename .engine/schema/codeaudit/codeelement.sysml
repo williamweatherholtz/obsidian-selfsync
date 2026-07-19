@@ -34,6 +34,10 @@ package EngineCodeAudit {
         parseDontValidate; makeIllegalStatesUnrepresentable; typestate; newtype; raiiGuard; functionalCoreImperativeShell; portsAndAdapters;
         serializedActor; boundedPool; singleWriter;
         state; strategy; observer; command; factory; adapter; facade; templateMethod; decorator;
+        // D0032 (crit R+1): two shapes the mislabel-retags needed and no existing member honestly fit —
+        // a content-addressed immutable store (safe by hashing+immutability, NOT single-writer) and an
+        // error-isolation loop over a bounded pool (the bound is delegated; the element IS the isolation).
+        contentAddressedImmutable; errorIsolationLoop;
         none;
     }
 

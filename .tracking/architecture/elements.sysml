@@ -85,7 +85,7 @@ package ProjectCodeElements {
         :>> riskRationale = "An acked commit references chunks this wrote; a non-durable write loses committed content on power loss (the missing-dir-fsync defect, now fixed).";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "content-address verified before store; atomic temp+rename+fsync(file)+fsync(dir). Durability is runtime-ordered, not type-enforced.";
-        :>> pattern = DesignPattern::singleWriter;
+        :>> pattern = DesignPattern::contentAddressedImmutable;
         :>> stpaRole = StpaRole::channel; // content-addressed + verified => correct-by-construction transfer, a pruned channel
     }
 
@@ -124,7 +124,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The single authZ choke-point for every vault operation; a wrong verdict is cross-tenant data exposure. Highest security consequence on the server.";
         :>> invariantSafety = InvariantSafety::typeEnforced;
         :>> invariantNotes = "Fail-closed by construction: exhaustive match, None => false, a Read grant strictly gates Access::Write; the Perm(stored) vs Access(requested) two-enum split prevents category confusion at compile time. Exemplary.";
-        :>> pattern = DesignPattern::makeIllegalStatesUnrepresentable;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::controller; // guards the controlled process (vault); a wrong belief (grant) reaches a Loss
         :>> actions = "authorize, deny";
     }
@@ -1268,7 +1268,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The ONLY place a config removal/divergence is acted on destructively/resurrectively â€” and only because the user chose it.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "local: push (or propagate removal); remote: pull (or adopt removal); base set to the winner.";
-        :>> pattern = DesignPattern::command;
+        :>> pattern = DesignPattern::strategy;
         :>> stpaRole = StpaRole::controller;
     }
     part ceIsolatedPass : CodeElement {
@@ -1281,7 +1281,7 @@ package ProjectCodeElements {
         :>> riskRationale = "The shared reconcile loop: a whole-connection error must ABORT the pass; any other error must stay isolated + hold the cursor.";
         :>> invariantSafety = InvariantSafety::runtimeGuarded;
         :>> invariantNotes = "connAbort short-circuit; isConnectionError => abort; else per-file hold via holdForRetry. Bounded concurrency (mapPool).";
-        :>> pattern = DesignPattern::boundedPool;
+        :>> pattern = DesignPattern::errorIsolationLoop;
         :>> stpaRole = StpaRole::channel;
     }
     part ceRunDeleteGuard : CodeElement {
@@ -1489,7 +1489,7 @@ package ProjectCodeElements {
         :>> riskRationale = "Unions two enabled-plugin id lists so a sync can never disable a locally-enabled plugin.";
         :>> invariantSafety = InvariantSafety::parsed;
         :>> invariantNotes = "Grow-only sorted union; null on a non-string[] (falls back to opaque handling).";
-        :>> pattern = DesignPattern::makeIllegalStatesUnrepresentable;
+        :>> pattern = DesignPattern::functionalCoreImperativeShell;
         :>> stpaRole = StpaRole::channel;
     }
     part ceIsSafeVaultPath : CodeElement {

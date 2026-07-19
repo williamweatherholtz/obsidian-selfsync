@@ -12,7 +12,7 @@ codebase's defect classes. Target these for High-criticality elements.
 
 | pattern | what it buys | exemplar here |
 |---|---|---|
-| `parseDontValidate` | validate once at the boundary into a type that *proves* the invariant thereafter | `validateChanges`/`validateFileMeta`; `safe_rel_path` |
+| `parseDontValidate` | validate once at the boundary into a type that *proves* the invariant thereafter | `safe_rel_path` (Option<PathBuf>); `validateStatus` (constructs a fresh value) — the true exemplars; note `validateChanges`/`validateFileMeta` also parse but historically cast (validateFileMeta now constructs + checks mtime, D-crit-R+1) |
 | `makeIllegalStatesUnrepresentable` | the type system forbids the bad state; no runtime check needed | `decide()`'s `Presence`/`Action` domain |
 | `typestate` | encode a state machine in types so illegal transitions don't compile | (target for the engine/connection state) |
 | `newtype` | a distinct type for a distinct concept (no mixing up two `String`s) | (target where same-typed args transpose) |
