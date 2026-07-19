@@ -114,6 +114,21 @@ export const STREAM_MIN_BYTES = 8 * 1024 * 1024; // 8 MiB
 // mobile. Within a file, chunk transfer is separately parallel (TRANSFER_CONCURRENCY). (Finding 1)
 export const FILE_CONCURRENCY = 4;
 
+// The whole-vault reconcile's SCAN-MODE decision, extracted as a pure total function (crit R+1,
+// issueStateMachineOrphanedAndImplicit D2): doReconcileAll picked one of four modes from a 2^4 boolean
+// space (forceConfigScan / forceFullScan / reset / noChange) with nested ifs. Naming the modes + the
+// decision makes the selection exhaustively unit-testable in isolation (the model is decide()'s table).
+//   noop         — nothing changed and no scan is due → record the floor + return, no reconcile.
+//   full         — a history reset OR the slow full-scan cadence → whole-vault reconcileAll.
+//   delta        — remote changes only → incremental reconcileDelta.
+//   delta+config — a delta PLUS a due config-only re-hash (reconcileDelta then reconcileLocalConfig).
+export type ReconcileMode = "noop" | "full" | "delta" | "delta+config";
+export function decideReconcileMode(o: { forceConfigScan: boolean; forceFullScan: boolean; reset: boolean; noChange: boolean }): ReconcileMode {
+  if (!o.forceConfigScan && !o.forceFullScan && !o.reset && o.noChange) return "noop";
+  if (o.forceFullScan || o.reset) return "full";
+  return o.forceConfigScan ? "delta+config" : "delta";
+}
+
 // After this many CONSECUTIVE failed pulls of the same (path, server-version), stop holding the poll
 // cursor open for it — a genuinely-corrupt server copy would otherwise re-download every poll forever
 // (R18). It's still re-attempted by the slow full scan and immediately re-tried when the server

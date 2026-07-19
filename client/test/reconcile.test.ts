@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES } from "../src/reconcile";
+import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -115,6 +115,26 @@ describe("SEC-DATA: DeleteRateGuard defeats a paced-tombstone vault drain", () =
     const g = new DeleteRateGuard(1000, 0.5, 6, () => t);
     g.observe(3);
     expect(g.wouldExceed(3)).toBe(false);    // peak 3 < min 6 → never guards
+  });
+});
+
+describe("decideReconcileMode (crit R+1, D2): the scan-mode selection is a pure total function", () => {
+  const m = (o: Partial<{ forceConfigScan: boolean; forceFullScan: boolean; reset: boolean; noChange: boolean }>) =>
+    decideReconcileMode({ forceConfigScan: false, forceFullScan: false, reset: false, noChange: false, ...o });
+  it("noop ONLY when idle (nothing changed) and no scan is due", () => {
+    expect(m({ noChange: true })).toBe("noop");
+    expect(m({ noChange: true, forceConfigScan: true })).toBe("delta+config"); // a due config scan runs even when idle
+    expect(m({ noChange: true, forceFullScan: true })).toBe("full");
+    expect(m({ noChange: true, reset: true })).toBe("full");
+  });
+  it("full wins on a full-scan cadence or a history reset (over a concurrent config scan)", () => {
+    expect(m({ forceFullScan: true, forceConfigScan: true })).toBe("full");
+    expect(m({ reset: true, forceConfigScan: true })).toBe("full");
+  });
+  it("delta+config for a due config scan (no full/reset); plain delta for remote changes otherwise", () => {
+    expect(m({ forceConfigScan: true })).toBe("delta+config");
+    expect(m({ noChange: false })).toBe("delta");            // a real delta, nothing else due
+    expect(m({ noChange: false, forceConfigScan: true })).toBe("delta+config");
   });
 });
 

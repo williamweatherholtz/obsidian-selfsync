@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, deriveNoteConflicts } from "./base";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -1361,7 +1361,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     // first (noteHistory), so an idle vault tracks them and a LATER reset stays detectable (a pure
     // tombstone-prune bumps the floor without any delta). No reconcile ran, so nothing was kept.
     const noChange = delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === this.state.version;
-    if (!forceConfigScan && !forceFullScan && !reset && noChange) {
+    const mode = decideReconcileMode({ forceConfigScan, forceFullScan, reset, noChange }); // pure scan-mode decision
+    if (mode === "noop") {
       this.noteHistory(delta.version, delta.history_floor, []);
       return;
     }
@@ -1383,11 +1384,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // visits every local file (catches a LOCAL note edit whose event was dropped) + carries the
     // bulk-delete guard. Otherwise: the incremental delta (remote changes) + a cheap CONFIG-ONLY
     // re-hash on the frequent config tick (local config edits, which fire no reliable event). (R13)
-    if (forceFullScan || reset) {
+    if (mode === "full") {
       await reconcileAll(d);
     } else {
       await reconcileDelta(d, delta);
-      if (forceConfigScan) await reconcileLocalConfig(d);
+      if (mode === "delta+config") await reconcileLocalConfig(d);
     }
     // Mark the scan windows done ONLY now that the awaited scan actually completed — a mid-scan throw
     // above leaves them due so the next poll re-arms (rather than trusting doConnect to re-stamp). (@audit r2)
