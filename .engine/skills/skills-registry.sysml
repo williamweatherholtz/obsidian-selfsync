@@ -98,6 +98,14 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Asked to assess test efficacy, after a test-hardening pass, or to prove a module's tests bite.";
         :>> writePolicy = WritePolicy::direct;
     }
+    part codeCritique : AISkill {
+        :>> id = "c0de0c17-1a2b-4c3d-8e4f-5a6b7c8d9e01";
+        :>> title = "code-critique";
+        :>> purpose = "Adversarial multi-lens BUG hunt of the deliverable SOURCE CODE by INDEPENDENT critics (data-integrity / security / concurrency / correctness): each runs in fresh context and tries to BREAK the code; findings are VERIFIED against the source before recording, filed as severity-carrying Issues (D0077, NOT method=critique verifications — the code is not a #Verify element), and each fixed with a fail-first regression. The recurring code-critique-round activity (round1/2/6 + R+1). Distinct from element-critique (model elements), architectural-critique (the engine), function-audit (per-function idiom). Deploys .engine/processes/code-critique.sysml.";
+        :>> location = ".engine/skills/code-critique/SKILL.md";
+        :>> triggerCondition = "Asked to critique / red-team / adversarially review the code, 'find bugs', 'where is this weak', 'another critique pass', or after a big change to a critical subsystem.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part testResult : AISkill {
         :>> id = "b153edf8-6a01-4e3d-c746-6fa3f6f0f666";
         :>> title = "test-result";
