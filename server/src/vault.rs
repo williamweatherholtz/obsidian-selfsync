@@ -147,6 +147,38 @@ enum VaultState {
     DanglingRecovery,
 }
 
+// The events that drive the index-health lifecycle. Extracting them + a total transition function
+// (issueVaultLifecycleImplicitFsm) turns what were scattered `self.state = …` assignments across
+// open/verify_and_gc/reindex into ONE explicit, unit-testable machine — the server analogue of the
+// client's transportTransition. The transitions are pure; callers apply the surrounding IO.
+#[derive(Clone, Copy, Debug)]
+enum VaultEvent {
+    Opened { corrupt: bool }, // finished opening the persisted index (`corrupt` = unreadable DB or empty-with-data)
+    IndexUnreadable,          // a runtime index read failed → the manifest can't be trusted (blind rebuild)
+    DanglingChunk,            // the index is intact but a referenced blob is missing (trust-the-index repair)
+    ReindexStarted,           // a rebuild is beginning
+    ReindexSucceeded,         // the rebuild completed cleanly
+}
+
+impl VaultState {
+    // The one total transition for the index-health lifecycle. Pure — no IO — so the whole table is
+    // exercised in isolation (see the transition test); each caller applies the returned state and does
+    // its own IO around it.
+    fn next(self, e: VaultEvent) -> VaultState {
+        match e {
+            // Opened is state-independent: the persisted index either checked out or it didn't.
+            VaultEvent::Opened { corrupt } => if corrupt { VaultState::Corrupt } else { VaultState::Ok },
+            VaultEvent::IndexUnreadable => VaultState::Corrupt,
+            VaultEvent::DanglingChunk => VaultState::DanglingRecovery,
+            // R19 one-shot: a DanglingRecovery reindex TRUSTS the intact index for this one attempt, but we
+            // drop to Corrupt as it starts so a rebuild that ABORTS is marked for a full blind rebuild next
+            // time. Corrupt/Ok are unchanged by merely starting (the caller captured was_corrupt already).
+            VaultEvent::ReindexStarted => if self == VaultState::DanglingRecovery { VaultState::Corrupt } else { self },
+            VaultEvent::ReindexSucceeded => VaultState::Ok,
+        }
+    }
+}
+
 pub struct Vault {
     root: PathBuf,
     vault_dir: PathBuf,
@@ -221,7 +253,7 @@ impl Vault {
         }
         let mut v = Vault {
             root: root.to_path_buf(), vault_dir, store, index,
-            state: if corrupt { VaultState::Corrupt } else { VaultState::Ok },
+            state: VaultState::Ok.next(VaultEvent::Opened { corrupt }),
             version, history_floor,
             last_orphan_sweep: std::sync::Mutex::new(std::time::Instant::now()),
         };
@@ -285,7 +317,7 @@ impl Vault {
             Ok(r) => r,
             Err(e) => {
                 log::error!("[vault] {}: index read failed ({e}); marking ERROR — run reindex", self.root.display());
-                self.state = VaultState::Corrupt; // unreadable index → blind rebuild-from-disk
+                self.state = self.state.next(VaultEvent::IndexUnreadable); // unreadable index → blind rebuild-from-disk
                 return;
             }
         };
@@ -299,7 +331,7 @@ impl Vault {
             // R19: the index ITSELF is intact (rows + tombstones present) — only a chunk blob is gone.
             // DanglingRecovery makes the auto-repair reindex TRUST the index (keeps the ghost-skip +
             // prefer-store guards) instead of rebuilding blindly from disk.
-            self.state = VaultState::DanglingRecovery;
+            self.state = self.state.next(VaultEvent::DanglingChunk);
             return; // don't GC a vault we're about to rebuild
         }
         match self.store.list_hashes() {
@@ -344,7 +376,7 @@ impl Vault {
         // R19 one-shot: consume the dangling flag — a DanglingRecovery that FAILS to reindex downgrades to
         // Corrupt (a full rebuild next time). (was_corrupt was captured above as false for DanglingRecovery,
         // so this reindex still TRUSTS the intact index; only an abort leaves it Corrupt.)
-        if self.state == VaultState::DanglingRecovery { self.state = VaultState::Corrupt; }
+        self.state = self.state.next(VaultEvent::ReindexStarted);
         // The current manifest (empty when the DB was corrupt/blank). Also note whether the index
         // still HOLDS tombstones: replace_files preserves the deletions table, so a rebuild that keeps
         // them (e.g. a dangling-chunk auto-repair on an otherwise-intact index) must NOT raise the
@@ -466,7 +498,7 @@ impl Vault {
             self.index.set_history_floor(max_version)?;
             self.history_floor = max_version;
         }
-        self.state = VaultState::Ok;
+        self.state = self.state.next(VaultEvent::ReindexSucceeded);
         for h in &old_refs {
             if !new_refs.contains(h) { let _ = self.store.remove(h); }
         }
@@ -751,6 +783,30 @@ fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vault_state_transitions_are_total_and_correct() {
+        use VaultEvent::*;
+        use VaultState::*;
+        // Opened is state-independent — the persisted index checked out or it didn't.
+        assert_eq!(Ok.next(Opened { corrupt: false }), Ok);
+        assert_eq!(Ok.next(Opened { corrupt: true }), Corrupt);
+        assert_eq!(DanglingRecovery.next(Opened { corrupt: false }), Ok); // prior state ignored
+        // Runtime health drops.
+        for s in [Ok, Corrupt, DanglingRecovery] {
+            assert_eq!(s.next(IndexUnreadable), Corrupt);
+            assert_eq!(s.next(DanglingChunk), DanglingRecovery);
+        }
+        // ReindexStarted: the R19 one-shot consumes DanglingRecovery → Corrupt (a failed rebuild then
+        // rebuilds blindly next time); Ok/Corrupt are unchanged by merely starting.
+        assert_eq!(DanglingRecovery.next(ReindexStarted), Corrupt);
+        assert_eq!(Corrupt.next(ReindexStarted), Corrupt);
+        assert_eq!(Ok.next(ReindexStarted), Ok);
+        // A completed rebuild always heals.
+        for s in [Ok, Corrupt, DanglingRecovery] {
+            assert_eq!(s.next(ReindexSucceeded), Ok);
+        }
+    }
 
     #[test]
     fn safe_rel_path_rejects_windows_reserved_device_names() {

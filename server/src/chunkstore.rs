@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///   2. The orphan sweep reclaims a de-referenced blob only after a TTL measured from when it was
 ///      orphaned (`touch` bumps the mtime on de-reference), giving a concurrent rename/dedup commit a
 ///      window to re-reference it before it can be collected.
+///
 /// Callers on the raw store (outside a Vault) MUST uphold #1/#2 themselves; the store assumes it.
 pub struct ContentStore {
     root: PathBuf,
