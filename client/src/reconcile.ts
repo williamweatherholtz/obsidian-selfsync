@@ -353,10 +353,12 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // Returns the conflict-copy path it wrote (so a caller whose subsequent write FAILS can remove the
 // now-orphaned copy), or null if no race was detected. The copy name is tagged with the CURRENT
 // content's hash — never a stale pre-fetch hash — so the tag always matches the copy's bytes.
-// Sentinel: a raced pull of a CONFIG path was routed to adjudication instead of a note copy — the
-// caller must NOT overwrite the raced local edit (R13-CR1). Not a real path (leading NUL).
-const CONFIG_RACE_MARKER = " config-race";
-async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<string | null> {
+// A discriminated union, NOT an overloaded `string|null` channel (issuePatternUntaggedShouldAdopt): a
+// raced CONFIG path (`config-race`) is type-distinct from a written note conflict-copy (`copy`), so a
+// caller can never conflate the adjudication marker with a real copy path (the old design smuggled a
+// magic leading-NUL sentinel through the path return — a representable-illegal state). (R13-CR1 / DI-3)
+type RaceOutcome = { kind: "none" } | { kind: "config-race" } | { kind: "copy"; path: string };
+async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<RaceOutcome> {
   const cur = await readOrNull(d.io, path);
   const curHash = cur ? await sha256hex(cur) : null;
   if (curHash !== expectLocalHash && cur) {
@@ -366,14 +368,14 @@ async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHa
       // would be pushed as junk config AND the resolver can't surface it. Record it + tell the caller
       // to leave the raced local edit in place for the user to adjudicate. (R13-CR1)
       d.onConfigConflict?.(path, "local edit raced a pull");
-      return CONFIG_RACE_MARKER;
+      return { kind: "config-race" };
     }
     const copy = conflictCopyName(path, d.device, nowUtc(), curHash?.slice(0, 6) ?? "");
     await d.io.write(copy, cur);
     d.onConflict?.(path, copy);
-    return copy;
+    return { kind: "copy", path: copy };
   }
-  return null;
+  return { kind: "none" };
 }
 
 // `expectLocalHash` is the local content hash the reconcile decision was based on. `guardRace`
@@ -384,8 +386,8 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     // Streamed large file: run the racing-edit check BEFORE streaming (streamFileToDisk writes +
     // renames atomically, so there's no post-fetch/pre-write seam to insert it into). The narrow
     // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
-    const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
-    if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite the local edit
+    const race: RaceOutcome = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : { kind: "none" };
+    if (race.kind === "config-race") return; // config race → adjudicate, don't overwrite the local edit
     try {
       // streamFileToDisk now verifies the whole-file hash INCREMENTALLY, BEFORE its atomic rename
       // (R17), so a bad manifest aborts without ever overwriting `path` — no post-write re-read (which
@@ -399,7 +401,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
       // The stream failed AFTER a racing-edit conflict copy was written, but nothing was overwritten
       // — so that copy is just a redundant duplicate of the current file. Remove the orphan before
       // propagating (issueConflictCopyCosmetic). Best-effort; the reconcile still fails the path.
-      if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } }
+      if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } }
       throw e;
     }
     // streamFileToDisk returned false → fall back to the buffered path. The racing-edit copy (if any)
@@ -408,7 +410,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     try {
       await d.io.write(path, bytes);
     } catch (e) {
-      if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } } // R14 sync#4
+      if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } } // R14 sync#4
       throw e;
     }
     setBase(d, path, bytes, rmeta.hash);
@@ -416,15 +418,15 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
   }
   const bytes = await fetchVerified(d, rmeta);
   // Buffered path: check AFTER the fetch (catches a save that landed during the multi-chunk fetch).
-  const racedCopy = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : null;
-  if (racedCopy === CONFIG_RACE_MARKER) return; // config race → adjudicate, don't overwrite
+  const race: RaceOutcome = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : { kind: "none" };
+  if (race.kind === "config-race") return; // config race → adjudicate, don't overwrite
   try {
     await d.io.write(path, bytes);
   } catch (e) {
     // Orphan cleanup, matching the streamed path (R14 sync#4): the write failed and nothing was
     // overwritten, so a racing-edit conflict copy is just a redundant duplicate of the unchanged
     // local file — remove it before propagating, so we don't surface a spurious conflict.
-    if (racedCopy) { try { await d.io.remove(racedCopy); } catch { /* best-effort cleanup */ } }
+    if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } }
     throw e;
   }
   setBase(d, path, bytes, rmeta.hash);
