@@ -6,8 +6,11 @@ import { validateFileMeta, validateChanges } from "../src/protocol";
 describe("response-shape validation (PROTO-3)", () => {
   const goodMeta = { path: "a.md", hash: "h", size: 3, mtime: 1, version: 5, chunks: ["c1", "c2"] };
 
-  it("accepts a well-formed FileMeta and returns it", () => {
-    expect(validateFileMeta(goodMeta)).toBe(goodMeta);
+  it("accepts a well-formed FileMeta and returns a fresh validated value (construct, not cast)", () => {
+    expect(validateFileMeta(goodMeta)).toEqual(goodMeta); // equal by value...
+    // ...and CONSTRUCTED (parse-don't-validate): the result carries only the validated fields, so an
+    // extra/hostile property on the wire object can't ride along into trusted state.
+    expect(validateFileMeta({ ...goodMeta, evil: "x" })).not.toHaveProperty("evil");
   });
 
   it("rejects a FileMeta whose chunks are not string[]", () => {
@@ -19,6 +22,17 @@ describe("response-shape validation (PROTO-3)", () => {
     expect(() => validateFileMeta({ ...goodMeta, hash: undefined })).toThrow(/hash/);
     expect(() => validateFileMeta({ ...goodMeta, version: "5" })).toThrow(/version/);
     expect(() => validateFileMeta(null)).toThrow();
+  });
+
+  // issueValidateFileMetaMtimeUnchecked: mtime is part of the FileMeta contract (flows into base
+  // stat-stamping) but was never validated — a hostile server could send a non-numeric mtime that the
+  // returned type falsely asserted. It must be rejected like every other numeric field.
+  it("rejects a FileMeta whose mtime is not a non-negative integer", () => {
+    expect(() => validateFileMeta({ ...goodMeta, mtime: "evil" })).toThrow(/mtime/);
+    expect(() => validateFileMeta({ ...goodMeta, mtime: NaN })).toThrow(/mtime/);
+    expect(() => validateFileMeta({ ...goodMeta, mtime: 1.5 })).toThrow(/mtime/);
+    const { mtime, ...noMtime } = goodMeta; void mtime;
+    expect(() => validateFileMeta(noMtime)).toThrow(/mtime/);
   });
 
   it("accepts a well-formed ChangesResponse", () => {

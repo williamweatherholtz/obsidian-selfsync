@@ -49,11 +49,22 @@ function asNum(v: unknown, f: string): number {
 export function validateFileMeta(o: unknown): FileMeta {
   const m = o as Record<string, unknown>;
   if (!m || typeof m !== "object") throw new Error("malformed response: FileMeta not an object");
-  asStr(m.path, "path"); asStr(m.hash, "hash"); asNum(m.size, "size"); asNum(m.version, "version");
   if (!Array.isArray(m.chunks) || m.chunks.some((c) => typeof c !== "string")) {
     throw new Error("malformed response: FileMeta.chunks not string[]");
   }
-  return o as FileMeta;
+  // CONSTRUCT a fresh, fully-validated FileMeta (parse-don't-validate) — do NOT `as`-cast the raw object
+  // (issueValidateFileMetaMtimeUnchecked): mtime is part of the FileMeta contract and flows into base
+  // stat-stamping, so a cast that skips it lets a hostile server send mtime:"evil"/NaN and have the type
+  // falsely assert it. Validate every field + build the value, like validateStatus. asStr/asNum return
+  // the checked value; the returned object contains only the validated fields.
+  return {
+    path: asStr(m.path, "path"),
+    hash: asStr(m.hash, "hash"),
+    size: asNum(m.size, "size"),
+    mtime: asNum(m.mtime, "mtime"),
+    version: asNum(m.version, "version"),
+    chunks: m.chunks as string[],
+  };
 }
 // R12-PB5: status() was the one consumed response NOT shape-validated — a garbage `{}` made
 // `status` undefined and mis-fired the "vault damaged, run reindex" path (and fed the version gate
