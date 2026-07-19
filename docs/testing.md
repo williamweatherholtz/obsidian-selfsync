@@ -115,7 +115,20 @@ survivor was the latent R12-CC1 `schema_version` stamp a single-version schema n
 (content-addressed blob store) had 6 in untested error/validation/recovery paths — crash-leftover `.tmp`
 sweep, the `is_valid_hash` format gate, `get()` swallowing non-`NotFound` errors as "absent", and the R16
 `touch()` orphan-clock reset. Killed with 5 tests. Confirming re-run: **80 caught / 0 missed / 9 unviable =
-100%** (`serverMutationScore` M2 index_store, M3 chunkstore). Follow-on: `vault.rs` (the largest module).
+100%** (`serverMutationScore` M2 index_store, M3 chunkstore).
+
+**Third pass — `vault.rs` (largest module: commit/reindex/GC/path-safety), 2026-07-18** (`mutationTestingVault`).
+138 mutants → 33 survivors = 74.2%, the least-covered module. 8 were on the live **request path** and were killed
+with 5 tests: `safe_rel_path` empty/absolute rejection, the strict `> MAX_FILE_BYTES` size gate, right-size/
+**wrong-hash** integrity rejection, idempotency-requires-chunks-match, and commit+delete version bump. Confirming
+re-run: **102 caught / 26 missed = 79.7%** (`serverMutationScore` M4). The 26 residual are **triaged, not ignored**
+(the skill's rule — kill or *justify*): 21 documented equivalent/impractical accepts (the 4 GiB `MAX_FILE_BYTES`
+constant whose *comparison* is now tested; log-only counters; the 300 s-interval best-effort orphan sweep whose
+core reclaim is already 100 % in `chunkstore`; a guard that's redundant on Windows) + 5 real reindex
+corrupt-rebuild gaps tracked as an open follow-on (`issueVaultReindexRebuildTestGaps` → `mutationTestingVaultReindex`).
+Effective non-accepted coverage ≈ 95 %.
+
+Across the four modules mutation-tested, 19 fail-first killing tests were added and 3 test-gap Issues recorded.
 
 Reproduce: `cargo install cargo-mutants && cd server && cargo mutants --file src/shares.rs --timeout 300`
 (use `--timeout` ≥ ~3× the baseline test time so `-j` contention can't cause false timeouts).
