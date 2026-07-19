@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { groupConfigConflicts, configFileLabel, configSurfaceOf, configAutoResolveChoice } from "../src/configsync";
+import { groupConfigConflicts, configFileLabel, configSurfaceOf, configAutoResolveChoice, adjudicateConfigConflict } from "../src/configsync";
 
 describe("configSurfaceOf — path → the per-category toggle that governs it", () => {
   it("maps each recognized config file/dir to its surface", () => {
@@ -31,6 +31,29 @@ describe("configAutoResolveChoice — first-contact direction, else prompt", () 
   it("falls through when no direction is pending, or the path has no surface", () => {
     expect(configAutoResolveChoice("conflict-copy", "appearance", undefined)).toBeNull();
     expect(configAutoResolveChoice("conflict-copy", null, "download")).toBeNull();
+  });
+});
+
+describe("adjudicateConfigConflict — the explicit auto-vs-manual state (D3)", () => {
+  it("an auto-resolvable first-contact divergence → {auto, choice}", () => {
+    expect(adjudicateConfigConflict("conflict-copy", "appearance", "download")).toEqual({ kind: "auto", choice: "remote" });
+    expect(adjudicateConfigConflict("conflict-copy", "appearance", "upload")).toEqual({ kind: "auto", choice: "local" });
+  });
+  it("anything the choice helper declines (later edit, no direction, no surface) → {manual}", () => {
+    expect(adjudicateConfigConflict("merge", "appearance", "download")).toEqual({ kind: "manual" });
+    expect(adjudicateConfigConflict("edit-wins-pull", "core", "upload")).toEqual({ kind: "manual" });
+    expect(adjudicateConfigConflict("conflict-copy", "appearance", undefined)).toEqual({ kind: "manual" });
+    expect(adjudicateConfigConflict("conflict-copy", null, "download")).toEqual({ kind: "manual" });
+  });
+  it("is a faithful lift of configAutoResolveChoice — never disagrees with the underlying choice", () => {
+    for (const reason of ["conflict-copy", "merge", "edit-wins-pull", "edit-wins-keep-local"])
+      for (const surface of ["appearance", "core", null] as const)
+        for (const dir of ["download", "upload", undefined] as const) {
+          const choice = configAutoResolveChoice(reason, surface, dir);
+          const adj = adjudicateConfigConflict(reason, surface, dir);
+          if (choice) expect(adj).toEqual({ kind: "auto", choice });
+          else expect(adj).toEqual({ kind: "manual" });
+        }
   });
 });
 

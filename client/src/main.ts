@@ -15,7 +15,7 @@ import { Phase, light, isWsStale } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
-import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, configSurfaceOf, configAutoResolveChoice, ConfigSurface, ConfigDirection } from "./configsync";
+import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
@@ -618,13 +618,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     const pid = pluginIdOf(path);
     if (pid) { const pd = this.settings.configSync.pluginDir?.[pid]; if (pd) dir = pd; }
     if (dir && this.settings.vaultReadOnly) dir = "download"; // read-only can only ever download
-    const choice = configAutoResolveChoice(reason, surface, dir);
-    if (choice) {
-      void resolveConfigConflict(this.deps(), path, choice); // reuses the tested adjudication apply
-      this.log(`config first-contact for '${path}': ${choice === "remote" ? "adopted the synced copy" : "kept this device's"} (chosen when enabling ${surface} sync)`);
+    // Explicit, enumerated adjudication (D3): auto-resolve this way, or queue for the human — never both.
+    const adj = adjudicateConfigConflict(reason, surface, dir);
+    if (adj.kind === "auto") {
+      void resolveConfigConflict(this.deps(), path, adj.choice); // reuses the tested adjudication apply
+      this.log(`config first-contact for '${path}': ${adj.choice === "remote" ? "adopted the synced copy" : "kept this device's"} (chosen when enabling ${surface} sync)`);
       return;
     }
-    if (this.settings.configConflicts.includes(path)) return; // already queued
+    if (this.settings.configConflicts.includes(path)) return; // already queued for the human
     this.settings.configConflicts.push(path);
     void this.saveSettings();
     this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in Settings → Conflicts`, true);

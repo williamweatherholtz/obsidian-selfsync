@@ -123,6 +123,22 @@ export function configAutoResolveChoice(reason: string, surface: ConfigSurface |
   return dir === "download" ? "remote" : "local";
 }
 
+// The explicit per-path config-adjudication STATE (D3, issueStateMachineOrphanedAndImplicit): a config
+// divergence is EITHER auto-resolved by the surface's first-contact direction OR queued for the human —
+// a two-case discriminated union, so the caller can't accidentally do neither/both. This replaces the old
+// implicit "compute a choice, and if it's null the fact that the path lands in the configConflicts array
+// IS the state" flow with a named, enumerated decision (the config-path analogue of decide()/finalize()).
+// Pure + total. NOTE: the divergence `reason` is deliberately NOT persisted — it is re-derived from the
+// live file states on every reconcile, so storing it would be a stale derived value (a #View, not truth);
+// the only persisted state is membership in the awaiting-user set (settings.configConflicts).
+export type ConfigAdjudication =
+  | { kind: "auto"; choice: "local" | "remote" } // first-contact divergence + the surface has a chosen direction → apply it
+  | { kind: "manual" };                          // genuine concurrent divergence (or no chosen direction) → the human decides
+export function adjudicateConfigConflict(reason: string, surface: ConfigSurface | null, dir: ConfigDirection | undefined): ConfigAdjudication {
+  const choice = configAutoResolveChoice(reason, surface, dir);
+  return choice ? { kind: "auto", choice } : { kind: "manual" };
+}
+
 // community-plugins.json is a SET of enabled community-plugin ids (a JSON string[]) that gates whether
 // installed plugins RUN. Synced as an opaque whole-file blob, a SHORTER synced copy could DISABLE a
 // plugin that's installed+enabled on this device (the "all my plugins vanished" class). It must be
