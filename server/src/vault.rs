@@ -877,6 +877,66 @@ mod tests {
         assert_eq!(after.hash, hash);
     }
 
+    // MUTATION-TESTING (D0030, mutationTestingVaultReindex): the reindex REBUILD path (reached when the
+    // prefer-store short-circuit does NOT fire) had untested branches — the healthy-reindex tests above
+    // all take the prefer-store shortcut, so reindex:387/412 survived. These three drive the rebuild path.
+
+    // 387 (`!empty && all_has` prefer-store) + 412 (version-preserve on rebuild): a HEALTHY reindex whose
+    // file has a VANISHED chunk (mirror intact) must REBUILD from the mirror — re-storing the chunk, not
+    // keeping the dangling verbatim entry — and, the content being unchanged, PRESERVE the version.
+    #[test]
+    fn reindex_rebuilds_a_file_whose_chunk_vanished_and_preserves_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"stable content"; let h = sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        let m = v.commit(CommitRequest { path: "keep.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        let original_version = m.version;
+        // Blob vanishes from the store, but the mirror file stays on disk and the index row is intact, so
+        // the vault is still HEALTHY (verify_and_gc not re-run) → reindex enters the prefer-store branch,
+        // finds the chunk missing (all_has == false), and must fall through to the disk rebuild.
+        v.store.remove(&h).unwrap();
+        assert!(v.get_chunk(&h).unwrap().is_none(), "precondition: the chunk is gone");
+        v.reindex(false).unwrap();
+        assert!(v.get_chunk(&h).unwrap().is_some(), "387: a vanished chunk must be rebuilt from the mirror, not kept as a dangling ref");
+        let after = v.changes(0).upserts.into_iter().find(|f| f.path == "keep.md").unwrap();
+        assert_eq!(after.version, original_version, "412: an unchanged file keeps its version on rebuild");
+    }
+
+    // 412 (`old.hash == hash` guard → true): a CHANGED file that must be rebuilt (its old chunk is gone,
+    // so prefer-store can't keep the stale entry) must get a NEW version — never keep the old one.
+    #[test]
+    fn reindex_bumps_version_for_a_changed_file_it_must_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body1 = b"one"; let h1 = sha256_hex(body1);
+        v.put_chunk(&h1, body1).unwrap();
+        let m = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
+        let original_version = m.version;
+        // Change the mirror on disk AND drop the old chunk → reindex cannot prefer-store the stale entry
+        // and must rebuild from the new bytes; the new hash must mint a new version.
+        write_vault_file(dir.path(), "n.md", b"two-changed");
+        v.store.remove(&h1).unwrap();
+        v.reindex(false).unwrap();
+        let after = v.changes(0).upserts.into_iter().find(|f| f.path == "n.md").unwrap();
+        assert_eq!(after.hash, sha256_hex(b"two-changed"), "the changed disk content is ingested");
+        assert!(after.version > original_version, "412: a changed file must get a NEW version on rebuild, not keep the old");
+    }
+
+    // 426 (`was_corrupt && !had_tombstones` floor-raise): a HEALTHY reindex with NO tombstones must LEAVE
+    // the history floor at genesis — only a rebuild that genuinely LOST tombstones resets history.
+    #[test]
+    fn healthy_reindex_without_tombstones_leaves_history_floor_at_genesis() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"x"; let h = sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        assert_eq!(v.changes(0).history_floor, 1, "precondition: genesis floor");
+        v.reindex(false).unwrap(); // healthy + zero tombstones → the floor must not move
+        assert_eq!(v.changes(0).history_floor, 1, "426: a healthy, tombstone-free reindex must not raise the floor");
+    }
+
     #[test]
     fn reindex_is_deterministic() {
         let dir = tempfile::tempdir().unwrap();
