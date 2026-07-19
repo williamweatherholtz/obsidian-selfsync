@@ -1351,4 +1351,79 @@ mod tests {
         let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h], expected_version: None });
         assert!(res.is_err(), "absurd declared size must be rejected before allocation");
     }
+
+    // ==== MUTATION-TESTING (D0030): kill the request-path survivors cargo-mutants found on vault.rs. ====
+
+    // safe_rel_path's front guard `is_empty() || contains('\\') || starts_with('/')` had no test for its
+    // arms, so weakening a `||` to `&&` (admit an empty / backslash / absolute path) survived — a path-
+    // safety hole. (On Windows the component/join backstop also catches the backslash case; this pins the
+    // contract on every platform — the early guard is the sole defense on a POSIX FS where '\\' is literal.)
+    #[test]
+    fn safe_rel_path_rejects_empty_backslash_and_absolute() {
+        assert!(safe_rel_path("").is_none(), "empty path rejected");
+        assert!(safe_rel_path("a\\b.md").is_none(), "backslash rejected (Windows sep / traversal)");
+        assert!(safe_rel_path("\\\\srv\\share").is_none(), "UNC-style backslash rejected");
+        assert!(safe_rel_path("/etc/passwd").is_none(), "absolute path rejected");
+        assert!(safe_rel_path("notes/ok.md").is_some(), "a normal relative path is accepted");
+    }
+
+    // commit's size gate is a STRICT `req.size > MAX_FILE_BYTES`. Weakening `>` reroutes an over-limit
+    // request into a later content-mismatch error instead of the size-limit rejection (== survivor), or
+    // rejects an at-limit request that should pass the gate (>= survivor). Tested via the DISTINCT error
+    // — no allocation, since the gate compares the declared size before reassembly.
+    #[test]
+    fn commit_size_gate_is_strict_greater_than() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"x"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
+        let over = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES + 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        assert!(over.to_string().contains("exceeds size limit"), "over-limit must be the size-limit error (got: {over})");
+        let at = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        assert!(!at.to_string().contains("exceeds size limit"), "size == limit passes the gate, failing later as a mismatch (got: {at})");
+    }
+
+    // commit's integrity check is `len != size || hash != claimed`. Weakening the `||` to `&&` would
+    // accept a right-SIZE but WRONG-HASH body — laundering corruption into a committed, served file.
+    #[test]
+    fn commit_rejects_correct_size_but_wrong_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"abc"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
+        let wrong = sha256_hex(b"different");
+        let e = v.commit(CommitRequest { path: "n.md".into(), hash: wrong, size: 3, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        assert!(e.to_string().contains("hash/size mismatch"), "a right-size wrong-hash body must be rejected (got: {e})");
+    }
+
+    // commit's idempotent short-circuit is `hash == req.hash && chunks == req.chunks`. Weakening the
+    // `&&` to `||` would treat a same-hash but DIFFERENTLY-CHUNKED re-commit as a no-op, freezing the
+    // stale chunk list so a genuine re-chunk never takes effect.
+    #[test]
+    fn commit_idempotency_requires_both_hash_and_chunks_to_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"helloworld"; let h = sha256_hex(body);
+        v.put_chunk(&h, body).unwrap(); // decomposition A: one whole-body chunk
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        // decomposition B: same body/hash, two chunks
+        let (p1, p2) = (b"hello".as_slice(), b"world".as_slice());
+        let (c1, c2) = (sha256_hex(p1), sha256_hex(p2));
+        v.put_chunk(&c1, p1).unwrap(); v.put_chunk(&c2, p2).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![c1.clone(), c2.clone()], expected_version: None }).unwrap();
+        assert_eq!(v.file_meta("n.md").unwrap().chunks, vec![c1, c2], "a same-hash re-chunk must be recorded, not treated as idempotent");
+    }
+
+    // new_version = self.version + 1 in BOTH commit and delete; a mutant turning `+ 1` into `* 1` (no
+    // bump) stalls the version so peers never see the change/tombstone.
+    #[test]
+    fn commit_and_delete_each_bump_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"v"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
+        let before = v.version();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        assert_eq!(v.version(), before + 1, "commit must bump the version");
+        let after_commit = v.version();
+        v.delete("n.md").unwrap();
+        assert_eq!(v.version(), after_commit + 1, "delete must bump the version");
+    }
 }
