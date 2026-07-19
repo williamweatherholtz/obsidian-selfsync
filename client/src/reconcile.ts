@@ -101,6 +101,18 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
   }
 }
 
+// The IO-free side of reconcileMergeOrConflict (same functional-core widening): once the remote is fetched
+// and the current local re-read, the CHOICE among adopt-remote / keep-a-read-only-copy / push-a-clean-merge
+// / conflict-copy is a pure function of a few booleans. The shell computes them (running merge3 only when a
+// clean merge is even possible — it needs the fetched bytes) and executes the returned plan's writes.
+export type MergePlan = "adoptRemote" | "readOnlyKeepCopy" | "pushMerged" | "conflictCopy";
+export function planMerge(f: { cosmetic: boolean; readOnly: boolean; action: Action; canMerge: boolean; mergeClean: boolean }): MergePlan {
+  if (f.cosmetic) return "adoptRemote";                             // EOL/trailing-newline-only diff → not a real conflict
+  if (f.readOnly) return f.action === "merge" ? "readOnlyKeepCopy" : "adoptRemote"; // owner canonical; copy only on a known-base divergence
+  if (f.canMerge && f.mergeClean) return "pushMerged";              // both changed, non-overlapping → clean 3-way merge
+  return "conflictCopy";                                            // overlapping / non-mergeable → remote wins, local kept as a copy
+}
+
 // Two text blobs are "cosmetically equal" if they differ ONLY by line-ending style (CRLF/CR vs LF)
 // and/or trailing blank lines — i.e. the SAME note authored/saved on different OSes (Windows CRLF vs
 // mobile LF). Such a pair must NEVER be treated as a conflict: on a first sync / adopt of two
@@ -801,54 +813,56 @@ async function reconcileMergeOrConflict(
   // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT a stale
   // pre-fetch hash — a save racing the fetch changes liveLocal, and a stale tag would mislabel the copy.
   const liveLocalHash = await sha256hex(liveLocal);
-  // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict — adopt remote,
-  // record base, spawn NO copy. TEXT ONLY: isMergeable is extension- AND fatal-UTF-8-gated, so a binary
-  // attachment is excluded (else the lossy TextDecoder could map two different binaries to one string
-  // and silently clobber a local attachment — critique F1 / issueFalseEolConflict).
-  if (isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && sameIgnoringEol(liveLocal, remoteBytes)) {
-    await d.io.write(path, remoteBytes);
-    setBase(d, path, remoteBytes, rmeta.hash);
-    return;
-  }
-  if (d.readOnly) {
-    // Read-only share: the owner's version is canonical and we push nothing. Preserve the reader's
-    // version as a LOCAL copy ONLY for a genuine both-sides divergence against a KNOWN base ("merge").
-    // A NO-BASE divergence ("conflict-copy") is first-contact reconciliation — adopt the owner's bytes
-    // with NO copy (a read-only copy can never sync, so one just litters the vault permanently).
-    if (action === "merge") {
+  // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict. TEXT ONLY:
+  // isMergeable is extension- AND fatal-UTF-8-gated, so a binary attachment is excluded (else the lossy
+  // TextDecoder could map two different binaries to one string and silently clobber a local attachment —
+  // critique F1 / issueFalseEolConflict).
+  const cosmetic = isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && sameIgnoringEol(liveLocal, remoteBytes);
+  // A clean 3-way merge is POSSIBLE only for a both-sides-changed ("merge") divergence over mergeable text
+  // with a known base text — compute it (and its cleanliness) only then, since merge3 needs the fetched bytes.
+  const canMerge = !cosmetic && !d.readOnly && action === "merge"
+    && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
+  const mergeResult = canMerge
+    ? merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes))
+    : null;
+  switch (planMerge({ cosmetic, readOnly: !!d.readOnly, action, canMerge, mergeClean: !!mergeResult?.clean })) {
+    case "adoptRemote":
+      // cosmetic-only, OR a read-only NO-base first-contact — adopt the remote, record base, spawn NO copy.
+      await d.io.write(path, remoteBytes);
+      setBase(d, path, remoteBytes, rmeta.hash);
+      return;
+    case "readOnlyKeepCopy": {
+      // Read-only share, known-base divergence: the owner's version is canonical and we push nothing, so
+      // preserve the reader's version as a LOCAL copy (a read-only copy can never sync).
       const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
       await d.io.write(copy, liveLocal);
       d.onReadOnly?.(path); d.onConflict?.(path, copy);
+      await d.io.write(path, remoteBytes);
+      setBase(d, path, remoteBytes, rmeta.hash);
+      return;
     }
-    await d.io.write(path, remoteBytes);
-    setBase(d, path, remoteBytes, rmeta.hash);
-    return;
-  }
-  // Both sides changed: attempt a clean three-way merge; fall through to a conflict copy only when it
-  // can't merge cleanly (overlapping edits) or the file isn't mergeable text.
-  const canMerge = action === "merge"
-    && isMergeable(path, liveLocal) && isMergeable(path, remoteBytes) && baseEntry?.text !== undefined;
-  if (canMerge) {
-    const { merged, clean } = merge3(baseEntry!.text!, new TextDecoder().decode(liveLocal), new TextDecoder().decode(remoteBytes));
-    if (clean) {
+    case "pushMerged": {
       // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
       // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
-      const mergedBytes = new TextEncoder().encode(merged);
+      const mergedBytes = new TextEncoder().encode(mergeResult!.merged);
       const { hash: h, bytes: committed } = await pushBytes(d, path, mergedBytes, rmeta.version);
       setBase(d, path, committed, h);
       return;
     }
+    case "conflictCopy": {
+      // Overlapping edits / non-mergeable: remote becomes canonical, the current local is kept as a copy.
+      const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
+      await d.io.write(copy, liveLocal);
+      // C4 (R10): register the conflict NOW — the copy is on disk and preserved. pushFile below can throw
+      // (network); if onConflict fired only after it, the copy would never reach the "needs review" list.
+      d.onConflict?.(path, copy);
+      await d.io.write(path, remoteBytes);
+      const { hash: ch, bytes: cb } = await pushFile(d, copy);
+      d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
+      setBase(d, path, remoteBytes, rmeta.hash);
+      return;
+    }
   }
-  // Fallback / conflict-copy: remote becomes canonical; the current local is kept as a copy.
-  const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
-  await d.io.write(copy, liveLocal);
-  // C4 (R10): register the conflict NOW — the copy is on disk and preserved. pushFile below can throw
-  // (network); if onConflict fired only after it, the copy would never reach the "needs review" list.
-  d.onConflict?.(path, copy);
-  await d.io.write(path, remoteBytes);
-  const { hash: ch, bytes: cb } = await pushFile(d, copy);
-  d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
-  setBase(d, path, remoteBytes, rmeta.hash);
 }
 
 interface ReconcileOneOpts {

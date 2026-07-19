@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { finalize, FinalizeFacts, ReconcileEffect, Action } from "../src/reconcile";
+import { finalize, FinalizeFacts, ReconcileEffect, Action, planMerge, MergePlan } from "../src/reconcile";
 
 // The pure decision core lifted out of reconcileOne (issueFunctionalCoreShellsReDecide). This is the "test
 // net" that makes the extraction safe: it exhaustively pins the SAFETY-CRITICAL table — restore-vs-remove
@@ -98,5 +98,34 @@ describe("finalize — pure reconcile decision table", () => {
         expect(destructive.has(e.kind), `${a} must be guarded, got ${e.kind}`).toBe(false);
       }
     }
+  });
+});
+
+describe("planMerge — pure merge/conflict decision table", () => {
+  const base = { cosmetic: false, readOnly: false, action: "merge" as Action, canMerge: false, mergeClean: false };
+  const plan = (o: Partial<typeof base> = {}): MergePlan => planMerge({ ...base, ...o });
+
+  it("is total across the flag space and yields only known plans", () => {
+    const plans = new Set<string>(["adoptRemote", "readOnlyKeepCopy", "pushMerged", "conflictCopy"]);
+    for (const cosmetic of [false, true]) for (const readOnly of [false, true])
+      for (const action of ["merge", "conflict-copy"] as Action[]) for (const canMerge of [false, true]) for (const mergeClean of [false, true]) {
+        expect(plans.has(plan({ cosmetic, readOnly, action, canMerge, mergeClean }))).toBe(true);
+      }
+  });
+
+  it("a cosmetic (EOL-only) diff adopts remote — regardless of read-only/merge state", () => {
+    expect(plan({ cosmetic: true })).toBe("adoptRemote");
+    expect(plan({ cosmetic: true, readOnly: true, canMerge: true, mergeClean: true })).toBe("adoptRemote");
+  });
+
+  it("read-only: keeps a local copy on a known-base 'merge' divergence, but adopts (no copy) for a no-base conflict-copy", () => {
+    expect(plan({ readOnly: true, action: "merge" })).toBe("readOnlyKeepCopy");
+    expect(plan({ readOnly: true, action: "conflict-copy" })).toBe("adoptRemote");
+  });
+
+  it("writable: a clean 3-way merge pushes; a dirty/impossible merge conflict-copies", () => {
+    expect(plan({ canMerge: true, mergeClean: true })).toBe("pushMerged");
+    expect(plan({ canMerge: true, mergeClean: false })).toBe("conflictCopy"); // overlapping edits
+    expect(plan({ canMerge: false })).toBe("conflictCopy");                    // not mergeable / no base text
   });
 });
