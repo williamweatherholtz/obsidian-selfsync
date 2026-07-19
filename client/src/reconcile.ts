@@ -32,6 +32,75 @@ export function decide(local: Presence, base: { hash: string } | null, remote: P
   return "merge";                                   // both changed
 }
 
+// The IO-free side of reconcileOne (issueFunctionalCoreShellsReDecide): once decide() has named the
+// Action, WHICH effect to run is a pure function of the Action + a handful of already-resolved facts
+// (read-only share? real tombstone? a bulk-delete guard tripped? confirmed local-absence?). Lifting that
+// choice out of the imperative switch makes the SAFETY-CRITICAL decisions — restore-vs-remove, delete-
+// remote-vs-guard, the read-only refusals — an exhaustively unit-testable table (finalize.test), while the
+// shell keeps only the awaited IO. The shell resolves the async probes (io.exists / confirmedAbsent) to
+// booleans as needed and executes the returned effect; no decision is re-made in the shell.
+export type ReconcileEffect =
+  | { kind: "noop" }                          // nothing to do (e.g. both sides absent, no stale base)
+  | { kind: "setBaseInSync" }                 // in-sync + both present → record base from the local bytes
+  | { kind: "clearBase" }                     // in-sync + both absent but a stale base lingers → drop it
+  | { kind: "reportReadOnly" }                // a read-only share can't perform this write → surface it
+  | { kind: "reportGuard" }                   // a bulk-delete guard tripped → refuse + surface, keep data
+  | { kind: "push"; version: number; allowStamp: boolean } // upload local at CAS base `version`
+  | { kind: "pull" }                          // download remote (guarded against a racing local edit)
+  | { kind: "restore" }                       // delete-local w/o a tombstone → re-push (+ report kept-absent)
+  | { kind: "keptAbsentReadOnly" }            // same, but read-only → can't restore; report kept-absent + read-only
+  | { kind: "removeLocal" }                   // delete-local with a real tombstone, not guarded → remove
+  | { kind: "deleteRemote" }                  // delete-remote, not guarded → executor re-probes absence, then deletes
+  | { kind: "mergeOrConflict" };              // both sides diverged → three-way merge or conflict-copy
+
+// Facts the shell resolves BEFORE finalize (all synchronous booleans / counts — no IO inside finalize):
+export interface FinalizeFacts {
+  readOnly: boolean;          // this vault is a read-only share (owner's version canonical; we push nothing)
+  hasTombstone: boolean;      // the server holds a REAL deletion tombstone for this path (delete-local needs it)
+  guardDelete: boolean;       // a suspicious MASS delete-LOCAL was detected this pass
+  guardRemoteDelete: boolean; // a suspicious MASS delete-REMOTE (local vault vanished) was detected this pass
+  isConflictCopy: boolean;    // path is a conflict-copy file (a deliberately-local file on a read-only share)
+  hasLocalBytes: boolean;     // local content is present (for the in-sync base-record)
+  hasRmeta: boolean;          // the server has this path (for the in-sync base-record)
+  hasBaseEntry: boolean;      // a base entry exists (for the in-sync stale-base clear)
+  remoteVersion: number;      // rmeta?.version ?? 0 — the CAS base for push / edit-wins-keep-local
+}
+
+// Pure: Action + resolved facts → the single effect the shell executes. Mirrors reconcileOne's switch
+// branch-for-branch; the ONLY behavioural subtlety preserved is that a plain `push` caches the scan-skip
+// stat hint (allowStamp) while edit-wins-keep-local's re-push does not.
+export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
+  switch (action) {
+    case "in-sync":
+      if (f.hasLocalBytes && f.hasRmeta) return { kind: "setBaseInSync" };
+      if (!f.hasLocalBytes && !f.hasRmeta && f.hasBaseEntry) return { kind: "clearBase" };
+      return { kind: "noop" };
+    case "push":
+      if (f.readOnly) return f.isConflictCopy ? { kind: "noop" } : { kind: "reportReadOnly" };
+      return { kind: "push", version: f.remoteVersion, allowStamp: true };
+    case "pull":
+    case "edit-wins-pull":
+      return { kind: "pull" };
+    case "delete-local":
+      // No tombstone ⇒ mere absence, never proof of deletion — restore to the server (or, read-only, keep
+      // local). WITH a tombstone: refuse if a mass-delete guard tripped, else remove. (onKeptAbsent fires
+      // in both no-tombstone effects; the executor emits it.)
+      if (!f.hasTombstone) return f.readOnly ? { kind: "keptAbsentReadOnly" } : { kind: "restore" };
+      if (f.guardDelete) return { kind: "reportGuard" };
+      return { kind: "removeLocal" };
+    case "delete-remote":
+      if (f.readOnly) return { kind: "reportReadOnly" };
+      if (f.guardRemoteDelete) return { kind: "reportGuard" };
+      return { kind: "deleteRemote" };
+    case "edit-wins-keep-local":
+      if (f.readOnly) return { kind: "reportReadOnly" };
+      return { kind: "push", version: f.remoteVersion, allowStamp: false };
+    case "merge":
+    case "conflict-copy":
+      return { kind: "mergeOrConflict" };
+  }
+}
+
 // Two text blobs are "cosmetically equal" if they differ ONLY by line-ending style (CRLF/CR vs LF)
 // and/or trailing blank lines — i.e. the SAME note authored/saved on different OSes (Windows CRLF vs
 // mobile LF). Such a pair must NEVER be treated as a conflict: on a first sync / adopt of two
@@ -216,6 +285,12 @@ export interface ReconcileDeps {
 // Selective-sync predicate: a path is accepted unless a per-device filter is set and rejects it. A path
 // this device doesn't accept is skipped ENTIRELY (no pull, no base, no delete) — see ReconcileDeps.accepts.
 function accepts(d: ReconcileDeps, path: string): boolean { return !d.accepts || d.accepts(path); }
+
+// The accepted-only base set — the ONE denominator every bulk-delete guard measures against (B1): a stale
+// base entry for a path this device no longer accepts is never a deletion candidate, so counting it would
+// dilute the ratio and let a genuine mass delete slip under the guard (DI-R2). One home so the three guard
+// sites (reconcileAll / reconcileDelta / reconcilePath) can't drift on how the denominator is computed.
+function acceptedBasePaths(d: ReconcileDeps): string[] { return d.base.paths().filter((p) => accepts(d, p)); }
 
 // The STATELESS per-pass bulk-delete ratio predicate (C2, widened): true when this pass would delete a
 // suspicious fraction of the accepted `universe` (base or local set) — a wholesale-empty manifest
@@ -523,7 +598,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Ratio denominator counts only ACCEPTED base paths: a stale base entry for a path this device
   // no longer accepts is never a deletion candidate, so including it would dilute the ratio and let
   // a genuine mass delete slip under the guard. (DI-R2 note)
-  const basePaths = d.base.paths().filter((p) => accepts(d, p));
+  const basePaths = acceptedBasePaths(d);
   const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
   // SEC-DATA: per-pass ratio OR'd with the cumulative cross-pass guard (a paced drain never trips the
   // per-pass ratio); the guard records the deletes only when it lets them through (see runDeleteGuard).
@@ -591,7 +666,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const remote = new Map<string, FileMeta>();
   for (const f of delta.upserts) remote.set(f.path, f);
   const tombstoned = new Set(delta.deletes.map((x) => x.path));
-  const baseSet = new Set(d.base.paths().filter((p) => accepts(d, p)));
+  const baseSet = new Set(acceptedBasePaths(d));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
   // SEC-DATA: same guard as reconcileAll — the delta path also delete-locals on tombstones, so a paced
   // drain must be caught here too (emptyManifest=false: a delta never reports the whole manifest empty).
@@ -649,7 +724,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     const remoteSet = new Set(manifest.upserts.map((f) => f.path));
     const tombstoned = new Set(manifest.deletes.map((x) => x.path));
     hasTombstone = (p) => tombstoned.has(p); // delete-local requires a real deletion tombstone
-    const basePaths = d.base.paths().filter((p) => accepts(d, p)); // accepted-only denominator (DI-R2 note)
+    const basePaths = acceptedBasePaths(d); // accepted-only denominator (DI-R2 note)
     const wouldDelete = basePaths.filter((p) => !remoteSet.has(p)).length;
     // Per-pass ratio ONLY, no cumulative DeleteRateGuard (A5): a paced SERVER drain propagates via the
     // poll/delta/full-scan paths (which feed the cumulative guard), not this local-event path — so the
@@ -873,91 +948,75 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     }
     d.onConfigResolved?.(path); // clean (add/edit/remove/in-sync) — drop any stale pending entry, then apply below
   }
-  switch (action) {
-    case "in-sync":
-      if (localBytes && rmeta) {
-        setBase(d, path, localBytes, rmeta.hash);
-        if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint (Finding 2)
-      }
-      // Both sides absent but base still present: clear the stale base. Otherwise recreating the
-      // file with content equal to the old base hash would read as delete-local and wipe it.
-      else if (!localBytes && !rmeta && baseEntry) { d.base.delete(path); d.onBaseChanged?.(); }
+  // Decide the effect PURELY (finalize), then execute only the IO here. Every safety-critical branch
+  // (restore-vs-remove, delete-remote-vs-guard, the read-only refusals) lives in finalize's table; the
+  // shell resolves the async absence probe (confirmedAbsent) inside the one effect that needs it, so it
+  // stays conditional. The rich per-branch rationale now lives beside finalize + on the effect variants.
+  const eff = finalize(action, {
+    readOnly: !!d.readOnly,
+    hasTombstone: hasTombstone(path),
+    guardDelete,
+    guardRemoteDelete,
+    isConflictCopy: isConflictCopy(path),
+    hasLocalBytes: !!localBytes,
+    hasRmeta: !!rmeta,
+    hasBaseEntry: !!baseEntry,
+    remoteVersion: rmeta?.version ?? 0,
+  });
+  switch (eff.kind) {
+    case "noop":
+      return;
+    case "setBaseInSync":
+      setBase(d, path, localBytes!, rmeta!.hash);
+      if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint (Finding 2)
+      return;
+    case "clearBase":
+      // Both sides absent but base still present: clear the stale base. Otherwise recreating the file
+      // with content equal to the old base hash would read as delete-local and wipe it.
+      d.base.delete(path); d.onBaseChanged?.();
+      return;
+    case "reportReadOnly":
+      d.onReadOnly?.(path);
+      return;
+    case "reportGuard":
+      d.onGuard?.(path); // a real tombstone / evidenced deletion, but a suspicious MASS delete — refuse, keep data
       return;
     case "push": {
-      if (d.readOnly) {
-        // Can't upload to a read-only share. A conflict-copy file is DELIBERATELY local there (it can
-        // never sync), so don't report it as a change that "won't sync" — that's just noise every
-        // reconcile; the copy is already surfaced via the derived conflict list.
-        if (!isConflictCopy(path)) d.onReadOnly?.(path);
-        return;
-      }
-      // CAS: base this write on the remote version we saw (0 if this is a local-only create). If a
-      // concurrent commit advanced the server past it, the commit 409s → CommitConflictError →
-      // per-file skip → the next reconcile decides merge instead of a silent lost-update overwrite.
-      const { hash: h, bytes } = await pushFile(d, path, rmeta?.version ?? 0);
+      // CAS: base the write on the remote version we saw (0 if a local-only create). A concurrent commit
+      // that advanced the server past it 409s → CommitConflictError → per-file skip → next reconcile merges.
+      const { hash: h, bytes } = await pushFile(d, path, eff.version);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
-      if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file is unchanged on disk → cache the hint
+      if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file unchanged on disk → cache the hint
       return;
     }
     case "pull":
       await applyPull(d, path, requireRemote(rmeta, action), localHash, true); // guard a local edit/create racing the fetch (DI-3)
       return;
-    case "delete-local":
-      // DATA-SAFETY (durable delete guard): only delete a local file when the server has a real
-      // deletion TOMBSTONE for it. Mere absence (local==base, remote-absent) is NOT proof of
-      // deletion — it also happens when this device is pointed at a WRONG / FRESH / RESTORED server
-      // that never had the file. Deleting on absence is what silently wiped local files after a
-      // vault switch: the C2 ratio guard fired only on the FIRST (empty) reconcile; once our own
-      // pushes made the remote non-empty, the ratio no longer tripped and the "kept" files were
-      // deleted on the next pass. Requiring a tombstone is durable across passes. Without one, the
-      // safe action is to RESTORE the file to the server, never to destroy local data.
-      if (!hasTombstone(path)) {
-        // D0019: report this keep-because-absent-without-tombstone so a history-reset pass can batch
-        // it into one review notice (it's kept + pushed either way — this is observational only).
-        d.onKeptAbsent?.(path);
-        if (d.readOnly) { d.onReadOnly?.(path); return; } // read-only share: can't restore; just keep local
-        // CAS (crit-round data-integrity): base the restore on "expected absent" (version 0) — the
-        // precondition this decision was made on (remote had no copy). If a peer created this path
-        // meanwhile, the commit 409s → CommitConflictError → per-file skip → the next reconcile MERGES
-        // instead of the restore silently overwriting the peer's just-created content (lost update).
-        const { hash: rh, bytes: rb } = await pushFile(d, path, 0);
-        setBase(d, path, rb, rh);
-        return;
-      }
-      if (guardDelete) { d.onGuard?.(path); return; } // real tombstone(s) but a suspicious MASS delete — still guard
-      await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.(); return;
-    case "delete-remote":
-      if (d.readOnly) { d.onReadOnly?.(path); return; } // can't delete on a read-only share
-      // SEC-DATA (symmetric to the delete-local guard): a MASS delete-remote — a suspicious fraction of
-      // the vault (or the WHOLE listing) gone locally while still present+unchanged on the server — is
-      // the signature of a LOCAL loss (cloud de-hydration, a partial backup restore, cleared storage),
-      // NOT the user deleting everything. Per-file confirmedAbsent below passes for every truly-gone
-      // file, so without this bulk gate a vanished vault would wipe the server + tombstone it fleet-wide
-      // (the delete-LOCAL direction was guarded since DI-1; this closes the mirror direction). A refused
-      // batch is recoverable (re-delete once genuinely intended); an unguarded one is not.
-      if (guardRemoteDelete) { d.onGuard?.(path); return; }
-      // EVIDENCED ABSENCE (issueFalseAbsenceDelete): decide() inferred a deletion because the file was
-      // absent from the local LISTING — but a listing under-reports (a directory that failed to
-      // enumerate, an un-hydrated OneDrive placeholder, an OS/AV lock), so it may still be on disk.
-      // Tombstoning here would delete it FLEET-WIDE. Confirm real absence with a direct per-path probe
-      // first; if it's still present (or unknowable), KEEP it — the next reconcile syncs it correctly.
-      // Mirrors the delete-local "a real tombstone, not mere absence" discipline above; the single-path
-      // route already re-probed via locallyPresent, but the batch route trusts the fallible list().
-      if (!(await confirmedAbsent(d.io, path))) return;
-      await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.(); return;
-    case "edit-wins-keep-local": {
-      if (d.readOnly) { d.onReadOnly?.(path); return; } // keep the local edit; don't push
-      // Remote is absent (someone deleted it) but we edited — re-create it. CAS base = 0 (absent):
-      // if a peer re-created it first, this 409s and the next reconcile merges the two versions.
-      const { hash: h, bytes } = await pushFile(d, path, rmeta?.version ?? 0);
-      setBase(d, path, bytes, h); // base from the COMMITTED bytes (DI-5)
+    case "restore": {
+      // delete-local with NO tombstone: mere absence isn't proof of deletion (wrong/fresh/restored server) —
+      // RESTORE to the server, never destroy local data. onKeptAbsent is observational (D0019). CAS base = 0
+      // (expected-absent): a peer that created it meanwhile 409s → next reconcile merges, no lost update.
+      d.onKeptAbsent?.(path);
+      const { hash: rh, bytes: rb } = await pushFile(d, path, 0);
+      setBase(d, path, rb, rh);
       return;
     }
-    case "edit-wins-pull":
-      await applyPull(d, path, requireRemote(rmeta, action), localHash, true); // guard a local edit racing the fetch (DI-3)
+    case "keptAbsentReadOnly":
+      // Same no-tombstone case on a read-only share: can't restore; keep local + report (observational).
+      d.onKeptAbsent?.(path); d.onReadOnly?.(path);
       return;
-    case "merge":
-    case "conflict-copy":
+    case "removeLocal":
+      await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.();
+      return;
+    case "deleteRemote":
+      // EVIDENCED ABSENCE (issueFalseAbsenceDelete): the local LISTING under-reports (a dir that failed to
+      // enumerate, an un-hydrated placeholder, an OS/AV lock), so re-probe real absence before tombstoning
+      // FLEET-WIDE. Still present/unknowable ⇒ KEEP; the next reconcile syncs it. (Bulk-loss already guarded
+      // by guardRemoteDelete in finalize; this is the per-file confirmation.)
+      if (!(await confirmedAbsent(d.io, path))) return;
+      await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.();
+      return;
+    case "mergeOrConflict":
       await reconcileMergeOrConflict(d, path, requireRemote(rmeta, action), action, baseEntry, localBytes);
       return;
   }
