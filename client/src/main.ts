@@ -3,7 +3,7 @@ import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } 
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, deriveNoteConflicts } from "./base";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
-import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab } from "./settings";
+import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
@@ -15,7 +15,7 @@ import { Phase, light, isWsStale } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
-import { shouldSync, pluginIdOf, DEFAULT_CONFIG_SYNC, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
+import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
@@ -1594,14 +1594,9 @@ export default class NewLiveSyncPlugin extends Plugin {
     try { data = this.migratePersisted((await this.loadData()) ?? {}) ?? {}; }
     catch (e: any) { this.log(`WARNING: couldn't read saved settings/base (${e?.message ?? e}) — starting from defaults; your synced files are untouched`, true); }
     const s = (data && typeof data === "object" ? data.settings : undefined) ?? {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, s);
-    // Fresh, fully-defaulted configSync object (never share the module constant, and
-    // backfill any categories added since this vault last saved).
-    this.settings.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
-    this.settings.configSync.pluginAllow = [...(s.configSync?.pluginAllow ?? [])]; // fresh array (CS2): never alias DEFAULT_CONFIG_SYNC's
-    this.settings.configSync.pluginDir = { ...(s.configSync?.pluginDir ?? {}) };   // fresh per-plugin first-contact directions
-    // Fresh array (never share the module constant's []) — the adjudication queue is mutated in place.
-    this.settings.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
+    // Parse-don't-validate at the persistence boundary: parseSettings hardens every field + freshens each
+    // nested collection (see settings.ts). loadSettings owns only the read + the separate BaseStore.
+    this.settings = parseSettings(s);
     // noteConflicts array retired (D-conflict-model): note conflicts are now derived from the vault.
     this.base = new BaseStore(data.base && typeof data.base === "object" ? data.base : {});
   }

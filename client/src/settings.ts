@@ -69,6 +69,27 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).
 };
 
+// Parse an untrusted persisted settings object (the `settings` sub-object of data.json) into a fully-
+// hardened NewLiveSyncSettings — parse-don't-validate at the persistence boundary (issuePatternUntagged
+// ShouldAdopt). Every field is defaulted from DEFAULT_SETTINGS, and each nested collection is rebuilt as a
+// FRESH instance with its own type guard, so a corrupt / partial / hand-edited / hostile data.json can
+// never leave a field aliasing a module constant (a shared-mutable bug) or holding the wrong type. The
+// loader (loadSettings) then owns only the read + the separate BaseStore; the settings SHAPE is defined
+// and defended here, right next to DEFAULT_SETTINGS, so the two can't drift.
+export function parseSettings(raw: unknown): NewLiveSyncSettings {
+  const s = (raw && typeof raw === "object" ? raw : {}) as Partial<NewLiveSyncSettings> & { configSync?: Partial<ConfigSyncSelection> };
+  const out = Object.assign({}, DEFAULT_SETTINGS, s);
+  // Fresh, fully-defaulted configSync (never share the module constant; backfill categories added since
+  // this vault last saved), each nested collection its own fresh instance so in-place mutation can't reach
+  // DEFAULT_CONFIG_SYNC.
+  out.configSync = { ...DEFAULT_CONFIG_SYNC, ...(s.configSync ?? {}) };
+  out.configSync.pluginAllow = [...(s.configSync?.pluginAllow ?? [])];
+  out.configSync.pluginDir = { ...(s.configSync?.pluginDir ?? {}) };
+  // Fresh array (the adjudication queue is mutated in place); a non-array persisted value → empty.
+  out.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
+  return out;
+}
+
 export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
   private statusGroup?: SettingGroup;
