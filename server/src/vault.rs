@@ -126,6 +126,27 @@ fn write_mirror(abs: &Path, body: &[u8]) -> std::io::Result<()> {
 // reassembled + hash-verified body). Named so classify_missing's return type stays legible.
 type Recovered = (String, FileMeta, Vec<u8>);
 
+// The vault's index-health lifecycle, an EXPLICIT state machine (crit R+1, issueVaultLifecycleImplicitFsm)
+// replacing the old `corrupt` + `dangling_recovery` bool PAIR — which could represent the illegal combo
+// (corrupt=false, dangling=true) and encoded transitions as scattered flag-sets. Only Ok serves sync ops
+// (ensure_ready/is_corrupt); Corrupt/DanglingRecovery both await reindex, differing in whether the index
+// is TRUSTWORTHY during the rebuild.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum VaultState {
+    Ok,               // healthy: sync ops proceed.
+    // The persisted index couldn't be trusted (unreadable DB, or an EMPTY index with materialized files
+    // present). The vault OPENS (process survives; operator can inspect) but refuses every sync op until
+    // reindex() rebuilds the manifest from disk — "fail loud, require explicit repair", NOT silent reset
+    // (a blank index would advertise an empty vault and our hash-based reconcile could read "delete all").
+    // reindex does a BLIND rebuild-from-disk here (the index is untrustworthy).
+    Corrupt,
+    // A dangling chunk reference on an otherwise INTACT index (all file rows + tombstones present) — only
+    // a blob is missing, not the index. reindex treats the index as TRUSTWORTHY (keeps the R18 tombstone
+    // ghost-skip + the prefer-store guard, so a dangling repair can't resurrect a ghost or adopt a stale
+    // mirror). A FAILED dangling-repair downgrades to Corrupt (the one-shot in reindex).
+    DanglingRecovery,
+}
+
 pub struct Vault {
     root: PathBuf,
     vault_dir: PathBuf,
@@ -134,19 +155,8 @@ pub struct Vault {
     // and drops into Arc<RwLock<Vault>> as axum state. The index is a DERIVED view — the source of
     // truth is the chunk store + the bind-mount mirror — so a corrupt index is repaired by reindex.
     index: SqliteIndex,
-    // True when the persisted index couldn't be trusted (unreadable DB, or an EMPTY index with
-    // materialized files present). The vault OPENS (so the process survives and the operator can
-    // inspect + repair) but refuses every sync op until `reindex()` rebuilds the manifest from the
-    // materialized files. This is "fail loud, require explicit repair", NOT silent auto-reset — a
-    // blank index would advertise an empty vault and our hash-based reconcile could read that as
-    // "delete everything".
-    corrupt: bool,
-    // R19: set when `corrupt` was raised ONLY because of a dangling chunk reference on an otherwise
-    // INTACT index (all file rows + tombstones present) — as opposed to an unreadable/empty index.
-    // The auto-repair reindex then treats the index as TRUSTWORTHY (was_corrupt=false): it keeps the
-    // R18 tombstone ghost-skip and the prefer-store guard active, so a dangling-ref repair can't
-    // resurrect a tombstoned ghost or revert an intact file to a stale mirror. Reset each reindex.
-    dangling_recovery: bool,
+    // The index-health lifecycle (see VaultState above). Was two bools; now one enum (no illegal combo).
+    state: VaultState,
     // Current version, cached in lockstep with the index on every mutation, so version() is a field
     // read (hot /status path) rather than a DB round-trip.
     version: u64,
@@ -210,17 +220,19 @@ impl Vault {
             }
         }
         let mut v = Vault {
-            root: root.to_path_buf(), vault_dir, store, index, corrupt, dangling_recovery: false, version, history_floor,
+            root: root.to_path_buf(), vault_dir, store, index,
+            state: if corrupt { VaultState::Corrupt } else { VaultState::Ok },
+            version, history_floor,
             last_orphan_sweep: std::sync::Mutex::new(std::time::Instant::now()),
         };
-        if !v.corrupt { v.verify_and_gc(); } // startup GC already clears orphans, so the runtime timer starts now
+        if v.state == VaultState::Ok { v.verify_and_gc(); } // startup GC already clears orphans, so the runtime timer starts now
         // D0022: AUTO-REPAIR where safe. If the index is unusable (empty-with-data / corrupt DB /
         // dangling chunk ref) but the authoritative files + chunk store can rebuild it, do so
         // automatically instead of locking the vault for a manual reindex — safe now that
         // tombstone-authoritative delete + the D0019 horizon mean a rebuilt index can never make a
         // client delete. Stay ERROR only when a rebuild genuinely can't fix it (a file lost from BOTH
         // disk and the store → RC-2, or unsafe/colliding filenames), which needs a human (Force / rename).
-        if v.corrupt {
+        if v.state != VaultState::Ok {
             match v.reindex(false) {
                 Ok(()) => log::info!("[vault] {}: auto-repaired the index (reindexed from disk).", v.root.display()),
                 Err(e) => log::error!("[vault] {}: index unusable and NOT auto-repairable ({e}); staying in ERROR — run reindex with Force if files are truly lost, or fix the offending filenames.", v.root.display()),
@@ -273,7 +285,7 @@ impl Vault {
             Ok(r) => r,
             Err(e) => {
                 log::error!("[vault] {}: index read failed ({e}); marking ERROR — run reindex", self.root.display());
-                self.corrupt = true;
+                self.state = VaultState::Corrupt; // unreadable index → blind rebuild-from-disk
                 return;
             }
         };
@@ -284,10 +296,10 @@ impl Vault {
                 "[vault] {}: {} referenced chunk(s) missing on disk (e.g. {}); marking ERROR — run reindex",
                 self.root.display(), missing.len(), missing[0]
             );
-            self.corrupt = true;
-            self.dangling_recovery = true; // R19: the index ITSELF is intact (rows + tombstones present) —
-            // only a chunk blob is gone. Mark this so the auto-repair reindex TRUSTS the index (keeps the
-            // ghost-skip + prefer-store guards) instead of rebuilding blindly from disk.
+            // R19: the index ITSELF is intact (rows + tombstones present) — only a chunk blob is gone.
+            // DanglingRecovery makes the auto-repair reindex TRUST the index (keeps the ghost-skip +
+            // prefer-store guards) instead of rebuilding blindly from disk.
+            self.state = VaultState::DanglingRecovery;
             return; // don't GC a vault we're about to rebuild
         }
         match self.store.list_hashes() {
@@ -305,7 +317,7 @@ impl Vault {
     }
 
     // True while the persisted index was corrupt/empty-with-data and has not yet been reindexed.
-    pub fn is_corrupt(&self) -> bool { self.corrupt }
+    pub fn is_corrupt(&self) -> bool { self.state != VaultState::Ok }
 
     // Rebuild the manifest from the materialized bind-mount files — the operator's explicit repair
     // for a corrupt index (and safe to run on a healthy vault). Version-PRESERVING: a file whose
@@ -328,8 +340,11 @@ impl Vault {
         // and the prefer-store guard stay active (otherwise a dangling repair could resurrect a
         // tombstoned ghost or rebuild an intact file from a stale mirror). Only an UNREADABLE/empty
         // index (dangling_recovery == false) forces the blind rebuild-from-disk.
-        let was_corrupt = self.corrupt && !self.dangling_recovery;
-        self.dangling_recovery = false; // one-shot: consumed by this reindex
+        let was_corrupt = self.state == VaultState::Corrupt;
+        // R19 one-shot: consume the dangling flag — a DanglingRecovery that FAILS to reindex downgrades to
+        // Corrupt (a full rebuild next time). (was_corrupt was captured above as false for DanglingRecovery,
+        // so this reindex still TRUSTS the intact index; only an abort leaves it Corrupt.)
+        if self.state == VaultState::DanglingRecovery { self.state = VaultState::Corrupt; }
         // The current manifest (empty when the DB was corrupt/blank). Also note whether the index
         // still HOLDS tombstones: replace_files preserves the deletions table, so a rebuild that keeps
         // them (e.g. a dangling-chunk auto-repair on an otherwise-intact index) must NOT raise the
@@ -451,7 +466,7 @@ impl Vault {
             self.index.set_history_floor(max_version)?;
             self.history_floor = max_version;
         }
-        self.corrupt = false;
+        self.state = VaultState::Ok;
         for h in &old_refs {
             if !new_refs.contains(h) { let _ = self.store.remove(h); }
         }
@@ -508,7 +523,7 @@ impl Vault {
     // any concurrent commit (that takes the write lock), so the referenced set can't shift mid-sweep;
     // the TTL spares just-uploaded chunks. A corrupt vault never sweeps — reindex owns its blobs.
     fn maybe_sweep_orphans(&self) {
-        if self.corrupt { return; }
+        if self.state != VaultState::Ok { return; }
         let due = {
             let Ok(mut last) = self.last_orphan_sweep.lock() else { return; };
             if last.elapsed() < ORPHAN_SWEEP_INTERVAL { return; }
