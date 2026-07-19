@@ -26,6 +26,19 @@ pub struct ContentStore {
     tmp_seq: AtomicU64,
 }
 
+// A chunk hash whose FORMAT (exactly 64 ASCII-hex chars) has been validated. `parse` is the ONLY
+// constructor, so a value of this type is a proof-of-format (parse-don't-validate, issuePatternUntagged
+// ShouldAdopt): path_for + the atomic write take `&ChunkHash`, never a raw `&str`, so an unvalidated hash
+// can't reach the filesystem-path computation (a `..`/oversize/short string is rejected at the boundary,
+// not silently `join`ed). Each public store method parses its `&str` arg exactly once at entry; the check
+// that used to be a free `is_valid_hash` re-called in every method is now that single parse, typed.
+struct ChunkHash<'a>(&'a str);
+impl<'a> ChunkHash<'a> {
+    fn parse(hash: &'a str) -> Option<ChunkHash<'a>> {
+        (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(ChunkHash(hash))
+    }
+}
+
 impl ContentStore {
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
@@ -48,16 +61,13 @@ impl ContentStore {
             }
         }
     }
-    fn path_for(&self, hash: &str) -> PathBuf {
-        // shard by first 2 hex chars to avoid huge flat dirs
-        self.root.join(&hash[0..2.min(hash.len())]).join(hash)
-    }
-    fn is_valid_hash(hash: &str) -> bool {
-        hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+    fn path_for(&self, hash: &ChunkHash) -> PathBuf {
+        // shard by first 2 hex chars to avoid huge flat dirs (a ChunkHash is always 64 hex → [0..2] is safe)
+        self.root.join(&hash.0[0..2]).join(hash.0)
     }
     pub fn has(&self, hash: &str) -> bool {
-        if !Self::is_valid_hash(hash) { return false; }
-        self.path_for(hash).exists()
+        let Some(h) = ChunkHash::parse(hash) else { return false; };
+        self.path_for(&h).exists()
     }
     // @audit r2 2026-07-18 — FIXED: rename published the blob but never fsync'd the shard DIR, so an
     // acked commit's chunk dir-entry could vanish on power loss (write_mirror does the dir-fsync + falsely
@@ -65,13 +75,13 @@ impl ContentStore {
     // list_hashes/sweep_orphans — a for_each_blob visitor could DRY it; deferred.)
     // @audit-hash sha256:d32e5537318339bd
     pub fn put(&self, hash: &str, bytes: &[u8]) -> std::io::Result<()> {
-        if !Self::is_valid_hash(hash) {
+        let Some(h) = ChunkHash::parse(hash) else {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid chunk hash format"));
-        }
+        };
         if sha256_hex(bytes) != hash {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "chunk hash mismatch"));
         }
-        let p = self.path_for(hash);
+        let p = self.path_for(&h);
         if p.exists() { return Ok(()); }
         if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
         // Write atomically: a crash mid-write must not leave a truncated blob that
@@ -101,16 +111,16 @@ impl ContentStore {
         Ok(())
     }
     pub fn get(&self, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
-        if !Self::is_valid_hash(hash) { return Ok(None); }
-        match std::fs::read(self.path_for(hash)) {
+        let Some(h) = ChunkHash::parse(hash) else { return Ok(None); };
+        match std::fs::read(self.path_for(&h)) {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
     }
     pub fn remove(&self, hash: &str) -> std::io::Result<()> {
-        if !Self::is_valid_hash(hash) { return Ok(()); }
-        let p = self.path_for(hash);
+        let Some(h) = ChunkHash::parse(hash) else { return Ok(()); };
+        let p = self.path_for(&h);
         if p.exists() { std::fs::remove_file(p)?; }
         Ok(())
     }
@@ -122,8 +132,8 @@ impl ContentStore {
     // gap. Touching can only ever keep a chunk alive longer — never removes it — so it introduces no
     // race; a genuinely-abandoned chunk is still reclaimed TTL after it was orphaned. Best-effort. (R16)
     pub fn touch(&self, hash: &str) {
-        if !Self::is_valid_hash(hash) { return; }
-        if let Ok(f) = std::fs::File::options().write(true).open(self.path_for(hash)) {
+        let Some(h) = ChunkHash::parse(hash) else { return; };
+        if let Ok(f) = std::fs::File::options().write(true).open(self.path_for(&h)) {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
     }
@@ -136,7 +146,7 @@ impl ContentStore {
             if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
             for f in std::fs::read_dir(shard.path())?.flatten() {
                 if let Some(name) = f.file_name().to_str() {
-                    if Self::is_valid_hash(name) { out.push(name.to_string()); }
+                    if ChunkHash::parse(name).is_some() { out.push(name.to_string()); }
                 }
             }
         }
@@ -162,7 +172,7 @@ impl ContentStore {
             for f in std::fs::read_dir(shard.path())?.flatten() {
                 let fname = f.file_name();
                 let Some(name) = fname.to_str() else { continue; };
-                if !Self::is_valid_hash(name) || referenced.contains(name) { continue; }
+                if ChunkHash::parse(name).is_none() || referenced.contains(name) { continue; }
                 // Age gate: spare anything modified within the TTL (an in-flight upload). elapsed()
                 // errs only if mtime is in the future → treat as age 0 (spared), never reclaim early.
                 let age = f.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
@@ -178,6 +188,19 @@ impl ContentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_hash_parse_accepts_only_64_hex() {
+        assert!(ChunkHash::parse(&"a".repeat(64)).is_some());
+        assert!(ChunkHash::parse(&"0123456789abcdef".repeat(4)).is_some()); // 64 hex
+        assert!(ChunkHash::parse(&"ABCDEF0123456789".repeat(4)).is_some()); // uppercase hex allowed
+        assert!(ChunkHash::parse("").is_none());
+        assert!(ChunkHash::parse(&"a".repeat(63)).is_none());  // too short
+        assert!(ChunkHash::parse(&"a".repeat(65)).is_none());  // too long
+        assert!(ChunkHash::parse(&"g".repeat(64)).is_none());  // non-hex
+        // A path-traversal / non-hash string is rejected at the boundary, so it can never reach path_for.
+        assert!(ChunkHash::parse("../../../etc/passwd").is_none());
+    }
 
     #[test]
     fn sweep_orphans_reclaims_unreferenced_and_spares_referenced_and_young() {
@@ -215,7 +238,7 @@ mod tests {
         assert!(!leftover.exists(), "a crash-leftover .tmp file must be reclaimed on open");
     }
 
-    // put() rejects a malformed hash as a FORMAT error (is_valid_hash: len==64 AND all-hex) BEFORE
+    // put() rejects a malformed hash as a FORMAT error (ChunkHash::parse: len==64 AND all-hex) BEFORE
     // hashing the bytes. Weakening the `&&` to `||` (valid if EITHER holds) would let a bad-length /
     // non-hex hash slip past the format gate and fail later as a content mismatch instead.
     #[test]

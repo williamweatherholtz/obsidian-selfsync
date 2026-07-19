@@ -49,6 +49,26 @@ fn handle_in_use(h: &VaultHandle, now: Instant) -> bool {
 // (see AppState.opens / vault()). Aliased so the field type stays legible (clippy::type_complexity).
 type OpenLocks = Arc<Mutex<HashMap<(String, String), Arc<Mutex<()>>>>>;
 
+// RAII reaper for the per-(user,vault) open-lock entry (issuePatternUntaggedShouldAdopt, raiiGuard). vault()
+// used to hand-call release_open_lock at every return path (4+ sites — the classic "forgot one exit" hazard);
+// Drop reaps on ALL exits instead. It removes the `opens` entry iff we're the LAST holder — the SAME
+// strong_count check the manual reap used: `lock` is the sole local Arc, so count 2 (this reaper + the map
+// entry) means no other opener is waiting on this key; a waiter holds a third Arc, so we keep the entry and
+// let the last one reap. (`opens` here is a cheap Arc clone of the shared map handle, not the per-key Arc,
+// so it doesn't perturb that count and the guard carries no lifetime parameter.)
+struct OpenLockReaper {
+    opens: OpenLocks,
+    key: (String, String),
+    lock: Arc<Mutex<()>>,
+}
+impl Drop for OpenLockReaper {
+    fn drop(&mut self) {
+        if let Ok(mut opens) = self.opens.lock() {
+            if Arc::strong_count(&self.lock) <= 2 { opens.remove(&self.key); }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
@@ -187,7 +207,11 @@ impl AppState {
             let mut opens = self.opens.lock().map_err(|_| std::io::Error::other("opens lock poisoned"))?;
             Arc::clone(opens.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))))
         };
-        let _open_guard = open_lock.lock().map_err(|_| std::io::Error::other("open lock poisoned"))?;
+        // RAII: the reaper removes this key's open-lock entry on EVERY exit below (raiiGuard) — no more
+        // hand-called release_open_lock at each return. It owns the sole local Arc, so its Drop's
+        // strong_count reap keeps the exact "last-holder" semantics the manual reap had.
+        let _reaper = OpenLockReaper { opens: Arc::clone(&self.opens), key: key.clone(), lock: open_lock };
+        let _open_guard = _reaper.lock.lock().map_err(|_| std::io::Error::other("open lock poisoned"))?;
         // Double-checked: another thread may have opened + cached it while we waited on the open lock.
         {
             let map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
@@ -195,8 +219,7 @@ impl AppState {
                 if let Ok(mut la) = h.last_access.lock() { *la = Instant::now(); }
                 let h = h.clone();
                 drop(map);
-                self.release_open_lock(&key, &open_lock);
-                return Ok(h);
+                return Ok(h); // _reaper reaps the open-lock entry on drop
             }
         }
         // crit R+1 (issueVaultDeleteOpenRace): refuse to auto-recreate a JUST-PURGED vault. A request that
@@ -205,15 +228,11 @@ impl AppState {
         // tombstones the key under this same per-key open lock, so by the time we hold the lock the
         // tombstone is visible → return NotFound (the delete stands). A later create_vault clears it.
         if self.deleted_vaults.lock().map_err(|_| std::io::Error::other("deleted_vaults lock poisoned"))?.contains(&key) {
-            self.release_open_lock(&key, &open_lock);
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "vault was deleted"));
         }
-        // Exactly one thread per key reaches here. Release the per-key open lock on the error path too,
-        // so a failed open never leaks its entry in `opens`.
-        let v = match Vault::open(&self.ns_dir(&usern, &vaultn)) {
-            Ok(v) => v,
-            Err(e) => { self.release_open_lock(&key, &open_lock); return Err(e); }
-        };
+        // Exactly one thread per key reaches here. A failed open (the `?`) still reaps its `opens` entry
+        // via _reaper's Drop, so a failed open never leaks its per-key lock entry.
+        let v = Vault::open(&self.ns_dir(&usern, &vaultn))?;
         let (tx, _rx) = broadcast::channel(256);
         let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx, last_access: Arc::new(Mutex::new(Instant::now())) };
         let cached = {
@@ -228,21 +247,7 @@ impl AppState {
             // Another thread may have opened it meanwhile — keep the first.
             map.entry(key.clone()).or_insert(handle).clone()
         };
-        self.release_open_lock(&key, &open_lock);
-        Ok(cached)
-    }
-
-    // Drop the per-(user,vault) open lock from `opens` when this caller is its last holder — no other
-    // thread is currently waiting to open the same key — so the map that serializes cold opens doesn't
-    // grow unboundedly across distinct vaults (the RS-1 leak class the sibling `ns` map already bounds;
-    // purge_user_data / purge_vault also clear it). strong_count == 2 means only our local `open_lock`
-    // + the map's own entry remain; a waiter blocked on this key holds a third Arc, so we keep the entry
-    // and let the last waiter reap it. Safe because the handle is cached in `ns` before we get here — a
-    // fresh caller hits the ns fast path and never re-opens, so tearing down the open lock can't race.
-    fn release_open_lock(&self, key: &(String, String), open_lock: &Arc<Mutex<()>>) {
-        if let Ok(mut opens) = self.opens.lock() {
-            if Arc::strong_count(open_lock) <= 2 { opens.remove(key); }
-        }
+        Ok(cached) // _reaper reaps the open-lock entry on drop
     }
 
     #[cfg(test)]

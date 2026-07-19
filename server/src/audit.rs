@@ -16,60 +16,78 @@ use axum::http::request::Parts;
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// The closed catalog of audited actions (AU.3.3.3 — the enumerated, reviewable event set).
+// A value from the closed audited-ACTION catalog (AU.3.3.3). The wrapped &'static str is PRIVATE, so the
+// ONLY values that exist are the `action::*` consts below — audit() takes an AuditAction, not a raw &str, so
+// an arbitrary or typo'd action string is unrepresentable at a call site (newtype / make-illegal-states-
+// unrepresentable, issuePatternUntaggedShouldAdopt). Call sites are unchanged: they still pass `action::LOGIN`.
+#[derive(Clone, Copy)]
+pub struct AuditAction(&'static str);
+impl AuditAction { fn as_str(self) -> &'static str { self.0 } }
+
+// Likewise the closed OUTCOME catalog — audit() can only be handed success / failure / denied.
+#[derive(Clone, Copy)]
+pub struct Outcome(&'static str);
+impl Outcome { fn as_str(self) -> &'static str { self.0 } }
+
+// The closed catalog of audited actions (AU.3.3.3 — the enumerated, reviewable event set). Each const is an
+// AuditAction; the private field means this module (a descendant of the defining module) is the only place
+// that can mint one, so the catalog is genuinely closed.
 pub mod action {
-    pub const LOGIN: &str = "login";
-    pub const LOGOUT: &str = "logout";
-    pub const ACCOUNT_CREATE: &str = "account_create";
-    pub const ACCOUNT_DELETE: &str = "account_delete";
-    pub const ADMIN_GRANT: &str = "admin_grant";
-    pub const ADMIN_REVOKE: &str = "admin_revoke";
-    pub const PASSWORD_CHANGE: &str = "password_change";
-    pub const PASSWORD_RESET: &str = "password_reset";
-    pub const SESSION_REVOKE: &str = "session_revoke";
-    pub const REGISTRATION_POLICY_CHANGE: &str = "registration_policy_change";
-    pub const INVITE_CREATE: &str = "invite_create";
-    pub const INVITE_REDEEM: &str = "invite_redeem";
-    pub const INVITE_REVOKE: &str = "invite_revoke";
-    pub const SHARE_GRANT: &str = "share_grant";
-    pub const SHARE_REVOKE: &str = "share_revoke";
-    pub const SHARE_LINK_CREATE: &str = "share_link_create"; // D0023 capability share-links
-    pub const SHARE_LINK_REDEEM: &str = "share_link_redeem";
-    pub const SHARE_LINK_REVOKE: &str = "share_link_revoke";
-    pub const VAULT_CREATE: &str = "vault_create";
-    pub const VAULT_DELETE: &str = "vault_delete";
-    pub const VAULT_REINDEX: &str = "vault_reindex";
-    pub const VAULT_PRUNE: &str = "vault_prune";
-    pub const AUTHZ_DENIED: &str = "authz_denied";
-    pub const RATE_LIMITED: &str = "rate_limited";
-    pub const MFA_ENABLE: &str = "mfa_enable";
-    pub const MFA_DISABLE: &str = "mfa_disable";
+    use super::AuditAction;
+    pub const LOGIN: AuditAction = AuditAction("login");
+    pub const LOGOUT: AuditAction = AuditAction("logout");
+    pub const ACCOUNT_CREATE: AuditAction = AuditAction("account_create");
+    pub const ACCOUNT_DELETE: AuditAction = AuditAction("account_delete");
+    pub const ADMIN_GRANT: AuditAction = AuditAction("admin_grant");
+    pub const ADMIN_REVOKE: AuditAction = AuditAction("admin_revoke");
+    pub const PASSWORD_CHANGE: AuditAction = AuditAction("password_change");
+    pub const PASSWORD_RESET: AuditAction = AuditAction("password_reset");
+    pub const SESSION_REVOKE: AuditAction = AuditAction("session_revoke");
+    pub const REGISTRATION_POLICY_CHANGE: AuditAction = AuditAction("registration_policy_change");
+    pub const INVITE_CREATE: AuditAction = AuditAction("invite_create");
+    pub const INVITE_REDEEM: AuditAction = AuditAction("invite_redeem");
+    pub const INVITE_REVOKE: AuditAction = AuditAction("invite_revoke");
+    pub const SHARE_GRANT: AuditAction = AuditAction("share_grant");
+    pub const SHARE_REVOKE: AuditAction = AuditAction("share_revoke");
+    pub const SHARE_LINK_CREATE: AuditAction = AuditAction("share_link_create"); // D0023 capability share-links
+    pub const SHARE_LINK_REDEEM: AuditAction = AuditAction("share_link_redeem");
+    pub const SHARE_LINK_REVOKE: AuditAction = AuditAction("share_link_revoke");
+    pub const VAULT_CREATE: AuditAction = AuditAction("vault_create");
+    pub const VAULT_DELETE: AuditAction = AuditAction("vault_delete");
+    pub const VAULT_REINDEX: AuditAction = AuditAction("vault_reindex");
+    pub const VAULT_PRUNE: AuditAction = AuditAction("vault_prune");
+    pub const AUTHZ_DENIED: AuditAction = AuditAction("authz_denied");
+    pub const RATE_LIMITED: AuditAction = AuditAction("rate_limited");
+    pub const MFA_ENABLE: AuditAction = AuditAction("mfa_enable");
+    pub const MFA_DISABLE: AuditAction = AuditAction("mfa_disable");
 }
 
 pub mod outcome {
-    pub const SUCCESS: &str = "success";
-    pub const FAILURE: &str = "failure";
-    pub const DENIED: &str = "denied";
+    use super::Outcome;
+    pub const SUCCESS: Outcome = Outcome("success");
+    pub const FAILURE: Outcome = Outcome("failure");
+    pub const DENIED: Outcome = Outcome("denied");
 }
 
 #[derive(Serialize)]
 struct AuditEvent<'a> {
     ts: &'a str,      // WHEN — UTC RFC-3339 with millis (authoritative in-app timestamp, not runtime-dependent)
     actor: &'a str,   // WHO  — authenticated principal, or "-" for a pre-auth event (failed login / unknown token)
-    action: &'a str,  // WHAT — a value from `action` above
+    action: &'a str,  // WHAT — the &str of an AuditAction from `action`
     target: &'a str,  // object acted on (subject account, "owner/vault", invite id, grantee)
-    outcome: &'a str, // one of `outcome`
+    outcome: &'a str, // the &str of an Outcome from `outcome`
     source: &'a str,  // SOURCE — client IP (see ClientIp), or "-" if unknown
 }
 
 // Emit one audit event. Best-effort to the `audit` target at info level; a serialize failure degrades
-// to a warn line rather than losing the fact entirely.
-pub fn audit(action: &str, actor: &str, target: &str, outcome: &str, source: &str) {
+// to a warn line rather than losing the fact entirely. The action/outcome are catalog newtypes, so the
+// closed-catalog guarantee (AU.3.3.3) is enforced by the TYPE, not by convention at each call site.
+pub fn audit(action: AuditAction, actor: &str, target: &str, outcome: Outcome, source: &str) {
     let ts = now_rfc3339();
-    let ev = AuditEvent { ts: &ts, actor, action, target, outcome, source };
+    let ev = AuditEvent { ts: &ts, actor, action: action.as_str(), target, outcome: outcome.as_str(), source };
     match serde_json::to_string(&ev) {
         Ok(json) => log::info!(target: "audit", "{json}"),
-        Err(e) => log::warn!(target: "audit", "audit-serialize-failed action={action}: {e}"),
+        Err(e) => log::warn!(target: "audit", "audit-serialize-failed action={}: {e}", action.as_str()),
     }
 }
 
@@ -116,7 +134,7 @@ mod tests {
     #[test]
     fn audit_event_is_valid_json_with_the_five_tuple() {
         // now_rfc3339 is exercised via a real call; assert the emitted string parses and carries fields.
-        let ev = AuditEvent { ts: "2026-07-10T00:00:00.000Z", actor: "alice", action: action::LOGIN, target: "alice", outcome: outcome::SUCCESS, source: "203.0.113.7" };
+        let ev = AuditEvent { ts: "2026-07-10T00:00:00.000Z", actor: "alice", action: action::LOGIN.as_str(), target: "alice", outcome: outcome::SUCCESS.as_str(), source: "203.0.113.7" };
         let json = serde_json::to_string(&ev).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         for k in ["ts", "actor", "action", "target", "outcome", "source"] {
