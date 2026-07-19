@@ -135,9 +135,9 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusDisplay("connecting").label).toBe("Resuming…");
     expect(p.statusDisplay("syncing").label).toBe("Resuming…");
     (p as any).resuming = false;
-    (p as any).realtimeConnected = true;
+    (p as any).transport = "live"; // realtimeConnected is now a computed getter (transport === "live")
     expect(p.statusDisplay("idle").label).toBe("Fully synced");
-    (p as any).realtimeConnected = false;
+    (p as any).transport = "offline";
     expect(p.statusDisplay("idle").label).toBe("Synced (polling)");
     // Read-only vault: idle must NOT read a plain green "Fully synced" (edits there never upload).
     (p as any).settings.vaultReadOnly = true;
