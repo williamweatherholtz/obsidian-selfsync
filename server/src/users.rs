@@ -25,16 +25,29 @@ fn dummy_hash() -> &'static str {
 // distinct names can ever collide on disk.
 // The human-readable rule, surfaced verbatim in the "invalid" error so the UI can set expectations.
 pub const NAME_RULE: &str = "use lowercase letters, digits, and . _ - + @ (max 64, no spaces or slashes)";
-pub fn safe_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        // '+' and '@' admitted so an email address works as a username (plus-addressing included).
-        // Both are safe: valid in a URL path segment and on every filesystem, and neither enables
-        // traversal (no '/', and '.'/'..' whole-names stay blocked). Still lowercase-canonical (§ above).
-        && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'+' | b'@'))
-        && s != "."
-        && s != ".."
+// A parsed, filesystem-safe name (username / vault id). parse-don't-validate (issueBoolPredicatesNoRefinedType):
+// the ONLY way to obtain a SafeName is SafeName::parse(&str), so holding a value of this type PROVES the
+// name was validated. AppState::ns_dir — the single builder of a DATA_ROOT/<user>/<vault> path — takes
+// &SafeName, so "join an unchecked name into a filesystem path" is a COMPILE error, not a discipline the
+// ~20 call sites must each remember. safe_name(&str)->bool remains as a thin wrapper for the sites not yet
+// threaded (still defensive, and now single-sourcing the rule here).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SafeName(String);
+impl SafeName {
+    // '+' and '@' admitted so an email address works as a username (plus-addressing included). Both are
+    // safe: valid in a URL path segment and on every filesystem, and neither enables traversal (no '/',
+    // and '.'/'..' whole-names stay blocked). Lowercase-canonical: uppercase is REJECTED, not folded.
+    pub fn parse(s: &str) -> Option<SafeName> {
+        let ok = !s.is_empty()
+            && s.len() <= 64
+            && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'+' | b'@'))
+            && s != "."
+            && s != "..";
+        ok.then(|| SafeName(s.to_string()))
+    }
+    pub fn as_str(&self) -> &str { &self.0 }
 }
+pub fn safe_name(s: &str) -> bool { SafeName::parse(s).is_some() }
 
 // Pure argon2 verify of a password against a stored PHC string. Kept free-standing (no lock,
 // no self) so the caller can run it on a blocking thread with the users mutex already released. (SEC-2)
@@ -290,6 +303,26 @@ impl UserStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // CRITIQUE R+1 (issueBoolPredicatesNoRefinedType): SafeName is the parse-once boundary for names that
+    // become filesystem path segments. Holding a SafeName PROVES validation (ns_dir requires it — an
+    // unchecked &str there is a COMPILE error, the guarantee this test's type can't express in a runtime
+    // assertion). This pins the accept/reject rule the whole server's path-safety now single-sources.
+    #[test]
+    fn safe_name_parse_accepts_valid_and_rejects_unsafe() {
+        for ok in ["alice", "a.b-c_d", "user+tag@example.com", "v1", "default"] {
+            assert!(SafeName::parse(ok).is_some(), "must accept {ok:?}");
+        }
+        assert!(SafeName::parse(&"x".repeat(64)).is_some()); // 64 chars = the boundary, allowed
+        for bad in ["", ".", "..", "Alice", "a/b", "a\\b", "a b", "../etc", "a\tb", "café"] {
+            assert!(SafeName::parse(bad).is_none(), "must reject {bad:?}");
+        }
+        assert!(SafeName::parse(".config").is_some(), "a leading dot is allowed (no traversal); only whole '.'/'..' are blocked");
+        assert!(SafeName::parse(&"x".repeat(65)).is_none(), ">64 chars rejected");
+        // The wrapper carries exactly the validated input; the bool helper agrees.
+        assert_eq!(SafeName::parse("alice").unwrap().as_str(), "alice");
+        assert!(safe_name("alice") && !safe_name("Alice"));
+    }
 
     fn store() -> (tempfile::TempDir, UserStore) {
         let d = tempdir().unwrap();

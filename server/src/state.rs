@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::registration::{Mode, RegistrationStore};
 use crate::shares::ShareStore;
 use crate::tokens::TokenStore;
-use crate::users::{safe_name, UserStore};
+use crate::users::{safe_name, SafeName, UserStore};
 use crate::vault::Vault;
 use std::collections::HashMap;
 use std::path::Path;
@@ -155,15 +155,21 @@ impl AppState {
         Ok(state)
     }
 
-    fn ns_dir(&self, user: &str, vault: &str) -> std::path::PathBuf {
-        self.cfg.data_root.join(user).join(vault)
+    // The SINGLE builder of a per-vault filesystem path. Takes &SafeName (crit R+1,
+    // issueBoolPredicatesNoRefinedType): a DATA_ROOT/<user>/<vault> path can ONLY be built from parsed,
+    // validated names — passing an unchecked &str here is a compile error. The state.rs entry points below
+    // parse once and hand the SafeName in, so the FS-path safety is type-enforced, not re-asserted ad hoc.
+    fn ns_dir(&self, user: &SafeName, vault: &SafeName) -> std::path::PathBuf {
+        self.cfg.data_root.join(user.as_str()).join(vault.as_str())
     }
 
-    // Open (and cache) the namespace for (user, vault). Names must be safe.
+    // Open (and cache) the namespace for (user, vault). Parses the names into SafeName (the only way to
+    // reach ns_dir); an invalid name is InvalidInput.
     pub fn vault(&self, user: &str, vault: &str) -> std::io::Result<VaultHandle> {
-        if !safe_name(user) || !safe_name(vault) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid user/vault name"));
-        }
+        let (usern, vaultn) = match (SafeName::parse(user), SafeName::parse(vault)) {
+            (Some(u), Some(v)) => (u, v),
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid user/vault name")),
+        };
         let key = (user.to_string(), vault.to_string());
         {
             let map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
@@ -204,7 +210,7 @@ impl AppState {
         }
         // Exactly one thread per key reaches here. Release the per-key open lock on the error path too,
         // so a failed open never leaks its entry in `opens`.
-        let v = match Vault::open(&self.ns_dir(user, vault)) {
+        let v = match Vault::open(&self.ns_dir(&usern, &vaultn)) {
             Ok(v) => v,
             Err(e) => { self.release_open_lock(&key, &open_lock); return Err(e); }
         };
@@ -247,7 +253,10 @@ impl AppState {
     // sync route would lazily create+persist an arbitrary vault dir in the caller's namespace
     // (a self-namespaced junk-dir amplification). (protocol-6 auto-provision)
     pub fn vault_exists(&self, user: &str, vault: &str) -> bool {
-        safe_name(user) && safe_name(vault) && self.ns_dir(user, vault).is_dir()
+        match (SafeName::parse(user), SafeName::parse(vault)) {
+            (Some(u), Some(v)) => self.ns_dir(&u, &v).is_dir(),
+            _ => false,
+        }
     }
 
     // Vaults that exist on disk for a user (directories under DATA_ROOT/<user>).
@@ -269,14 +278,14 @@ impl AppState {
     // on-disk directory — so a recreated username can never inherit the prior owner's notes/chunks
     // (SEC-MED-2 data remanence). Best-effort on the dir (a locked file shouldn't wedge the delete).
     pub fn purge_user_data(&self, user: &str) -> std::io::Result<()> {
-        if !safe_name(user) { return Ok(()); } // the admin route already validated; defensive
+        let usern = match SafeName::parse(user) { Some(u) => u, None => return Ok(()) }; // defensive; admin route already validated
         if let Ok(mut map) = self.ns.lock() {
             map.retain(|(u, _), _| u != user); // drop cached handles so a reopen can't serve a stale index
         }
         if let Ok(mut opens) = self.opens.lock() {
             opens.retain(|(u, _), _| u != user); // and the per-key open locks — don't retain a deleted user's keys
         }
-        let dir = self.cfg.data_root.join(user);
+        let dir = self.cfg.data_root.join(usern.as_str());
         // Best-effort on the dir (crit R+1, issuePurgeDirNotBestEffort): matches the comment above and
         // purge_vault — a locked file must not wedge the account delete into a half-state; log + retry.
         if dir.exists() {
@@ -290,7 +299,10 @@ impl AppState {
     // Remove ONE vault's data (cached handle + on-disk dir) — the operator's per-vault delete
     // (Round-7 RC-4), the finer-grained complement to purge_user_data. Best-effort on the dir.
     pub fn purge_vault(&self, owner: &str, vault: &str) -> std::io::Result<()> {
-        if !safe_name(owner) || !safe_name(vault) { return Ok(()); }
+        let (ownern, vaultn) = match (SafeName::parse(owner), SafeName::parse(vault)) {
+            (Some(o), Some(v)) => (o, v),
+            _ => return Ok(()),
+        };
         let key = (owner.to_string(), vault.to_string());
         // Serialize against a concurrent OPEN (crit R+1, issueVaultDeleteOpenRace): hold the SAME per-key
         // open lock vault() takes across Vault::open, so our teardown (tombstone + drop handle + remove
@@ -316,7 +328,7 @@ impl AppState {
         // holds this lock can't be mid-create; a later create_vault clears it.
         self.deleted_vaults.lock().map_err(|_| std::io::Error::other("deleted_vaults lock poisoned"))?.insert(key.clone());
         if let Ok(mut map) = self.ns.lock() { map.remove(&key); }
-        let dir = self.ns_dir(owner, vault);
+        let dir = self.ns_dir(&ownern, &vaultn);
         // Best-effort on the dir (crit R+1, issuePurgeDirNotBestEffort): grants+links are already revoked
         // (the security-relevant part) and the handle is evicted + tombstoned (a stale index can't be
         // served), so a Windows file lock (an in-flight request still holding the index DB) must NOT wedge
