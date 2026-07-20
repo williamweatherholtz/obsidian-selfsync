@@ -2,10 +2,10 @@
 // ReleaseVersioning — increment the SelfSync plugin version per semantic versioning
 // whenever a coherent set of shippable changes is ready, then tag + publish (D0002).
 //
-// Pre-1.0 semver (0.MINOR.PATCH): MAJOR = breaking change to the sync protocol / on-disk
-// base format / server API / settings schema; MINOR = new backward-compatible user-facing
-// capability; PATCH = bug fix / docs / refactor / test-only; a mixed set takes the HIGHEST
-// level. manifest.json is the source of truth BRAT reads; versions.json maps version ->
+// Semver (the project is at 1.x — D0034): MAJOR = breaking change to the sync protocol / on-disk
+// base format / server API / settings schema (a genuine break bumps the major, e.g. 2.0.0); MINOR =
+// new backward-compatible user-facing capability; PATCH = bug fix / docs / refactor / test-only; a
+// mixed set takes the HIGHEST level. manifest.json is the source of truth BRAT reads; versions.json maps version ->
 // minAppVersion; pushing a tag `X.Y.Z` (no `v`) triggers .github/workflows/release.yml.
 // Deployed by the `release-versioning` skill (D0059).
 // =====================================================================
@@ -25,7 +25,7 @@ package ReleaseVersioning {
         :>> title = "Classify the change set (semver level)";
         :>> order = 1;
         :>> triggerCondition = "A coherent set of committed changes is ready to ship (a feature/fix batch complete + green).";
-        :>> actionText = "Review the changes since the last release and pick the bump level, HIGHEST wins: MAJOR = breaking change to sync protocol / on-disk base format / server API / settings schema (not backward compatible); MINOR = new backward-compatible user-facing capability (setting, mode, command); PATCH = bug fix / docs / refactor / test-only. Pre-1.0 stays 0.MINOR.PATCH. When torn between minor and patch, prefer minor if any user-visible behavior was added.";
+        :>> actionText = "Review the changes since the last release and pick the bump level, HIGHEST wins: MAJOR = breaking change to sync protocol / on-disk base format / server API / settings schema (not backward compatible); MINOR = new backward-compatible user-facing capability (setting, mode, command); PATCH = bug fix / docs / refactor / test-only. The project is at 1.x (D0034), so a genuine breaking change is a MAJOR bump (e.g. 2.0.0) — not avoided the way it was pre-1.0. When torn between minor and patch, prefer minor if any user-visible behavior was added.";
         :>> producedArtifact = "A chosen bump level (major|minor|patch) with a one-line rationale.";
         :>> owner = Owner::either;
     }

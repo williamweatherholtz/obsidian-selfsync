@@ -22,12 +22,12 @@ classified version, and it keeps the version files from drifting.
 
 ## 1. Classify the change set (semver level)
 
-SelfSync is pre-1.0 (`0.MINOR.PATCH`). Pick the level for the changes since the last release —
+SelfSync is at **1.x** (D0034). Pick the level for the changes since the last release —
 **the highest applicable wins:**
 
 | Level | When |
 |-------|------|
-| **major** | Breaking change to the sync protocol, on-disk/base format, server API, or settings schema (not backward compatible). Pre-1.0, prefer minor unless truly breaking. |
+| **major** | Breaking change to the sync protocol, on-disk/base format, server API, or settings schema (not backward compatible) — bumps the major (e.g. 2.0.0). |
 | **minor** | New backward-compatible user-facing capability — a new setting, sync mode, or command. |
 | **patch** | Bug fix, docs, internal refactor, or test-only — no new capability. |
 
