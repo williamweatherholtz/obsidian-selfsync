@@ -64,9 +64,7 @@ path produced each verdict.
 1. **Green-without-running** — claiming tests pass from reading code/CI memory.
 2. **Skipping self-consistency** — "cargo test passed" while `keel orient`'s task
    total silently disagrees with the structural `action` count.
-3. **Hanging the shell** — piping `conda run` output into `Select-String`/
-   `Out-Null`/redirects (CLAUDE.md §6). Run plain.
-4. **Fabricating a confirmation** — verification evidence for `method=test` is the
+3. **Fabricating a confirmation** — verification evidence for `method=test` is the
    run; for `confirmation` it is the human's word. Never infer the latter.
 
 ## Output Format

@@ -1,8 +1,9 @@
 # SysML v2 Syntax Notes (confirmed against the pilot implementation)
 
 Validated empirically against `jupyter-sysml-kernel` 0.59.0 (OMG pilot
-implementation, OpenJDK 25) via the harness in `.engine/tools/validate/`.
-These supersede guesses; treat them as ground truth for authoring `.sysml`.
+implementation, OpenJDK 25) when these notes were written; that kernel harness
+has since been retired (D0048/D0074/M4 — `keel` is the validator now), but the
+syntax facts below still hold. Treat them as ground truth for authoring `.sysml`.
 
 ## Works ✅
 
@@ -80,26 +81,21 @@ schema is restructured as **one distinct top-level package per file**, named
 - starts with `private import ScalarValues::*;` if it uses primitives, and
 - `private import EngineElement::*;` (etc.) for any sibling types it references.
 
-Validate by concatenating dependency-ordered files into one submission (so
-imports resolve) — see `.engine/tools/validate/`.
+(This concatenation was how the retired kernel validators resolved imports; `keel` parses the tree
+directly, so it is no longer something you do by hand.)
 
 ## How to validate
 
-Use the four-layer validators (retired legacy `validate_sysml.py` 2026-06-11):
+Validate with `keel` — the Python kernel validators + the JVM SysML kernel were retired with the
+Rust-sole-gate move (D0048/D0074/M4); there is no conda/JVM validation step:
 
-```powershell
-$conda = "C:\Users\WilliamWeatherholtz\miniforge3\Scripts\conda.exe"
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_schema.py
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_workflows.py
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_instances.py
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_tracking.py
+```
+keel validate [ROOT]   # parses .tracking/*.sysml
+keel guard   [ROOT]    # all forward guards; also scans .engine (engine-lint / decision-rationale / process-*)
 ```
 
-The kernelspec calls bare `java`, so it MUST run through `conda run -n sysml`
-(running the env python directly fails with WinError 2). Needs sandbox disabled
-(subprocess + the kernel). A cell FAILS iff the kernel emits a line containing
-`ERROR:`. NEVER pipe `conda run` output into another cmdlet — the JVM holds the
-pipe and the shell hangs.
+Both are kernel-free Rust — no `conda`, no JVM. A change is not done until `keel validate` reports
+zero `ERROR:` and `keel guard` is green.
 
 ## TestResult naming and enum conventions (updated Sprint 7, 2026-06-15)
 
@@ -136,9 +132,9 @@ Current stack (Rust parser + pilot 0.59.0 + query.py) is stable. Re-evaluate whe
 
 ## Decision file authoring (`.engine/decisions/`)
 
-Decision files are standalone SysML v2 packages. Common mistakes caught by the lint check in `validate_instances.py`:
+Decision files are standalone SysML v2 packages. Common mistakes (the `decision-rationale` + `engine-lint` guards in `keel guard` scan the decision files now that the kernel validators are retired):
 
-- **Imports**: `EngineWork::*` (for `Decision`), `EngineElement::*` (for `VerificationMethod`/`VerdictKind`), and `EngineVerification::*` (for the acceptance event's `Test`/`TestResult`). `Decision` lives in `EngineWork`, so that import is required; `validate_instances.py` lint-checks it.
+- **Imports**: `EngineWork::*` (for `Decision`), `EngineElement::*` (for `VerificationMethod`/`VerdictKind`), and `EngineVerification::*` (for the acceptance event's `Test`/`TestResult`). `Decision` lives in `EngineWork`, so that import is required.
 - **Fields**: `id`, `title`, `createdAt`, `createdBy` (inherited from `Element`) + `status : DecisionStatus`, `context : String` (the forces/situation), `decision : String` (the choice), `rationale : String` (why — incl. alternatives + criteria), `consequences : String`. Acceptance is NOT a field — it is a confirmation event (below).
 - **Template**: always copy a recent file (e.g. `0065-attribution-contract.sysml`) — do not author from scratch.
 - **Acceptance is a confirmation event (D0066), not a field.** A new accepted Decision `dNNNN` carries `verification dNNNNAccept : Test { :>> method = VerificationMethod::confirmation; ... }` (verifies `dNNNN` by naming) + `part dNNNNAcceptR1 : TestResult { :>> outcome = VerdictKind::pass; :>> judgedBy = <accepting human>; :>> judgedAt; :>> judgedAgainst; }`. `status = accepted` is the structured fact; the event carries who/when/commit. Tooling reads acceptance from the event.
@@ -147,9 +143,8 @@ Decision files are standalone SysML v2 packages. Common mistakes caught by the l
   `ALTERNATIVES: (A) <opt> — rejected: <why>; (B) <opt> — rejected: <why>; (C) <chosen>.
   CRITERIA: <the axes the choice was made on>.` Skip for record-only / no-alternative decisions
   (test: *was a real option rejected?*). Records the alternatives-not-chosen (ISO 42010).
-- **No cross-package references (issue021).** `validate_instances.py` loads each `.engine` file
-  in kernel isolation with only `schema/core` preloaded — it does NOT co-load other decisions,
-  processes, or workflows. So a Decision file CANNOT reference an element in another package
+- **No cross-package references (issue021).** A Decision file is parsed standalone with only
+  `schema/core` in scope — other decisions, processes, or workflows are NOT co-loaded. So it CANNOT reference an element in another package
   (e.g. `#ProspectiveChange dependency from d0049 to Delivery` with `import DeliveryWorkflow`
   fails: both the namespace and the target are unresolvable; a package is also never a valid
   `dependency` endpoint). Two ways to live within this:

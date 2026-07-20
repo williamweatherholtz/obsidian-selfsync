@@ -358,44 +358,25 @@ enforced above]; plus `critique-rigor` D0080/issue030 [low-rigor critiques + aff
 action]. The python `validate_*.py` guards, `query.py`, and `parity_check.py` were RETIRED at M4
 (sprint58, issue012 closed) — the Rust path is the sole gate.
 
-**`.engine/` schema/workflow/instance changes still use the kernel validators** (deeper
-SysML semantics than the Rust validator covers), and they remain the authoritative SysML
-oracle on demand / in CI (each starts the pilot kernel, ~20s):
-
-```
-$conda = "C:\Users\WilliamWeatherholtz\miniforge3\Scripts\conda.exe"
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_schema.py      # schema/core + safety
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_workflows.py   # workflows/*.sysml + _meta
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_instances.py   # .engine decisions/processes/skills
-& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_tracking.py    # .tracking (kernel cross-check / fallback when the rust binary is unbuilt)
-```
-
-(Run through the full miniforge3 conda path — §6 explains why bare `conda` is not on PATH.
-The kernel calls bare `java`. Sandbox must be disabled. The legacy `validate_sysml.py` was
-retired 2026-06-11 — it predates the flat-package split.)
-See `.engine/docs/keel-syntax-notes.md` for confirmed syntax do's/don'ts before authoring.
+**`.engine/` changes (schema / workflows / decisions / processes / skills) go through the SAME `keel`
+path — there is NO separate kernel validator to run.** `keel validate [ROOT]` parses the `.tracking/`
+`.sysml`; `keel guard` additionally SCANS `.engine/` (engine-lint over the schema/workflow/instance
+elements, decision-rationale over every Decision, process-skill + process-change over the process defs),
+so a green `keel validate` + `keel guard` is the full local gate for both trees. The Python kernel
+validators (`validate_schema/workflows/instances/tracking.py`), `kill_stale_kernels.py`, and the JVM
+SysML kernel were retired with the Rust-sole-gate move (D0048 / D0074 / M4) and are no longer present in
+this repo — do not look for a conda/JVM validation step; there isn't one.
 
 ---
 
 ## 6. Environment notes
 
 - Windows + PowerShell. Use PowerShell syntax (`$null`, `$env:VAR`, backtick line-continuation).
-- **`conda` is NOT on `$env:PATH`** in PowerShell sessions that don't run conda init (e.g.
-  Claude Code's shell). Use the full miniforge3 path every time:
-  ```
-  & "C:\Users\WilliamWeatherholtz\miniforge3\Scripts\conda.exe" run -n sysml --no-capture-output python ...
-  ```
-  Installation root: `C:\Users\WilliamWeatherholtz\miniforge3` (miniforge3, **not** miniconda3).
-  The validator commands in §5 must use this prefix — `conda run` as a bare word will not be found.
-- **NEVER pipe `conda run` output into a live cmdlet or redirect** (`| Select-String`,
-  `| Out-Null`, `> $null`) — the kernel JVM holds the pipe and the shell HANGS. Run plain.
-- Interrupted kernel runs can orphan JVMs: `python .engine/tools/kill_stale_kernels.py`.
-- SysML validation requires the `sysml` conda env (Jupyter SysML kernel, OpenJDK).
 - **Use absolute paths in shell commands; don't rely on cwd (issue013).** The Bash and
   PowerShell tools share one working directory, so a `cd` in one silently changes the cwd
   the other sees and breaks later relative-path commands. Pass absolute paths to scripts
-  and files (the `keel` binary takes an explicit `[ROOT]`, and the kernel validators self-locate the repo, so cwd doesn't matter to them).
-- **Validation-path tools must be kernel-free where possible (D0048).** A tool that gates
-  commits or routine checks should not start the JVM kernel — it's slow and orphans JVMs
-  (the leak W1 fixed). The forward guards + views are all kernel-free Rust (`keel guard` /
-  `keel validate`); the JVM kernel runs only for deep `.engine` SysML semantics.
+  and files (the `keel` binary takes an explicit `[ROOT]`, so cwd doesn't matter to it).
+- **The whole validation path is kernel-free Rust (D0048).** `keel validate` / `keel guard` are the
+  only validators — no JVM SysML kernel, no `conda`, no `java`. (The historical guidance about the
+  `sysml` conda env, not piping `conda run` output, and orphaned JVMs is obsolete — the kernel was
+  retired with the Rust-sole-gate move; see §5.)

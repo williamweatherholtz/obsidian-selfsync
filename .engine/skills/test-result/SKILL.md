@@ -52,7 +52,7 @@ is the latest verdict. The query layer always takes the most-recent result.
    it.
 4. Fill all three provenance fields: `judgedAt` = today ISO-8601, `judgedBy`
    = actor id, `judgedAgainst` = current HEAD short SHA.
-5. Validate the file (validate_tracking.py); the result must parse clean before
+5. Validate the file (`keel validate [ROOT]`); the result must parse clean before
    commit.
 
 ## Output Format
