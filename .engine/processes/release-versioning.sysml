@@ -62,4 +62,13 @@ package ReleaseVersioning {
         :>> producedArtifact = "A green check-release assertion (tag + GitHub release with the three plugin assets).";
         :>> owner = Owner::ai;
     }
+    part rv6Currency : ProcessStep {
+        :>> id = "5c0a7e42-9b1d-4c8e-a6f3-2d7b0e14aa63";
+        :>> title = "Monitor release currency (unattended net)";
+        :>> order = 6;
+        :>> triggerCondition = "Continuous — a daily CI net, and any time work lands on main.";
+        :>> actionText = "Run `node scripts/check-release-currency.mjs` — it counts commits on main since the last release tag that touch SHIPPABLE paths (client/**, server/**, manifest.json, versions.json; engine/tracking/docs commits are excluded so they never false-positive), WARNs at >=1 and FAILs past the threshold (> 10 commits or > 14 days). This complements rv5/check-release.mjs, which asserts only that the MANIFEST's version is released and is therefore BLIND to unreleased work accruing on top (the manifest left at an already-released version) — the D0033 blind spot that let 47 shippable commits pile up unreleased past 1.6.0. Wired into .github/workflows/verify-released.yml (the same daily net as rv5) so 'a release is overdue' becomes a checkable signal that triggers rv1, not a memory (D0047).";
+        :>> producedArtifact = "A currency signal: green (current), a warn (a release is due soon), or a hard fail (overdue — cut a release).";
+        :>> owner = Owner::ai;
+    }
 }

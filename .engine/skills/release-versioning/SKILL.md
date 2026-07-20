@@ -71,6 +71,21 @@ guard against the "bumped + committed but never released" miss — "released" is
 assertion, not a memory. The `.github/workflows/verify-released.yml` CI job runs the same check
 daily, so drift goes red on its own even if this step is skipped.
 
+## 6. Currency net (D0033 — complements step 5)
+
+Step 5's `check-release.mjs` asserts the *manifest's* version is released — it says nothing about
+work piling up unreleased on top (the manifest sits at an already-released version while `main`
+drifts). That blind spot let 47 shippable commits accrue unreleased past 1.6.0. So:
+```
+node scripts/check-release-currency.mjs
+```
+It counts commits on `main` since the last release tag touching **shippable** paths (`client/**`,
+`server/**`, `manifest.json`, `versions.json` — engine/tracking/docs are excluded so they don't
+false-positive), **warns** at ≥1 and **fails** past the threshold (`>10` commits or `>14` days). It's
+wired into `.github/workflows/verify-released.yml` (the same daily net), so an overdue release goes red
+on its own — a signal to run this skill from step 1. Thresholds live in the script (tunable without a
+new Decision). Where step 5 is release *completeness*, this is release *currency*.
+
 ## Notes
 - Tags are `X.Y.Z` (no `v`), matching the workflow's tag filter.
 - `client/package.json`'s version is kept in step for tidiness; it is not shipped in the plugin.

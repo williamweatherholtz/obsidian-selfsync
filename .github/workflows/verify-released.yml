@@ -23,3 +23,8 @@ jobs:
         run: node scripts/check-release.mjs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # D0033: complement the above — it only checks the MANIFEST's version is released, so it's blind to
+      # unreleased work piling up on main. This fails when main has drifted too far past the last release
+      # tag with shippable-path commits (the blind spot that let 47 commits accrue unreleased past 1.6.0).
+      - name: Assert main hasn't drifted past the last release (currency)
+        run: node scripts/check-release-currency.mjs
