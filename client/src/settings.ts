@@ -182,7 +182,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // Live status light at the BOTTOM: coloured dot + phase; issue as desc; connection actions right.
     g.addSetting((st) => {
       st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(phase).color}`);
-      const disp = this.plugin.statusDisplay(phase); // label + detail (Resuming… / Syncing… N pending / checking for changes)
+      const disp = this.plugin.statusDisplay(phase); // label + detail (Resuming… / Syncing… N pending)
       st.nameEl.createSpan({ text: disp.label + (disp.detail ? ` ${disp.detail}` : "") });
       const issue = this.plugin.getLastIssue();
       if (phase !== "idle" && issue) st.setDesc(issue);

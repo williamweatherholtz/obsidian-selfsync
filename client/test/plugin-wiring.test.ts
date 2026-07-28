@@ -129,8 +129,10 @@ describe("plugin wiring — producers → engine → effects", () => {
     const { p } = await bootPlugin();
     (p as any).syncPending = 3;
     expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "3 pending" });
+    // A syncing phase with nothing pending is a CHECK, not a state (issueStatusLightFlicker): no
+    // "checking for changes" detail — and the light never even paints it (effectiveLightPhase collapses it to idle).
     (p as any).syncPending = 0;
-    expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "checking for changes" }); // never a bare "Syncing…"
+    expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "" });
     (p as any).resuming = true; // just came back from a context switch
     expect(p.statusDisplay("connecting").label).toBe("Resuming…");
     expect(p.statusDisplay("syncing").label).toBe("Resuming…");

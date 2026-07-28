@@ -17,6 +17,7 @@ import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
+import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -50,6 +51,10 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 // WS-less client still converges quickly.
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
+// Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
+// (or has no pending transfer) faster than this never shows — the light holds its steady state, so a
+// sub-second poll/check can't flit the light. Only a sustained, genuine transfer paints "Syncing…".
+const SYNCING_SHOW_DELAY_MS = 600;
 // WS half-open liveness (crit-round residual): the server sends an app heartbeat every ~30s. If the
 // client sees NO frame (heartbeat or change) for this long, the socket is silently dead → re-dial.
 const WS_STALE_MS = 75 * 1000;      // ~2.5 missed heartbeats
@@ -305,6 +310,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Files still PENDING transfer this reconcile pass, for the "N pending" text. 0/null when nothing is
   // outstanding. Only counts files that actually need syncing (not files examined), so it drives to 0.
   private syncPending = 0;
+  // The status-light DISPLAY FSM (statuslight.ts) + its debounce timer + a repaint-dedupe key. Entering the
+  // visible "syncing" state is debounced so a transient reconcile never flits the light (issueStatusLightFlicker).
+  private lightDisplay: LightDisplay = lightDisplayInit();
+  private lightTimer?: number;
+  private lastLightKey = "";
   // Realtime WS channel lifecycle as an explicit FSM (transportstate.ts): offline/dialing/live/degraded —
   // replaces the old realtimeConnected bool + per-socket `opened` closure + scattered poll-cadence flips (crit R+1,
   // issueStateMachineOrphanedAndImplicit D1). `realtimeConnected` (state === "live") drives the status
@@ -960,9 +970,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // (it clears only when the switch reconcile completes). So a long fork/switch reads as "Switching
     // vault…" instead of a generic "Syncing…", and survives backgrounding, answering "did it finish?".
     if (this.settings.pendingSwitch) return { label: "Switching vault…", detail: "applying your choice" };
-    if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "checking for changes" };
+    if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "reconnecting" };
     switch (phase) {
-      case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "checking for changes" };
+      // A shown "syncing" always has real transfer work (effectiveLightPhase collapses a 0-pending check to
+      // idle), so the detail is the pending count — never "checking for changes" (a transition, not a state).
+      case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "" };
       case "idle":       return this.settings.vaultReadOnly
         // Read-only vault: Obsidian still lets you EDIT, but those edits never upload — so a plain green
         // "Fully synced" is a mode error (it implies your changes are safe on the server). Say so.
@@ -973,7 +985,29 @@ export default class NewLiveSyncPlugin extends Plugin {
       case "off":        return { label: "Not connected", detail: "" };
     }
   }
-  private renderLight(phase: Phase) {
+  // The status light's SHOWABLE phase: a `syncing` reconcile with nothing queued to transfer (syncPending
+  // <= 0) is a CHECK, not a state — so it collapses to `idle` and never paints "Syncing…". Only a genuine
+  // transfer (syncPending > 0) is a real syncing phase; the debounce below then also suppresses a sub-second
+  // one. Together these kill the "Fully synced" ⇄ "Syncing… checking for changes" flitter (issueStatusLightFlicker).
+  private effectiveLightPhase(): Phase {
+    const p = this.engine.phase();
+    return (p === "syncing" && this.syncPending <= 0) ? "idle" : p;
+  }
+  // The render ENTRY POINT (all callers route here): feed the effective phase into the debounced display
+  // FSM. `_p` is accepted for the legacy callers that pass engine.phase() but is ignored — the FSM +
+  // effectiveLightPhase are the single source of what's shown.
+  private renderLight(_p?: Phase) { this.dispatchLight({ kind: "phase", phase: this.effectiveLightPhase() }); }
+  // Drive the display FSM (statuslight.ts) and apply its debounce-timer effects, then paint whatever it
+  // says is currently shown. Entering `syncing` arms the timer (keeps the steady state visible); the timer
+  // emits `settle`, which commits to `syncing` only if it's still pending — so a transient never paints.
+  private dispatchLight(e: LightEvent): void {
+    const act = nextLightDisplay(this.lightDisplay, e);
+    this.lightDisplay = act.state;
+    if (act.disarm && this.lightTimer !== undefined) { window.clearTimeout(this.lightTimer); this.lightTimer = undefined; }
+    if (act.arm) this.lightTimer = window.setTimeout(() => { this.lightTimer = undefined; this.dispatchLight({ kind: "settle" }); }, SYNCING_SHOW_DELAY_MS);
+    this.paintLight(this.lightDisplay.shown);
+  }
+  private paintLight(phase: Phase) {
     const spec = light(phase, "", this.realtimeConnected); // COLOUR source
     const disp = this.statusDisplay(phase);
     const tip = disp.detail ? `${disp.label} ${disp.detail}` : disp.label;
@@ -985,6 +1019,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       : phase === "offline" ? "alert-triangle"
       : phase === "off" ? "circle-slash"
       : "refresh-cw"; // connecting / syncing = active
+    // Repaint-dedupe: if the computed light is identical to what's already on screen, don't touch the DOM.
+    // Kills any residual flash from repeated identical renders (e.g. idle re-rendered on every poll settle).
+    const key = `${phase}|${spec.color}|${spec.label}|${tip}|${glyph}`;
+    if (key === this.lastLightKey) return;
+    this.lastLightKey = key;
     if (this.statusEl) {
       this.statusEl.empty();
       const dot = this.statusEl.createSpan({ text: "●" });
