@@ -505,9 +505,23 @@ package ProjectDelivery {
         // 2026-07-29-embedded-timestamp-metadata.md). Not yet implemented — ships MINOR. =====
         action embeddedTimestampMetadata;
         verification embeddedTimestampMetadataDoD : Test { :>> id = "d7c19001-0000-4a10-9b20-a1b2c3d40091"; :>> method = VerificationMethod::test; :>> procedureText = "DoD (NOT yet met — refine authored 2026-07-29): pure frontmatter.ts (parse/serialize, normalized hash masking the managed keys, raw fallback for non-md/unparseable YAML) + excludedFolders.ts (add/remove/normalize/isExcluded/matchFolders) unit tests green; reconcile.test.ts timestamp-only->no-conflict + copy-bump->reverted-not-pushed + excluded-folder->untouched + genuine-conflict->no-regression green; fstimes.ts driver tests (mtime from updated desktop; creation time from created Win/mac; Linux/mobile degrade; ctime never; native-addon-absent graceful) green; settings-ui.dom.test.ts add/remove/autocomplete wiring green; a *.pwspec.ts e2e (seed real folders, add an excluded folder in settings, assert excluded content never reaches the server) green; full client vitest + server cargo test --locked + clippy -D warnings + keel reverify all green. Ships a MINOR release. Resolves issueTimestampConflictNoise."; }
+        part embeddedTimestampMetadataDoDR1 : TestResult { :>> id = "d7c1a001-0000-4a10-9b20-a1b2c3d4a001"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "ab40154"; :>> judgedAt = "2026-07-29"; :>> judgedBy = "claudeOpus"; }
+        // CLOSEOUT (autonomous, method=inspect): DoD met — full deliverable gate green @ 6c33630 (server cargo
+        // test + clippy -D warnings + client vitest 504) + tsc clean + plugin bundles; shipped as 1.7.0.
+        // RETRO (autonomous, method=analysis): a pre-release 3-lens adversarial critique caught FIVE ship-
+        // blockers the TDD suite missed (non-md corruption, cross-device churn, created=now, CRLF, quoted
+        // dates) because its fixtures were all LF / unquoted / .md / strictly-ordered timestamps. Durable
+        // lesson: adversarial-critique-before-release + adversarial fixtures (the fixes shipped WITH fail-
+        // first tests, so the fix is its own guard). 4 lower findings tracked -> issueTimestampHardeningFollowups.
         // ===== Follow-up (v-next) — deferred hardening from the pre-release 3-lens critique. Not started. =====
         action embeddedTimestampHardening;
         verification embeddedTimestampHardeningDoD : Test { :>> id = "d7c19002-0000-4a10-9b20-a1b2c3d40092"; :>> method = VerificationMethod::test; :>> procedureText = "DoD (NOT started — deferred critique follow-ups, each fail-first): F9 a user's manual edit of a managed created/updated is HONORED (reconcile the managed fields in the copy/re-stamp revert instead of blind-restoring base) rather than reverted every sync; F12 managed notes are handled so a body-only change by an external mtime-preserving tool (rsync -a / Syncthing) is not missed by the (size,mtime) scan-skip; F14 formatIsoOffset labels a historical stamp with the offset in effect AT that instant (DST-correct), not the current offset; F15 the >1 MiB churn-killer works (a copy/re-stamp of a large managed note whose base text was dropped still reverts + is not spuriously re-stamped updated=now). Resolves issueTimestampHardeningFollowups."; }
+        // REVIEW — the per-sitting human gate (D0049), the single human confirmation. wweatherholtz reviewed
+        // the pre-release 3-lens critique results + fixes and authorized the release; #Covers names the sprint.
+        verification sittingReview20260729 : Test { :>> id = "d7c1a002-0000-4a10-9b20-a1b2c3d4a002"; :>> method = VerificationMethod::confirmation; :>> procedureText = "Per-sitting human review (D0049) for the 2026-07-29 sitting: wweatherholtz accepted the embeddedTimestampMetadata sprint (SelfSync-owned embedded created/updated timestamps, volatile-field-aware sync, and embedded-time-driven FS times), having reviewed the 3-lens pre-release adversarial critique and its ship-blocker fixes, and authorized deployment as release 1.7.0 — via explicit 'good, publish' on 2026-07-29. This is the single human confirmation gate; the sprint's closeOut (inspect) + retro (analysis) ran autonomously."; }
+        part sittingReview20260729R1 : TestResult { :>> id = "d7c1a003-0000-4a10-9b20-a1b2c3d4a003"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "ab40154"; :>> judgedAt = "2026-07-29"; :>> judgedBy = "wweatherholtz"; }
+        #Covers dependency from sittingReview20260729 to embeddedTimestampMetadata;
+        #Covers dependency from sittingReview20260729 to embeddedTimestampCapability;
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
