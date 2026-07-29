@@ -534,6 +534,11 @@ package ProjectDelivery {
         // review: wweatherholtz directed + authorized this 1.7.1 fix and its release via explicit "yes
         // implement" (2026-07-29); covered by sittingReview20260729 (this sitting's single confirmation gate).
         #Covers dependency from sittingReview20260729 to frontmatterParserSafety;
+        // ===== Sprint timestampBackfill (2026-07-29) — 1.8.0: instantiate embedded timestamps ON ENABLE
+        // (convergence backfill) + the critique-hardening (instant-based compliance, alias mask, reversible
+        // first pass, restore detection, honest counted confirm, Templates exclude). =====
+        action timestampBackfill;
+        verification timestampBackfillDoD : Test { :>> id = "d7c19004-0000-4a10-9b20-a1b2c3d40094"; :>> method = VerificationMethod::test; :>> procedureText = "Ships MINOR 1.8.0. Enabling (or a policy change, or a settled launch) runs a convergence pass that brings every in-scope .md note to compliance: INSTANT-BASED compliance (canonical unquoted ISO-with-offset, offset-agnostic -> global fixed point), a real normalizer (seed missing from OS ctime/mtime, never 'now'; re-emit non-canonical at the same instant; never bump) with the FIXED-POINT law as a shipped test; pushed via backfillPush so a masked-key-only conform is neither reverted nor re-stamped by reconcile (proven test). Paced + RESUMABLE via a per-(device,vault) policy-versioned marker+cursor; drift handled at the write boundary; REVERSIBLE first pass (conflict-copy of any not-cleanly-conformable note); informed COUNTED enable confirm with restore-signature detection; third-party alias keys MASKED in identity (Linter-loop fix); Templates folder excluded. DoD: frontmatter + timestampBackfill + reconcile(backfillPush) unit tests + settings-ui DOM (enable->consent->backfill) green; full client vitest + tsc + server cargo test + clippy -D warnings + keel reverify green. Resolves issueTimestampEnableInert."; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so

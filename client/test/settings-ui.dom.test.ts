@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // so the Sign-out wiring test still fires. (Its own behaviour is covered by inspection, not this stub.)
 vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
 import { NewLiveSyncSettingTab } from "../src/settings";
-import { fakePlugin, toggleByName, buttonByText, flipToggle, rowByName, inputByPlaceholder, typeInto } from "./ui-dom-harness";
+import { fakePlugin, toggleByName, buttonByText, flipToggle, rowByName, inputByPlaceholder, typeInto, flush } from "./ui-dom-harness";
 
 function renderTab(plugin: any) {
   const tab = new NewLiveSyncSettingTab(plugin.app, plugin);
@@ -53,6 +53,23 @@ describe("settings tab renders and wires its controls", () => {
     typeInto(inputByPlaceholder(containerEl, "Folder to exclude"), "Archive");
     buttonByText(containerEl, "Add folder").click();
     expect(p.setExcludedFolders).toHaveBeenCalledWith(["Archive", "Work"]); // addExcluded(["Work"],"Archive")
+  });
+
+  it("enabling embedded timestamps prompts consent, then kicks off the backfill (1.8.0)", async () => {
+    const runTimestampBackfill = vi.fn(async () => {});
+    const p = fakePlugin({
+      settings: { embeddedTimestamps: false, driveFsTimes: true, timestampCreatedKey: "created", timestampUpdatedKey: "updated", excludedFolders: [] },
+      countNonCompliantTimestamps: vi.fn(async () => ({ total: 10, pending: 4 })),
+      detectRestoreSignature: () => false,
+      runTimestampBackfill,
+    });
+    const { containerEl } = renderTab(p);
+    const master = toggleByName(containerEl, "Embed created/updated timestamps");
+    expect(master.checked).toBe(false);
+    flipToggle(master); // → onChange(true) → confirmModal (mocked true) → enable + runTimestampBackfill
+    await flush();
+    expect(p.settings.embeddedTimestamps).toBe(true);
+    expect(runTimestampBackfill).toHaveBeenCalled();
   });
 
   it("P2: toggling a category (Core settings) also applies immediately", () => {

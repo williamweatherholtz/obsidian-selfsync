@@ -59,6 +59,10 @@ export interface NewLiveSyncSettings {
   timestampUpdatedKey: string;
   excludedFolders: string[]; // folders SelfSync must NOT manage timestamps for (content still syncs)
   driveFsTimes: boolean;     // drive filesystem mtime (+ creation time on Win/mac) from the embedded value
+  // Per-(vault) embedded-timestamp backfill convergence marker, keyed `owner/vaultId` (like historyFloors).
+  // { policy: the timestampPolicySignature it converged under; cursor: last-processed path, or the DONE
+  // sentinel }. Per-device (settings never sync); omitted from DEFAULT_SETTINGS + lazily `??= {}` on use.
+  timestampBackfill?: Record<string, { policy: string; cursor: string }>;
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
@@ -363,7 +367,21 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const g = new SettingGroup(c).setHeading("Embedded timestamps");
     g.addSetting((st) => st.setName("Embed created/updated timestamps")
       .setDesc("SelfSync maintains created/updated (ISO-8601) in note frontmatter, so timestamps survive copying and a difference that is only a timestamp never causes a sync conflict.")
-      .addToggle((tg) => tg.setValue(s.embeddedTimestamps).onChange(async (v) => { s.embeddedTimestamps = v; await this.plugin.saveSettings(); this.display(); })));
+      .addToggle((tg) => tg.setValue(s.embeddedTimestamps).onChange(async (v) => {
+        if (v) {
+          // Informed, counted consent — enabling conforms existing vault data (critique Findings 3/5/7).
+          const { total, pending } = await this.plugin.countNonCompliantTimestamps();
+          const restore = this.plugin.detectRestoreSignature();
+          const body = `SelfSync will maintain created/updated in one ISO format and conform ${pending} of ${total} note(s) to match — seeding missing dates from each file's own timestamps and adding the two fields where absent. It may adjust line endings or key order on notes it changes; the original of anything not cleanly conformable is kept as a copy.`
+            + (restore ? " NOTE: your files' dates look reset by a backup, clone, or cloud-sync, so seeded dates may not reflect real history." : "");
+          const ok = await confirmModal(this.app, { title: "Embed created/updated timestamps?", body, confirmText: "Enable & conform" });
+          if (!ok) { tg.setValue(false); return; } // cancelled → revert the toggle, change nothing
+        }
+        s.embeddedTimestamps = v;
+        await this.plugin.saveSettings();
+        if (v) void this.plugin.runTimestampBackfill();
+        this.display();
+      })));
     if (!s.embeddedTimestamps) return;
     g.addSetting((st) => st.setName("Drive filesystem times")
       .setDesc("Set each note's modification time (and, in Obsidian, its creation time) from the embedded value.")
