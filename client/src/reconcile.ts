@@ -776,6 +776,20 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
 // from the live O(1) stat here so it's correct in both directions (still no read). Self-healed before,
 // but now immediate. (Was delayed up to FULL_SCAN_INTERVAL_MS.)
 // @audit-hash sha256:e9a08a0dfa9d3dbf
+// Backfill: push a locally-CONFORMED managed note so the server AND the base reflect it, WITHOUT going
+// through decide(). A conform only touches masked keys, so a normal reconcile would see "raw changed but
+// normHash unchanged" and either REVERT it (the copy-bump guard) or re-stamp `updated=now` — both would
+// undo the backfill. Pushing + setting base directly makes local==base==remote (in-sync) so reconcile
+// leaves it alone. CAS against the server's current version; a concurrent edit 409s → the caller skips it
+// (isolated) and retries next pass. Does NOT bump `updated` (the backfill preserves real history).
+export async function backfillPush(d: ReconcileDeps, path: string, conformed: Uint8Array): Promise<void> {
+  const rmeta = await d.api.fileMeta(path);
+  const { hash, bytes } = await pushBytes(d, path, conformed, rmeta?.version ?? 0);
+  await d.io.write(path, bytes); // reflect on disk (ObsidianVaultIo.write drives the FS mtime/ctime)
+  setBase(d, path, bytes, hash);
+  if (d.managedKeys && d.managedKeys.length) { const e = d.base.get(path); if (e) e.normHash = await normalizedHash(bytes, d.managedKeys); }
+}
+
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);

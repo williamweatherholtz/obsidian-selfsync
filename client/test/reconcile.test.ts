@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
+import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, backfillPush, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
+import { conformTimestamps, noteCompliant } from "../src/frontmatter";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -97,6 +98,22 @@ describe("embedded timestamp management", () => {
     io.m.set("board.canvas", enc('{"nodes":[]}'));
     await reconcileAll(mdeps(srv, io));
     expect(dec(io.m.get("board.canvas")!)).toBe('{"nodes":[]}'); // unchanged — no YAML block prepended
+  });
+
+  it("backfillPush conforms a note and it STICKS through a later reconcile — no revert, no re-stamp (1.8.0)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const original = "---\ntitle: T\n---\nbody\n"; // no managed keys yet
+    io.m.set("n.md", enc(original));
+    const d = mdeps(srv, io, { now: () => Date.UTC(2026, 0, 1) });
+    const conformed = enc(conformTimestamps(original, ["created", "updated"], Date.UTC(2020, 0, 1), Date.UTC(2021, 0, 1), Date.UTC(2026, 0, 1), 0));
+    await backfillPush(d, "n.md", conformed);
+    expect(noteCompliant(dec(io.m.get("n.md")!), ["created", "updated"])).toBe(true);
+    const v = srv.files.get("n.md")!.version;
+    await reconcileAll(d); // local==base==remote(conformed) → in-sync; MUST NOT revert or re-stamp
+    expect(noteCompliant(dec(io.m.get("n.md")!), ["created", "updated"])).toBe(true);
+    expect(dec(io.m.get("n.md")!)).toContain("created: 2020-01-01T00:00:00+00:00"); // real history preserved, not bumped to now
+    expect(srv.files.get("n.md")!.version).toBe(v); // no spurious re-push
+    expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(false);
   });
 
   it("seeds created from the file's real ctime on the event path, not now (F3)", async () => {
