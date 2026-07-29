@@ -527,6 +527,13 @@ package ProjectDelivery {
         // corruption + BOM/EOL/key-order rewrite surfaced by the embeddedTimestampMetadata critique. =====
         action frontmatterParserSafety;
         verification frontmatterParserSafetyDoD : Test { :>> id = "d7c19003-0000-4a10-9b20-a1b2c3d40093"; :>> method = VerificationMethod::test; :>> procedureText = "Ships PATCH 1.7.1. The frontmatter parser is block-scalar-safe (col-0-only fence: an indented --- inside a YAML block scalar never false-closes), and setManagedValue is surgical + preservation-safe — it preserves a leading BOM, CRLF/LF line endings, existing key order, and all non-managed frontmatter + body byte-for-byte; drops duplicate managed keys; appends a missing key before the closing fence. Guard (D0047): frontmatter.test block-scalar / BOM / CRLF / key-order / round-trip-stable cases + the existing suite. DoD: full client vitest (509) + tsc clean + keel reverify green. Resolves issueFrontmatterBlockScalarCorruption."; }
+        part frontmatterParserSafetyDoDR1 : TestResult { :>> id = "d7c1a004-0000-4a10-9b20-a1b2c3d4a004"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "92ae8c6"; :>> judgedAt = "2026-07-29"; :>> judgedBy = "claudeOpus"; }
+        // CLOSEOUT (autonomous, inspect): shipped 1.7.1; deliverable gate green @ 3b4a55e. RETRO (analysis):
+        // the corruption came from a line-based parser blind to YAML block scalars — the durable guard is the
+        // shipped parser test-table (block-scalar / BOM / CRLF / key-order / round-trip). Same-sitting human
+        // review: wweatherholtz directed + authorized this 1.7.1 fix and its release via explicit "yes
+        // implement" (2026-07-29); covered by sittingReview20260729 (this sitting's single confirmation gate).
+        #Covers dependency from sittingReview20260729 to frontmatterParserSafety;
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
