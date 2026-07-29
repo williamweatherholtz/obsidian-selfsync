@@ -105,3 +105,20 @@ export function seedValues(ctime: number | undefined, mtime: number | undefined,
     updated: formatIsoOffset(mtime ?? now, tzOffsetMin),
   };
 }
+
+// Two versions are content-identical except the managed keys. Adopt `remote` as the canonical text, then
+// overwrite each managed key with the OLDER (earliest) of the two values — once content is known identical,
+// the newer stamp is spurious, so the older instant is the truthful last-real-change / creation time.
+export function reconcileManagedFields(local: string, remote: string, keys: string[]): string {
+  let out = remote;
+  for (const key of keys) {
+    const lv = getManagedValue(local, key), rv = getManagedValue(remote, key);
+    const lms = lv !== undefined ? parseIso(lv) : undefined;
+    const rms = rv !== undefined ? parseIso(rv) : undefined;
+    let pick: string | undefined;
+    if (lms !== undefined && rms !== undefined) pick = lms <= rms ? lv : rv; // older / earliest wins
+    else pick = lv ?? rv; // present on only one side → keep it
+    if (pick !== undefined) out = setManagedValue(out, key, pick);
+  }
+  return out;
+}

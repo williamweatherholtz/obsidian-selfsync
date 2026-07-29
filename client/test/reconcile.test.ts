@@ -25,6 +25,74 @@ describe("decide", () => {
   it("nothing anywhere -> in-sync", () => expect(decide(null, null, null)).toBe("in-sync"));
 });
 
+describe("embedded timestamp management", () => {
+  const KEYS = ["created", "updated"];
+  const mdeps = (srv: ReturnType<typeof fakeServer>, io: ReturnType<typeof fakeIo>, extra: Partial<ReconcileDeps> = {}) =>
+    deps(srv.api, io, { managedKeys: KEYS, excludedFolders: [], tzOffsetMin: 0, now: () => 0, ...extra });
+
+  it("timestamp-only cross-device diff auto-resolves without a conflict copy, keeping the older updated", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const older = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+    const newer = "---\nupdated: 2026-09-09T00:00:00+00:00\n---\nbody\n";
+    io.m.set("n.md", enc(older));
+    await serverPutBytes(srv.api, "n.md", enc(newer)); // no common base -> conflict-copy path
+    await reconcileAll(mdeps(srv, io));
+    expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(false);
+    expect(dec(io.m.get("n.md")!)).toContain("2026-01-01T00:00:00+00:00"); // older updated kept
+  });
+
+  it("a spurious local timestamp bump on unchanged content is reverted and not pushed", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+    await serverPutBytes(srv.api, "n.md", enc(base));
+    const d = mdeps(srv, io);
+    await reconcileAll(d); // pull base down; records base (raw + text)
+    const vBefore = srv.files.get("n.md")!.version;
+    io.m.set("n.md", enc(base.replace("2026-01-01", "2026-05-05"))); // bump; body identical
+    await reconcileAll(d);
+    expect(srv.files.get("n.md")!.version).toBe(vBefore); // NOT pushed
+    expect(dec(io.m.get("n.md")!)).toContain("2026-01-01T00:00:00+00:00"); // reverted
+  });
+
+  it("an excluded folder is NOT managed: a spurious bump there is pushed as a normal change", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+    await serverPutBytes(srv.api, "Gen/n.md", enc(base));
+    const d = mdeps(srv, io, { excludedFolders: ["Gen"] });
+    await reconcileAll(d);
+    const v = srv.files.get("Gen/n.md")!.version;
+    io.m.set("Gen/n.md", enc(base.replace("2026-01-01", "2026-05-05")));
+    await reconcileAll(d);
+    expect(srv.files.get("Gen/n.md")!.version).toBeGreaterThan(v); // managed OFF -> pushed
+  });
+
+  it("a genuine body conflict still produces a conflict copy (no regression)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    io.m.set("n.md", enc("---\nupdated: 2026-01-01T00:00:00+00:00\n---\nLOCAL\n"));
+    await serverPutBytes(srv.api, "n.md", enc("---\nupdated: 2026-02-02T00:00:00+00:00\n---\nREMOTE\n"));
+    await reconcileAll(mdeps(srv, io));
+    expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(true);
+  });
+
+  it("a new managed note is seeded with created + updated before push", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    io.m.set("n.md", enc("plain body\n"));
+    await reconcileAll(mdeps(srv, io, { now: () => Date.UTC(2026, 0, 1) }));
+    expect(dec(io.m.get("n.md")!)).toContain("created:");
+    expect(dec(io.m.get("n.md")!)).toContain("updated:");
+  });
+
+  it("stamping does not re-trigger a push on the next reconcile", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    io.m.set("n.md", enc("---\ntitle: T\n---\nbody\n"));
+    const d = mdeps(srv, io);
+    await reconcileAll(d);
+    const v = srv.files.get("n.md")!.version;
+    await reconcileAll(d);
+    expect(srv.files.get("n.md")!.version).toBe(v);
+  });
+});
+
 function fakeServer() {
   const chunks = new Map<string, Uint8Array>(); const files = new Map<string, FileMeta>(); let version = 1;
   // Deletion TOMBSTONES, like the real server: deleteFile records one, and changes() returns those

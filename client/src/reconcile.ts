@@ -4,6 +4,8 @@ import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
+import { isExcluded } from "./excludedFolders";
+import { normalizedHash, getManagedValue, setManagedValue, formatIsoOffset, seedValues, reconcileManagedFields } from "./frontmatter";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -231,6 +233,14 @@ function holdForRetry(d: ReconcileDeps, path: string, version: number): boolean 
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
   device: string;
+  // Embedded-timestamp management. The feature is OFF unless `managedKeys` is a non-empty [createdKey,
+  // updatedKey] (set only when the `embeddedTimestamps` setting is on) — so isManaged() is false and this
+  // whole path is inert by default. `excludedFolders` opts paths OUT of management; `tzOffsetMin` (minutes
+  // ahead of UTC) and `now` are injected so stamping stays deterministic + unit-testable.
+  managedKeys?: string[];
+  excludedFolders?: string[];
+  tzOffsetMin?: number;
+  now?: () => number;
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
   // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
@@ -448,6 +458,42 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
   const keepText = isMergeable(path, bytes) && bytes.length <= MAX_BASE_TEXT_BYTES;
   d.base.set(path, keepText ? { hash, text: new TextDecoder().decode(bytes) } : { hash });
   d.onBaseChanged?.();
+}
+
+// Embedded-timestamp management is active for a path only when the feature is on (managedKeys non-empty)
+// AND the path is not under a user-excluded folder. Default-off ⇒ every timestamp branch is inert.
+function isManaged(d: ReconcileDeps, path: string): boolean {
+  return !!d.managedKeys && d.managedKeys.length > 0 && !isExcluded(path, d.excludedFolders ?? []);
+}
+
+// The base's NORMALIZED hash (managed keys masked): prefer the persisted value, else recompute from the
+// stored base text (present for every mergeable markdown note — where managed timestamps live).
+async function baseNormHash(d: ReconcileDeps, baseEntry: BaseEntry | null): Promise<string | undefined> {
+  if (!baseEntry) return undefined;
+  if (baseEntry.normHash) return baseEntry.normHash;
+  if (baseEntry.text !== undefined) return normalizedHash(new TextEncoder().encode(baseEntry.text), d.managedKeys!);
+  return undefined;
+}
+
+// Produce the managed-key-stamped bytes for a genuine local change. First-seed absent created/updated
+// from the file's OS metadata (ctime/mtime), NOT "now", so adopting a pre-existing vault preserves each
+// note's real history; only a genuine EDIT (bump=true, i.e. a change against a known base) sets updated=now.
+// Binary / undecodable content is returned untouched.
+function stampBytes(d: ReconcileDeps, bytes: Uint8Array, localStat: { ctime?: number; mtime?: number } | undefined, bump: boolean): Uint8Array {
+  const keys = d.managedKeys!;
+  const createdKey = keys[0];
+  const updatedKey = keys[1] ?? keys[0];
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return bytes; }
+  const tz = d.tzOffsetMin ?? 0;
+  const now = (d.now ?? (() => Date.now()))();
+  if (getManagedValue(text, createdKey) === undefined || getManagedValue(text, updatedKey) === undefined) {
+    const seed = seedValues(localStat?.ctime, localStat?.mtime, now, tz);
+    if (getManagedValue(text, createdKey) === undefined) text = setManagedValue(text, createdKey, seed.created);
+    if (getManagedValue(text, updatedKey) === undefined) text = setManagedValue(text, updatedKey, seed.updated);
+  }
+  if (bump) text = setManagedValue(text, updatedKey, formatIsoOffset(now, tz));
+  return new TextEncoder().encode(text);
 }
 
 // Bring a remote file down. Large files stream straight to disk (never held whole in RAM)
@@ -819,6 +865,29 @@ async function reconcileMergeOrConflict(
   // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT a stale
   // pre-fetch hash — a save racing the fetch changes liveLocal, and a stale tag would mislabel the copy.
   const liveLocalHash = await sha256hex(liveLocal);
+  // Embedded-timestamp: if local & remote are the SAME LOGICAL version (normalized-equal — only managed
+  // timestamp keys differ), this is NOT a conflict. Reconcile the fields (earliest created, OLDER updated —
+  // the newer stamp is spurious once content is identical) and adopt, spawning NO conflict copy.
+  if (isManaged(d, path)) {
+    const keys = d.managedKeys!;
+    const localNorm = await normalizedHash(liveLocal, keys);
+    const remoteNorm = await normalizedHash(remoteBytes, keys);
+    if (localNorm === remoteNorm) {
+      const decode = (b: Uint8Array) => new TextDecoder().decode(b);
+      const mergedText = reconcileManagedFields(decode(liveLocal), decode(remoteBytes), keys);
+      if (d.readOnly || mergedText === decode(remoteBytes)) {
+        await d.io.write(path, remoteBytes); // remote already carries the winning values (or read-only: can't push)
+        setBase(d, path, remoteBytes, rmeta.hash);
+      } else {
+        const bytes = new TextEncoder().encode(mergedText);
+        await d.io.write(path, bytes);
+        const { hash: h, bytes: committed } = await pushBytes(d, path, bytes, rmeta.version);
+        setBase(d, path, committed, h);
+        const e = d.base.get(path); if (e) e.normHash = await normalizedHash(committed, keys);
+      }
+      return;
+    }
+  }
   // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict. TEXT ONLY:
   // isMergeable is extension- AND fatal-UTF-8-gated, so a binary attachment is excluded (else the lossy
   // TextDecoder could map two different binaries to one string and silently clobber a local attachment —
@@ -878,7 +947,7 @@ interface ReconcileOneOpts {
   localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
   hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
-  localStat?: { size: number; mtime: number }; // on-disk stat, for the scan-skip fast path
+  localStat?: { size: number; mtime: number; ctime?: number }; // on-disk stat (scan-skip fast path + first-seed source)
 }
 
 // Reconcile ONE path against the server — a dispatcher: selective-sync + size gate, decide(), then the
@@ -941,6 +1010,21 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     localBytes = local.kind === "present" ? local.bytes : null;
     localHash = localBytes ? await sha256hex(localBytes) : null;
   }
+  // Embedded-timestamp: a COPY / re-stamp (raw hash differs from base, remote still equals base, but the
+  // content is NORMALIZED-equal to base — only managed timestamp keys moved) is NOT a genuine change.
+  // Restore the base values so decide() sees in-sync and nothing is pushed — this kills the timestamp-only
+  // conflict/churn flood at its source. Inert unless the feature is on (isManaged).
+  if (isManaged(d, path) && localBytes && baseEntry && rmeta && rmeta.hash === baseEntry.hash
+    && localHash !== baseEntry.hash && baseEntry.text !== undefined) {
+    const localNorm = await normalizedHash(localBytes, d.managedKeys!);
+    const bnorm = await baseNormHash(d, baseEntry);
+    if (bnorm && localNorm === bnorm) {
+      const restored = new TextEncoder().encode(baseEntry.text);
+      await d.io.write(path, restored);
+      localBytes = restored;
+      localHash = baseEntry.hash;
+    }
+  }
   const action = decide(
     localHash ? { hash: localHash } : null,
     baseEntry ? { hash: baseEntry.hash } : null,
@@ -1002,11 +1086,18 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       d.onGuard?.(path); // a real tombstone / evidenced deletion, but a suspicious MASS delete — refuse, keep data
       return;
     case "push": {
+      // Embedded-timestamp: a genuine local change → stamp updated (and first-seed created/updated from OS
+      // metadata for a new/adopted note) and land it on disk BEFORE the push, so the embedded timestamp is
+      // in the user's file and is what we commit. bump=true only for an EDIT (a known base) — a first
+      // adoption keeps the seeded OS times rather than "now". Inert unless the feature is on.
+      const stamped = (isManaged(d, path) && localBytes) ? stampBytes(d, localBytes, localStat, !!baseEntry) : null;
+      if (stamped) await d.io.write(path, stamped);
       // CAS: base the write on the remote version we saw (0 if a local-only create). A concurrent commit
       // that advanced the server past it 409s → CommitConflictError → per-file skip → next reconcile merges.
       const { hash: h, bytes } = await pushFile(d, path, eff.version);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
-      if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file unchanged on disk → cache the hint
+      if (stamped) { const e = d.base.get(path); if (e) e.normHash = await normalizedHash(bytes, d.managedKeys!); } // record norm; disk changed so skip the stale stat hint
+      else if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file unchanged on disk → cache the hint
       return;
     }
     case "pull":

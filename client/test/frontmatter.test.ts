@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   hasFrontmatter, getManagedValue, setManagedValue,
-  normalizedContent, normalizedHash, formatIsoOffset, parseIso, seedValues,
+  normalizedContent, normalizedHash, formatIsoOffset, parseIso, seedValues, reconcileManagedFields,
 } from "../src/frontmatter";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -81,5 +81,20 @@ describe("iso offset + seeding", () => {
     const s = seedValues(undefined, undefined, now, 0);
     expect(parseIso(s.created)).toBe(now);
     expect(parseIso(s.updated)).toBe(now);
+  });
+});
+
+describe("reconcileManagedFields", () => {
+  const local = "---\ncreated: 2020-01-01T00:00:00+00:00\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+  const remote = "---\ncreated: 2019-01-01T00:00:00+00:00\nupdated: 2026-09-09T00:00:00+00:00\n---\nbody\n";
+  it("keeps earliest created and older updated", () => {
+    const out = reconcileManagedFields(local, remote, ["created", "updated"]);
+    expect(getManagedValue(out, "created")).toBe("2019-01-01T00:00:00+00:00"); // earliest
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00"); // older
+  });
+  it("takes the present value when one side lacks the key", () => {
+    const r2 = "---\ncreated: 2019-01-01T00:00:00+00:00\n---\nbody\n";
+    const out = reconcileManagedFields(local, r2, ["created", "updated"]);
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00"); // from local
   });
 });

@@ -11,7 +11,7 @@ export interface AppendHandle {
   abort(): Promise<void>;
 }
 export interface VaultIo {
-  list(): Promise<Map<string, { mtime: number; size: number }>>;
+  list(): Promise<Map<string, { mtime: number; size: number; ctime?: number }>>;
   read(path: string): Promise<Uint8Array>;
   write(path: string, bytes: Uint8Array): Promise<void>;
   remove(path: string): Promise<void>;
