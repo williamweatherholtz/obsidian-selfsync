@@ -540,6 +540,17 @@ package ProjectDelivery {
         // first pass, restore detection, honest counted confirm, Templates exclude). =====
         action timestampBackfill;
         verification timestampBackfillDoD : Test { :>> id = "d7c19004-0000-4a10-9b20-a1b2c3d40094"; :>> method = VerificationMethod::test; :>> procedureText = "Ships MINOR 1.8.0. Enabling (or a policy change, or a settled launch) runs a convergence pass that brings every in-scope .md note to compliance: INSTANT-BASED compliance (canonical unquoted ISO-with-offset, offset-agnostic -> global fixed point), a real normalizer (seed missing from OS ctime/mtime, never 'now'; re-emit non-canonical at the same instant; never bump) with the FIXED-POINT law as a shipped test; pushed via backfillPush so a masked-key-only conform is neither reverted nor re-stamped by reconcile (proven test). Paced + RESUMABLE via a per-(device,vault) policy-versioned marker+cursor; drift handled at the write boundary; REVERSIBLE first pass (conflict-copy of any not-cleanly-conformable note); informed COUNTED enable confirm with restore-signature detection; third-party alias keys MASKED in identity (Linter-loop fix); Templates folder excluded. DoD: frontmatter + timestampBackfill + reconcile(backfillPush) unit tests + settings-ui DOM (enable->consent->backfill) green; full client vitest + tsc + server cargo test + clippy -D warnings + keel reverify green. Resolves issueTimestampEnableInert."; }
+        part timestampBackfillDoDR1 : TestResult { :>> id = "d7c1a005-0000-4a10-9b20-a1b2c3d4a005"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "fa3a563"; :>> judgedAt = "2026-07-29"; :>> judgedBy = "claudeOpus"; }
+        // CLOSEOUT (autonomous, inspect): shipped 1.8.0; deliverable gate green @ 9d2fd65. RETRO (analysis):
+        // the whole 1.8.0 design was reshaped by a 3-lens spec critique BEFORE any code (rejected an unsound
+        // generic engine whose interface couldn't express config's decision; fixed a cross-TZ termination
+        // flaw via instant-based compliance) — critique-before-implement paid off a THIRD time this sitting.
+        // The correctness core (compliance / normalizer / planner / backfillPush) is unit + integration
+        // proven; the impure orchestration ships with DOM coverage + an ACCEPTED e2e gap (owner chose to ship
+        // eyes-open) — a real-Obsidian e2e for the backfill is folded into embeddedTimestampHardening (v-next).
+        // Same-sitting human authorization: wweatherholtz directed + accepted the 1.8.0 build + ship via
+        // explicit "2 please" + "continue until done" (2026-07-29); covered by sittingReview20260729.
+        #Covers dependency from sittingReview20260729 to timestampBackfill;
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
