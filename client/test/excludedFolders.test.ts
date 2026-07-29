@@ -21,6 +21,11 @@ describe("excludedFolders (pure)", () => {
     expect(isExcluded("Other/n.md", ["Work"])).toBe(false);
     expect(isExcluded("a/b.md", [])).toBe(false);
   });
+  it("isExcluded is case-insensitive (F7 — Windows/macOS filesystems)", () => {
+    expect(isExcluded("work/note.md", ["Work"])).toBe(true);
+    expect(isExcluded("WORK/Sub/n.md", ["work"])).toBe(true);
+    expect(isExcluded("Other/n.md", ["Work"])).toBe(false);
+  });
   it("matchFolders ranks case-insensitively, prefix before substring", () => {
     const all = ["Archive", "Work", "Work/Archive", "Notes/Work"];
     expect(matchFolders("work", all)).toEqual(["Work", "Work/Archive", "Notes/Work"]);

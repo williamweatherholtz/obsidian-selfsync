@@ -5,7 +5,7 @@ import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
 import { isExcluded } from "./excludedFolders";
-import { normalizedHash, getManagedValue, setManagedValue, formatIsoOffset, seedValues, reconcileManagedFields } from "./frontmatter";
+import { normalizedHash, getManagedValue, setManagedValue, formatIsoOffset, parseIso, seedValues, reconcileManagedFields } from "./frontmatter";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -241,6 +241,9 @@ export interface ReconcileDeps {
   excludedFolders?: string[];
   tzOffsetMin?: number;
   now?: () => number;
+  // Live on-disk stat for one path (event path first-seed source; whole-vault uses io.list()). Absent ⇒
+  // first-seed falls back to now() instead of the file's real ctime/mtime.
+  statOf?: (path: string) => { size: number; mtime: number; ctime?: number } | undefined;
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
   // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
@@ -463,7 +466,10 @@ function setBase(d: ReconcileDeps, path: string, bytes: Uint8Array, hash: string
 // Embedded-timestamp management is active for a path only when the feature is on (managedKeys non-empty)
 // AND the path is not under a user-excluded folder. Default-off ⇒ every timestamp branch is inert.
 function isManaged(d: ReconcileDeps, path: string): boolean {
-  return !!d.managedKeys && d.managedKeys.length > 0 && !isExcluded(path, d.excludedFolders ?? []);
+  // Markdown notes ONLY — the managed timestamps live in YAML frontmatter. Gating on `.md` here (matching
+  // fsTimeWriteOptions) is what stops stampBytes from injecting a frontmatter block into a .canvas/.json/
+  // .txt and corrupting it (F1). Excluded folders opt out entirely.
+  return !!d.managedKeys && d.managedKeys.length > 0 && path.endsWith(".md") && !isExcluded(path, d.excludedFolders ?? []);
 }
 
 // The base's NORMALIZED hash (managed keys masked): prefer the persisted value, else recompute from the
@@ -800,7 +806,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // deciding. O(1) exists check, only when the server-has-it precondition holds.
   const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
   try {
-    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, locallyPresent });
+    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, locallyPresent, localStat: d.statOf?.(path) });
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
@@ -1014,7 +1020,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
   // content is NORMALIZED-equal to base — only managed timestamp keys moved) is NOT a genuine change.
   // Restore the base values so decide() sees in-sync and nothing is pushed — this kills the timestamp-only
   // conflict/churn flood at its source. Inert unless the feature is on (isManaged).
-  if (isManaged(d, path) && localBytes && baseEntry && rmeta && rmeta.hash === baseEntry.hash
+  if (!d.readOnly && isManaged(d, path) && localBytes && baseEntry && rmeta && rmeta.hash === baseEntry.hash
     && localHash !== baseEntry.hash && baseEntry.text !== undefined) {
     const localNorm = await normalizedHash(localBytes, d.managedKeys!);
     const bnorm = await baseNormHash(d, baseEntry);
@@ -1096,8 +1102,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // that advanced the server past it 409s → CommitConflictError → per-file skip → next reconcile merges.
       const { hash: h, bytes } = await pushFile(d, path, eff.version);
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
-      if (stamped) { const e = d.base.get(path); if (e) e.normHash = await normalizedHash(bytes, d.managedKeys!); } // record norm; disk changed so skip the stale stat hint
-      else if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file unchanged on disk → cache the hint
+      if (stamped) {
+        const e = d.base.get(path);
+        if (e) e.normHash = await normalizedHash(bytes, d.managedKeys!); // record norm so a later copy/re-stamp reverts
+        // The write drove the FS mtime to the embedded `updated`; cache (size, that mtime) so the next pass
+        // scan-skips this note instead of re-hashing it (F8 churn). Managed mtime moves only on a real edit.
+        const upMs = parseIso(getManagedValue(new TextDecoder().decode(bytes), d.managedKeys![1] ?? d.managedKeys![0]) ?? "");
+        if (upMs !== undefined) d.base.stampStat(path, bytes.length, upMs);
+      } else if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // pushed file unchanged on disk → cache the hint
       return;
     }
     case "pull":

@@ -98,3 +98,39 @@ describe("reconcileManagedFields", () => {
     expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00"); // from local
   });
 });
+
+describe("critique fixes — CRLF / quotes / duplicates / cross-device determinism", () => {
+  it("reads and rewrites managed keys on CRLF notes without duplicating (F4)", () => {
+    const crlf = "---\r\ntitle: Hi\r\nupdated: 2026-01-01T00:00:00-06:00\r\n---\r\nbody\r\n";
+    expect(getManagedValue(crlf, "updated")).toBe("2026-01-01T00:00:00-06:00");
+    const out = setManagedValue(crlf, "updated", "2026-02-02T00:00:00-06:00");
+    expect(getManagedValue(out, "updated")).toBe("2026-02-02T00:00:00-06:00");
+    expect((out.match(/updated:/g) || []).length).toBe(1); // no duplicate key
+  });
+  it("parseIso strips YAML quotes (F5)", () => {
+    const ms = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(parseIso('"2026-01-01T00:00:00+00:00"')).toBe(ms);
+    expect(parseIso("'2026-01-01T00:00:00+00:00'")).toBe(ms);
+  });
+  it("setManagedValue collapses pre-existing duplicate keys to one (F6)", () => {
+    const dup = "---\nupdated: 2020-01-01T00:00:00+00:00\ntitle: T\nupdated: 2021-01-01T00:00:00+00:00\n---\nbody\n";
+    const out = setManagedValue(dup, "updated", "2026-01-01T00:00:00+00:00");
+    expect((out.match(/updated:/g) || []).length).toBe(1);
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00");
+  });
+  it("keyOf handles no-space-after-colon and rejects indented (nested) keys (F13)", () => {
+    expect(getManagedValue("---\nupdated:2026-01-01T00:00:00+00:00\n---\nb\n", "updated")).toBe("2026-01-01T00:00:00+00:00");
+    expect(getManagedValue("---\nmeta:\n  updated: 2026-01-01T00:00:00+00:00\n---\nb\n", "updated")).toBeUndefined();
+  });
+  it("reconcileManagedFields is deterministic across devices — no ping-pong (F2)", () => {
+    const keys = ["updated"];
+    const a = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+    const b = "---\nupdated: 2026-01-01T01:00:00+01:00\n---\nbody\n"; // SAME instant, different offset string
+    const ab = getManagedValue(reconcileManagedFields(a, b, keys), "updated");
+    const ba = getManagedValue(reconcileManagedFields(b, a, keys), "updated");
+    expect(ab).toBe(ba); // both devices converge on the SAME value — no perpetual re-push
+    const g = "---\nupdated: not-a-date\n---\nbody\n";
+    expect(getManagedValue(reconcileManagedFields(a, g, keys), "updated")).toBe("2026-01-01T00:00:00+00:00");
+    expect(getManagedValue(reconcileManagedFields(g, a, keys), "updated")).toBe("2026-01-01T00:00:00+00:00");
+  });
+});

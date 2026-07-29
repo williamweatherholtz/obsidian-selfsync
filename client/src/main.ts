@@ -1145,6 +1145,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // (what Dataview reads; on desktop the real FS mtime too). Undefined ⇒ leave timestamps untouched.
   fsTimeWriteOptions(path: string, bytes: Uint8Array): DataWriteOptions | undefined {
     if (!this.settings.driveFsTimes || !this.settings.embeddedTimestamps) return undefined;
+    if (Platform.isMobile) return undefined; // spec §7: mobile FS-time driving is unreliable — skip (F10)
     if (isExcluded(path, this.settings.excludedFolders)) return undefined;
     if (!path.endsWith(".md")) return undefined;
     let text: string;
@@ -1165,6 +1166,9 @@ export default class NewLiveSyncPlugin extends Plugin {
       excludedFolders: this.settings.excludedFolders,
       tzOffsetMin: -new Date().getTimezoneOffset(),
       now: () => Date.now(),
+      // Live stat for a single path (event path first-seed): the note's real ctime/mtime so `created`
+      // seeds from OS metadata, not "now" (F3). Only notes (getAbstractFileByPath) — matches isManaged's .md gate.
+      statOf: (p) => { const f = this.app.vault.getAbstractFileByPath(p); return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime, ctime: f.stat.ctime } : undefined; },
       readOnly: this.settings.vaultReadOnly,
       maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in

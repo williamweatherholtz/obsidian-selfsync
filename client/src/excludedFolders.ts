@@ -17,9 +17,12 @@ export function removeExcluded(list: string[], raw: string): string[] {
 }
 
 export function isExcluded(path: string, list: string[]): boolean {
-  const p = normalizeFolder(path);
+  // Case-INSENSITIVE: Windows/macOS filesystems are case-folding, and a user typing "Work" must exclude a
+  // "work/…" path. Over-exclusion on a case-sensitive Linux FS (two folders differing only in case) is safe
+  // — exclusion only means "leave timestamps alone", never a destructive action.
+  const p = normalizeFolder(path).toLowerCase();
   return list.some((raw) => {
-    const f = normalizeFolder(raw);
+    const f = normalizeFolder(raw).toLowerCase();
     return f !== "" && (p === f || p.startsWith(f + "/"));
   });
 }

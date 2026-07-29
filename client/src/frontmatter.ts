@@ -13,7 +13,7 @@ function split(text: string): Split {
   const nl = text.indexOf("\n");
   if (nl === -1 || text.slice(0, nl).trim() !== FENCE) return { hasFm: false, fmLines: [], body: text };
   const rest = text.slice(nl + 1);
-  const lines = rest.split("\n");
+  const lines = rest.split(/\r?\n/); // tolerate CRLF — strip the trailing \r so keyOf/fence match on Windows notes
   let close = -1;
   for (let i = 0; i < lines.length; i++) if (lines[i].trim() === FENCE) { close = i; break; }
   if (close === -1) return { hasFm: false, fmLines: [], body: text }; // unterminated → treat as plain
@@ -23,7 +23,10 @@ function split(text: string): Split {
 }
 
 function keyOf(line: string): string | null {
-  const m = /^([A-Za-z0-9_. -]+):(?:\s.*)?$/.exec(line);
+  // Top-level scalar key: must start with a non-space key char (so an INDENTED/nested line never matches),
+  // may contain internal spaces (Linter uses `date modified`), optional space before the colon, any value
+  // after (including `key:value` with no space, and values containing colons like a timestamp).
+  const m = /^([A-Za-z0-9_.-][A-Za-z0-9_. -]*?)\s*:.*$/.exec(line);
   return m ? m[1] : null;
 }
 
@@ -49,10 +52,13 @@ export function setManagedValue(text: string, key: string, value: string): strin
   if (!s.hasFm) {
     return `${FENCE}\n${kv}\n${FENCE}\n${text}`;
   }
-  const out = [...s.fmLines];
-  const at = out.findIndex((l) => keyOf(l) === key);
-  if (at >= 0) out[at] = kv;
-  else out.unshift(kv); // fixed position: top of block → never reorders on re-stamp
+  let seen = false;
+  const out: string[] = [];
+  for (const l of s.fmLines) {
+    if (keyOf(l) === key) { if (!seen) { out.push(kv); seen = true; } /* drop any DUPLICATE managed-key lines */ }
+    else out.push(l);
+  }
+  if (!seen) out.unshift(kv); // absent → add at the top (stable position; never reorders on re-stamp)
   return `${FENCE}\n${out.join("\n")}\n${FENCE}\n${s.body}`;
 }
 
@@ -93,7 +99,11 @@ export function formatIsoOffset(epochMs: number, tzOffsetMin: number): string {
 }
 
 export function parseIso(s: string): number | undefined {
-  const ms = Date.parse(s.trim());
+  let t = s.trim();
+  // Strip surrounding YAML quotes — Linter presets / Obsidian Properties often quote string-typed dates
+  // (`updated: "2026-…"`), and Date.parse of a quoted string is NaN.
+  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) t = t.slice(1, -1).trim();
+  const ms = Date.parse(t);
   return Number.isNaN(ms) ? undefined : ms;
 }
 
@@ -112,13 +122,27 @@ export function seedValues(ctime: number | undefined, mtime: number | undefined,
 export function reconcileManagedFields(local: string, remote: string, keys: string[]): string {
   let out = remote;
   for (const key of keys) {
-    const lv = getManagedValue(local, key), rv = getManagedValue(remote, key);
-    const lms = lv !== undefined ? parseIso(lv) : undefined;
-    const rms = rv !== undefined ? parseIso(rv) : undefined;
-    let pick: string | undefined;
-    if (lms !== undefined && rms !== undefined) pick = lms <= rms ? lv : rv; // older / earliest wins
-    else pick = lv ?? rv; // present on only one side → keep it
+    const pick = pickOlder(getManagedValue(local, key), getManagedValue(remote, key));
     if (pick !== undefined) out = setManagedValue(out, key, pick);
   }
   return out;
+}
+
+// Pick the OLDER of two managed values, DETERMINISTICALLY across devices: both sides must compute the same
+// winner regardless of which copy is "local", or two devices ping-pong forever (equal-instant/different-
+// offset is the multi-timezone case). Rule: older parsed instant wins; a parseable value beats an
+// unparseable one; a true tie (equal instant, or both unparseable) breaks on the lexicographically-smaller
+// string. NEVER "prefer local".
+function pickOlder(lv: string | undefined, rv: string | undefined): string | undefined {
+  if (lv === undefined) return rv;
+  if (rv === undefined) return lv;
+  const lms = parseIso(lv), rms = parseIso(rv);
+  if (lms !== undefined && rms !== undefined) {
+    if (lms < rms) return lv;
+    if (rms < lms) return rv;
+    return lv <= rv ? lv : rv; // same instant, different string → deterministic
+  }
+  if (lms !== undefined) return lv; // parseable beats unparseable
+  if (rms !== undefined) return rv;
+  return lv <= rv ? lv : rv; // both unparseable → deterministic
 }

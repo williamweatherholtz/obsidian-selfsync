@@ -91,6 +91,22 @@ describe("embedded timestamp management", () => {
     await reconcileAll(d);
     expect(srv.files.get("n.md")!.version).toBe(v);
   });
+
+  it("does NOT stamp a non-markdown file — never injects frontmatter into a .canvas/.json (F1)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    io.m.set("board.canvas", enc('{"nodes":[]}'));
+    await reconcileAll(mdeps(srv, io));
+    expect(dec(io.m.get("board.canvas")!)).toBe('{"nodes":[]}'); // unchanged — no YAML block prepended
+  });
+
+  it("seeds created from the file's real ctime on the event path, not now (F3)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const CT = Date.UTC(2020, 0, 1);
+    io.m.set("n.md", enc("plain body\n"));
+    const d = deps(srv.api, io, { managedKeys: ["created", "updated"], excludedFolders: [], tzOffsetMin: 0, now: () => Date.UTC(2026, 0, 1), statOf: () => ({ size: 11, mtime: CT, ctime: CT }) });
+    await reconcilePath(d, "n.md", 11);
+    expect(dec(io.m.get("n.md")!)).toContain("created: 2020-01-01T00:00:00+00:00"); // from ctime, not the 2026 "now"
+  });
 });
 
 function fakeServer() {
