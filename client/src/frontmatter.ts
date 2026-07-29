@@ -10,6 +10,11 @@ const BOM = "﻿";
 // demoting real keys into the body (the shipped-1.7.0 corruption, Finding 1).
 const FENCE_RE = /^---[ \t]*$/;
 
+// Well-known THIRD-PARTY volatile timestamp keys (Obsidian Linter etc.). We never WRITE these, but we MASK
+// them in the normalized-identity hash so another plugin bumping them isn't seen as a content change — which
+// would otherwise ignite a cross-plugin re-stamp/re-sync storm on a bulk enable (critique Finding 4).
+const VOLATILE_ALIAS_KEYS = ["date modified", "date created", "modified"];
+
 interface Parsed {
   bom: boolean;
   eol: "\r\n" | "\n";
@@ -99,7 +104,7 @@ export function normalizedContent(text: string, managedKeys: string[]): string {
   for (let i = 0; i < p.lines.length; i++) {
     if (i > p.open && i < p.close) {
       const k = keyOf(p.lines[i]);
-      if (k !== null && managedKeys.includes(k)) continue; // mask managed keys (block-scalar-safe boundary)
+      if (k !== null && (managedKeys.includes(k) || VOLATILE_ALIAS_KEYS.includes(k))) continue; // mask our keys + third-party volatile timestamp keys
     }
     kept.push(p.lines[i]);
   }
@@ -154,6 +159,40 @@ export function reconcileManagedFields(local: string, remote: string, keys: stri
   for (const key of keys) {
     const pick = pickOlder(getManagedValue(local, key), getManagedValue(remote, key));
     if (pick !== undefined) out = setManagedValue(out, key, pick);
+  }
+  return out;
+}
+
+// ---- 1.8.0 backfill: instant-based compliance + the real normalizer ----
+
+// Canonical timestamp value = an UNQUOTED ISO-8601 date-time with a numeric offset. OFFSET-AGNOSTIC on
+// purpose: the SAME instant written with different device offsets (-06:00 vs -05:00) is equally canonical,
+// so two devices never disagree on compliance and there is a global fixed point (critique F2).
+const CANON_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/;
+export function isCanonicalTimestamp(v: string): boolean { return CANON_TS_RE.test(v.trim()); }
+
+// A note is COMPLIANT iff every managed key is present AND canonical-shaped.
+export function noteCompliant(text: string, keys: string[]): boolean {
+  for (const k of keys) { const v = getManagedValue(text, k); if (v === undefined || !isCanonicalTimestamp(v)) return false; }
+  return true;
+}
+
+// Bring a note to compliance WITHOUT bumping (the backfill preserves real history — distinct from the
+// per-edit stamp, which does bump `updated` to now). keys = [createdKey, updatedKey]. A missing key is
+// seeded from OS metadata (ctime/mtime, never "now"); a present-but-non-canonical value is re-emitted at
+// the SAME instant in canonical form (or, if unparseable, re-seeded from OS metadata); canonical values are
+// left untouched. FIXED POINT by construction: the output is always noteCompliant().
+export function conformTimestamps(text: string, keys: string[], ctime: number | undefined, mtime: number | undefined, now: number, tzOffsetMin: number): string {
+  const createdKey = keys[0];
+  const updatedKey = keys[1] ?? keys[0];
+  const seed = seedValues(ctime, mtime, now, tzOffsetMin);
+  let out = text;
+  for (const [key, seedVal] of [[createdKey, seed.created], [updatedKey, seed.updated]] as const) {
+    const v = getManagedValue(out, key);
+    if (v === undefined) { out = setManagedValue(out, key, seedVal); continue; }
+    if (isCanonicalTimestamp(v)) continue; // already canonical (any offset) — leave it
+    const ms = parseIso(v);
+    out = setManagedValue(out, key, ms !== undefined ? formatIsoOffset(ms, tzOffsetMin) : seedVal);
   }
   return out;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   hasFrontmatter, getManagedValue, setManagedValue,
   normalizedContent, normalizedHash, formatIsoOffset, parseIso, seedValues, reconcileManagedFields,
+  isCanonicalTimestamp, noteCompliant, conformTimestamps,
 } from "../src/frontmatter";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -96,6 +97,53 @@ describe("reconcileManagedFields", () => {
     const r2 = "---\ncreated: 2019-01-01T00:00:00+00:00\n---\nbody\n";
     const out = reconcileManagedFields(local, r2, ["created", "updated"]);
     expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00"); // from local
+  });
+});
+
+describe("1.8.0 instant-based compliance + normalizer + alias masking", () => {
+  const K = ["created", "updated"];
+  it("isCanonicalTimestamp: offset-agnostic; rejects quoted/Z/ms/date-only", () => {
+    expect(isCanonicalTimestamp("2026-01-01T00:00:00-06:00")).toBe(true);
+    expect(isCanonicalTimestamp("2026-01-01T00:00:00+05:30")).toBe(true);
+    expect(isCanonicalTimestamp('"2026-01-01T00:00:00+00:00"')).toBe(false);
+    expect(isCanonicalTimestamp("2026-01-01T00:00:00Z")).toBe(false);
+    expect(isCanonicalTimestamp("2026-01-01T00:00:00.123+00:00")).toBe(false);
+    expect(isCanonicalTimestamp("2026-01-01")).toBe(false);
+  });
+  it("noteCompliant requires both keys present + canonical", () => {
+    expect(noteCompliant("---\ncreated: 2026-01-01T00:00:00+00:00\nupdated: 2026-01-01T00:00:00+00:00\n---\nb\n", K)).toBe(true);
+    expect(noteCompliant("---\ncreated: 2026-01-01T00:00:00+00:00\n---\nb\n", K)).toBe(false);
+    expect(noteCompliant('---\ncreated: "2026-01-01T00:00:00+00:00"\nupdated: 2026-01-01T00:00:00+00:00\n---\nb\n', K)).toBe(false);
+    expect(noteCompliant("no frontmatter\n", K)).toBe(false);
+  });
+  it("conformTimestamps is a FIXED POINT — output is always compliant + idempotent", () => {
+    const now = Date.UTC(2026, 6, 1), ct = Date.UTC(2020, 0, 1), mt = Date.UTC(2021, 0, 1);
+    for (const input of [
+      "no frontmatter body\n",
+      "---\ntitle: T\n---\nbody\n",
+      '---\ncreated: "2026-01-01T00:00:00+00:00"\nupdated: 2026-01-01T00:00:00Z\n---\nb\n',
+      "---\ncreated: garbage\nupdated: 2026-01-01\n---\nb\n",
+      "---\ncreated: 2020-01-01T00:00:00+00:00\nupdated: 2021-01-01T00:00:00+00:00\n---\nb\n",
+    ]) {
+      const out = conformTimestamps(input, K, ct, mt, now, 0);
+      expect(noteCompliant(out, K)).toBe(true);
+      expect(conformTimestamps(out, K, ct, mt, now, 0)).toBe(out);
+    }
+  });
+  it("conform re-emits an existing valid instant canonically (Z -> +00:00, same instant), never bumps", () => {
+    const out = conformTimestamps("---\nupdated: 2026-01-01T00:00:00Z\ncreated: 2019-01-01T00:00:00Z\n---\nb\n", K, undefined, undefined, 0, 0);
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00");
+    expect(getManagedValue(out, "created")).toBe("2019-01-01T00:00:00+00:00");
+  });
+  it("conform seeds a missing key from OS metadata, not now", () => {
+    const out = conformTimestamps("---\ntitle: T\n---\nb\n", K, Date.UTC(2020, 0, 1), Date.UTC(2021, 0, 1), Date.UTC(2026, 0, 1), 0);
+    expect(getManagedValue(out, "created")).toBe("2020-01-01T00:00:00+00:00");
+    expect(getManagedValue(out, "updated")).toBe("2021-01-01T00:00:00+00:00");
+  });
+  it("normalizedContent masks third-party alias keys (Linter-loop fix)", () => {
+    const a = "---\ntitle: T\ndate modified: 2026-01-01T00:00:00\nupdated: 2026-01-01T00:00:00+00:00\n---\nb\n";
+    const b = "---\ntitle: T\ndate modified: 2026-09-09T09:09:09\nupdated: 2026-05-05T00:00:00+00:00\n---\nb\n";
+    expect(normalizedContent(a, K)).toBe(normalizedContent(b, K));
   });
 });
 
