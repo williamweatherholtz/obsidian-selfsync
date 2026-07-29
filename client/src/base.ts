@@ -4,7 +4,10 @@
 // rsync/Syncthing scan optimization. They're a hint only: absent/stale ⇒ fall back to hashing,
 // so correctness never depends on them, and a real local edit is caught by the event path
 // (reconcilePath always reads) regardless.
-export interface BaseEntry { hash: string; text?: string; size?: number; mtime?: number }
+// `normHash` = the NORMALIZED content hash (managed timestamp keys masked) at the last sync. Unlike the
+// (size, mtime) perf hint, it is identity-meaningful — it lets a copy/re-stamp (raw hash differs, normHash
+// equal) be recognized as "no genuine change", so it IS persisted (see toJSON).
+export interface BaseEntry { hash: string; text?: string; size?: number; mtime?: number; normHash?: string }
 
 // The per-file "base" = the last-synced state (common ancestor for merges).
 // Persisted across restart via the plugin's saveData; `text` is kept only for
@@ -32,8 +35,13 @@ export class BaseStore {
   // @audit r2 2026-07-18 — EXEMPLARY, no change: deliberately persists only hash+text, DROPPING the
   // (size,mtime) scan-skip hint — so a restart rebuilds the stamp from a fresh full pass rather than
   // trusting a stale persisted hint. Correct instinct: never let a perf hint outlive its verifying session.
-  toJSON(): Record<string, { hash: string; text?: string }> {
-    return Object.fromEntries([...this.m].map(([p, e]) => [p, e.text !== undefined ? { hash: e.hash, text: e.text } : { hash: e.hash }]));
+  toJSON(): Record<string, { hash: string; text?: string; normHash?: string }> {
+    return Object.fromEntries([...this.m].map(([p, e]) => {
+      const o: { hash: string; text?: string; normHash?: string } = { hash: e.hash };
+      if (e.text !== undefined) o.text = e.text;
+      if (e.normHash !== undefined) o.normHash = e.normHash;
+      return [p, o];
+    }));
   }
 }
 

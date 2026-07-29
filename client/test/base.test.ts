@@ -14,6 +14,14 @@ describe("BaseStore", () => {
     expect(b2.get("a.md")).toBeUndefined();
   });
 
+  it("persists normHash (identity-meaningful) through toJSON/reload", () => {
+    const s = new BaseStore();
+    s.set("n.md", { hash: "raw1", normHash: "norm1" });
+    const json = JSON.parse(JSON.stringify(s.toJSON()));
+    const s2 = new BaseStore(json);
+    expect(s2.get("n.md")?.normHash).toBe("norm1");
+  });
+
   it("R15 sync#3: the (size,mtime) scan-skip hint is NOT persisted by toJSON (session-only)", () => {
     const b = new BaseStore();
     b.set("a.md", { hash: "h1", text: "hi" });
