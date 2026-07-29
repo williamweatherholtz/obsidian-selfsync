@@ -4,76 +4,106 @@
 // we insert them at a fixed position, so SelfSync never reorders a user's YAML.
 import { sha256hex } from "./chunker";
 
-const FENCE = "---";
+const BOM = "﻿";
+// A frontmatter fence is `---` at COLUMN 0 (optional trailing whitespace). Requiring col-0 is what stops an
+// INDENTED `---` inside a YAML block scalar (description: | … `  ---`) from false-closing the block and
+// demoting real keys into the body (the shipped-1.7.0 corruption, Finding 1).
+const FENCE_RE = /^---[ \t]*$/;
 
-interface Split { hasFm: boolean; fmLines: string[]; body: string; }
+interface Parsed {
+  bom: boolean;
+  eol: "\r\n" | "\n";
+  lines: string[];   // content lines (terminators stripped); a trailing "" element preserves a final newline
+  hasFm: boolean;
+  open: number;      // index of the opening fence (0) or -1
+  close: number;     // index of the closing fence or -1
+}
 
-function split(text: string): Split {
-  // Frontmatter must be the very first line `---`, terminated by a later `---`.
-  const nl = text.indexOf("\n");
-  if (nl === -1 || text.slice(0, nl).trim() !== FENCE) return { hasFm: false, fmLines: [], body: text };
-  const rest = text.slice(nl + 1);
-  const lines = rest.split(/\r?\n/); // tolerate CRLF — strip the trailing \r so keyOf/fence match on Windows notes
+function detectEol(text: string): "\r\n" | "\n" {
+  const i = text.indexOf("\n");
+  return i > 0 && text[i - 1] === "\r" ? "\r\n" : "\n";
+}
+
+// Parse WITHOUT losing anything: split preserves every line; join with the detected EOL round-trips a
+// consistent-EOL document byte-for-byte (the trailing "" carries a final newline). BOM detected + preserved.
+function parse(raw: string): Parsed {
+  const bom = raw.startsWith(BOM);
+  const text = bom ? raw.slice(1) : raw;
+  const eol = detectEol(text);
+  const lines = text.split(/\r?\n/);
+  if (lines.length === 0 || !FENCE_RE.test(lines[0])) return { bom, eol, lines, hasFm: false, open: -1, close: -1 };
   let close = -1;
-  for (let i = 0; i < lines.length; i++) if (lines[i].trim() === FENCE) { close = i; break; }
-  if (close === -1) return { hasFm: false, fmLines: [], body: text }; // unterminated → treat as plain
-  const fmLines = lines.slice(0, close);
-  const body = lines.slice(close + 1).join("\n");
-  return { hasFm: true, fmLines, body };
+  for (let i = 1; i < lines.length; i++) if (FENCE_RE.test(lines[i])) { close = i; break; }
+  if (close === -1) return { bom, eol, lines, hasFm: false, open: -1, close: -1 };
+  return { bom, eol, lines, hasFm: true, open: 0, close };
 }
 
 function keyOf(line: string): string | null {
-  // Top-level scalar key: must start with a non-space key char (so an INDENTED/nested line never matches),
-  // may contain internal spaces (Linter uses `date modified`), optional space before the colon, any value
-  // after (including `key:value` with no space, and values containing colons like a timestamp).
-  const m = /^([A-Za-z0-9_.-][A-Za-z0-9_. -]*?)\s*:.*$/.exec(line);
+  // Top-level scalar key: must start with a non-space key char (so an INDENTED/nested line — incl. block-
+  // scalar content — never matches), may contain internal spaces (Linter's `date modified`), optional space
+  // before the colon, any value after (incl. `key:value` with no space, and values containing colons).
+  const m = /^([A-Za-z0-9_.-][A-Za-z0-9_. -]*?)[ \t]*:.*$/.exec(line);
   return m ? m[1] : null;
 }
 
-export function hasFrontmatter(text: string): boolean {
-  return split(text).hasFm;
+function reassemble(p: Parsed, lines: string[]): string {
+  return (p.bom ? BOM : "") + lines.join(p.eol);
 }
 
+export function hasFrontmatter(text: string): boolean { return parse(text).hasFm; }
+
 export function getManagedValue(text: string, key: string): string | undefined {
-  const s = split(text);
-  if (!s.hasFm) return undefined;
-  for (const line of s.fmLines) {
-    if (keyOf(line) === key) {
-      const idx = line.indexOf(":");
-      return line.slice(idx + 1).trim() || undefined;
+  const p = parse(text);
+  if (!p.hasFm) return undefined;
+  for (let i = p.open + 1; i < p.close; i++) {
+    if (keyOf(p.lines[i]) === key) {
+      const idx = p.lines[i].indexOf(":");
+      return p.lines[i].slice(idx + 1).trim() || undefined;
     }
   }
   return undefined;
 }
 
+// SURGICAL + preservation-safe: replaces only our key's line (dropping duplicates) or inserts it just before
+// the closing fence — preserving the user's other keys, their ORDER, the body, the EOL (CRLF/LF), and a BOM.
+// Never re-serializes the user's YAML.
 export function setManagedValue(text: string, key: string, value: string): string {
-  const s = split(text);
+  const p = parse(text);
   const kv = `${key}: ${value}`;
-  if (!s.hasFm) {
-    return `${FENCE}\n${kv}\n${FENCE}\n${text}`;
+  if (!p.hasFm) {
+    // No parseable frontmatter → create a fresh block at the top; the rest of the doc is untouched.
+    return reassemble(p, ["---", kv, "---", ...p.lines]);
   }
   let seen = false;
+  let closePos = -1;
   const out: string[] = [];
-  for (const l of s.fmLines) {
-    if (keyOf(l) === key) { if (!seen) { out.push(kv); seen = true; } /* drop any DUPLICATE managed-key lines */ }
-    else out.push(l);
+  for (let i = 0; i < p.lines.length; i++) {
+    if (i > p.open && i < p.close && keyOf(p.lines[i]) === key) {
+      if (!seen) { out.push(kv); seen = true; } // replace in place; drop DUPLICATE managed-key lines
+      continue;
+    }
+    if (i === p.close) closePos = out.length; // where the closing fence landed after any dup-drops
+    out.push(p.lines[i]);
   }
-  if (!seen) out.unshift(kv); // absent → add at the top (stable position; never reorders on re-stamp)
-  return `${FENCE}\n${out.join("\n")}\n${FENCE}\n${s.body}`;
+  if (!seen) out.splice(closePos, 0, kv); // absent → append at the END of the block (before the closing fence)
+  return reassemble(p, out);
 }
 
 // The git-model identity primitive: strip the managed keys, normalize EOL + trailing newline, so two
 // versions that differ ONLY in managed keys yield identical normalized content (and hash).
 export function normalizedContent(text: string, managedKeys: string[]): string {
-  const lf = text.replace(/\r\n/g, "\n");
-  const s = split(lf);
-  if (!s.hasFm) return trimTrailing(lf);
-  const kept = s.fmLines.filter((l) => {
-    const k = keyOf(l);
-    return k === null || !managedKeys.includes(k);
-  });
-  const rebuilt = `${FENCE}\n${kept.join("\n")}\n${FENCE}\n${s.body}`;
-  return trimTrailing(rebuilt);
+  const lf = text.replace(/\r\n/g, "\n").replace(/^﻿/, ""); // identity is EOL- and BOM-agnostic
+  const p = parse(lf);
+  if (!p.hasFm) return trimTrailing(lf);
+  const kept: string[] = [];
+  for (let i = 0; i < p.lines.length; i++) {
+    if (i > p.open && i < p.close) {
+      const k = keyOf(p.lines[i]);
+      if (k !== null && managedKeys.includes(k)) continue; // mask managed keys (block-scalar-safe boundary)
+    }
+    kept.push(p.lines[i]);
+  }
+  return trimTrailing(kept.join("\n"));
 }
 function trimTrailing(s: string): string { return s.replace(/\n+$/, "\n"); }
 

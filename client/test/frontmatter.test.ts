@@ -99,6 +99,46 @@ describe("reconcileManagedFields", () => {
   });
 });
 
+describe("1.7.1 parser safety — block scalars / BOM / CRLF / order preservation", () => {
+  it("does NOT false-close frontmatter on a --- inside a block scalar (Finding 1 — corruption)", () => {
+    const note = "---\ndescription: |\n  intro\n  ---\n  more\ntitle: Real Title\ntags: [a, b]\n---\nbody\n";
+    const out = setManagedValue(note, "updated", "2026-01-01T00:00:00-06:00");
+    expect(getManagedValue(out, "title")).toBe("Real Title"); // still in frontmatter, not demoted to body
+    expect(getManagedValue(out, "tags")).toBe("[a, b]");
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00-06:00");
+    expect(out).toContain("  more"); // block-scalar content preserved
+  });
+  it("preserves a leading BOM (Finding 5)", () => {
+    const note = "﻿---\ntitle: T\n---\nbody\n";
+    const out = setManagedValue(note, "updated", "x");
+    expect(out.charCodeAt(0)).toBe(0xFEFF);
+    expect(getManagedValue(out, "updated")).toBe("x");
+    expect(getManagedValue(out, "title")).toBe("T");
+  });
+  it("preserves CRLF line endings (Finding 5)", () => {
+    const note = "---\r\ntitle: T\r\n---\r\nbody\r\n";
+    const out = setManagedValue(note, "updated", "x");
+    expect(out.replace(/\r\n/g, "")).not.toContain("\n"); // every LF is part of a CRLF — none introduced bare
+    expect(getManagedValue(out, "updated")).toBe("x");
+    expect(getManagedValue(out, "title")).toBe("T");
+  });
+  it("preserves the user's existing key order (Finding 5)", () => {
+    const note = "---\ntitle: T\nauthor: me\n---\nbody\n";
+    const out = setManagedValue(note, "updated", "x");
+    const fm = out.slice(0, out.indexOf("body"));
+    expect(fm.indexOf("title")).toBeLessThan(fm.indexOf("author")); // user's order intact
+    expect(getManagedValue(out, "updated")).toBe("x");
+  });
+  it("round-trips and is byte-stable on re-set (no drift / no churn)", () => {
+    const note = "---\ntitle: T\n---\nbody line\nmore\n";
+    const out = setManagedValue(note, "updated", "2026-01-01T00:00:00+00:00");
+    expect(getManagedValue(out, "updated")).toBe("2026-01-01T00:00:00+00:00");
+    expect(out).toContain("title: T");
+    expect(out).toContain("body line\nmore");
+    expect(setManagedValue(out, "updated", "2026-01-01T00:00:00+00:00")).toBe(out); // idempotent bytes
+  });
+});
+
 describe("critique fixes — CRLF / quotes / duplicates / cross-device determinism", () => {
   it("reads and rewrites managed keys on CRLF notes without duplicating (F4)", () => {
     const crlf = "---\r\ntitle: Hi\r\nupdated: 2026-01-01T00:00:00-06:00\r\n---\r\nbody\r\n";

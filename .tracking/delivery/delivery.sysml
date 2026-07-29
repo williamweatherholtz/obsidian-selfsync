@@ -522,6 +522,10 @@ package ProjectDelivery {
         part sittingReview20260729R1 : TestResult { :>> id = "d7c1a003-0000-4a10-9b20-a1b2c3d4a003"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "ab40154"; :>> judgedAt = "2026-07-29"; :>> judgedBy = "wweatherholtz"; }
         #Covers dependency from sittingReview20260729 to embeddedTimestampMetadata;
         #Covers dependency from sittingReview20260729 to embeddedTimestampCapability;
+        // ===== Sprint frontmatterParserSafety (2026-07-29) — 1.7.1: fix the shipped block-scalar frontmatter
+        // corruption + BOM/EOL/key-order rewrite surfaced by the embeddedTimestampMetadata critique. =====
+        action frontmatterParserSafety;
+        verification frontmatterParserSafetyDoD : Test { :>> id = "d7c19003-0000-4a10-9b20-a1b2c3d40093"; :>> method = VerificationMethod::test; :>> procedureText = "Ships PATCH 1.7.1. The frontmatter parser is block-scalar-safe (col-0-only fence: an indented --- inside a YAML block scalar never false-closes), and setManagedValue is surgical + preservation-safe — it preserves a leading BOM, CRLF/LF line endings, existing key order, and all non-managed frontmatter + body byte-for-byte; drops duplicate managed keys; appends a missing key before the closing fence. Guard (D0047): frontmatter.test block-scalar / BOM / CRLF / key-order / round-trip-stable cases + the existing suite. DoD: full client vitest (509) + tsc clean + keel reverify green. Resolves issueFrontmatterBlockScalarCorruption."; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
