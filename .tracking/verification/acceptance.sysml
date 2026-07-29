@@ -185,6 +185,40 @@ package ProjectAcceptance {
     part acSelfHealingReconnectConfirmR1 : TestResult { :>> id = "c0f1a5cc-4302-4a10-9b20-a1b2c3d40332"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
     part acConfigAdjudicationUIConfirmR1 : TestResult { :>> id = "c0f1a5cc-4303-4a10-9b20-a1b2c3d40333"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "912722b"; :>> judgedAt = "2026-07-05"; :>> judgedBy = "wweatherholtz"; }
 
+    // ---- embedded-timestamp / conflict-noise acceptance scenarios (BDD, 2026-07-29) ----
+    verification acEmbeddedTimestamp : Test {
+        :>> id = "d7c13001-0000-4a10-9b20-a1b2c3d40031"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/frontmatter.test.ts";
+        :>> procedureText = "GIVEN a note with NO managed timestamp fields WHEN SelfSync first seeds it THEN `created` is initialized from the file's existing creation time and `updated` from its modification time (TFile.stat / OS metadata), NOT the current time (falling back to now only if stat is unavailable), injecting a frontmatter block when missing; AND GIVEN a managed note WHEN SelfSync detects a genuine content change THEN it stamps `updated` (ISO-8601 with offset); AND stamping the managed field does not change the normalized hash (no re-sync loop). Verified by frontmatter.test.ts (seed-from-OS-metadata, stamp-on-genuine-change, inject-when-absent, offset format) + reconcile.test.ts (no loop).";
+    }
+    verification acNormalizedIdentity : Test {
+        :>> id = "d7c13002-0000-4a10-9b20-a1b2c3d40032"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/frontmatter.test.ts";
+        :>> procedureText = "GIVEN two note versions identical except the managed timestamp keys WHEN their normalized hashes are computed THEN the hashes are equal (managed keys masked, key order + EOL normalized); AND non-markdown / unparseable-YAML files fall back to the raw hash. Verified by the frontmatter.test.ts normalized-hash table.";
+    }
+    verification acTimestampConflictResolve : Test {
+        :>> id = "d7c13003-0000-4a10-9b20-a1b2c3d40033"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/reconcile.test.ts";
+        :>> procedureText = "GIVEN two devices whose note differs only in managed timestamp fields WHEN reconcile runs THEN no conflict copy is created and the earliest `created` + older `updated` are kept; AND a local file whose only change is a spurious timestamp bump is reverted and not pushed; AND a genuine content conflict still merges/conflicts as before (no regression). Verified by reconcile.test.ts timestamp-only + copy-bump + no-regression cases.";
+    }
+    verification acDriveFsTimes : Test {
+        :>> id = "d7c13004-0000-4a10-9b20-a1b2c3d40034"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/fstimes.test.ts";
+        :>> procedureText = "GIVEN a managed note written on pull or local stamp WHEN the FS-time driver runs THEN mtime is set from `updated` on desktop, creation time is set from `created` on Windows/macOS, Linux skips creation time, and a missing/failing native addon degrades to mtime-only without throwing; POSIX ctime is never set. Verified by fstimes.test.ts with mocked utimes / DataWriteOptions per platform.";
+    }
+    verification acExcludedFolders : Test {
+        :>> id = "d7c13005-0000-4a10-9b20-a1b2c3d40035"; :>> method = VerificationMethod::test;
+        :>> location = "client/test/excludedFolders.test.ts";
+        :>> procedureText = "GIVEN a folder on the excluded list WHEN SelfSync processes a note under it THEN no managed timestamp field is read, written, or FS-time-driven for that note and content sync is unchanged; AND the settings UI can add (with folder autocomplete) and remove entries. Verified by excludedFolders.test.ts (isExcluded/matchFolders + set ops), settings-ui.dom.test.ts (add/remove wiring), and a *.pwspec.ts e2e asserting an excluded folder's file never reaches the server.";
+    }
+
+    // ---- embedded-timestamp #Verify edges (Test -> SystemRequirement) ----
+    #Verify dependency from acEmbeddedTimestamp to srEmbeddedTimestamp;
+    #Verify dependency from acNormalizedIdentity to srNormalizedIdentity;
+    #Verify dependency from acTimestampConflictResolve to srTimestampConflictResolve;
+    #Verify dependency from acDriveFsTimes to srDriveFsTimes;
+    #Verify dependency from acExcludedFolders to srExcludedFolders;
+
     // ---- #Verify edges: Test -> SystemRequirement (the previously-missing traceability) ----
     // new config SRs
     #Verify dependency from acConfigSelective to srConfigSelective;

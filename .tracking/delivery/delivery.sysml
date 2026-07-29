@@ -492,6 +492,18 @@ package ProjectDelivery {
         // assertion — the fix IS its own guard, so no new backlog item. The one process slip (the fix was
         // started ad-hoc before being routed through a sprint) is already covered by the tracked no-sprint
         // guard (issue020 / sprint30). Velocity: 2pt delivered.
+        // REVIEW — the per-sitting human gate (D0049), the single human confirmation. wweatherholtz accepted
+        // this sitting explicitly; #Covers names the sprint it attests (keel sitting-coverage reads it).
+        verification sittingReview20260728 : Test { :>> id = "9a77e005-1b2c-4d3e-8f40-5a6b7c8d9e0b"; :>> method = VerificationMethod::confirmation; :>> procedureText = "Per-sitting human review (D0049) for the 2026-07-28 sitting: wweatherholtz accepted the statusLightFlickerFsm sprint (the debounced status-light display FSM that eliminated the 'Fully synced' <-> 'Syncing... checking for changes' flitter) and its deployment as release 1.6.2, via explicit 'yes' on 2026-07-28. This is the single human confirmation gate; the sprint's closeOut (inspect) + retro (analysis) ran autonomously."; }
+        part sittingReview20260728R1 : TestResult { :>> id = "9a77e005-1b2c-4d3e-8f40-5a6b7c8d9e0c"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "187c623"; :>> judgedAt = "2026-07-28"; :>> judgedBy = "wweatherholtz"; }
+        #Covers dependency from sittingReview20260728 to statusLightFlickerFsm;
+        // ===== Sprint embeddedTimestampMetadata (2026-07-29) — SelfSync-owned embedded created/updated
+        // timestamps (ISO-8601+offset), normalized-content identity so timestamp-only diffs never conflict,
+        // and embedded-time-driven filesystem mtime (+ creation time on Win/mac). REFINE phase: needs/
+        // use-cases/SRs/acceptance authored; TDD + DOM + e2e architected (spec: docs/design/specs/
+        // 2026-07-29-embedded-timestamp-metadata.md). Not yet implemented — ships MINOR. =====
+        action embeddedTimestampMetadata;
+        verification embeddedTimestampMetadataDoD : Test { :>> id = "d7c19001-0000-4a10-9b20-a1b2c3d40091"; :>> method = VerificationMethod::test; :>> procedureText = "DoD (NOT yet met — refine authored 2026-07-29): pure frontmatter.ts (parse/serialize, normalized hash masking the managed keys, raw fallback for non-md/unparseable YAML) + excludedFolders.ts (add/remove/normalize/isExcluded/matchFolders) unit tests green; reconcile.test.ts timestamp-only->no-conflict + copy-bump->reverted-not-pushed + excluded-folder->untouched + genuine-conflict->no-regression green; fstimes.ts driver tests (mtime from updated desktop; creation time from created Win/mac; Linux/mobile degrade; ctime never; native-addon-absent graceful) green; settings-ui.dom.test.ts add/remove/autocomplete wiring green; a *.pwspec.ts e2e (seed real folders, add an excluded folder in settings, assert excluded content never reaches the server) green; full client vitest + server cargo test --locked + clippy -D warnings + keel reverify all green. Ships a MINOR release. Resolves issueTimestampConflictNoise."; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so
@@ -505,4 +517,15 @@ package ProjectDelivery {
     }
     #DerivedFrom dependency from configSyncCapability to nConfigSync; // hard rootedness gate (D0099)
     #CharteredBy dependency from configSyncCapability to nConfigSync; // charter lineage (rootedness burndown)
+
+    // The embedded-timestamp + volatile-field-aware-sync capability (2026-07-29), rooted to its Need so
+    // requirement-rootedness enforces the traceability (D0099). Spec: docs/design/specs/2026-07-29-embedded-timestamp-metadata.md.
+    #Capability part embeddedTimestampCapability : Story {
+        :>> id = "d7c17001-0000-4a10-9b20-a1b2c3d40071";
+        :>> title = "Embedded timestamps + volatile-field-aware sync";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> kind = WorkKind::code; :>> priority = WorkPriority::p1; :>> owner = "wweatherholtz";
+    }
+    #DerivedFrom dependency from embeddedTimestampCapability to nTimestampFidelity; // hard rootedness gate (D0099)
+    #CharteredBy dependency from embeddedTimestampCapability to nTimestampFidelity; // charter lineage
 }

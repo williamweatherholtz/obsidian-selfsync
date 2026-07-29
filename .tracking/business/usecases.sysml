@@ -118,6 +118,29 @@ package ProjectUseCases {
         :>> extensions = "Already signed in to that server -> redeem immediately, keep the current vault, prompt to Switch. | NOT set up (or a different server) -> the guided wizard prefills the link's server and finishes by redeeming + adopting the vault. | The account was admin-created (must-change) -> the wizard forces a new password first (no silent 403). | Single-use -> a second redeem of the same link is rejected. | LEAVE/DECLINE -> the grantee drops their OWN access (Switch -> Shared with you -> Leave): local files are kept, only their grant is removed (never the owner's or anyone else's), and if it was the vault being synced it disconnects. | A read-only grant pulls but never pushes.";
     }
 
+    // ---- embedded-timestamp / conflict-noise use cases (2026-07-29) ----
+    use case ucCopyPreservesTimestamp : UseCase {
+        :>> id = "d7c1b001-0000-4a10-9b20-a1b2c3d400a1"; :>> title = "Copying a note preserves its true modified time";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> description = "A note is copied or moved, or arrives via a tool that rewrites filesystem timestamps; its real last-changed time must not appear to change.";
+        :>> mainSuccess = "The embedded `updated`/`created` values are unchanged by the copy (they are content, not filesystem metadata); on the next reconcile SelfSync recognizes the content is unchanged, keeps the older embedded time, and restores the filesystem mtime (and creation time on Windows/macOS) from the embedded value.";
+        :>> extensions = "A spurious filesystem-time bump alone (content identical) is never pushed and never raises a diff. | On Linux the creation time cannot be set, so only mtime is restored. | On mobile, filesystem times are best-effort; the embedded value stays authoritative.";
+    }
+    use case ucTimestampOnlyNoConflict : UseCase {
+        :>> id = "d7c1b002-0000-4a10-9b20-a1b2c3d400a2"; :>> title = "Two devices differ only in a timestamp — no conflict";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> description = "The same note exists on two devices with identical body content but a different embedded `updated` (each device re-stamped it, or one was copied).";
+        :>> mainSuccess = "SelfSync compares by normalized content (managed timestamp keys masked), finds the versions logically identical, auto-resolves without a conflict copy, and keeps the earliest `created` and the older `updated`.";
+        :>> extensions = "If the content genuinely differs as well, the normal three-way merge / conflict-copy path runs unchanged and the merged result takes a fresh `updated`. | A note in an excluded folder is left entirely alone (see ucExcludedFolderUntouched).";
+    }
+    use case ucExcludedFolderUntouched : UseCase {
+        :>> id = "d7c1b003-0000-4a10-9b20-a1b2c3d400a3"; :>> title = "Excluded folders are left completely alone";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user designates certain vault folders that SelfSync must not manage timestamps for (generated or externally-owned notes).";
+        :>> mainSuccess = "The user adds a folder to the Excluded folders list (with path autocomplete); SelfSync never reads or writes the managed timestamp fields for notes under that folder and never drives their filesystem times — those notes sync by content exactly as before.";
+        :>> extensions = "Removing a folder from the list resumes management on its next genuine change. | A path not under any excluded folder is managed normally. | Excluding a folder never deletes or rewrites frontmatter already present in those notes.";
+    }
+
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
     #DependsOn dependency from ucFirstRunSetup to selfHoster;
     #DependsOn dependency from ucFirstRunSetup to n1GuidedSetup;
@@ -148,4 +171,10 @@ package ProjectUseCases {
     #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
     #DependsOn dependency from ucDeployServer to selfHostOperator;
     #DependsOn dependency from ucDeployServer to goal2SimpleBackend;
+    #DependsOn dependency from ucCopyPreservesTimestamp to selfHoster;
+    #DependsOn dependency from ucCopyPreservesTimestamp to nTimestampFidelity;
+    #DependsOn dependency from ucTimestampOnlyNoConflict to selfHoster;
+    #DependsOn dependency from ucTimestampOnlyNoConflict to nNoMetadataConflicts;
+    #DependsOn dependency from ucExcludedFolderUntouched to selfHoster;
+    #DependsOn dependency from ucExcludedFolderUntouched to nTimestampFidelity;
 }

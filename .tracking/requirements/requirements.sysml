@@ -320,6 +320,48 @@ package ProjectRequirements {
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 
+    // ---- embedded-timestamp / conflict-noise requirements (2026-07-29) ----
+    requirement srEmbeddedTimestamp : SystemRequirement {
+        :>> id = "d7c15001-0000-4a10-9b20-a1b2c3d40051";
+        :>> title = "SelfSync-owned embedded created/updated timestamps";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The plugin shall maintain authoritative `created` and `updated` timestamps (full ISO 8601 with UTC offset; keys configurable) in a managed note's YAML frontmatter, shall stamp `updated` only when it detects a genuine content change, and shall inject a frontmatter block where absent for in-scope notes; when first seeding a note that has no managed fields it shall initialize `created` from the file's existing creation time and `updated` from its modification time (TFile.stat / OS metadata), falling back to the current time only when that metadata is unavailable.";
+        :>> rationale = "SelfSync, as the sync engine, is the only component that knows when a change is genuine; owning the field avoids the per-device re-stamp churn that editor-event plugins cause. ISO-8601-with-offset is standard, human-readable, and unambiguous. Seeding from existing file metadata (not 'now') means adopting a pre-existing vault preserves each note's real history rather than marking every old note as just-created.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srNormalizedIdentity : SystemRequirement {
+        :>> id = "d7c15002-0000-4a10-9b20-a1b2c3d40052";
+        :>> title = "Content identity ignores managed timestamp fields";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When comparing note versions for change detection and conflict resolution, the plugin shall use a normalized content hash that excludes the managed timestamp keys and normalizes YAML key order and line endings, so a difference confined to those keys is not treated as a content change.";
+        :>> rationale = "Git-model content-addressing: masking the volatile field before hashing turns timestamp-only diffs into non-events and prevents SelfSync's own stamping from causing a sync loop.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srTimestampConflictResolve : SystemRequirement {
+        :>> id = "d7c15003-0000-4a10-9b20-a1b2c3d40053";
+        :>> title = "Auto-resolve timestamp-only differences, keeping the older updated";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When two versions are identical under the normalized hash but differ in managed timestamp fields, the plugin shall resolve them without creating a conflict copy, retaining the earliest `created` and the older `updated`; a spurious local timestamp bump on otherwise-unchanged content shall be reverted and not pushed.";
+        :>> rationale = "Once content is known identical, the newer stamp is spurious, so the older `updated` is the truthful last-real-change time; reverting the local bump stops the conflict flood at its source.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srDriveFsTimes : SystemRequirement {
+        :>> id = "d7c15004-0000-4a10-9b20-a1b2c3d40054";
+        :>> title = "Embedded timestamp drives filesystem times where the OS permits";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> statement = "After writing a managed note, the plugin shall set the filesystem modification time from `updated` on all desktop platforms and the file creation time from `created` on Windows and macOS, shall degrade gracefully to modification-time-only where creation time is unsettable (Linux) or unsupported (mobile), and shall never attempt to set POSIX ctime.";
+        :>> rationale = "Makes filesystem times and Dataview's file.mtime trustworthy again; per-OS capability is a hard limit, not a preference. Birthtime is strictly best-effort so a missing native addon never breaks sync.";
+        :>> kind = RequirementKind::interfaceReq; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srExcludedFolders : SystemRequirement {
+        :>> id = "d7c15005-0000-4a10-9b20-a1b2c3d40055";
+        :>> title = "User-excluded folders are not managed";
+        :>> createdAt = "2026-07-29"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The plugin shall provide a configurable list of excluded vault folders and shall not read, write, or drive filesystem times for the managed timestamp fields of any note under an excluded folder; the settings surface shall offer folder-path autocomplete and per-entry add and remove.";
+        :>> rationale = "Gives the user explicit opt-out for generated or externally-owned folders; folder matching is a pure, unit-tested predicate wired into the existing shouldSync gate.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- satisfy edges: SR satisfies the Need it serves ----
     satisfy nVaultSharing by srVaultSharing;
     satisfy goal1ClearConfig by srClearConfig;
@@ -363,4 +405,10 @@ package ProjectRequirements {
     satisfy nVaultSharing by srReadOnlyGating;
     satisfy nVaultSharing by srRegistrationPolicy;
     satisfy nVaultSharing by srAdminSurface;
+    // embedded-timestamp / conflict-noise (2026-07-29)
+    satisfy nTimestampFidelity by srEmbeddedTimestamp;
+    satisfy nNoMetadataConflicts by srNormalizedIdentity;
+    satisfy nNoMetadataConflicts by srTimestampConflictResolve;
+    satisfy nTimestampFidelity by srDriveFsTimes;
+    satisfy nTimestampFidelity by srExcludedFolders;
 }

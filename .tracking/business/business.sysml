@@ -217,6 +217,23 @@ package ProjectBusiness {
         :>> priority = Priority::should;
     }
 
+    // ---- Needs surfaced by the embedded-timestamp / conflict-noise work (2026-07-29) ----
+    // Owner-reported field pain: "wayy too many diff conflicts that are just time metadata".
+    requirement nTimestampFidelity : Need {
+        :>> id = "d7c10001-0000-4a10-9b20-a1b2c3d40001";
+        :>> title = "My notes' modified/created times are accurate and portable";
+        :>> source = NeedSource::customer;
+        :>> statement = "Each note carries a trustworthy record of when it was actually created and last changed — one that survives copying or moving the file between machines and is reflected in the file's own timestamps — so time-based and 'recently edited' views can be relied on.";
+        :>> priority = Priority::must;
+    }
+    requirement nNoMetadataConflicts : Need {
+        :>> id = "d7c10002-0000-4a10-9b20-a1b2c3d40002";
+        :>> title = "Timestamp-only differences never cause sync conflicts";
+        :>> source = NeedSource::customer;
+        :>> statement = "When two devices hold a note whose content is identical apart from a timestamp/metadata field, sync resolves it silently and correctly rather than surfacing a conflict — the user is never asked to adjudicate a difference that is not a real content change.";
+        :>> priority = Priority::must;
+    }
+
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
     #DependsOn dependency from nReliableSync to goal2SimpleBackend;
@@ -234,4 +251,6 @@ package ProjectBusiness {
     #DependsOn dependency from n3ThreeWayMerge to goal3ConflictMerge;
     #DependsOn dependency from n3NeverClobber to goal3ConflictMerge;
     #DependsOn dependency from n3Unpaywalled to goal3ConflictMerge;
+    #DependsOn dependency from nTimestampFidelity to goal3ConflictMerge;
+    #DependsOn dependency from nNoMetadataConflicts to goal3ConflictMerge;
 }
