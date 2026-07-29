@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, normalizePath, setIcon } from "obsidian";
+import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, TFolder, DataWriteOptions, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, deriveNoteConflicts } from "./base";
@@ -19,6 +19,8 @@ import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, Conf
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
+import { isExcluded } from "./excludedFolders";
+import { parseIso, getManagedValue } from "./frontmatter";
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
 // event and don't advance the server version, so only a periodic full reconcile catches them (the
@@ -133,11 +135,11 @@ class ObsidianVaultIo implements VaultIo {
   }
 
   async list() {
-    const m = new Map<string, { mtime: number; size: number }>();
+    const m = new Map<string, { mtime: number; size: number; ctime?: number }>();
     // getFiles() returns notes/attachments only (never .obsidian); passes() is a
-    // belt-and-suspenders guard.
+    // belt-and-suspenders guard. ctime feeds first-seed of a managed note's `created`.
     for (const f of this.plugin.app.vault.getFiles()) {
-      if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size });
+      if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size, ctime: f.stat.ctime });
     }
     if (this.plugin.settings.configSync.enabled) {
       await this.enumerateConfig(".obsidian", m);
@@ -151,7 +153,7 @@ class ObsidianVaultIo implements VaultIo {
 
   // Recursively enumerate the hidden .obsidian/ config surface via the low-level
   // adapter (getFiles() can't see it), keeping only paths that pass the filter.
-  private async enumerateConfig(dir: string, m: Map<string, { mtime: number; size: number }>): Promise<void> {
+  private async enumerateConfig(dir: string, m: Map<string, { mtime: number; size: number; ctime?: number }>): Promise<void> {
     const adapter = this.plugin.app.vault.adapter;
     let listing: { files: string[]; folders: string[] };
     // A directory we can't enumerate must NOT be silently treated as empty: that fabricates absence for
@@ -162,7 +164,7 @@ class ObsidianVaultIo implements VaultIo {
     catch (e: any) { this.plugin.log(`config enumeration couldn't list '${dir}' (${e?.message ?? e}) — files under it are left as-is, NOT treated as deleted`); return; }
     for (const file of listing.files) {
       if (!this.passes(file)) continue;
-      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0, size: st?.size ?? 0 }); } catch { /* skip unreadable */ }
+      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0, size: st?.size ?? 0, ctime: st?.ctime }); } catch { /* skip unreadable */ }
     }
     for (const folder of listing.folders) await this.enumerateConfig(folder, m);
   }
@@ -197,7 +199,9 @@ class ObsidianVaultIo implements VaultIo {
     const dir = p.split("/").slice(0, -1).join("/");
     if (dir && !(await this.plugin.app.vault.adapter.exists(dir))) await this.plugin.app.vault.adapter.mkdir(dir);
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-    await this.plugin.app.vault.adapter.writeBinary(p, buf);
+    // Embedded-timestamp: drive Obsidian's stored mtime/ctime (Dataview's file.mtime/ctime, and the real
+    // FS mtime on desktop) from a managed note's embedded updated/created. Undefined for anything else.
+    await this.plugin.app.vault.adapter.writeBinary(p, buf, this.plugin.fsTimeWriteOptions(path, bytes));
     // R23-DI: fsync the note (and its parent dir) BEFORE returning so it is durable before the caller
     // records base + persists data.json. Round 8 gave the ≥8 MiB STREAMED path this guarantee; the
     // buffered path (all small notes / config / conflict copies on desktop) lacked it, leaving the same
@@ -1121,10 +1125,46 @@ export default class NewLiveSyncPlugin extends Plugin {
     const mb = this.settings.maxSyncMB;
     return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_SETTINGS.maxSyncMB) * 1024 * 1024;
   }
+  // The managed timestamp keys ([created, updated]) when the feature is on, else [] → the whole
+  // embedded-timestamp path is inert (isManaged() false everywhere).
+  managedKeys(): string[] {
+    return this.settings.embeddedTimestamps ? [this.settings.timestampCreatedKey, this.settings.timestampUpdatedKey] : [];
+  }
+  // All vault folder paths, for the excluded-folders autocomplete.
+  getAllFolders(): string[] {
+    const v = this.app.vault as unknown as { getAllFolders?: () => { path: string }[] };
+    if (typeof v.getAllFolders === "function") return v.getAllFolders().map((f) => f.path).filter((p) => !!p);
+    return this.app.vault.getAllLoadedFiles().filter((f): f is TFolder => f instanceof TFolder).map((f) => f.path).filter((p) => !!p);
+  }
+  async setExcludedFolders(list: string[]): Promise<void> {
+    this.settings.excludedFolders = [...new Set(list)].sort();
+    await this.saveSettings();
+    this.settingsRefresh?.();
+  }
+  // DataWriteOptions driving Obsidian's stored mtime/ctime from a managed note's embedded updated/created
+  // (what Dataview reads; on desktop the real FS mtime too). Undefined ⇒ leave timestamps untouched.
+  fsTimeWriteOptions(path: string, bytes: Uint8Array): DataWriteOptions | undefined {
+    if (!this.settings.driveFsTimes || !this.settings.embeddedTimestamps) return undefined;
+    if (isExcluded(path, this.settings.excludedFolders)) return undefined;
+    if (!path.endsWith(".md")) return undefined;
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return undefined; }
+    const up = parseIso(getManagedValue(text, this.settings.timestampUpdatedKey) ?? "");
+    const cr = parseIso(getManagedValue(text, this.settings.timestampCreatedKey) ?? "");
+    if (up === undefined && cr === undefined) return undefined;
+    const o: DataWriteOptions = {};
+    if (up !== undefined) o.mtime = up;
+    if (cr !== undefined) o.ctime = cr;
+    return o;
+  }
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(),
+      managedKeys: this.managedKeys(),
+      excludedFolders: this.settings.excludedFolders,
+      tzOffsetMin: -new Date().getTimezoneOffset(),
+      now: () => Date.now(),
       readOnly: this.settings.vaultReadOnly,
       maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in

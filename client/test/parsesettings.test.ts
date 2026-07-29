@@ -52,4 +52,20 @@ describe("parseSettings — harden + freshen the persisted settings object", () 
     expect(s.configSync.pluginAllow).toEqual(["excalidraw"]);
     expect(s.configSync.pluginDir).toEqual({}); // absent sub-field → fresh default
   });
+
+  it("defaults + hardens the embedded-timestamp settings", () => {
+    const d = parseSettings({});
+    expect(d.embeddedTimestamps).toBe(false); // opt-in
+    expect(d.timestampCreatedKey).toBe("created");
+    expect(d.timestampUpdatedKey).toBe("updated");
+    expect(d.excludedFolders).toEqual([]);
+    expect(d.driveFsTimes).toBe(true);
+    expect(parseSettings({ excludedFolders: ["Work"], embeddedTimestamps: true }).excludedFolders).toEqual(["Work"]);
+    expect(parseSettings({ excludedFolders: "oops" }).excludedFolders).toEqual([]); // non-array → empty
+    // fresh array per parse (no alias)
+    const input = { excludedFolders: ["X"] };
+    const out = parseSettings(input);
+    input.excludedFolders.push("Y");
+    expect(out.excludedFolders).toEqual(["X"]);
+  });
 });

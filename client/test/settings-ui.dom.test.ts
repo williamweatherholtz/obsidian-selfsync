@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // so the Sign-out wiring test still fires. (Its own behaviour is covered by inspection, not this stub.)
 vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
 import { NewLiveSyncSettingTab } from "../src/settings";
-import { fakePlugin, toggleByName, buttonByText, flipToggle } from "./ui-dom-harness";
+import { fakePlugin, toggleByName, buttonByText, flipToggle, rowByName, inputByPlaceholder, typeInto } from "./ui-dom-harness";
 
 function renderTab(plugin: any) {
   const tab = new NewLiveSyncSettingTab(plugin.app, plugin);
@@ -36,6 +36,23 @@ describe("settings tab renders and wires its controls", () => {
     flipToggle(master);                        // change event → onChange
     expect(plugin.settings.configSync.enabled).toBe(false);
     expect(plugin.applyConfigSyncChange).toHaveBeenCalled();
+  });
+
+  it("embedded-timestamps: renders the master toggle and adds/removes an excluded folder", () => {
+    const p = fakePlugin({
+      settings: { embeddedTimestamps: true, driveFsTimes: true, timestampCreatedKey: "created", timestampUpdatedKey: "updated", excludedFolders: ["Work"] },
+      setExcludedFolders: vi.fn(async () => {}),
+      getAllFolders: () => ["Work", "Archive", "Notes"],
+    });
+    const { containerEl } = renderTab(p);
+    expect(toggleByName(containerEl, "Embed created/updated timestamps")?.checked).toBe(true);
+    const row = rowByName(containerEl, "Work");
+    expect(row).toBeTruthy();
+    row.querySelector("button").click(); // Remove
+    expect(p.setExcludedFolders).toHaveBeenCalledWith([]); // removeExcluded(["Work"],"Work")
+    typeInto(inputByPlaceholder(containerEl, "Folder to exclude"), "Archive");
+    buttonByText(containerEl, "Add folder").click();
+    expect(p.setExcludedFolders).toHaveBeenCalledWith(["Archive", "Work"]); // addExcluded(["Work"],"Archive")
   });
 
   it("P2: toggling a category (Core settings) also applies immediately", () => {

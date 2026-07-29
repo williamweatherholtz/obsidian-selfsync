@@ -152,6 +152,15 @@ export class PluginSettingTab {
 }
 export class TAbstractFile { path = ""; }
 export class TFile extends TAbstractFile { stat = { size: 0, mtime: 0, ctime: 0 }; }
+export class TFolder extends TAbstractFile { children: any[] = []; }
+// Minimal stand-in for Obsidian's AbstractInputSuggest — enough that `class X extends AbstractInputSuggest`
+// evaluates at module load and can be constructed; the suggestion popup itself isn't exercised in DOM tests.
+export class AbstractInputSuggest<T> {
+  app: any; inputEl: any;
+  constructor(app: any, inputEl: any) { this.app = app; this.inputEl = inputEl; }
+  setValue(v: string) { if (this.inputEl) this.inputEl.value = v; return this; }
+  close() {}
+}
 export class MarkdownView { addAction() { return fakeEl(); } }
 export const Platform = { isMobile: false, isDesktop: true, isIosApp: false, isAndroidApp: false, isMacOS: false, isWin: true, isLinux: false, isPhone: false };
 export const normalizePath = (p: string) => p;

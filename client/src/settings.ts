@@ -1,5 +1,15 @@
-import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
+import { addExcluded, removeExcluded, matchFolders } from "./excludedFolders";
+
+// Folder-path autocomplete for the excluded-folders input: a thin adapter over the pure matchFolders,
+// fed the live vault folder list. All ranking logic stays pure + unit-tested (excludedFolders.test).
+class FolderSuggest extends AbstractInputSuggest<string> {
+  constructor(app: App, inputEl: HTMLInputElement, private folders: () => string[]) { super(app, inputEl); }
+  getSuggestions(query: string): string[] { return matchFolders(query, this.folders()); }
+  renderSuggestion(value: string, el: HTMLElement): void { el.setText(value); }
+  selectSuggestion(value: string): void { this.setValue(value); this.close(); }
+}
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
@@ -42,6 +52,13 @@ export interface NewLiveSyncSettings {
   // the in-memory rewind check alone is dead across a restart. Same fresh-per-instance handling as
   // historyFloors (omitted from DEFAULT_SETTINGS, lazily `??= {}`).
   lastVersions?: Record<string, number>;
+  // Embedded-timestamp metadata (SelfSync-owned created/updated frontmatter). OFF by default — the
+  // feature writes into user notes, so it is a deliberate opt-in.
+  embeddedTimestamps: boolean;
+  timestampCreatedKey: string;
+  timestampUpdatedKey: string;
+  excludedFolders: string[]; // folders SelfSync must NOT manage timestamps for (content still syncs)
+  driveFsTimes: boolean;     // drive filesystem mtime (+ creation time on Win/mac) from the embedded value
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
@@ -64,6 +81,12 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   storePassword: false,
   maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
   configConflicts: [],
+  // Embedded-timestamp metadata (opt-in, default OFF — the feature writes into user notes).
+  embeddedTimestamps: false,
+  timestampCreatedKey: "created",
+  timestampUpdatedKey: "updated",
+  excludedFolders: [],
+  driveFsTimes: true,
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
   // would be ALIASED across instances by Object.assign (a shared-mutable-default bug). It's created
   // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).
@@ -87,6 +110,8 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   out.configSync.pluginDir = { ...(s.configSync?.pluginDir ?? {}) };
   // Fresh array (the adjudication queue is mutated in place); a non-array persisted value → empty.
   out.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
+  // Fresh array (mutated in place by add/remove); a non-array persisted value → empty.
+  out.excludedFolders = Array.isArray(s.excludedFolders) ? [...s.excludedFolders] : [];
   return out;
 }
 
@@ -115,6 +140,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.renderObsidianConfig(containerEl, s); // what config syncs (scope)
     this.renderConflicts(containerEl);          // only surfaces pending conflicts needing a manual choice
     this.renderAdvanced(containerEl, s);
+    this.renderEmbeddedTimestamps(containerEl, s); // SelfSync-owned created/updated + excluded folders
   }
 
   hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; } // stop live-refreshing once closed
@@ -327,6 +353,38 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Connection").setDesc("Reconfigure re-opens setup (server/account/vault). Disconnect stops syncing on this device but keeps your login — 'Sign out' above does both.")
       .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup()))
       .addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); })));
+  }
+
+  // Embedded-timestamp controls: master toggle, FS-time-driving toggle, and the excluded-folders list
+  // (each row a Remove button; an add row with folder-path autocomplete). All list algebra is the pure
+  // excludedFolders module; persistence is the single plugin.setExcludedFolders. Re-render on add/remove
+  // (mirrors renderPluginChecklist) — the add input is separate, so no mid-edit focus is lost.
+  private renderEmbeddedTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
+    const g = new SettingGroup(c).setHeading("Embedded timestamps");
+    g.addSetting((st) => st.setName("Embed created/updated timestamps")
+      .setDesc("SelfSync maintains created/updated (ISO-8601) in note frontmatter, so timestamps survive copying and a difference that is only a timestamp never causes a sync conflict.")
+      .addToggle((tg) => tg.setValue(s.embeddedTimestamps).onChange(async (v) => { s.embeddedTimestamps = v; await this.plugin.saveSettings(); this.display(); })));
+    if (!s.embeddedTimestamps) return;
+    g.addSetting((st) => st.setName("Drive filesystem times")
+      .setDesc("Set each note's modification time (and, in Obsidian, its creation time) from the embedded value.")
+      .addToggle((tg) => tg.setValue(s.driveFsTimes).onChange(async (v) => { s.driveFsTimes = v; await this.plugin.saveSettings(); })));
+    g.addSetting((st) => st.setName("Excluded folders")
+      .setDesc("Folders SelfSync leaves alone (no timestamp management). Their notes still sync normally."));
+    for (const folder of s.excludedFolders) {
+      g.addSetting((st) => st.setName(folder)
+        .addButton((b) => b.setButtonText("Remove").onClick(async () => {
+          await this.plugin.setExcludedFolders(removeExcluded(s.excludedFolders, folder)); this.display();
+        })));
+    }
+    g.addSetting((st) => {
+      let input: { getValue(): string } | undefined;
+      st.setName("Add a folder");
+      st.addText((t) => { input = t; t.setPlaceholder("Folder to exclude"); new FolderSuggest(this.app, t.inputEl as HTMLInputElement, () => this.plugin.getAllFolders()); });
+      st.addButton((b) => b.setButtonText("Add folder").onClick(async () => {
+        const v = (input?.getValue() ?? "").trim();
+        if (v) { await this.plugin.setExcludedFolders(addExcluded(s.excludedFolders, v)); this.display(); }
+      }));
+    });
   }
 
   private copyDebugInfo(s: NewLiveSyncSettings): void {
