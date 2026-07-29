@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { light, isWsStale, Phase } from "../src/syncstate";
+import { light, isWsStale, Phase, effectivePhase } from "../src/syncstate";
+
+describe("effectivePhase — a 0-pending reconcile is a check, not a syncing state", () => {
+  it("collapses syncing+0-pending to idle; a real transfer stays syncing (the hangs-on-syncing fix)", () => {
+    expect(effectivePhase("syncing", 0)).toBe("idle");
+    expect(effectivePhase("syncing", 5)).toBe("syncing");
+    expect(effectivePhase("idle", 0)).toBe("idle");
+    expect(effectivePhase("connecting", 0)).toBe("connecting");
+    expect(effectivePhase("offline", 3)).toBe("offline");
+  });
+});
 
 describe("light is a pure function of phase", () => {
   it("green only when idle (up to date)", () => {

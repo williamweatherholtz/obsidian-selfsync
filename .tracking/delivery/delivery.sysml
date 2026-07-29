@@ -551,6 +551,10 @@ package ProjectDelivery {
         // Same-sitting human authorization: wweatherholtz directed + accepted the 1.8.0 build + ship via
         // explicit "2 please" + "continue until done" (2026-07-29); covered by sittingReview20260729.
         #Covers dependency from sittingReview20260729 to timestampBackfill;
+        // ===== Sprint statusHangsOnSyncing (2026-07-29) — 1.8.1: fix the "hangs on Syncing..." regression
+        // from the 1.6.2 flicker fix (statusText rendered the raw engine phase, bypassing the light's collapse). =====
+        action statusHangsOnSyncing;
+        verification statusHangsOnSyncingDoD : Test { :>> id = "d7c19005-0000-4a10-9b20-a1b2c3d40095"; :>> method = VerificationMethod::test; :>> procedureText = "Ships PATCH 1.8.1. The 0-pending-reconcile -> idle collapse is now a pure syncstate.effectivePhase(phase, syncPending), and BOTH effectiveLightPhase AND statusText route through it, so the settings status card and the ribbon light agree — a resting 0-pending reconcile shows 'Fully synced', never a stuck 'Syncing...'. Also cleans a raw NUL byte shipped in the 1.8.0 backfill sentinel (source now uses an escaped sentinel; main.ts is no longer treated as binary). Guard: syncstate.test effectivePhase table. DoD: full client vitest + tsc + server cargo test --locked + clippy -D warnings + keel reverify green. Resolves issueStatusHangsOnSyncing."; }
     }
 
     // The config-sync capability (0.10.4), marked #Capability + rooted to its Need so

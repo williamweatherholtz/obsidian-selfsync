@@ -29,6 +29,16 @@ export function light(phase: Phase, detail = "", realtime = true): LightSpec {
   }
 }
 
+// The EFFECTIVE display phase: a `syncing` reconcile with nothing queued to transfer (syncPending <= 0) is
+// a CHECK, not a state, so it collapses to `idle` — no surface should paint "Syncing…" when there's no
+// work. This is the SINGLE projection every display surface shares (the ribbon light AND the settings
+// status card). The "hangs on syncing" regression was the card rendering the RAW engine phase via
+// statusText(), so it read "Syncing…" whenever the engine sat in a 0-pending reconcile while the light
+// (which already used this collapse) correctly showed idle.
+export function effectivePhase(phase: Phase, syncPending: number): Phase {
+  return phase === "syncing" && syncPending <= 0 ? "idle" : phase;
+}
+
 // True when the realtime socket has gone silent past the liveness deadline — no frame (server
 // heartbeat OR change) within `staleAfterMs`. Browsers hide protocol ping/pong from JS, so an
 // app-level heartbeat is the only signal that a socket is alive vs half-open; this is the pure
