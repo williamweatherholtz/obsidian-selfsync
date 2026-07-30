@@ -2,11 +2,12 @@
 name: release-versioning
 description: |
   Deploys the Release Versioning process (D0002): after a coherent set of shippable SelfSync
-  plugin changes is committed and green, increment the version per semantic versioning, tag,
-  and publish. Use whenever asked to "cut a release", "bump the version", "publish", or after
-  finishing a feature/fix batch. Classifies the semver level, bumps via scripts/bump-version.mjs
-  (the sole version-editing path), tags X.Y.Z (triggering .github/workflows/release.yml), and
-  verifies the release. This is the deploying skill for .engine/processes/release-versioning.sysml (D0059).
+  plugin changes is committed and green, increment the version per semantic versioning and push
+  to main — the release then AUTO-PUBLISHES (D0035). Use whenever asked to "cut a release",
+  "bump the version", "publish", or after finishing a feature/fix batch. Classifies the semver
+  level, bumps via scripts/bump-version.mjs (the sole version-editing path), commits + pushes to
+  main (.github/workflows/release.yml auto-builds + tags X.Y.Z + publishes), and verifies the
+  release. This is the deploying skill for .engine/processes/release-versioning.sysml (D0059).
 metadata:
   version: 0.1.0
   domain: [release, versioning, semver, publishing, obsidian-plugin, BRAT]
@@ -49,17 +50,18 @@ This is the **only** place versions are edited — it updates `manifest.json` (t
 truth BRAT reads), `versions.json` (adds `version → minAppVersion`), and `client/package.json`
 in one step. Never hand-edit those files.
 
-## 4. Commit, tag, push
+## 4. Commit and push to main — the release auto-publishes (D0035)
 ```
 git add manifest.json versions.json client/package.json
 git commit -m "release: <new-version> — <one-line summary of the set>"
-git tag <new-version>          # no "v" prefix — matches release.yml's tag filter + manifest.json
 git push origin main
-git push origin <new-version>  # the tag push triggers the release build
 ```
-Commit with the **keel gate enabled** (no `--no-verify`): the guard mismatch was fixed (D0003),
-so a release commit runs the full guard like any other. **The tag push is not optional** — a
-bump that is committed but never tagged is *not released* (BRAT never sees it). Step 5 asserts it.
+That is the whole release action. `.github/workflows/release.yml` fires on the `manifest.json`
+change to `main` and **idempotently builds + tags (`<new-version>`, no `v`) + publishes** the
+GitHub release with the BRAT assets. There is **no manual `git tag` / `git push <tag>` step** — a
+forgotten tag is exactly the miss D0035 removed (1.9.0 sat on `main` unreleased). Commit with the
+**keel gate enabled** (no `--no-verify`). If the auto-run is ever missed, `workflow_dispatch` on
+release.yml is the manual re-run. Step 5 still asserts the result.
 
 ## 5. Verify the published release (automated — do not eyeball)
 ```
@@ -87,7 +89,7 @@ on its own — a signal to run this skill from step 1. Thresholds live in the sc
 new Decision). Where step 5 is release *completeness*, this is release *currency*.
 
 ## Notes
-- Tags are `X.Y.Z` (no `v`), matching the workflow's tag filter.
+- Tags are `X.Y.Z` (no `v`) — created BY the release workflow (`gh release create`), not pushed by hand.
 - `client/package.json`'s version is kept in step for tidiness; it is not shipped in the plugin.
 - Adding or changing this process is itself a process-definition change — it needs its own
   process-change Decision (D0070), like D0002 that introduced it.

@@ -6,8 +6,9 @@
 // base format / server API / settings schema (a genuine break bumps the major, e.g. 2.0.0); MINOR =
 // new backward-compatible user-facing capability; PATCH = bug fix / docs / refactor / test-only; a
 // mixed set takes the HIGHEST level. manifest.json is the source of truth BRAT reads; versions.json maps version ->
-// minAppVersion; pushing a tag `X.Y.Z` (no `v`) triggers .github/workflows/release.yml.
-// Deployed by the `release-versioning` skill (D0059).
+// minAppVersion. The release PUBLISHES AUTOMATICALLY when a bumped manifest.json lands on main — .github/
+// workflows/release.yml fires on that change and idempotently builds + tags + publishes (D0035); there is no
+// separate manual tag step. Deployed by the `release-versioning` skill (D0059).
 // =====================================================================
 package ReleaseVersioning {
     private import EngineElement::*;     // Cadence / Owner enums
@@ -47,10 +48,10 @@ package ReleaseVersioning {
     }
     part rv4CommitTagPush : ProcessStep {
         :>> id = "d99af5a3-979c-446a-a3b6-c592e4a475c0";
-        :>> title = "Commit, tag, and push";
+        :>> title = "Commit and push to main (the release then auto-publishes)";
         :>> order = 4;
-        :>> actionText = "Commit the version files with `release: <new-version> — <one-line summary of the set>`; tag `<new-version>` (no `v` prefix — matches release.yml + manifest.json); `git push origin main` then `git push origin <new-version>`. The tag push triggers the release build. Commit with the keel gate ENABLED (no --no-verify): the guard mismatch was fixed (D0003), so a release commit runs the full guard like any other. The tag push (order 4) is NOT optional — a bump that is committed but never tagged is not released; order 5 asserts this.";
-        :>> producedArtifact = "A release commit + an X.Y.Z tag pushed to origin.";
+        :>> actionText = "Commit the version files with `release: <new-version> — <one-line summary of the set>` and `git push origin main`. That is the ENTIRE release action: .github/workflows/release.yml fires on the manifest.json change to main and idempotently builds + tags (`<new-version>`, no `v`) + publishes the GitHub release with the BRAT assets (D0035). No separate `git push origin <tag>` step — a forgotten tag was the failure mode this removed (1.9.0 sat on main unreleased). Commit with the keel gate ENABLED (no --no-verify): a release commit runs the full guard like any other. `workflow_dispatch` on release.yml is the manual re-run escape hatch if the auto-run is ever missed.";
+        :>> producedArtifact = "A release commit pushed to main; the release workflow auto-publishes the tag + GitHub release.";
         :>> owner = Owner::ai;
     }
     part rv5Verify : ProcessStep {

@@ -1,11 +1,18 @@
 name: Release SelfSync plugin
 
-# Push a version tag (e.g. 0.1.0 — no "v" prefix, matching manifest.json) to build
-# the plugin and publish a GitHub release with the assets BRAT installs.
+# "We can't be not releasing code" (D0035). The version lives in manifest.json; the release is published
+# AUTOMATICALLY when a bumped manifest.json lands on main — no separate "remember to tag + push" step (the
+# gap that put 1.9.0 on main but not into a GitHub release, so BRAT still showed 1.8.1). This job derives
+# the version from manifest.json, and is IDEMPOTENT: if that version is already released it no-ops, so a
+# re-run, a manual re-push, or an unrelated manifest edit is safe. `gh release create` creates the matching
+# tag (X.Y.Z, no "v" — matching manifest.json) and uploads the assets BRAT installs. workflow_dispatch is
+# the manual re-run escape hatch. verify-released.yml remains the daily backstop.
 on:
   push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+    branches: [main]
+    paths:
+      - manifest.json
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -20,22 +27,41 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Determine version and whether it is already released
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(node -p "require('./manifest.json').version")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "$VER" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version $VER is already released — nothing to do."
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "version $VER is not released yet — will build + publish."
+          fi
+
       - name: Build the plugin
+        if: steps.v.outputs.released == 'false'
         working-directory: client
         run: |
           npm install
           npm run build
 
       - name: Publish release with plugin assets
+        if: steps.v.outputs.released == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          # BRAT downloads these from the release. manifest.json's version must equal the tag.
-          gh release create "$tag" \
+          VER="${{ steps.v.outputs.version }}"
+          # Create the tag (at this commit) AND the release in one step; manifest.json's version IS the tag.
+          # BRAT downloads these assets from the release.
+          gh release create "$VER" --target "$GITHUB_SHA" \
             client/main.js client/styles.css manifest.json versions.json \
-            --title "$tag" \
-            --notes "SelfSync $tag — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync."
+            --title "$VER" \
+            --notes "SelfSync $VER — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync."
 
-  # The server image is published by a dedicated workflow (.github/workflows/server-image.yml),
-  # which also fires on version tags — so a release publishes the matching image too.
+  # The server image is published by a dedicated workflow (.github/workflows/server-image.yml), which
+  # fires on server changes to main (and on version tags) — so a release that touches the server publishes
+  # the matching image independently of this job.

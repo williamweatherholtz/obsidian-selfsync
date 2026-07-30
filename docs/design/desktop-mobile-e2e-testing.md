@@ -45,8 +45,8 @@ This is the **same flow on desktop and mobile** — no manual file-copying, no p
 4. To update later: BRAT → "Check for updates" (or it auto-updates on launch).
 
 > **How this works (B8, done):** the repo publishes a GitHub **release** (via
-> `.github/workflows/release.yml` on a version-tag push) with `main.js` + `manifest.json` +
-> `versions.json` attached, and a root-level `manifest.json` BRAT reads for the version. For local dev,
+> `.github/workflows/release.yml`, which auto-fires when a bumped `manifest.json` lands on main — D0035)
+> with `main.js` + `manifest.json` + `versions.json` attached, and a root-level `manifest.json` BRAT reads for the version. For local dev,
 > `scripts/e2e.ps1` stages Vault A/B by copying the freshly-built `main.js` + root `manifest.json` into
 > `<vault>/.obsidian/plugins/new-livesync/` — a dev shortcut, **not** the user install path.
 
