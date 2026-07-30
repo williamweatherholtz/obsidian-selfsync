@@ -11,6 +11,7 @@ class FolderSuggest extends AbstractInputSuggest<string> {
   selectSuggestion(value: string): void { this.setValue(value); this.close(); }
 }
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
+import { DEFAULT_IGNORED_TIMESTAMP_KEYS } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
 import { light } from "./syncstate";
@@ -52,17 +53,14 @@ export interface NewLiveSyncSettings {
   // the in-memory rewind check alone is dead across a restart. Same fresh-per-instance handling as
   // historyFloors (omitted from DEFAULT_SETTINGS, lazily `??= {}`).
   lastVersions?: Record<string, number>;
-  // Embedded-timestamp metadata (SelfSync-owned created/updated frontmatter). OFF by default — the
-  // feature writes into user notes, so it is a deliberate opt-in.
-  embeddedTimestamps: boolean;
-  timestampCreatedKey: string;
-  timestampUpdatedKey: string;
-  excludedFolders: string[]; // folders SelfSync must NOT manage timestamps for (content still syncs)
-  driveFsTimes: boolean;     // drive filesystem mtime (+ creation time on Win/mac) from the embedded value
-  // Per-(vault) embedded-timestamp backfill convergence marker, keyed `owner/vaultId` (like historyFloors).
-  // { policy: the timestampPolicySignature it converged under; cursor: last-processed path, or the DONE
-  // sentinel }. Per-device (settings never sync); omitted from DEFAULT_SETTINGS + lazily `??= {}` on use.
-  timestampBackfill?: Record<string, { policy: string; cursor: string }>;
+  // Timestamp-ignore (the redesigned feature — SelfSync NEVER writes note timestamps). When on, a diff that
+  // is only a TIMESTAMP-VALUED frontmatter key is excluded from sync change-detection, so it never causes a
+  // conflict. Identity-only; it never edits a note. ON by default (safe: never writes; value-shape gated).
+  ignoreTimestampChanges: boolean;
+  // Frontmatter key patterns whose timestamp-valued lines are ignored. A trailing `*` is a prefix wildcard
+  // (e.g. `updated-*` for per-device keys). Defaults to DEFAULT_IGNORED_TIMESTAMP_KEYS.
+  ignoredTimestampKeys: string[];
+  excludedFolders: string[]; // folders where timestamp-only diffs are NOT ignored (they sync raw; EOL/BOM still normalized)
 }
 export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
@@ -85,12 +83,10 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   storePassword: false,
   maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
   configConflicts: [],
-  // Embedded-timestamp metadata (opt-in, default OFF — the feature writes into user notes).
-  embeddedTimestamps: false,
-  timestampCreatedKey: "created",
-  timestampUpdatedKey: "updated",
+  // Timestamp-ignore (identity-only, default ON — it never writes notes; see the field docs above).
+  ignoreTimestampChanges: true,
+  ignoredTimestampKeys: [...DEFAULT_IGNORED_TIMESTAMP_KEYS],
   excludedFolders: [],
-  driveFsTimes: true,
   // historyFloors intentionally omitted here: a module-level object literal in DEFAULT_SETTINGS
   // would be ALIASED across instances by Object.assign (a shared-mutable-default bug). It's created
   // fresh per instance by `this.settings.historyFloors ??= {}` on first use in doReconcileAll (D0019).
@@ -116,6 +112,22 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   out.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
   // Fresh array (mutated in place by add/remove); a non-array persisted value → empty.
   out.excludedFolders = Array.isArray(s.excludedFolders) ? [...s.excludedFolders] : [];
+  // Migrate the retired 1.7-1.8 "embed timestamps" (which WROTE notes) to the identity-only "ignore
+  // timestamp changes". Default ON for everyone — it never edits files and is value-shape gated, so even a
+  // vault that never touched the old feature gets conflict suppression + the always-on EOL/BOM fix. Honor an
+  // explicit new-field value if present; otherwise default on regardless of the old boolean.
+  const legacy = s as Partial<{ ignoreTimestampChanges: boolean; ignoredTimestampKeys: string[]; timestampCreatedKey: string; timestampUpdatedKey: string }>;
+  out.ignoreTimestampChanges = typeof legacy.ignoreTimestampChanges === "boolean" ? legacy.ignoreTimestampChanges : true;
+  out.ignoredTimestampKeys = Array.isArray(legacy.ignoredTimestampKeys) && legacy.ignoredTimestampKeys.length
+    ? [...legacy.ignoredTimestampKeys]
+    : [...new Set([
+        ...(legacy.timestampCreatedKey ? [legacy.timestampCreatedKey] : []),
+        ...(legacy.timestampUpdatedKey ? [legacy.timestampUpdatedKey] : []),
+        ...DEFAULT_IGNORED_TIMESTAMP_KEYS,
+      ])];
+  // Drop retired fields so a migrated data.json doesn't carry dead keys forward.
+  const bag = out as unknown as Record<string, unknown>;
+  for (const k of ["embeddedTimestamps", "timestampCreatedKey", "timestampUpdatedKey", "driveFsTimes", "timestampBackfill"]) delete bag[k];
   return out;
 }
 
@@ -144,7 +156,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.renderObsidianConfig(containerEl, s); // what config syncs (scope)
     this.renderConflicts(containerEl);          // only surfaces pending conflicts needing a manual choice
     this.renderAdvanced(containerEl, s);
-    this.renderEmbeddedTimestamps(containerEl, s); // SelfSync-owned created/updated + excluded folders
+    this.renderIgnoreTimestamps(containerEl, s); // identity-only timestamp masking + excluded folders
   }
 
   hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; } // stop live-refreshing once closed
@@ -359,35 +371,33 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); })));
   }
 
-  // Embedded-timestamp controls: master toggle, FS-time-driving toggle, and the excluded-folders list
-  // (each row a Remove button; an add row with folder-path autocomplete). All list algebra is the pure
-  // excludedFolders module; persistence is the single plugin.setExcludedFolders. Re-render on add/remove
-  // (mirrors renderPluginChecklist) — the add input is separate, so no mid-edit focus is lost.
-  private renderEmbeddedTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
-    const g = new SettingGroup(c).setHeading("Embedded timestamps");
-    g.addSetting((st) => st.setName("Embed created/updated timestamps")
-      .setDesc("SelfSync maintains created/updated (ISO-8601) in note frontmatter, so timestamps survive copying and a difference that is only a timestamp never causes a sync conflict.")
-      .addToggle((tg) => tg.setValue(s.embeddedTimestamps).onChange(async (v) => {
-        if (v) {
-          // Informed, counted consent — enabling conforms existing vault data (critique Findings 3/5/7).
-          const { total, pending } = await this.plugin.countNonCompliantTimestamps();
-          const restore = this.plugin.detectRestoreSignature();
-          const body = `SelfSync will maintain created/updated in one ISO format and conform ${pending} of ${total} note(s) to match — seeding missing dates from each file's own timestamps and adding the two fields where absent. It may adjust line endings or key order on notes it changes; the original of anything not cleanly conformable is kept as a copy.`
-            + (restore ? " NOTE: your files' dates look reset by a backup, clone, or cloud-sync, so seeded dates may not reflect real history." : "");
-          const ok = await confirmModal(this.app, { title: "Embed created/updated timestamps?", body, confirmText: "Enable & conform" });
-          if (!ok) { tg.setValue(false); return; } // cancelled → revert the toggle, change nothing
-        }
-        s.embeddedTimestamps = v;
+  // Timestamp-ignore controls: the master toggle, the ignored-date-field list, and the excluded-folders list
+  // (each row a Remove button; an add row with folder-path autocomplete). Identity-only — nothing here ever
+  // edits a note, so enabling has no counted-consent step. Re-render on change (mirrors renderPluginChecklist).
+  private renderIgnoreTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
+    const g = new SettingGroup(c).setHeading("Timestamp changes");
+    g.addSetting((st) => st.setName("Ignore timestamp-only changes")
+      .setDesc("When a note differs only in a date field (created/updated/etc.), don't treat it as a change or a conflict. SelfSync never edits these fields — if another plugin rewrites them on every edit, SelfSync ignores that churn rather than fighting it. (Line-ending and BOM differences are always ignored, regardless of this setting.)")
+      .addToggle((tg) => tg.setValue(s.ignoreTimestampChanges).onChange(async (v) => {
+        s.ignoreTimestampChanges = v; // identity-only: safe to toggle freely, never touches a note's content
         await this.plugin.saveSettings();
-        if (v) void this.plugin.runTimestampBackfill();
         this.display();
       })));
-    if (!s.embeddedTimestamps) return;
-    g.addSetting((st) => st.setName("Drive filesystem times")
-      .setDesc("Set each note's modification time (and, in Obsidian, its creation time) from the embedded value.")
-      .addToggle((tg) => tg.setValue(s.driveFsTimes).onChange(async (v) => { s.driveFsTimes = v; await this.plugin.saveSettings(); })));
+    if (!s.ignoreTimestampChanges) return;
+    g.addSetting((st) => st.setName("Ignored date fields")
+      .setDesc("Frontmatter keys treated as dates — one per line. A trailing * is a wildcard (e.g. updated-* matches per-device keys like updated-laptop). Only values that actually look like a date are ignored, so a non-date value under the same key still syncs.")
+      .addTextArea((t) => {
+        t.setValue(s.ignoredTimestampKeys.join("\n"));
+        (t.inputEl as HTMLTextAreaElement).rows = 5;
+        // Commit on blur so a mid-edit keystroke doesn't churn settings; empty → restore the defaults.
+        t.inputEl.addEventListener("blur", async () => {
+          const keys = t.getValue().split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+          s.ignoredTimestampKeys = [...new Set(keys.length ? keys : DEFAULT_IGNORED_TIMESTAMP_KEYS)];
+          await this.plugin.saveSettings();
+        });
+      }));
     g.addSetting((st) => st.setName("Excluded folders")
-      .setDesc("Folders SelfSync leaves alone (no timestamp management). Their notes still sync normally."));
+      .setDesc("Folders where a timestamp-only difference is NOT ignored (they sync raw). Their notes still sync normally."));
     for (const folder of s.excludedFolders) {
       g.addSetting((st) => st.setName(folder)
         .addButton((b) => b.setButtonText("Remove").onClick(async () => {

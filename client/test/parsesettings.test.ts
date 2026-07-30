@@ -53,14 +53,24 @@ describe("parseSettings — harden + freshen the persisted settings object", () 
     expect(s.configSync.pluginDir).toEqual({}); // absent sub-field → fresh default
   });
 
-  it("defaults + hardens the embedded-timestamp settings", () => {
+  it("defaults + hardens the timestamp-ignore settings, and migrates the retired embed-timestamp fields", () => {
     const d = parseSettings({});
-    expect(d.embeddedTimestamps).toBe(false); // opt-in
-    expect(d.timestampCreatedKey).toBe("created");
-    expect(d.timestampUpdatedKey).toBe("updated");
+    expect(d.ignoreTimestampChanges).toBe(true); // default ON — identity-only, never writes notes
+    expect(d.ignoredTimestampKeys).toContain("updated");
+    expect(d.ignoredTimestampKeys).toContain("updated-*"); // per-device pattern in the defaults
     expect(d.excludedFolders).toEqual([]);
-    expect(d.driveFsTimes).toBe(true);
-    expect(parseSettings({ excludedFolders: ["Work"], embeddedTimestamps: true }).excludedFolders).toEqual(["Work"]);
+    // Retired fields are dropped, not carried forward.
+    expect((d as unknown as Record<string, unknown>).embeddedTimestamps).toBeUndefined();
+    expect((d as unknown as Record<string, unknown>).driveFsTimes).toBeUndefined();
+    // A legacy vault that had the old feature on → migrates to masking on, seeding its custom keys ∪ defaults.
+    const migrated = parseSettings({ embeddedTimestamps: true, timestampCreatedKey: "made", timestampUpdatedKey: "changed" });
+    expect(migrated.ignoreTimestampChanges).toBe(true);
+    expect(migrated.ignoredTimestampKeys).toContain("made");
+    expect(migrated.ignoredTimestampKeys).toContain("changed");
+    expect(migrated.ignoredTimestampKeys).toContain("updated"); // ∪ defaults
+    // An explicit new-field value is honored.
+    expect(parseSettings({ ignoreTimestampChanges: false }).ignoreTimestampChanges).toBe(false);
+    expect(parseSettings({ excludedFolders: ["Work"] }).excludedFolders).toEqual(["Work"]);
     expect(parseSettings({ excludedFolders: "oops" }).excludedFolders).toEqual([]); // non-array → empty
     // fresh array per parse (no alias)
     const input = { excludedFolders: ["X"] };

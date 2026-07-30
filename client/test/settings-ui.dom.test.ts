@@ -38,14 +38,14 @@ describe("settings tab renders and wires its controls", () => {
     expect(plugin.applyConfigSyncChange).toHaveBeenCalled();
   });
 
-  it("embedded-timestamps: renders the master toggle and adds/removes an excluded folder", () => {
+  it("timestamp-ignore: renders the master toggle and adds/removes an excluded folder", () => {
     const p = fakePlugin({
-      settings: { embeddedTimestamps: true, driveFsTimes: true, timestampCreatedKey: "created", timestampUpdatedKey: "updated", excludedFolders: ["Work"] },
+      settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["created", "updated"], excludedFolders: ["Work"] },
       setExcludedFolders: vi.fn(async () => {}),
       getAllFolders: () => ["Work", "Archive", "Notes"],
     });
     const { containerEl } = renderTab(p);
-    expect(toggleByName(containerEl, "Embed created/updated timestamps")?.checked).toBe(true);
+    expect(toggleByName(containerEl, "Ignore timestamp-only changes")?.checked).toBe(true);
     const row = rowByName(containerEl, "Work");
     expect(row).toBeTruthy();
     row.querySelector("button").click(); // Remove
@@ -55,21 +55,17 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.setExcludedFolders).toHaveBeenCalledWith(["Archive", "Work"]); // addExcluded(["Work"],"Archive")
   });
 
-  it("enabling embedded timestamps prompts consent, then kicks off the backfill (1.8.0)", async () => {
-    const runTimestampBackfill = vi.fn(async () => {});
+  it("enabling timestamp-ignore just flips the setting — no consent modal, no file changes", async () => {
     const p = fakePlugin({
-      settings: { embeddedTimestamps: false, driveFsTimes: true, timestampCreatedKey: "created", timestampUpdatedKey: "updated", excludedFolders: [] },
-      countNonCompliantTimestamps: vi.fn(async () => ({ total: 10, pending: 4 })),
-      detectRestoreSignature: () => false,
-      runTimestampBackfill,
+      settings: { ignoreTimestampChanges: false, ignoredTimestampKeys: ["created", "updated"], excludedFolders: [] },
     });
     const { containerEl } = renderTab(p);
-    const master = toggleByName(containerEl, "Embed created/updated timestamps");
+    const master = toggleByName(containerEl, "Ignore timestamp-only changes");
     expect(master.checked).toBe(false);
-    flipToggle(master); // → onChange(true) → confirmModal (mocked true) → enable + runTimestampBackfill
+    flipToggle(master); // → onChange(true) → saveSettings + re-render (identity-only; nothing touches a note)
     await flush();
-    expect(p.settings.embeddedTimestamps).toBe(true);
-    expect(runTimestampBackfill).toHaveBeenCalled();
+    expect(p.settings.ignoreTimestampChanges).toBe(true);
+    expect(p.saveSettings).toHaveBeenCalled();
   });
 
   it("P2: toggling a category (Core settings) also applies immediately", () => {

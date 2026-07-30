@@ -78,6 +78,15 @@ class TextComponent {
   setDisabled(_d: boolean) { return this; }
   onChange(cb: (v: string) => any) { if (HAS_DOM) this.inputEl.addEventListener("input", () => cb(this.inputEl.value)); return this; }
 }
+class TextAreaComponent {
+  inputEl: any = fakeEl();
+  constructor(parent: any) { if (HAS_DOM) { this.inputEl = augment(document.createElement("textarea")); parent.appendChild(this.inputEl); } }
+  setValue(v: string) { if (HAS_DOM) this.inputEl.value = v; return this; }
+  getValue() { return HAS_DOM ? this.inputEl.value : ""; }
+  setPlaceholder(p: string) { if (HAS_DOM) this.inputEl.placeholder = p; return this; }
+  setDisabled(_d: boolean) { return this; }
+  onChange(cb: (v: string) => any) { if (HAS_DOM) this.inputEl.addEventListener("input", () => cb(this.inputEl.value)); return this; }
+}
 class DropdownComponent {
   selectEl: any = fakeEl();
   constructor(parent: any) { if (HAS_DOM) { this.selectEl = augment(document.createElement("select")); parent.appendChild(this.selectEl); } }
@@ -107,6 +116,7 @@ export class Setting {
   addToggle(cb: (t: ToggleComponent) => any) { cb(new ToggleComponent(this.controlEl)); return this; }
   addButton(cb: (b: ButtonComponent) => any) { cb(new ButtonComponent(this.controlEl)); return this; }
   addText(cb: (t: TextComponent) => any) { cb(new TextComponent(this.controlEl)); return this; }
+  addTextArea(cb: (t: TextAreaComponent) => any) { cb(new TextAreaComponent(this.controlEl)); return this; }
   addDropdown(cb: (d: DropdownComponent) => any) { cb(new DropdownComponent(this.controlEl)); return this; }
 }
 

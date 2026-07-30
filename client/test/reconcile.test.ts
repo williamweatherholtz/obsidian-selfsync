@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, backfillPush, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
-import { conformTimestamps, noteCompliant } from "../src/frontmatter";
+import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -26,36 +25,73 @@ describe("decide", () => {
   it("nothing anywhere -> in-sync", () => expect(decide(null, null, null)).toBe("in-sync"));
 });
 
-describe("embedded timestamp management", () => {
-  const KEYS = ["created", "updated"];
+describe("timestamp-ignore + always-on content identity", () => {
+  const KEYS = ["created", "updated", "updated-*"];
   const mdeps = (srv: ReturnType<typeof fakeServer>, io: ReturnType<typeof fakeIo>, extra: Partial<ReconcileDeps> = {}) =>
-    deps(srv.api, io, { managedKeys: KEYS, excludedFolders: [], tzOffsetMin: 0, now: () => 0, ...extra });
+    deps(srv.api, io, { ignorePatterns: KEYS, excludedFolders: [], statOf: () => ({ size: 1, mtime: 0 }), ...extra });
 
-  it("timestamp-only cross-device diff auto-resolves without a conflict copy, keeping the older updated", async () => {
+  it("timestamp-only cross-device diff auto-resolves without a conflict copy (adopts remote, no rewrite of values)", async () => {
     const srv = fakeServer(); const io = fakeIo();
-    const older = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
-    const newer = "---\nupdated: 2026-09-09T00:00:00+00:00\n---\nbody\n";
-    io.m.set("n.md", enc(older));
-    await serverPutBytes(srv.api, "n.md", enc(newer)); // no common base -> conflict-copy path
+    io.m.set("n.md", enc("---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n"));
+    await serverPutBytes(srv.api, "n.md", enc("---\nupdated: 2026-09-09T00:00:00+00:00\n---\nbody\n")); // no common base
     await reconcileAll(mdeps(srv, io));
     expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(false);
-    expect(dec(io.m.get("n.md")!)).toContain("2026-01-01T00:00:00+00:00"); // older updated kept
+    expect(dec(io.m.get("n.md")!)).toContain("body");
   });
 
-  it("a spurious local timestamp bump on unchanged content is reverted and not pushed", async () => {
+  it("a spurious local timestamp bump on unchanged content is NOT pushed and NOT rewritten (kept as-is)", async () => {
     const srv = fakeServer(); const io = fakeIo();
     const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
     await serverPutBytes(srv.api, "n.md", enc(base));
     const d = mdeps(srv, io);
     await reconcileAll(d); // pull base down; records base (raw + text)
     const vBefore = srv.files.get("n.md")!.version;
-    io.m.set("n.md", enc(base.replace("2026-01-01", "2026-05-05"))); // bump; body identical
-    await reconcileAll(d);
-    expect(srv.files.get("n.md")!.version).toBe(vBefore); // NOT pushed
-    expect(dec(io.m.get("n.md")!)).toContain("2026-01-01T00:00:00+00:00"); // reverted
+    io.m.set("n.md", enc(base.replace("2026-01-01", "2026-05-05"))); // timestamp bump; body identical
+    await reconcilePath(d, "n.md");
+    expect(srv.files.get("n.md")!.version).toBe(vBefore); // churn suppressed — NOT pushed
+    expect(dec(io.m.get("n.md")!)).toContain("2026-05-05"); // kept AS-IS — no destructive revert (tolerates a stamp plugin)
   });
 
-  it("an excluded folder is NOT managed: a spurious bump there is pushed as a normal change", async () => {
+  it("a CRLF-only local change is NOT pushed — even with the timestamp feature OFF (always-on EOL identity)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const lf = "# Title\n\nsome body line\n";
+    await serverPutBytes(srv.api, "n.md", enc(lf));
+    const d = deps(srv.api, io, { ignorePatterns: [], excludedFolders: [], statOf: () => ({ size: 1, mtime: 0 }) }); // feature OFF
+    await reconcileAll(d);
+    const vBefore = srv.files.get("n.md")!.version;
+    io.m.set("n.md", enc(lf.replace(/\n/g, "\r\n"))); // CRLF re-save, no real content change
+    await reconcilePath(d, "n.md");
+    expect(srv.files.get("n.md")!.version).toBe(vBefore); // EOL-only → not a change → not pushed
+  });
+
+  it("a peer deletion is HONORED (not resurrected) when only a local timestamp drifted (Finding C)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
+    await serverPutBytes(srv.api, "n.md", enc(base));
+    await serverPutBytes(srv.api, "keep.md", enc("keeper\n")); // a second file so deleting one isn't an empty-manifest / mass-delete (which the safety guard would refuse)
+    const d = mdeps(srv, io);
+    await reconcileAll(d); // sync + base recorded for both
+    io.m.set("n.md", enc(base.replace("2026-01-01", "2026-05-05"))); // local timestamp drift
+    await srv.api.deleteFile("n.md"); // a peer deletes it (records a real tombstone)
+    await reconcileAll(d);
+    expect(io.m.has("n.md")).toBe(false); // removed locally, NOT re-pushed (no resurrection)
+    expect(srv.files.has("n.md")).toBe(false); // stays deleted on the server
+  });
+
+  it("a real body merge is NOT spoiled by a divergent timestamp line — clean merge, no conflict copy (Finding B)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nline1\nline2\n";
+    await serverPutBytes(srv.api, "n.md", enc(base));
+    const d = mdeps(srv, io);
+    await reconcileAll(d); // base recorded (raw + text)
+    io.m.set("n.md", enc("---\nupdated: 2026-05-05T00:00:00+00:00\n---\nline1\nline2\n")); // body same, ts bumped
+    await serverPutBytes(srv.api, "n.md", enc("---\nupdated: 2026-07-07T00:00:00+00:00\n---\nline1\nline2\nline3\n")); // real body edit + different ts
+    await reconcileAll(d);
+    expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(false); // timestamp line didn't force a conflict
+    expect(dec(io.m.get("n.md")!)).toContain("line3"); // remote's body edit merged in
+  });
+
+  it("an excluded folder does NOT mask timestamps: a bump there is a real change and is pushed", async () => {
     const srv = fakeServer(); const io = fakeIo();
     const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nbody\n";
     await serverPutBytes(srv.api, "Gen/n.md", enc(base));
@@ -63,8 +99,8 @@ describe("embedded timestamp management", () => {
     await reconcileAll(d);
     const v = srv.files.get("Gen/n.md")!.version;
     io.m.set("Gen/n.md", enc(base.replace("2026-01-01", "2026-05-05")));
-    await reconcileAll(d);
-    expect(srv.files.get("Gen/n.md")!.version).toBeGreaterThan(v); // managed OFF -> pushed
+    await reconcilePath(d, "Gen/n.md");
+    expect(srv.files.get("Gen/n.md")!.version).toBeGreaterThan(v); // masking off here → pushed
   });
 
   it("a genuine body conflict still produces a conflict copy (no regression)", async () => {
@@ -75,54 +111,18 @@ describe("embedded timestamp management", () => {
     expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(true);
   });
 
-  it("a new managed note is seeded with created + updated before push", async () => {
+  it("SelfSync never writes a note: a plain note is pushed byte-for-byte unchanged (no stamping, no frontmatter injected)", async () => {
     const srv = fakeServer(); const io = fakeIo();
     io.m.set("n.md", enc("plain body\n"));
-    await reconcileAll(mdeps(srv, io, { now: () => Date.UTC(2026, 0, 1) }));
-    expect(dec(io.m.get("n.md")!)).toContain("created:");
-    expect(dec(io.m.get("n.md")!)).toContain("updated:");
+    await reconcileAll(mdeps(srv, io));
+    expect(dec(io.m.get("n.md")!)).toBe("plain body\n");
   });
 
-  it("stamping does not re-trigger a push on the next reconcile", async () => {
-    const srv = fakeServer(); const io = fakeIo();
-    io.m.set("n.md", enc("---\ntitle: T\n---\nbody\n"));
-    const d = mdeps(srv, io);
-    await reconcileAll(d);
-    const v = srv.files.get("n.md")!.version;
-    await reconcileAll(d);
-    expect(srv.files.get("n.md")!.version).toBe(v);
-  });
-
-  it("does NOT stamp a non-markdown file — never injects frontmatter into a .canvas/.json (F1)", async () => {
+  it("does NOT touch a non-markdown file (.canvas stays byte-identical)", async () => {
     const srv = fakeServer(); const io = fakeIo();
     io.m.set("board.canvas", enc('{"nodes":[]}'));
     await reconcileAll(mdeps(srv, io));
-    expect(dec(io.m.get("board.canvas")!)).toBe('{"nodes":[]}'); // unchanged — no YAML block prepended
-  });
-
-  it("backfillPush conforms a note and it STICKS through a later reconcile — no revert, no re-stamp (1.8.0)", async () => {
-    const srv = fakeServer(); const io = fakeIo();
-    const original = "---\ntitle: T\n---\nbody\n"; // no managed keys yet
-    io.m.set("n.md", enc(original));
-    const d = mdeps(srv, io, { now: () => Date.UTC(2026, 0, 1) });
-    const conformed = enc(conformTimestamps(original, ["created", "updated"], Date.UTC(2020, 0, 1), Date.UTC(2021, 0, 1), Date.UTC(2026, 0, 1), 0));
-    await backfillPush(d, "n.md", conformed);
-    expect(noteCompliant(dec(io.m.get("n.md")!), ["created", "updated"])).toBe(true);
-    const v = srv.files.get("n.md")!.version;
-    await reconcileAll(d); // local==base==remote(conformed) → in-sync; MUST NOT revert or re-stamp
-    expect(noteCompliant(dec(io.m.get("n.md")!), ["created", "updated"])).toBe(true);
-    expect(dec(io.m.get("n.md")!)).toContain("created: 2020-01-01T00:00:00+00:00"); // real history preserved, not bumped to now
-    expect(srv.files.get("n.md")!.version).toBe(v); // no spurious re-push
-    expect([...io.m.keys()].some((p) => isConflictCopy(p))).toBe(false);
-  });
-
-  it("seeds created from the file's real ctime on the event path, not now (F3)", async () => {
-    const srv = fakeServer(); const io = fakeIo();
-    const CT = Date.UTC(2020, 0, 1);
-    io.m.set("n.md", enc("plain body\n"));
-    const d = deps(srv.api, io, { managedKeys: ["created", "updated"], excludedFolders: [], tzOffsetMin: 0, now: () => Date.UTC(2026, 0, 1), statOf: () => ({ size: 11, mtime: CT, ctime: CT }) });
-    await reconcilePath(d, "n.md", 11);
-    expect(dec(io.m.get("n.md")!)).toContain("created: 2020-01-01T00:00:00+00:00"); // from ctime, not the 2026 "now"
+    expect(dec(io.m.get("board.canvas")!)).toBe('{"nodes":[]}');
   });
 });
 

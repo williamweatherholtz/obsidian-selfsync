@@ -1,9 +1,8 @@
-import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, TFolder, DataWriteOptions, normalizePath, setIcon } from "obsidian";
+import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
-import { BaseStore, deriveNoteConflicts, conflictCopyName, isConflictCopy } from "./base";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, backfillPush } from "./reconcile";
-import { timestampPolicySignature, planBackfillItem } from "./timestampBackfill";
+import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -20,12 +19,7 @@ import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, Conf
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { isExcluded } from "./excludedFolders";
-import { parseIso, getManagedValue, noteCompliant } from "./frontmatter";
 
-// Backfill marker sentinel: a per-(device,vault) convergence pass records the last-processed path as its
-// resume cursor, and this value once it has processed every in-scope note under the current policy.
-const BACKFILL_DONE = "\u0000done";
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
 // event and don't advance the server version, so only a periodic full reconcile catches them (the
@@ -206,7 +200,7 @@ class ObsidianVaultIo implements VaultIo {
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     // Embedded-timestamp: drive Obsidian's stored mtime/ctime (Dataview's file.mtime/ctime, and the real
     // FS mtime on desktop) from a managed note's embedded updated/created. Undefined for anything else.
-    await this.plugin.app.vault.adapter.writeBinary(p, buf, this.plugin.fsTimeWriteOptions(path, bytes));
+    await this.plugin.app.vault.adapter.writeBinary(p, buf);
     // R23-DI: fsync the note (and its parent dir) BEFORE returning so it is durable before the caller
     // records base + persists data.json. Round 8 gave the ≥8 MiB STREAMED path this guarantee; the
     // buffered path (all small notes / config / conflict copies on desktop) lacked it, leaving the same
@@ -376,7 +370,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       reconcilePath: (p, size) => this.doReconcilePath(p, size),
       rews: () => this.doRews(),
       teardown: () => this.doTeardown(),
-      onPhase: (p) => { if (p !== "connecting" && p !== "syncing") this.resuming = false; this.renderLight(p); if (p === "idle") this.maybeBackfill(); }, // resume window ends once state settles; a settled sync is when the backfill runs/resumes (self-skips when converged)
+      onPhase: (p) => { if (p !== "connecting" && p !== "syncing") this.resuming = false; this.renderLight(p); }, // resume window ends once state settles
       onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
       scheduleReconnect: () => this.scheduleReconnect(),
     });
@@ -1131,10 +1125,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     const mb = this.settings.maxSyncMB;
     return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_SETTINGS.maxSyncMB) * 1024 * 1024;
   }
-  // The managed timestamp keys ([created, updated]) when the feature is on, else [] → the whole
-  // embedded-timestamp path is inert (isManaged() false everywhere).
-  managedKeys(): string[] {
-    return this.settings.embeddedTimestamps ? [this.settings.timestampCreatedKey, this.settings.timestampUpdatedKey] : [];
+  // The timestamp-ignore key patterns when the feature is on, else [] → no frontmatter masking (EOL/BOM
+  // normalization in content identity stays on regardless). SelfSync never WRITES these keys.
+  ignorePatterns(): string[] {
+    return this.settings.ignoreTimestampChanges ? this.settings.ignoredTimestampKeys : [];
   }
   // All vault folder paths, for the excluded-folders autocomplete.
   getAllFolders(): string[] {
@@ -1146,141 +1140,17 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings.excludedFolders = [...new Set(list)].sort();
     await this.saveSettings();
     this.settingsRefresh?.();
-    if (this.settings.embeddedTimestamps) void this.runTimestampBackfill(); // policy changed → re-converge (new signature re-walks)
-  }
-  // DataWriteOptions driving Obsidian's stored mtime/ctime from a managed note's embedded updated/created
-  // (what Dataview reads; on desktop the real FS mtime too). Undefined ⇒ leave timestamps untouched.
-  fsTimeWriteOptions(path: string, bytes: Uint8Array): DataWriteOptions | undefined {
-    if (!this.settings.driveFsTimes || !this.settings.embeddedTimestamps) return undefined;
-    if (Platform.isMobile) return undefined; // spec §7: mobile FS-time driving is unreliable — skip (F10)
-    if (isExcluded(path, this.settings.excludedFolders)) return undefined;
-    if (!path.endsWith(".md")) return undefined;
-    let text: string;
-    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return undefined; }
-    const up = parseIso(getManagedValue(text, this.settings.timestampUpdatedKey) ?? "");
-    const cr = parseIso(getManagedValue(text, this.settings.timestampCreatedKey) ?? "");
-    if (up === undefined && cr === undefined) return undefined;
-    const o: DataWriteOptions = {};
-    if (up !== undefined) o.mtime = up;
-    if (cr !== undefined) o.ctime = cr;
-    return o;
-  }
-  // ---- embedded-timestamp backfill (1.8.0) ----
-  private backfillRunning = false;
-
-  // Obsidian's configured template folder (default "Templates"): never inject frontmatter into a template,
-  // which would propagate a stray managed block into every note instantiated from it (critique Finding 9).
-  private templatesFolder(): string {
-    const t = (this.app as unknown as { internalPlugins?: { getPluginById?: (id: string) => { instance?: { options?: { folder?: string } } } } })
-      .internalPlugins?.getPluginById?.("templates")?.instance?.options?.folder;
-    return typeof t === "string" && t ? t : "Templates";
-  }
-
-  private inBackfillScope(path: string): boolean {
-    return path.endsWith(".md")
-      && !isConflictCopy(path)
-      && !isExcluded(path, this.settings.excludedFolders)
-      && !isExcluded(path, [this.templatesFolder()])
-      && !path.startsWith(this.selfFolderId());
-  }
-
-  private noteStat(path: string): { ctime?: number; mtime?: number } | undefined {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    return f instanceof TFile ? { ctime: f.stat.ctime, mtime: f.stat.mtime } : undefined;
-  }
-
-  // Count in-scope notes not yet compliant (drives the enable confirm's honest N-of-M). Reads files — used
-  // once, at the enable prompt.
-  async countNonCompliantTimestamps(): Promise<{ total: number; pending: number }> {
-    const keys = this.managedKeys();
-    if (!keys.length) return { total: 0, pending: 0 };
-    const paths = this.app.vault.getFiles().map((f) => f.path).filter((p) => this.inBackfillScope(p));
-    let pending = 0;
-    for (const p of paths) {
-      try { if (!noteCompliant(new TextDecoder("utf-8", { fatal: true }).decode(await this.io.read(p)), keys)) pending++; } catch { /* binary → skip */ }
-    }
-    return { total: paths.length, pending };
-  }
-
-  // Heuristic restore/clone/cloud-resync detector: if most sampled notes share one ctime within a few
-  // seconds, the filesystem dates were reset — so seeding `created`/`updated` from them would fabricate a
-  // uniform history. The enable confirm discloses this so the user chooses with eyes open (critique F3).
-  detectRestoreSignature(): boolean {
-    const files = this.app.vault.getFiles().filter((f) => f.path.endsWith(".md"));
-    if (files.length < 20) return false;
-    const sample = files.slice(0, 200);
-    const buckets = new Map<number, number>();
-    for (const f of sample) { const b = Math.floor(f.stat.ctime / 5000); buckets.set(b, (buckets.get(b) ?? 0) + 1); }
-    return Math.max(...buckets.values()) / sample.length > 0.6;
-  }
-
-  private maybeBackfill(): void {
-    if (this.settings.embeddedTimestamps && !this.backfillRunning) void this.runTimestampBackfill();
-  }
-
-  // The convergence pass: bring every in-scope note to compliance (seed/normalize managed timestamps),
-  // paced + resumable via a per-vault cursor, reversible via a conflict-copy for any not-cleanly-conformable
-  // note. Self-skips when already converged under the current policy. Pushes via backfillPush so a conform
-  // (masked-key-only change) is not reverted or re-stamped by reconcile.
-  async runTimestampBackfill(): Promise<void> {
-    if (!this.settings.embeddedTimestamps || this.backfillRunning || !this.api || this.settings.vaultReadOnly) return;
-    const keys = this.managedKeys();
-    if (!keys.length) return;
-    const policy = timestampPolicySignature(keys, this.settings.excludedFolders);
-    const key = this.historyFloorKey();
-    const markers = (this.settings.timestampBackfill ??= {});
-    const m = markers[key];
-    if (m && m.policy === policy && m.cursor === BACKFILL_DONE) return; // converged under the current policy
-    let cursor = m && m.policy === policy ? m.cursor : ""; // resume, or restart on a policy change
-    this.backfillRunning = true;
-    try {
-      const tz = -new Date().getTimezoneOffset();
-      const now = Date.now();
-      const d = this.deps();
-      const paths = this.app.vault.getFiles().map((f) => f.path).filter((p) => this.inBackfillScope(p)).sort();
-      let processed = 0;
-      for (const path of paths) {
-        if (this.unloading) break;
-        if (path <= cursor) continue; // resume: skip the already-processed prefix
-        try {
-          const stat = this.noteStat(path);
-          const bytes = await d.io.read(path);
-          let text: string;
-          try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { cursor = path; continue; }
-          const plan = planBackfillItem(text, keys, stat?.ctime, stat?.mtime, now, tz);
-          if (plan.conformed !== null) {
-            if (plan.needsCopy) {
-              const copy = conflictCopyName(path, this.deviceLabel(), new Date());
-              await d.io.write(copy, bytes); // preserve the original (reversible); it syncs like any note
-              this.log(`timestamp backfill: '${path}' wasn't cleanly conformable — kept the original as '${copy}'`, true);
-            }
-            await backfillPush(d, path, new TextEncoder().encode(plan.conformed));
-          }
-        } catch (e) { this.log(`timestamp backfill skipped '${path}': ${e instanceof Error ? e.message : String(e)}`); }
-        cursor = path;
-        markers[key] = { policy, cursor };
-        if (++processed % 25 === 0) { await this.saveSettings(); this.statusListener?.(); }
-      }
-      markers[key] = { policy, cursor: BACKFILL_DONE };
-      await this.saveSettings();
-      this.log(`timestamp backfill complete — ${paths.length} note(s) in scope`, true);
-      this.statusListener?.();
-    } finally {
-      this.backfillRunning = false;
-    }
   }
 
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
       device: this.deviceLabel(),
-      managedKeys: this.managedKeys(),
+      ignorePatterns: this.ignorePatterns(),
       excludedFolders: this.settings.excludedFolders,
-      tzOffsetMin: -new Date().getTimezoneOffset(),
-      now: () => Date.now(),
-      // Live stat for a single path (event path first-seed): the note's real ctime/mtime so `created`
-      // seeds from OS metadata, not "now" (F3). Only notes (getAbstractFileByPath) — matches isManaged's .md gate.
-      statOf: (p) => { const f = this.app.vault.getAbstractFileByPath(p); return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime, ctime: f.stat.ctime } : undefined; },
+      // Live (size, mtime) for a single path — the scan-skip hint the cosmetic override stamps so a
+      // timestamp/EOL-only note isn't re-hashed every pass. Notes only (getAbstractFileByPath).
+      statOf: (p) => { const f = this.app.vault.getAbstractFileByPath(p); return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime } : undefined; },
       readOnly: this.settings.vaultReadOnly,
       maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
