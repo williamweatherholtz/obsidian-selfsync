@@ -894,20 +894,40 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   async shareVault(vault: string, grantee: string, perm: SharePerm): Promise<void> {
     await this.withAuth((t) => HttpTransport.shareCreate(this.settings.serverUrl, t, vault, grantee, perm));
+    await this.refreshVaultPrivacy(); // sharing may make the vault non-private → re-gate hot-load
   }
   async unshareVault(vault: string, grantee: string): Promise<void> {
     await this.withAuth((t) => HttpTransport.shareDelete(this.settings.serverUrl, t, vault, grantee));
+    await this.refreshVaultPrivacy();
   }
   // D0023 capability share-links. Create returns the full selfsync-share:// link to hand out (Copy).
   async createShareLink(vault: string, perm: SharePerm, label = "", ttlSecs?: number): Promise<string> {
     const linkToken = await this.withAuth((t) => HttpTransport.createShareLink(this.settings.serverUrl, t, vault, perm, label, ttlSecs));
+    await this.refreshVaultPrivacy();
     return encodeShareLink({ server: this.settings.serverUrl, token: linkToken });
   }
   listShareLinks(): Promise<ShareLinkInfo[]> {
     return this.withAuth((t) => HttpTransport.listShareLinks(this.settings.serverUrl, t));
   }
-  revokeShareLink(id: string): Promise<void> {
-    return this.withAuth((t) => HttpTransport.revokeShareLink(this.settings.serverUrl, t, id));
+  async revokeShareLink(id: string): Promise<void> {
+    await this.withAuth((t) => HttpTransport.revokeShareLink(this.settings.serverUrl, t, id));
+    await this.refreshVaultPrivacy();
+  }
+  // SECURITY GATE for hot-loading synced plugins: a plugin's code arriving via sync is only safe to
+  // auto-execute (loadManifests + enablePlugin, no restart) when NO ONE ELSE can write to this vault — i.e.
+  // it is OUR OWN vault (not shared TO us) AND has no readWrite grant or link to anyone. Otherwise a peer /
+  // shared-vault owner could push malicious main.js that runs on this device (the RCE the restart barrier
+  // prevents). Fail-safe: any doubt / error ⇒ NOT private ⇒ keep the restart gate. Refreshed on connect +
+  // whenever a share changes.
+  private vaultIsPrivate = false;
+  async refreshVaultPrivacy(): Promise<void> {
+    if (this.settings.vaultOwner) { this.vaultIsPrivate = false; return; } // a vault shared TO us — never hot-load
+    try {
+      const mine = (await this.myVaultShares()).find((v) => v.vault === this.settings.vaultId);
+      const hasRwGrant = !!mine?.grants.some((g) => g.perm === "readWrite");
+      const hasRwLink = (await this.listShareLinks()).some((l) => l.vault === this.settings.vaultId && l.perm === "readWrite");
+      this.vaultIsPrivate = !hasRwGrant && !hasRwLink;
+    } catch { this.vaultIsPrivate = false; } // fail SAFE: on any doubt, keep the restart gate
   }
   // Redeem a pasted share-link: it must be for the server this device is configured against (the token
   // is server-specific; cross-server redemption needs an account there first). Binds a grant to this
@@ -990,29 +1010,54 @@ export default class NewLiveSyncPlugin extends Plugin {
     // SECURITY (Round-6 SEC): config that arrives via SYNC can carry UNTRUSTED, executable content.
     // A share peer — OR the owner of a vault shared with you — can commit community-plugin CODE
     // (.obsidian/plugins/<id>/main.js) or theme/snippet CSS (exfil/phishing via Obsidian's un-CSP'd
-    // renderer). We therefore NEVER auto-execute or auto-apply sync-driven config, for ANY vault.
-    // The previous gate only covered NON-OWNED vaults (`vaultOwner` set) and auto-reloaded plugin
-    // code + auto-applied CSS for owned vaults — but a vault you OWN and share readWrite also holds
-    // a peer's untrusted content (the owner-direction RCE). And CSS was never gated at all. The
-    // safe, uniform rule: surface a reload notice; the user applies changes explicitly. Non-code,
-    // non-CSS config (e.g. a plugin's data.json) is already written to disk and read on next load.
+    // renderer). The base rule stays: surface a reload notice; the user applies changes explicitly.
+    // NARROW EXCEPTION (owner-accepted, scoped): on a PROVABLY-PRIVATE vault — OUR OWN vault with NO
+    // readWrite grant/link to anyone (refreshVaultPrivacy, fail-safe) — sync-delivered plugin code is OUR
+    // OWN, so a newly-arrived plugin is hot-loaded live (applyPluginCodeChange) to remove the restart
+    // friction. Any shared / shareable vault (a peer could push code) keeps the restart trust-barrier, as
+    // does CSS (still never auto-applied) and an update to an already-running plugin. Non-code, non-CSS
+    // config (e.g. a plugin's data.json) is already on disk and read on next load.
     const touchedCss = paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"));
     const pluginIds = new Set<string>();
     for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.selfFolderId()) pluginIds.add(id); }
     const touchedCore = paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p));
 
     if (pluginIds.size > 0) {
-      // R14 sec#1: NAME the plugins whose executable code changed via sync, so the user makes an
-      // INFORMED trust decision instead of dismissing a generic notice. On a shared vault a peer (or
-      // the owner of a vault shared to you) can push code for a plugin you already trust; seeing
-      // exactly which plugin's code changed — and that it's executable and unapplied until reload —
-      // is the barrier before you reload it into Obsidian's un-CSP'd renderer.
-      const names = [...pluginIds].sort().join(", ");
-      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT active until you fully close and reopen Obsidian, and you should do so ONLY if you trust the source of these changes.`, 15000);
+      await this.applyPluginCodeChange(pluginIds);
     } else if (touchedCss || touchedCore) {
       new Notice("SelfSync: some synced settings (appearance / core) will apply after you fully close and reopen Obsidian.");
     } else {
       this.log(`applied synced config (${paths.length} file(s))`);
+    }
+  }
+
+  // A synced change to community-plugin CODE. On a PROVABLY-PRIVATE vault (own + unshared — refreshVaultPrivacy)
+  // it is our OWN code, so a NEWLY-ARRIVED plugin (not yet loaded this session) is hot-loaded LIVE
+  // (loadManifests + enablePlugin) — no restart. Everything the gate does NOT cover falls back to the explicit
+  // restart notice + trust warning (the R14 sec#1 barrier): a SHARED vault (untrusted code), an UPDATE to an
+  // already-RUNNING plugin (Obsidian re-executes plugin code only on a reload), a hot-load FAILURE, or the
+  // internal API being absent. Best-effort + fail-safe — a plugin that refuses to hot-load never breaks sync.
+  private async applyPluginCodeChange(ids: Set<string>): Promise<void> {
+    const pm = (this.app as unknown as { plugins?: { plugins?: Record<string, unknown>; loadManifests?: () => Promise<void>; enablePlugin?: (id: string) => Promise<unknown> } }).plugins;
+    const isLoaded = (id: string) => !!pm?.plugins?.[id];
+    const hotLoaded: string[] = [];
+    const needRestart: string[] = [...ids].filter(isLoaded); // an update to a RUNNING plugin → reload needed to re-execute
+    const newlyArrived = [...ids].filter((id) => !isLoaded(id));
+    if (this.vaultIsPrivate && newlyArrived.length && pm?.loadManifests && pm?.enablePlugin) {
+      try {
+        await pm.loadManifests(); // register the newly-arrived manifest(s) so enablePlugin can find them
+        for (const id of newlyArrived) {
+          try { await pm.enablePlugin(id); hotLoaded.push(id); }
+          catch (e) { this.log(`hot-load of '${id}' failed (${e instanceof Error ? e.message : e}) — restart to activate`); needRestart.push(id); }
+        }
+      } catch { needRestart.push(...newlyArrived); }
+    } else {
+      needRestart.push(...newlyArrived); // gated (shared/untrusted vault) or no API → the restart trust-barrier stays
+    }
+    if (hotLoaded.length) { new Notice(`SelfSync: activated ${hotLoaded.length} synced plugin(s) — no restart needed.`); this.settingsRefresh?.(); }
+    if (needRestart.length) {
+      const names = [...new Set(needRestart)].sort().join(", ");
+      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT active until you fully close and reopen Obsidian, and you should do so ONLY if you trust the source of these changes.`, 15000);
     }
   }
 
@@ -1373,6 +1418,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
       this.settings.baseVaultKey = this.historyFloorKey(); // stamp the vault this base now belongs to (D0047 guard)
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
+      void this.refreshVaultPrivacy(); // re-evaluate the hot-load security gate (own + unshared?) each connect
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
       // The connection FSM now owns the failure TAXONOMY + its user-facing label: the engine classifies

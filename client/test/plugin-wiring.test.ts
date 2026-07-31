@@ -377,6 +377,49 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  it("refreshVaultPrivacy: own+unshared → private; a readWrite grant/link or a shared-TO-us vault → NOT private (fail-safe)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }];
+    anyp.listShareLinks = async () => [];
+    await p.refreshVaultPrivacy();
+    expect(anyp.vaultIsPrivate).toBe(true);                          // own + no shares → private → hot-load allowed
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }];
+    await p.refreshVaultPrivacy();
+    expect(anyp.vaultIsPrivate).toBe(false);                         // a readWrite grantee CAN push code → NOT private
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }];
+    anyp.listShareLinks = async () => [{ id: "x", vault: p.settings.vaultId, perm: "readWrite", label: "", expires_at: null, redeemed_by: null }];
+    await p.refreshVaultPrivacy();
+    expect(anyp.vaultIsPrivate).toBe(false);                         // a readWrite share LINK too
+    anyp.listShareLinks = async () => [];
+    p.settings.vaultOwner = "alice";                                 // a vault shared TO us
+    await p.refreshVaultPrivacy();
+    expect(anyp.vaultIsPrivate).toBe(false);
+    p.settings.vaultOwner = undefined;
+    anyp.myVaultShares = async () => { throw new Error("net"); };    // any error → FAIL-SAFE
+    await p.refreshVaultPrivacy();
+    expect(anyp.vaultIsPrivate).toBe(false);
+    p.onunload();
+  });
+
+  it("hot-load: a NEWLY-synced plugin on a private vault activates live; a running-update or a shared vault keeps the restart barrier", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const enabled: string[] = [];
+    (p.app as any).plugins = { plugins: { alreadyRunning: {} }, loadManifests: async () => {}, enablePlugin: async (id: string) => { enabled.push(id); } };
+    anyp.vaultIsPrivate = true;
+    await anyp.applyPluginCodeChange(new Set(["newplugin"]));
+    expect(enabled).toContain("newplugin");                          // private + newly-arrived → hot-loaded, no restart
+    enabled.length = 0;
+    await anyp.applyPluginCodeChange(new Set(["alreadyRunning"]));
+    expect(enabled).not.toContain("alreadyRunning");                 // an update to a RUNNING plugin → restart, not hot-reload
+    enabled.length = 0;
+    anyp.vaultIsPrivate = false;                                     // shared / untrusted vault
+    await anyp.applyPluginCodeChange(new Set(["fromapeer"]));
+    expect(enabled).not.toContain("fromapeer");                     // gate closed → NEVER auto-execute (the RCE barrier)
+    p.onunload();
+  });
+
   it("forkVault creates the new vault then switches to it in UPLOAD mode (owner cleared, editable)", async () => {
     // Loopback serverUrl so the static HttpTransport.createVault passes the cleartext-remote guard.
     const { p } = await bootPlugin(true, { settings: { serverUrl: "http://127.0.0.1:8789" } });
