@@ -627,6 +627,25 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.serverPluginIds = next;
     this.settingsRefresh?.(); // a newly-discovered server plugin should appear in the list
   }
+  // Best-effort DISPLAY NAME for a synced-but-not-yet-loaded plugin (issuePluginSyncFolderIdNotName):
+  // Obsidian's app.plugins.manifests only has INSTALLED (loaded-at-startup) plugins, so an ADOPTED plugin
+  // whose files synced to disk but hasn't been loaded yet showed its folder id. Its manifest.json IS on
+  // disk (synced), so read the real "name" from there — cached; returns undefined until the async read
+  // resolves (then re-renders the settings). A not-on-disk id (not adopted) keeps the folder id, which is
+  // honest there. `null` = looked up, no name (don't re-read).
+  private pluginNameCache = new Map<string, string | null>();
+  getPluginDisplayName(id: string): string | undefined {
+    const cached = this.pluginNameCache.get(id);
+    if (cached !== undefined) return cached ?? undefined;
+    this.pluginNameCache.set(id, null); // mark looked-up so we don't stack reads on every render
+    void (async () => {
+      try {
+        const name = (JSON.parse(await this.app.vault.adapter.read(`.obsidian/plugins/${id}/manifest.json`)) as { name?: unknown }).name;
+        if (typeof name === "string" && name) { this.pluginNameCache.set(id, name); this.settingsRefresh?.(); }
+      } catch { /* not on disk (not adopted / not yet downloaded) → keep the folder id */ }
+    })();
+    return undefined;
+  }
   // Adopt EVERY community plugin the server holds (the fresh-vault bootstrap) — download-only for the
   // ones not installed here (they pull + install). Community surface must be on for these to sync.
   async installAllServerPlugins(): Promise<void> {

@@ -452,7 +452,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // installs it. (Previously the list was installed-plugins-only, leaving a new vault with nothing to
     // pick.) Sorted by display name (manifest name if installed, else the id).
     const ro = !!this.plugin.settings.vaultReadOnly;
-    const byName = (a: string, b: string) => (manifests[a]?.name || a).localeCompare(manifests[b]?.name || b);
+    const displayName = (id: string) => manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id;
+    const byName = (a: string, b: string) => displayName(a).localeCompare(displayName(b));
     const allIds = [...new Set([...installed, ...onServer])];
     // PARITY (issuePluginSyncStaleServerState): the main list is only what THIS device actually syncs —
     // installed here OR explicitly adopted (allowlisted). A plugin merely present on the server (from another
@@ -514,7 +515,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
       const here = installed.has(id);
-      const st = new Setting(body).setName(manifests[id]?.name || id);
+      const st = new Setting(body).setName(manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id);
       if (!here && onServer.has(id)) st.setDesc("from the sync — will be installed here");
       else if (here && !onServer.has(id)) st.setDesc("on this device only — will be uploaded");
       st.addToggle((tg) => tg.setValue(on).onChange(async (v) => { await this.plugin.setPluginSync(id, v); this.display(); }));
