@@ -355,6 +355,28 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  it("removePluginFromServer purges ONLY that plugin's server files + drops it from the allowlist/view (explicit, bounded)", async () => {
+    const { p, api } = await bootPlugin();
+    const meta = (path: string) => ({ path, hash: path, size: 0, version: 1, chunks: [] as string[] });
+    api.__setChanges({ version: 1, upserts: [
+      meta(".obsidian/plugins/update-time-on-edit/main.js"),
+      meta(".obsidian/plugins/update-time-on-edit/manifest.json"),
+      meta(".obsidian/plugins/keepme/main.js"),
+    ], deletes: [] });
+    await p.reconnect(); await flush();                 // a FULL reconcile → onRemotePlugins populates the server-plugin view
+    expect(p.getServerPluginIds()).toContain("update-time-on-edit");
+    p.settings.configSync.pluginAllow = ["update-time-on-edit", "keepme"];
+    const n = await p.removePluginFromServer("update-time-on-edit");
+    expect(n).toBe(2);                                  // both of that plugin's files deleted
+    const deleted = (api.__calls.deleteFile ?? []).map((a: any[]) => a[0]);
+    expect(deleted).toContain(".obsidian/plugins/update-time-on-edit/main.js");
+    expect(deleted).toContain(".obsidian/plugins/update-time-on-edit/manifest.json");
+    expect(deleted).not.toContain(".obsidian/plugins/keepme/main.js"); // a DIFFERENT plugin is untouched (bounded to the one plugin)
+    expect(p.settings.configSync.pluginAllow).toEqual(["keepme"]);     // dropped from THIS device's allowlist
+    expect(p.getServerPluginIds()).not.toContain("update-time-on-edit"); // gone from the synced-plugins view
+    p.onunload();
+  });
+
   it("forkVault creates the new vault then switches to it in UPLOAD mode (owner cleared, editable)", async () => {
     // Loopback serverUrl so the static HttpTransport.createVault passes the cleartext-remote guard.
     const { p } = await bootPlugin(true, { settings: { serverUrl: "http://127.0.0.1:8789" } });

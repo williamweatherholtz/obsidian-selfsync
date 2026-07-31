@@ -651,6 +651,30 @@ export default class NewLiveSyncPlugin extends Plugin {
   async installAllServerPlugins(): Promise<void> {
     for (const id of this.serverPluginIds) await this.setPluginSync(id, true, "download");
   }
+  // Explicit PURGE (issuePluginSyncStaleServerState): a DELIBERATE, user-initiated removal of ONE plugin's
+  // files from the server, so a plugin you stopped using no longer lingers in the sync. This is NOT the
+  // passive-disable path (the grow-only enabled-list is deliberately untouched, so this can never cascade
+  // into 'all my plugins vanished'); it's a bounded, one-plugin delete-remote the user asks for. Also drops
+  // the id from THIS device's allowlist (so it stops re-pushing) + the server-plugins view. Returns the
+  // count deleted. Note: if ANOTHER device still actively syncs the plugin, it can re-push it (honest — that
+  // device wants it); a fleet-wide tombstone was deliberately NOT chosen (would change the catastrophe-proof
+  // merge). Local installed copy is untouched.
+  async removePluginFromServer(id: string): Promise<number> {
+    if (!this.api) { new Notice("SelfSync: connect first, then remove a plugin from the server"); return 0; }
+    const api = this.api;
+    const manifest = await api.changes(0);
+    const prefix = `.obsidian/plugins/${id}/`;
+    const paths = manifest.upserts.map((f) => f.path).filter((p) => p.startsWith(prefix));
+    for (const p of paths) { await api.deleteFile(p); this.base.delete(p); } // explicit gesture → not subject to the passive bulk-delete guard
+    const cs = this.settings.configSync;
+    cs.pluginAllow = cs.pluginAllow.filter((x) => x !== id); // stop THIS device re-pushing it
+    if (cs.pluginDir) delete cs.pluginDir[id];
+    this.serverPluginIds.delete(id); // drop from the synced-plugins view immediately
+    void this.persist(); // the base changed (entries dropped)
+    await this.saveSettings();
+    this.settingsRefresh?.();
+    return paths.length;
+  }
 
   private recordConfigConflict(path: string, reason: string): void {
     // First-contact divergence for a surface the user just enabled with an explicit direction →
