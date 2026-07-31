@@ -2,6 +2,7 @@ import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
 import { ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
 import { SyncApi } from "./sync";
 import { isInsecureRemote } from "./connstr";
+import { ConnError, Endpoint } from "./connstate";
 
 // A layered connection diagnosis: which link in the chain is broken, so the user gets an actionable
 // reason instead of a silent "offline". Addresses the #1 sync-support complaint — failures that don't
@@ -57,6 +58,27 @@ function tryJson(r: RequestUrlResponse): unknown {
   try { return r.json; } catch { return undefined; }
 }
 
+// Parse the 429 Retry-After header (seconds). Obsidian lowercases response header keys, but accept both.
+function retryAfterSecs(r: RequestUrlResponse): number | undefined {
+  const h = (r.headers ?? {}) as Record<string, string>;
+  const v = Number(h["retry-after"] ?? h["Retry-After"]);
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+// Mint a TYPED transport error at the throw site carrying the classifier's inputs (status / retry-after /
+// which endpoint / was-it-a-login). The connection FSM reads these fields — never the message string,
+// which the server body overwrites (a 401 arrives as "unauthorized", not "HTTP 401"). The message is still
+// human-readable (errText) for logs.
+function httpFail(r: RequestUrlResponse, tag: { endpoint: Endpoint; wasLogin?: boolean }, label: string): ConnError {
+  return new ConnError(errText(r, `${label}: HTTP ${r.status}`), {
+    status: r.status,
+    retryAfterSecs: r.status === 429 ? retryAfterSecs(r) : undefined,
+    wasLogin: !!tag.wasLogin,
+    endpoint: tag.endpoint,
+    bodyHint: (r.text ?? "").trim().slice(0, 300) || undefined,
+  });
+}
+
 // Bearer auth header — was spelled out ~12x across the static account calls.
 function bearer(token: string): Record<string, string> { return { authorization: `Bearer ${token}` }; }
 
@@ -70,16 +92,16 @@ function normBase(url: string): string { return url.replace(/\/+$/, ""); }
 // body through tryJson (the .json getter throws on non-JSON). Endpoints with bespoke status semantics —
 // fileMeta (404→null), commit (409/404), changePassword (401), deleteFile (404), the binary chunk ops —
 // keep their own explicit handling and deliberately do NOT route through here.
-async function apiJson<T>(params: RequestUrlParam, label: string): Promise<T> {
+async function apiJson<T>(params: RequestUrlParam, label: string, tag: { endpoint: Endpoint; wasLogin?: boolean } = { endpoint: Endpoint.Other }): Promise<T> {
   const r = await httpReq({ ...params, throw: false });
-  if (r.status !== 200) throw new Error(errText(r, `${label}: HTTP ${r.status}`));
+  if (r.status !== 200) throw httpFail(r, tag, label);
   return tryJson(r) as T;
 }
 
 // apiJson's contract for endpoints that return no body (just a 200-or-throw).
-async function apiVoid(params: RequestUrlParam, label: string): Promise<void> {
+async function apiVoid(params: RequestUrlParam, label: string, tag: { endpoint: Endpoint; wasLogin?: boolean } = { endpoint: Endpoint.Other }): Promise<void> {
   const r = await httpReq({ ...params, throw: false });
-  if (r.status !== 200) throw new Error(errText(r, `${label}: HTTP ${r.status}`));
+  if (r.status !== 200) throw httpFail(r, tag, label);
 }
 
 // HTTP via Obsidian's `requestUrl` (bypasses the renderer CSP that breaks fetch).
@@ -174,7 +196,7 @@ export class HttpTransport implements SyncApi {
     const j = await apiJson<{ token: string; must_change_password?: boolean }>({
       url: `${normBase(baseUrl)}/api/login`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ username, password }),
-    }, "login");
+    }, "login", { endpoint: Endpoint.Login, wasLogin: true });
     return { token: j.token, mustChange: Boolean(j.must_change_password) };
   }
 
@@ -279,7 +301,7 @@ export class HttpTransport implements SyncApi {
   // clear reason rather than a bare "HTTP 503", and never act on a degraded manifest.
   async status(): Promise<StatusResponse> {
     // validateStatus checks the shape + maps snake_case api_version → apiVersion (a malformed 200 throws there).
-    return validateStatus(await apiJson<unknown>({ url: this.v("/status"), method: "GET", headers: this.auth() }, "status"));
+    return validateStatus(await apiJson<unknown>({ url: this.v("/status"), method: "GET", headers: this.auth() }, "status", { endpoint: Endpoint.VaultStatus }));
   }
 
   async changes(since: number): Promise<ChangesResponse> {

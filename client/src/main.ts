@@ -15,6 +15,7 @@ import { Phase, light, isWsStale, effectivePhase } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
+import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -343,7 +344,13 @@ export default class NewLiveSyncPlugin extends Plugin {
   private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
   private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
-  getLastIssue(): string | undefined { return this.lastIssue; }
+  getLastIssue(): string | undefined {
+    // A blocked/lockedOut link carries the SPECIFIC actionable reason (sign-in rejected / version mismatch
+    // / vault gone / locked out) — prefer it over the transient "retrying" fallback text.
+    const link = this.engine?.linkState();
+    if (link && (link.kind === LinkKind.Blocked || (link.kind === LinkKind.Retrying && link.recovery.kind === RecoveryKind.After))) return linkPhase(link).detail;
+    return this.lastIssue;
+  }
 
   // Injection seams (overridable in tests): the real Obsidian-backed io + HTTP transport, and the
   // two static auth calls. A test subclass returns in-memory fakes so the whole producer→engine→
@@ -372,7 +379,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       teardown: () => this.doTeardown(),
       onPhase: (p) => { if (p !== "connecting" && p !== "syncing") this.resuming = false; this.renderLight(p); }, // resume window ends once state settles
       onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
-      scheduleReconnect: () => this.scheduleReconnect(),
+      // Classify a transport failure into a typed class the engine's LinkState transitions on. Injected
+      // because it needs settings context (is a password stored → can we silently re-login vs. must the
+      // user reconfigure). Pure once the context is supplied.
+      classify: (e) => classifyConnectError(toConnErrorInfo(e, this.hasStoredPassword())),
+      scheduleRecovery: (rec) => this.scheduleRecovery(rec),
     });
     this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
 
@@ -726,8 +737,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.loginInFlight) return this.loginInFlight;
     const run = (async () => {
       if (!this.settings.password) {
-        this.openSetup();
-        throw new Error("session expired — please re-enter your password in setup");
+        this.openSetup(); // guarded against stacking by setupOpen
+        throw new ConnError("session expired — please re-enter your password in setup", { synthetic: SyntheticKind.SessionExpired, wasLogin: false, endpoint: Endpoint.Other });
       }
       const token = await this.loginRemote();
       if (!this.settings.storePassword) this.settings.password = "";
@@ -739,10 +750,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     return run.finally(() => { this.loginInFlight = undefined; });
   }
 
-  // A server auth rejection (401) — the reactive signal that replaces the proactive probe.
+  // A server auth rejection (401) — the reactive signal that replaces the proactive probe. Reads the TYPED
+  // ConnError's status (the message string carries the server body "unauthorized", NOT "HTTP 401", so the
+  // old /HTTP 401/ regex never matched a real 401 — the bug that made a rejected sign-in loop). A legacy
+  // fallback regex stays for any non-ConnError path.
   private isAuthError(e: unknown): boolean {
+    if (e instanceof ConnError) return e.info.status === 401;
     return /HTTP 401/.test(e instanceof Error ? e.message : String(e));
   }
+  // Can we silently re-login? Only if a password is actually stored on this device (token-only ⇒ no).
+  private hasStoredPassword(): boolean { return this.settings.storePassword && !!this.settings.password; }
 
   // Run an authenticated call with the current token; on a 401 (token expired/revoked), clear it,
   // re-login ONCE, and retry. This is the reactive replacement for the validation-TTL cache: the
@@ -984,7 +1001,12 @@ export default class NewLiveSyncPlugin extends Plugin {
         ? { label: "Synced (read-only)", detail: "your edits stay on this device" }
         : { label: this.realtimeConnected ? "Fully synced" : "Synced (polling)", detail: "" };
       case "connecting": return { label: "Connecting…", detail: "" };
-      case "offline":    return { label: "Offline — retrying", detail: "" };
+      // A down link, decomposed by the connection FSM. `retrying` = transient backoff; `lockedOut` / `blocked`
+      // carry their SPECIFIC reason (429 wait, or sign-in rejected / version mismatch / vault gone …) from
+      // the LinkState — no more one-size "offline".
+      case "retrying":   return { label: "Reconnecting…", detail: "" };
+      case "lockedOut":  return { label: linkPhase(this.engine.linkState()).detail, detail: "" };
+      case "blocked":    return { label: linkPhase(this.engine.linkState()).detail, detail: "" };
       case "off":        return { label: "Not connected", detail: "" };
     }
   }
@@ -1018,7 +1040,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // polling device must not sit at a permanent spinner (that state-vs-motion collision trains alarm
     // habituation). The spinner (refresh-cw) is reserved for the ACTIVE states (connecting / syncing).
     const glyph = phase === "idle" ? (this.settings.vaultReadOnly ? "lock" : "check")
-      : phase === "offline" ? "alert-triangle"
+      : (phase === "retrying" || phase === "blocked" || phase === "lockedOut") ? "alert-triangle" // a down link (any reason)
       : phase === "off" ? "circle-slash"
       : "refresh-cw"; // connecting / syncing = active
     // Repaint-dedupe: if the computed light is identical to what's already on screen, don't touch the DOM.
@@ -1199,7 +1221,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // True when the last connect failed because the vault is GONE server-side (a 404 — deleted or
   // renamed). Drives the "Re-create this vault from this device" prompt in settings (D0021).
   private vaultGone = false;
-  isVaultGone(): boolean { return this.vaultGone; }
+  isVaultGone(): boolean { const l = this.engine?.linkState(); return !!l && l.kind === LinkKind.Blocked && l.reason === FailureKind.VaultGone; }
 
   // Deliberate recovery from a deleted vault (D0021): re-create the same-named vault on the server,
   // then reconnect. The vault comes back EMPTY, so the normal reconcile keeps this device's local
@@ -1267,13 +1289,13 @@ export default class NewLiveSyncPlugin extends Plugin {
         // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
         this.log(this.lastIssue, !this.versionNoticeShown);
         this.versionNoticeShown = true;
-        throw new Error(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${server}`);
+        throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${server}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
       }
       this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
       if (health.status !== "ready") {
         this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
         this.log(this.lastIssue);
-        throw new Error("server vault not ready (reindex needed)");
+        throw new ConnError("server vault not ready (reindex needed)", { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.Other });
       }
       // If this is a vault shared TO us, re-derive our permission from the server's grant so the
       // cached vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
@@ -1296,22 +1318,17 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.spinUpWs();
       this.startPolling();
       this.backoff = 3000;
-      this.lastIssue = undefined;
-      this.vaultGone = false; // a successful connect means the vault exists again
+      this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {
-      // Keep the specific reason if one was already set (the health case); else a friendly generic.
-      // A 404 means the server is reachable but the VAULT is gone (deleted/renamed) — that's not a
-      // connectivity problem, so say so actionably instead of "retrying…" forever (Round-7 RC-3).
-      const em = String(e?.message);
-      this.vaultGone = /HTTP 404/.test(em); // the vault was deleted/renamed server-side (D0021 prompt)
-      this.lastIssue = /no password stored|session expired/.test(em)
-        ? "Session expired — open Settings and tap “Reconfigure” (under Advanced) to sign in again."
-        : this.vaultGone
-        ? "This vault no longer exists on the server — re-create it from this device (button below), or tap “Switch” to pick another. Your local files are untouched."
-        : (this.lastIssue ?? `Can't reach the server (${e?.message ?? e}). Retrying…`);
-      throw e; // → engine: onError logs it, state goes offline, backoff reconnect is scheduled
+      // The connection FSM now owns the failure TAXONOMY + its user-facing label: the engine classifies
+      // this error (engine.classify → LinkState), and getLastIssue/statusDisplay read the LinkState for a
+      // blocked/lockedOut reason (sign-in rejected / version mismatch / vault gone / locked out …). Here we
+      // set only the TRANSIENT fallback text (shown while `retrying`, when the link isn't blocked); the
+      // vaultGone/session-expired/version cases are carried on the typed error, not a parallel bool/regex.
+      this.lastIssue = `Can't reach the server (${e?.message ?? e}). Retrying…`;
+      throw e; // → engine.failWith: classify + advance LinkState + schedule the class-appropriate recovery
     }
   }
 
@@ -1397,20 +1414,37 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.spinUpWs()) throw new Error("ws could not be opened");
   }
 
-  // Arm the backoff reconnect: after a jittered delay, enqueue {connect}. Stops the poll while
-  // offline (the connect restarts it) so the two don't retry in parallel.
-  // @audit r2 2026-07-18 — FIXED (accuracy): the comment claimed "full jitter" but the formula is EQUAL
-  // jitter (base/2 + random·base/2 — a fixed floor of base/2 plus half-random). Relabeled to match; equal
-  // jitter still disperses a fleet's reconnects after a server restart while keeping a sane minimum delay.
-  // (Doc above the body → no @audit-hash.)
-  private scheduleReconnect(): void {
+  // Arm the recovery the connection FSM's CLASS dictates (D-connfsm): a transient uses the equal-jitter
+  // backoff (base/2 + random·base/2, capped 30s — disperses a fleet after a server restart); a lockedOut
+  // waits the server's Retry-After window; a serverDegraded/unknown uses a slow fixed cadence; a BLOCKED
+  // class (auth/version/vault) arms only a SLOW self-heal re-probe (~10m) — so a transient server-side
+  // cause recovers WITHOUT the user, but we NEVER tight-loop (the field bug) and NEVER dead-end. Each fires
+  // one {connect}. Stops the poll while down (the connect restarts it) so the two don't retry in parallel.
+  private scheduleRecovery(rec: Recovery): void {
     if (this.reconnectTimer !== undefined || this.unloading) return;
     if (this.pollTimer !== undefined) { window.clearInterval(this.pollTimer); this.pollTimer = undefined; }
-    const base = this.backoff;
-    const delay = Math.round(base / 2 + Math.random() * (base / 2));
-    this.log(`retrying in ${Math.round(delay / 1000)}s`);
+    let delay: number;
+    switch (rec.kind) {
+      case RecoveryKind.Backoff: {
+        const base = this.backoff;
+        delay = Math.round(base / 2 + Math.random() * (base / 2));
+        this.backoff = Math.min(base * 2, 30000);
+        this.log(`retrying in ${Math.round(delay / 1000)}s`);
+        break;
+      }
+      case RecoveryKind.After:
+        delay = Math.max(1, rec.secs) * 1000;
+        this.log(`locked out — retrying in ${Math.max(1, Math.round(rec.secs / 60))}m`);
+        break;
+      case RecoveryKind.Slow:
+        delay = Math.max(1, rec.secs) * 1000;
+        this.log(`server not ready — retrying in ${Math.round(rec.secs)}s`);
+        break;
+      case RecoveryKind.AwaitUser:
+        delay = Math.max(60, rec.reprobeSecs) * 1000; // quiet self-heal probe; the status card shows the reason + a Reconnect action
+        break;
+    }
     this.reconnectTimer = window.setTimeout(() => { this.reconnectTimer = undefined; this.engine.enqueue({ kind: "connect" }); }, delay);
-    this.backoff = Math.min(base * 2, 30000);
   }
 
   // The 4s safety-net poll is now just an event SOURCE: it enqueues {remote}; the engine serializes

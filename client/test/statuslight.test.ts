@@ -7,7 +7,7 @@ import { Phase } from "../src/syncstate";
 // the light can't flit "Fully synced" ⇄ "Syncing…". The plugin feeds `phase` events + a timer-driven
 // `settle`; this reducer owns the decision and the arm/disarm signals.
 
-const PHASES: Phase[] = ["off", "connecting", "idle", "syncing", "offline"];
+const PHASES: Phase[] = ["off", "connecting", "idle", "syncing", "retrying", "lockedOut", "blocked"];
 const step = (s: LightDisplay, e: LightEvent) => nextLightDisplay(s, e);
 const phase = (p: Phase): LightEvent => ({ kind: "phase", phase: p });
 const settle: LightEvent = { kind: "settle" };

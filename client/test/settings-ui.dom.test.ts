@@ -99,8 +99,8 @@ describe("settings tab renders and wires its controls", () => {
     expect(plugin.signOut).toHaveBeenCalled();
   });
 
-  it("when offline: the Reconnect button invokes reconnect", () => {
-    plugin = fakePlugin({ statusText: () => "offline" });
+  it("when the link is down (retrying/blocked/lockedOut): the Reconnect button invokes reconnect", () => {
+    plugin = fakePlugin({ statusText: () => "retrying" });
     const { containerEl } = renderTab(plugin);
     buttonByText(containerEl, "Reconnect").click();
     expect(plugin.reconnect).toHaveBeenCalled();

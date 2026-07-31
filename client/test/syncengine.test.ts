@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SyncEngine, EngineEffects, engineStateToPhase } from "../src/syncengine";
+import { FailureKind, LinkKind, RecoveryKind } from "../src/connstate";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 function deferred() {
@@ -33,7 +34,8 @@ function harness() {
     teardown: () => { calls.push("teardown"); },
     onPhase: (p) => phases.push(p),
     onError: (w) => errors.push(w),
-    scheduleReconnect: () => { reconnects++; },
+    classify: () => ({ kind: FailureKind.Transient }), // default: a failure is transient → schedules a backoff recovery
+    scheduleRecovery: () => { reconnects++; },
   };
   const block = (name: string) => { const d = deferred(); (blocks[name] ??= []).push(d); return d; };
   e = new SyncEngine(fx);
@@ -88,7 +90,7 @@ describe("SyncEngine — serial run-to-completion", () => {
       connect: () => { calls.push("connect"); return Promise.resolve(); },
       reconcileAll: () => { calls.push("reconcileAll"); return Promise.resolve(); }, // no beginReconcile → no work
       reconcilePath: () => Promise.resolve(), rews: () => Promise.resolve(),
-      teardown: () => {}, onPhase: (p) => phases.push(p), onError: () => {}, scheduleReconnect: () => {},
+      teardown: () => {}, onPhase: (p) => phases.push(p), onError: () => {}, classify: () => ({ kind: FailureKind.Transient }), scheduleRecovery: () => {},
     };
     const e = new SyncEngine(fx);
     e.enqueue({ kind: "connect" }); await tick();
@@ -106,13 +108,13 @@ describe("SyncEngine — serial run-to-completion", () => {
     h.e.enqueue({ kind: "connect" }); await tick();
     expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // first attempt: honest "Connecting…"
     g1.reject(new Error("down")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     // The backoff fires another connect while the server is still down.
     const g2 = h.block("connect");
     h.e.enqueue({ kind: "connect" }); await tick();
-    expect(engineStateToPhase(h.e.getState())).toBe("offline");    // stays offline — NOT "connecting"
+    expect(engineStateToPhase(h.e.getState())).toBe("retrying");    // stays offline — NOT "connecting"
     g2.reject(new Error("still down")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     expect(h.phases.filter((p) => p === "connecting").length).toBe(1); // "connecting" projected exactly once
   });
 
@@ -121,10 +123,10 @@ describe("SyncEngine — serial run-to-completion", () => {
     const g1 = h.block("connect");
     h.e.enqueue({ kind: "connect" }); await tick();
     g1.reject(new Error("down")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     const g2 = h.block("connect");
     h.e.enqueue({ kind: "connect" }); await tick();
-    expect(engineStateToPhase(h.e.getState())).toBe("offline");
+    expect(engineStateToPhase(h.e.getState())).toBe("retrying");
     h.e.markReconciling();                                         // connect() confirmed reachability
     expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // recovery shows Syncing, not offline/connecting
     g2.resolve(); await tick();
@@ -191,7 +193,7 @@ describe("SyncEngine — failure funnels to offline + reconnect", () => {
     h.e.enqueue({ kind: "remote" }); await tick();
     h.e.enqueue({ kind: "path", path: "a.md", size: 1 }); // queued behind the failing reconcile
     g.reject(new Error("server down")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     expect(h.reconnects).toBe(1);
     expect(h.e.pending()).toEqual([]);       // pending path dropped — the reconnect's reconcileAll covers it
     expect(h.errors).toContain("remote");
@@ -203,7 +205,7 @@ describe("SyncEngine — failure funnels to offline + reconnect", () => {
     h.e.enqueue({ kind: "connect" }); await tick();
     expect(h.e.getState()).toBe("connecting");
     g.reject(new Error("no token")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     expect(h.reconnects).toBe(1);
     // While disconnected, a local edit is ignored (recovered by the next connect's reconcile).
     h.e.enqueue({ kind: "path", path: "a.md", size: 1 }); await tick();
@@ -249,7 +251,7 @@ describe("SyncEngine — Round-6 CONC fixes", () => {
     const g = h.block("reconcileAll");
     h.e.enqueue({ kind: "remote" }); await tick();
     g.reject(new Error("blip")); await tick();
-    expect(h.e.getState()).toBe("offline");
+    expect(h.e.getState()).toBe("disconnected");
     // A WS `close` in the offline→reconnect window enqueues {rews}; it must be ignored now that
     // connected=false, and a stray poll {remote} too — ONLY the scheduled backoff reconnect recovers.
     h.e.enqueue({ kind: "rews" }); await tick();
@@ -265,7 +267,7 @@ describe("SyncEngine — Round-6 CONC fixes", () => {
       connect: () => Promise.resolve(),
       reconcileAll: () => Promise.resolve(),
       reconcilePath: (_p, s) => { sizes.push(s); return Promise.resolve(); },
-      rews: () => Promise.resolve(), teardown: () => {}, onPhase: () => {}, onError: () => {}, scheduleReconnect: () => {},
+      rews: () => Promise.resolve(), teardown: () => {}, onPhase: () => {}, onError: () => {}, classify: () => ({ kind: FailureKind.Transient }), scheduleRecovery: () => {},
     };
     const e = new SyncEngine(fx);
     e.enqueue({ kind: "connect" });                       // in-flight; the paths below queue behind it
@@ -277,12 +279,65 @@ describe("SyncEngine — Round-6 CONC fixes", () => {
   });
 });
 
+describe("SyncEngine — typed failure via LinkState (connfsm)", () => {
+  const mk = (cls: any) => {
+    let recovery: any;
+    const fx: EngineEffects = {
+      connect: () => Promise.reject(new Error("boom")),
+      reconcileAll: () => Promise.resolve(), reconcilePath: () => Promise.resolve(),
+      rews: () => Promise.resolve(), teardown: () => {}, onPhase: () => {}, onError: () => {},
+      classify: () => cls, scheduleRecovery: (rec) => { recovery = rec; },
+    };
+    const e = new SyncEngine(fx);
+    return { e, get recovery() { return recovery; } };
+  };
+
+  it("LOOP-PREVENTION: a blocked class (authRejected) leaves the link BLOCKED + a self-heal re-probe (not a tight retry)", async () => {
+    const h = mk({ kind: FailureKind.AuthRejected });
+    h.e.enqueue({ kind: "connect" });
+    await tick();
+    expect(h.e.getState()).toBe("disconnected");
+    expect(h.e.linkState().kind).toBe(LinkKind.Blocked);
+    expect((h.e.linkState() as { reason: string }).reason).toBe(FailureKind.AuthRejected);
+    expect(h.e.phase()).toBe("blocked");             // display: NOT "retrying"
+    expect(h.recovery.kind).toBe(RecoveryKind.AwaitUser);        // self-heal re-probe, never a tight backoff
+    expect(h.recovery.reprobeSecs).toBeGreaterThan(0);
+  });
+
+  it("a transient failure leaves the link retrying with a backoff recovery, phase 'retrying'", async () => {
+    const h = mk({ kind: FailureKind.Transient });
+    h.e.enqueue({ kind: "connect" });
+    await tick();
+    expect(h.e.linkState().kind).toBe(LinkKind.Retrying);
+    expect(h.recovery.kind).toBe(RecoveryKind.Backoff);
+    expect(h.e.phase()).toBe("retrying");
+  });
+
+  it("a successful connect resets the link to ok (idle, no lingering block)", async () => {
+    let cls: any = { kind: FailureKind.AuthRejected };
+    let ok = false;
+    const fx: EngineEffects = {
+      connect: () => ok ? Promise.resolve() : Promise.reject(new Error("boom")),
+      reconcileAll: () => Promise.resolve(), reconcilePath: () => Promise.resolve(),
+      rews: () => Promise.resolve(), teardown: () => {}, onPhase: () => {}, onError: () => {},
+      classify: () => cls, scheduleRecovery: () => {},
+    };
+    const e = new SyncEngine(fx);
+    e.enqueue({ kind: "connect" }); await tick();
+    expect(e.linkState().kind).toBe(LinkKind.Blocked);
+    ok = true; // user reconfigured → next connect succeeds
+    e.enqueue({ kind: "connect" }); await tick();
+    expect(e.linkState().kind).toBe(LinkKind.Ok);
+    expect(e.getState()).toBe("idle");
+  });
+});
+
 describe("engineStateToPhase — light projection", () => {
   it("maps operational state to the display phase", () => {
     expect(engineStateToPhase("connecting")).toBe("connecting");
     expect(engineStateToPhase("reconciling")).toBe("syncing");
     expect(engineStateToPhase("idle")).toBe("idle");
-    expect(engineStateToPhase("offline")).toBe("offline");
+    expect(engineStateToPhase("disconnected")).toBe("retrying");
     expect(engineStateToPhase("off")).toBe("off");
     expect(engineStateToPhase("unloading")).toBe("off");
   });

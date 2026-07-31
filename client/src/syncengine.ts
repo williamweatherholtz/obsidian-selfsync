@@ -17,9 +17,12 @@
 // PROJECTION of this machine's state (see phase()).
 
 import { Phase } from "./syncstate";
+import { LinkState, LINK_OK, LinkKind, LinkEventKind, linkNext, recoveryFor, Recovery, FailureClass, linkPhase } from "./connstate";
 
-// The operational state. Projected to a display Phase for the light.
-export type EngineState = "off" | "connecting" | "reconciling" | "idle" | "offline" | "unloading";
+// The operational (work-queue) state. ITS ONLY CONCERN — the failure taxonomy lives in the separate,
+// single-concern LinkState machine (connstate.ts). `disconnected` = "the link is down"; the WHY (retrying
+// vs blocked-and-why) is LinkState, projected together into the display Phase.
+export type EngineState = "off" | "connecting" | "reconciling" | "idle" | "disconnected" | "unloading";
 
 export type EngineEvent =
   | { kind: "connect" }                             // (re)establish: token, health, initial reconcile, WS+poll
@@ -39,15 +42,18 @@ export interface EngineEffects {
   teardown(): void;                            // stop timers + close WS (disconnect/unload)
   onPhase(p: Phase): void;                     // projection sink for the status light
   onError(where: string, e: unknown): void;    // logging
-  scheduleReconnect(): void;                   // arm the backoff timer that will later enqueue {connect}
+  classify(e: unknown): FailureClass;          // pure transport-error → failure class (injected: needs settings context)
+  scheduleRecovery(rec: Recovery): void;       // arm the recovery timer (backoff / retry-after / slow / self-heal re-probe) → enqueues {connect}
 }
 
+// State-only projection. `disconnected` defaults to `retrying`; SyncEngine.phase() REFINES it with the
+// LinkState (blocked / lockedOut / retrying). Kept for callers/tests that only have an EngineState.
 export function engineStateToPhase(s: EngineState): Phase {
   switch (s) {
     case "connecting": return "connecting";
     case "reconciling": return "syncing";
     case "idle": return "idle";
-    case "offline": return "offline";
+    case "disconnected": return "retrying";
     case "off":
     case "unloading": return "off";
   }
@@ -60,14 +66,21 @@ export class SyncEngine {
   // NOT folded into EngineState. The other two former aux booleans WERE redundant with the state and are now
   // DERIVED from it (D4, issueStateMachineOrphanedAndImplicit), eliminating the flag-vs-state desync class:
   //   connected ⟺ state ∈ {reconciling, idle}  (a connect() completed → one of those two post-connect states)
-  //   retrying  ⟺ state === "offline"           (failToOffline sets offline; connect-success/disconnect clear it)
+  //   down      ⟺ state === "disconnected"       (failWith sets it; connect-success/disconnect clear it). The
+  //             failure TAXONOMY (retrying vs blocked-and-why) lives in the separate `link` LinkState machine.
   private running = false;
   private state: EngineState = "off";
+  // The connection-HEALTH machine (single-concern, separate from the work-queue `state`). Mutated ONLY
+  // inside failWith / the connect handler — both run under the pump, so it stays single-writer.
+  private link: LinkState = LINK_OK;
 
   constructor(private fx: EngineEffects) {}
 
   getState(): EngineState { return this.state; }
-  phase(): Phase { return engineStateToPhase(this.state); }
+  linkState(): LinkState { return this.link; }
+  // Display Phase = the two machines composed: the work-queue state, refined by LinkState when the link is
+  // down (disconnected → retrying | lockedOut | blocked). The specific tip comes from linkPhase(link).detail.
+  phase(): Phase { return this.state === "disconnected" ? linkPhase(this.link).phase : engineStateToPhase(this.state); }
 
   // Has a connect() completed? DERIVED from the state — the two post-connect states are exactly the
   // connected ones. Gates path/remote/rews (an event before/after a live connection is dropped).
@@ -80,7 +93,7 @@ export class SyncEngine {
   // initial reconcile — so recovery shows "Syncing…" not a stale "offline"/"connecting". Upgrades from
   // either "connecting" (fresh connect) or "offline" (a backoff retry that just reached the server) to
   // "reconciling"; never overrides idle/unloading.
-  markReconciling(): void { if (this.state === "connecting" || this.state === "offline") this.setState("reconciling"); }
+  markReconciling(): void { if (this.state === "connecting" || this.state === "disconnected") this.setState("reconciling"); }
 
   // Called by the reconcile EFFECT the instant it has genuine work — a non-empty delta, a history
   // reset, or a config scan that actually mutates a file. A routine no-op poll never calls it, so a
@@ -125,17 +138,20 @@ export class SyncEngine {
   // path/remote/rews work — the reconnect's connect() does a full reconcileAll that subsumes all of
   // it (local edits are recovered via base comparison, remote via changes(0)). No tight retry loop,
   // no lost data. disconnect/unload events are preserved.
-  private failToOffline(where: string, e: unknown): void {
-    // Going to "offline" IS the whole state change now: it encodes both "we're in a backoff loop"
-    // (retrying — so the next connect stays "offline", not flashing "connecting") AND "not connected"
-    // (isConnected() is false in "offline"), so the path/remote/rews guards short-circuit during the
-    // offline→reconnect window. Without that, a WS `close` firing after the failure would enqueue {rews},
-    // pass the guard, and re-dial a socket while the backoff reconnect is ALSO pending — two live recovery
-    // paths (Round-6 CONC). Only the backoff {connect} recovers now; success moves us to a connected state.
-    this.setState("offline");
+  // On any effect failure: CLASSIFY it (the injected pure classifier), advance the LinkState machine, go
+  // `disconnected` (so isConnected() is false and the path/remote/rews guards short-circuit — the same
+  // single-recovery-path property the old "offline" gave), and arm the recovery the CLASS dictates:
+  //   transient → jittered backoff; lockedOut → the server's Retry-After window; serverDegraded → a slow
+  //   cadence; a blocked class (auth/version/vault) → a SLOW self-heal re-probe only (no tight loop — that
+  //   was the field bug — and no dead end — a transient server-side cause still recovers). The LinkState is
+  //   updated BEFORE setState so the phase projection reflects the new health. Terminal events preserved.
+  private failWith(where: string, e: unknown): void {
+    const cls = this.fx.classify(e);
+    this.link = linkNext(this.link, { kind: LinkEventKind.Failed, cls });
+    this.setState("disconnected");
     this.fx.onError(where, e);
     this.queue = this.queue.filter((q) => q.kind === "disconnect" || q.kind === "unload");
-    this.fx.scheduleReconnect();
+    this.fx.scheduleRecovery(recoveryFor(cls));
   }
 
   private async pump(): Promise<void> {
@@ -167,13 +183,15 @@ export class SyncEngine {
       case "disconnect":
         this.queue = []; this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
       case "connect": {
-        // A fresh connect shows "Connecting…"; a backoff RETRY (server was down) keeps showing
-        // "Offline — retrying" so the light doesn't flash connecting↔offline every attempt. "Already
-        // offline at connect time" IS exactly the retry case (failToOffline left us there), so it reads
-        // straight off the state — no separate `retrying` flag.
-        this.setState(this.state === "offline" ? "offline" : "connecting");
-        try { await this.fx.connect(); this.setState(this.queue.length ? "reconciling" : "idle"); } // → a connected state
-        catch (e) { this.failToOffline("connect", e); }
+        // A transient backoff RETRY (link=retrying) keeps showing the down state so the light doesn't flash
+        // connecting↔disconnected every attempt; a fresh connect, a self-heal re-probe, or a user reconnect
+        // (link ok or blocked) shows "Connecting…". On success the link machine goes back to `ok`.
+        this.setState(this.link.kind === LinkKind.Retrying ? "disconnected" : "connecting");
+        try {
+          await this.fx.connect();
+          this.link = linkNext(this.link, { kind: LinkEventKind.Connected });
+          this.setState(this.queue.length ? "reconciling" : "idle"); // → a connected state
+        } catch (e) { this.failWith("connect", e); }
         return;
       }
       case "rews":
@@ -185,12 +203,12 @@ export class SyncEngine {
         // Do NOT flip to "reconciling" up front — a routine poll is usually a no-op. The reconcile
         // effect calls beginReconcile() the moment it has genuine work, so an idle poll stays "idle"
         // (the light doesn't blip "Syncing…" every few seconds). pump() settles back to idle after.
-        try { await this.fx.reconcileAll(); } catch (e) { this.failToOffline("remote", e); }
+        try { await this.fx.reconcileAll(); } catch (e) { this.failWith("remote", e); }
         return;
       case "path":
         if (!this.isConnected()) return;   // a local edit while disconnected is caught by connect()'s reconcileAll
         this.setState("reconciling");
-        try { await this.fx.reconcilePath(ev.path, ev.size); } catch (e) { this.failToOffline("path", e); }
+        try { await this.fx.reconcilePath(ev.path, ev.size); } catch (e) { this.failWith("path", e); }
         return;
     }
   }

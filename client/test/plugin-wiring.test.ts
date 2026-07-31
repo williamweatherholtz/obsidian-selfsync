@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import NewLiveSyncPlugin, { ApiClient } from "../src/main";
 import { VaultIo, SyncApi } from "../src/sync";
 import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
+import { ConnError, Endpoint } from "../src/connstate";
 import { TFile } from "obsidian";
 
 // In-memory VaultIo (enough for reconcile to run).
@@ -30,11 +31,13 @@ function spyApi() {
   // client now fails CLOSED on an absent/mismatched one (R12-PB2). Tests override for the mismatch case.
   let statusApiVersion: number | undefined = CLIENT_API_VERSION;
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
+  let failStatus404 = false;                   // vault-gone: the status probe 404s (typed ConnError, endpoint=vaultStatus)
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
     __setChanges: (r: any) => void;
     __failChangesWith: (msg: string) => void;
+    __failStatus404: () => void;
   } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
@@ -43,9 +46,11 @@ function spyApi() {
     __failStatusAuth: (n) => { failStatusAuthTimes = n; },
     __setChanges: (r: any) => { changesResp = r; },
     __failChangesWith: (msg: string) => { changesError = msg; },
+    __failStatus404: () => { failStatus404 = true; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
+      if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
       return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
     },
     async changes(since) { rec("changes", [since]); if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
@@ -220,21 +225,22 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
-  it("D0021: a vault-gone 404 on connect → offline + isVaultGone (re-create-from-device prompt)", async () => {
-    // The synced vault was deleted server-side: the connect reconcile 404s. The engine goes offline
-    // and the plugin flags vaultGone so settings can offer 'Re-create this vault from this device'.
-    const { p } = await bootPlugin(true, { preOnload: (pp) => pp.api_.__failChangesWith("changes: HTTP 404") });
-    expect(p.statusText()).toBe("offline");
+  it("D0021: a vault-gone 404 on the status probe → blocked + isVaultGone (re-create-from-device prompt)", async () => {
+    // The synced vault was deleted server-side: the connect health probe (vault-scope status) 404s. The
+    // connection FSM classifies it vaultGone → a BLOCKED link (not a tight retry), and the plugin flags
+    // vaultGone (read from the LinkState) so settings can offer 'Re-create this vault from this device'.
+    const { p } = await bootPlugin(true, { preOnload: (pp) => pp.api_.__failStatus404() });
+    expect(p.statusText()).toBe("blocked");
     expect(p.isVaultGone()).toBe(true);
     p.onunload();
   });
 
-  it("a reconcile failure drives the engine offline", async () => {
+  it("a generic reconcile failure drives the engine to a retrying link (transient)", async () => {
     const { p, api } = await bootPlugin();
     api.__failChanges(true);
-    api.__poke();       // triggers reconcileAll → changes() throws
+    api.__poke();       // triggers reconcileAll → changes() throws (a plain error → transient → retrying)
     await flush();
-    expect(p.statusText()).toBe("offline");
+    expect(p.statusText()).toBe("retrying");
     p.onunload();
   });
 
@@ -256,11 +262,12 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusText()).toBe("off");
   });
 
-  it("REFUSES to sync on a protocol-version mismatch (offline, clear reason, never reconciles)", async () => {
-    // Server advertises a different apiVersion than the client speaks → doConnect must throw
-    // BEFORE reconciling (no changes() call), go offline, and record an actionable reason.
+  it("REFUSES to sync on a protocol-version mismatch (blocked, clear reason, never reconciles)", async () => {
+    // Server advertises a different apiVersion than the client speaks → doConnect must throw BEFORE
+    // reconciling (no changes() call); the FSM classifies it versionMismatch → a BLOCKED link (awaits an
+    // update, not a tight retry) with an actionable reason.
     const { p, api } = await bootPlugin(true, { preOnload: (tp) => tp.api_.__setApiVersion(999) });
-    expect(p.statusText()).toBe("offline");
+    expect(p.statusText()).toBe("blocked");
     expect(api.__calls.changes?.length ?? 0).toBe(0); // never touched the vault data
     expect(p.getLastIssue()).toMatch(/version/i);
     p.onunload();

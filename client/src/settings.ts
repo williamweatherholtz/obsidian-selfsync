@@ -231,7 +231,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       // Diagnose is always available: it names the first broken link so a silent offline — or a
       // "looks fine but isn't syncing" — gets an actionable reason instead of a shrug.
       st.addButton((b) => b.setButtonText("Diagnose").onClick(() => void this.runDiagnosis()));
-      if (phase === "offline") {
+      if (phase === "retrying" || phase === "blocked" || phase === "lockedOut") { // a down link — any reason
         st.addButton((b) => b.setButtonText("Reconnect").onClick(() => this.plugin.reconnect()));
         // D0021: the vault was deleted server-side — offer a deliberate re-create-from-this-device.
         if (this.plugin.isVaultGone()) {

@@ -7,18 +7,18 @@ describe("effectivePhase — a 0-pending reconcile is a check, not a syncing sta
     expect(effectivePhase("syncing", 5)).toBe("syncing");
     expect(effectivePhase("idle", 0)).toBe("idle");
     expect(effectivePhase("connecting", 0)).toBe("connecting");
-    expect(effectivePhase("offline", 3)).toBe("offline");
+    expect(effectivePhase("retrying", 3)).toBe("retrying");
   });
 });
 
 describe("light is a pure function of phase", () => {
   it("green only when idle (up to date)", () => {
     expect(light("idle").color).toBe("var(--color-green)");
-    for (const s of ["off", "connecting", "syncing", "offline"] as Phase[]) {
+    for (const s of ["off", "connecting", "syncing", "retrying"] as Phase[]) {
       expect(light(s).color).not.toBe("var(--color-green)");
     }
   });
-  it("offline is red", () => expect(light("offline").color).toBe("var(--color-red)"));
+  it("retrying is red", () => expect(light("retrying").color).toBe("var(--color-red)"));
 
   it("syncing tip includes the progress detail when given ('Syncing… 12/174')", () => {
     expect(light("syncing", "12/174").tip).toBe("Syncing… 12/174");
@@ -38,9 +38,9 @@ describe("light is a pure function of phase", () => {
   it("realtime defaults to up (prior behavior) when the flag is omitted", () => {
     expect(light("idle").color).toBe("var(--color-green)");
   });
-  it("the realtime flag only affects idle (syncing/offline are unchanged)", () => {
+  it("the realtime flag only affects idle (syncing/retrying are unchanged)", () => {
     expect(light("syncing", "", false).color).toBe(light("syncing", "", true).color);
-    expect(light("offline", "", false).color).toBe("var(--color-red)");
+    expect(light("retrying", "", false).color).toBe("var(--color-red)");
   });
 });
 

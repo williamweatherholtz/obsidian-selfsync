@@ -6,7 +6,11 @@
 // own header, "only ever drove the status LIGHT"; nothing live imported it, so the dead duplicate is
 // removed. `Phase` is now purely a display-projection enum, produced by engineStateToPhase.)
 
-export type Phase = "off" | "connecting" | "idle" | "syncing" | "offline";
+// The display projection. The single lossy "offline" is decomposed (connstate.ts / the connection FSM):
+// `retrying` = a transient failure being backoff-retried; `lockedOut` = a 429 wait; `blocked` = a failure
+// that awaits the user (sign-in rejected / version mismatch / vault gone …) — its specific reason rides in
+// the light's `detail`. A genuinely down link is one of these three, never a catch-all "offline".
+export type Phase = "off" | "connecting" | "idle" | "syncing" | "retrying" | "lockedOut" | "blocked";
 
 export interface LightSpec { color: string; label: string; tip: string }
 
@@ -24,7 +28,11 @@ export function light(phase: Phase, detail = "", realtime = true): LightSpec {
       : { color: "var(--color-yellow)", label: "SelfSync", tip: `Synced — realtime reconnecting, polling${detail ? " (" + detail + ")" : ""}` };
     case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: `Syncing…${detail ? ` ${detail}` : ""}` };
     case "connecting": return { color: "var(--color-yellow)", label: "SelfSync", tip: "Connecting…" };
-    case "offline":    return { color: "var(--color-red)", label: "SelfSync", tip: "Offline — retrying" };
+    // A down link, decomposed. `blocked` needs the user to act (red); `lockedOut` is a timed wait (orange);
+    // `retrying` is a transient backoff (red). The specific reason is passed in `detail`.
+    case "retrying":   return { color: "var(--color-red)", label: "SelfSync", tip: detail || "Reconnecting…" };
+    case "lockedOut":  return { color: "var(--color-orange)", label: "SelfSync", tip: detail || "Too many attempts — retrying" };
+    case "blocked":    return { color: "var(--color-red)", label: "SelfSync", tip: detail || "Sign-in needed — open Settings" };
     case "off":        return { color: "var(--text-faint)", label: "SelfSync", tip: "Not connected" };
   }
 }
