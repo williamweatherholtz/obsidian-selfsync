@@ -53,6 +53,12 @@ export interface NewLiveSyncSettings {
   // the in-memory rewind check alone is dead across a restart. Same fresh-per-instance handling as
   // historyFloors (omitted from DEFAULT_SETTINGS, lazily `??= {}`).
   lastVersions?: Record<string, number>;
+  // D0047 guard for the vault-change-skips-transition class: the `owner/vaultId` the persisted base belongs
+  // to. On connect, if it doesn't match the vault we're about to sync (any path changed the vault without
+  // going through switchTo), the base is FOREIGN and reconciling against it could silently overwrite — so we
+  // force a safe merge-switch (clears the base). Stamped after each successful connect. Per-device (settings
+  // never sync); omitted from DEFAULT_SETTINGS.
+  baseVaultKey?: string;
   // Timestamp-ignore (the redesigned feature — SelfSync NEVER writes note timestamps). When on, a diff that
   // is only a TIMESTAMP-VALUED frontmatter key is excluded from sync change-detection, so it never causes a
   // conflict. Identity-only; it never edits a note. ON by default (safe: never writes; value-shape gated).
@@ -339,7 +345,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .setDesc("Show a sync-status icon in the open note's header.")
       .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v))));
     g.addSetting((st) => st.setName("Store password on this device")
-      .setDesc("Keep your password on this device for silent reconnect.")
+      .setDesc("Keep your password on this device for silent reconnect. Your session idle-expires after a period of inactivity (a security default); with this on, SelfSync signs back in automatically instead of asking you to Reconfigure. Off = more secure (token-only) but you re-enter your password when the session expires. (Admins can lengthen or disable the server-side window via SESSION_IDLE_TIMEOUT_SECS.)")
       .addToggle((tg) => tg.setValue(s.storePassword).onChange(async (v) => {
         s.storePassword = v;
         if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
@@ -445,18 +451,23 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // and adopt the plugins an existing vault synced: ticking a not-installed one pulls its files, which
     // installs it. (Previously the list was installed-plugins-only, leaving a new vault with nothing to
     // pick.) Sorted by display name (manifest name if installed, else the id).
-    const ids = [...new Set([...installed, ...onServer])]
-      .sort((a, b) => (manifests[a]?.name || a).localeCompare(manifests[b]?.name || b));
     const ro = !!this.plugin.settings.vaultReadOnly;
-    const shared = ids.filter((id) => cs.pluginAllow.includes(id)).length;
-    const notInstalledOnServer = [...onServer].filter((id) => !installed.has(id) && !cs.pluginAllow.includes(id));
+    const byName = (a: string, b: string) => (manifests[a]?.name || a).localeCompare(manifests[b]?.name || b);
+    const allIds = [...new Set([...installed, ...onServer])];
+    // PARITY (issuePluginSyncStaleServerState): the main list is only what THIS device actually syncs —
+    // installed here OR explicitly adopted (allowlisted). A plugin merely present on the server (from another
+    // device) but not installed/adopted here is AVAILABLE-to-adopt, shown in a separate subordinate group —
+    // never mixed into "Synced" (where it read as "this is syncing" when it wasn't).
+    const syncedIds = allIds.filter((id) => installed.has(id) || cs.pluginAllow.includes(id)).sort(byName);
+    const availableIds = allIds.filter((id) => onServer.has(id) && !installed.has(id) && !cs.pluginAllow.includes(id)).sort(byName);
+    const shared = syncedIds.filter((id) => cs.pluginAllow.includes(id)).length;
     const g = new SettingGroup(c).setHeading("Synced community plugins");
 
     // Standing RESTART reminder: a plugin adopted from the sync but not yet installed locally is on
     // disk (or downloading), but Obsidian only loads plugins at STARTUP — it stays dormant until a full
     // restart. The transient sync toast is easy to miss on mobile, so surface it as a persistent banner
     // here, where the user just tapped "Install." (Closes the "looks done but nothing happened" gap.)
-    const needsRestart = ids.filter((id) => cs.pluginAllow.includes(id) && !installed.has(id));
+    const needsRestart = syncedIds.filter((id) => cs.pluginAllow.includes(id) && !installed.has(id));
     if (needsRestart.length) {
       g.addSetting((st) => st.setName(`${needsRestart.length} plugin${needsRestart.length > 1 ? "s" : ""} not active yet`).setClass("mod-warning")
         .setDesc("Downloaded from the sync — fully close and reopen Obsidian (on mobile, swipe the app away) to enable them."));
@@ -464,7 +475,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     // Fresh vault, before the first full reconcile has reported the server's plugins: don't render an
     // empty group that reads as "nothing to sync" — say we're still looking.
-    if (ids.length === 0) {
+    if (allIds.length === 0) {
       g.addSetting((st) => st.setName("Checking the server for plugins…")
         .setDesc("Plugins synced from your other devices will appear here after the next sync — then tick them to install."));
       return;
@@ -474,32 +485,41 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // server holds (download-only for the ones not installed here); shown only when there are such
     // plugins. setPluginSync records each added plugin's first-contact direction.
     g.addSetting((st) => {
-      st.setName("All plugins").setDesc(`${shared} of ${ids.length} synced${notInstalledOnServer.length ? ` · ${notInstalledOnServer.length} available from the sync (not installed here)` : ""}.`);
-      st.addButton((b) => b.setButtonText("Sync none").onClick(async () => { for (const id of ids) await this.plugin.setPluginSync(id, false); this.display(); }));
-      if (notInstalledOnServer.length) st.addButton((b) => b.setButtonText("Install all from the sync").setCta().onClick(async () => { await this.plugin.installAllServerPlugins(); this.display(); }));
-      else st.addButton((b) => b.setButtonText("Sync all").onClick(async () => { for (const id of ids) await this.plugin.setPluginSync(id, true); this.display(); }));
+      st.setName("All plugins").setDesc(`${shared} of ${syncedIds.length} synced${availableIds.length ? ` · ${availableIds.length} available from the sync (not adopted here)` : ""}.`);
+      if (syncedIds.length) st.addButton((b) => b.setButtonText("Sync none").onClick(async () => { for (const id of syncedIds) await this.plugin.setPluginSync(id, false); this.display(); }));
+      if (availableIds.length) st.addButton((b) => b.setButtonText("Install all from the sync").setCta().onClick(async () => { await this.plugin.installAllServerPlugins(); this.display(); }));
     });
 
-    // Collapsible list — a big plugin roster shouldn't flood the pane. Collapses/expands independently
-    // of each plugin's direction (a mix of download/upload is fine). Expand state persists across the
-    // tab's re-renders (a membership toggle re-renders to show/hide that plugin's direction control).
+    // The plugins THIS device actually syncs.
+    this.renderPluginRows(c, syncedIds, cs, manifests, installed, onServer, ro, `${syncedIds.length} synced`);
+
+    // A SEPARATE, subordinate group for the AVAILABLE-to-adopt set (the parity fix): plugins on the server
+    // from other devices that aren't installed/adopted here — offered to pick up, but clearly NOT "synced".
+    if (availableIds.length) {
+      const ag = new SettingGroup(c).setHeading("Available from the sync (not adopted)");
+      ag.addSetting((st) => st.setDesc("On the server from your other devices, but not installed or synced here. Tick one to adopt it on this device."));
+      this.renderPluginRows(c, availableIds, cs, manifests, installed, onServer, ro, `${availableIds.length} available`);
+    }
+  }
+
+  // Render a collapsible list of plugin rows (toggle + first-contact direction). Shared by the "Synced"
+  // and "Available from the sync" groups so the row logic lives in one place.
+  private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string): void {
+    if (!ids.length) return;
     const expanded = this.pluginsExpanded ?? ids.length <= 8;
     const details = c.createEl("details"); (details as unknown as { open: boolean }).open = expanded;
     details.addEventListener("toggle", () => { this.pluginsExpanded = (details as unknown as { open: boolean }).open; });
-    details.createEl("summary", { text: `${ids.length} plugins` }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
+    details.createEl("summary", { text: summaryLabel }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
     const body = details.createDiv();
-
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
       const here = installed.has(id);
       const st = new Setting(body).setName(manifests[id]?.name || id);
-      // Say where each plugin lives so the choice is legible on a fresh vault.
       if (!here && onServer.has(id)) st.setDesc("from the sync — will be installed here");
       else if (here && !onServer.has(id)) st.setDesc("on this device only — will be uploaded");
       st.addToggle((tg) => tg.setValue(on).onChange(async (v) => { await this.plugin.setPluginSync(id, v); this.display(); }));
-      // First-contact direction appears only when synced AND a divergence is possible — i.e. the plugin
-      // is installed here on a read-write vault. A not-installed plugin can only download (it pulls +
-      // installs); a read-only vault can only download. Both show as text, no choice.
+      // First-contact direction appears only when synced AND a divergence is possible — installed here on a
+      // read-write vault. A not-installed plugin can only download (pull+install); a read-only vault too.
       if (on && !here) st.setDesc("downloads from the sync (not installed here yet)");
       else if (on && ro) st.setDesc("download only (read-only vault)");
       else if (on) {

@@ -1310,6 +1310,15 @@ export default class NewLiveSyncPlugin extends Plugin {
       // reconcile — silently DOWNGRADING an authoritative overwrite (download = take-remote, upload =
       // take-local) into a merge that could conflict-copy or resurrect. Leaving it set until success
       // makes the switch resolution durable across a failed attempt (it retries as the switch, not a merge).
+      // D0047 GUARD (vault-change-skips-transition class): the persisted base belongs to a specific
+      // owner/vaultId. If it doesn't match the vault we're about to sync — i.e. ANY path changed the vault
+      // without routing through switchTo — the base is FOREIGN and a plain reconcile could silently overwrite
+      // local files (decide()'s B===L→pull branch, no conflict-copy). Force a safe merge-switch (switchTo
+      // clears the stale base + unions; nothing lost), unless a switch is already pending.
+      if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.settings.baseVaultKey !== this.historyFloorKey() && this.base.paths().length) {
+        this.log(`base belonged to '${this.settings.baseVaultKey}' but now syncing '${this.historyFloorKey()}' — clearing the stale base (safe merge)`, true);
+        this.settings.pendingSwitch = "merge";
+      }
       const switchMode = this.settings.pendingSwitch;
       if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); }
       else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
@@ -1319,6 +1328,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.startPolling();
       this.backoff = 3000;
       this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
+      this.settings.baseVaultKey = this.historyFloorKey(); // stamp the vault this base now belongs to (D0047 guard)
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
     } catch (e: any) {

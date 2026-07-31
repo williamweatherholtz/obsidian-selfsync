@@ -339,6 +339,22 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  it("D0047 guard: a FOREIGN base (vault changed without switchTo) forces a safe merge-switch, never a foreign-base reconcile", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("hi"));
+    await p.reconnect(); await flush();                 // full reconcile pushes note.md → base populated; stamps baseVaultKey
+    const key0 = "/" + p.settings.vaultId;
+    expect(p.settings.baseVaultKey).toBe(key0);         // the base is stamped with the vault it belongs to
+    // Simulate the bug class: some path (e.g. the setup wizard's old behavior) changes the vault WITHOUT
+    // going through switchTo — the base is now FOREIGN.
+    p.settings.vaultId = "other";
+    p.settings.pendingSwitch = undefined;
+    await p.reconnect(); await flush();
+    expect(p.settings.baseVaultKey).toBe("/other");     // guard fired → merge-switch connected → re-stamped
+    expect(dec(await p.io_.read("note.md"))).toBe("hi"); // local file NOT silently clobbered by a foreign-base pull
+    p.onunload();
+  });
+
   it("forkVault creates the new vault then switches to it in UPLOAD mode (owner cleared, editable)", async () => {
     // Loopback serverUrl so the static HttpTransport.createVault passes the cleartext-remote guard.
     const { p } = await bootPlugin(true, { settings: { serverUrl: "http://127.0.0.1:8789" } });

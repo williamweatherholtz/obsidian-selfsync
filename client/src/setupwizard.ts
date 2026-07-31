@@ -269,8 +269,22 @@ export class SetupWizardModal extends Modal {
       // freshLogin — the only other place that clears the password — so clearing it here is what
       // actually honors the contract.
       const cred = wizardCredentials(this.s, vault, this.token, st.storePassword);
+      const vaultChanged = !!st.vaultId && st.vaultId !== cred.vaultId; // re-running setup and picking a DIFFERENT vault
       st.serverUrl = cred.serverUrl; st.username = cred.username; st.password = cred.password;
-      st.vaultId = cred.vaultId; st.authToken = cred.authToken;
+      st.authToken = cred.authToken;
+      // Changing to a DIFFERENT vault must NOT reconcile it against the OLD vault's base (a single global
+      // base, cleared only by switchTo) — that can SILENTLY OVERWRITE local files whose new-vault copy
+      // differs (decide()'s B===L→pull branch, no conflict-copy). Route a real change WITH local data through
+      // the switch flow (merge = the safe union; pendingSwitch → switchTo clears the stale base), exactly
+      // like the "Switch vault" action. A fresh setup / same vault / no local data adopts directly (safe).
+      if (vaultChanged && await this.plugin.hasLocalData()) {
+        await this.plugin.saveSettings(); // persist the creds first (switchToVault sets vaultId + pendingSwitch atomically)
+        new Notice(`SelfSync: switching to '${vault}' — merging safely so nothing is lost`);
+        this.close();
+        await this.plugin.switchToVault(cred.vaultId, "merge");
+        return;
+      }
+      st.vaultId = cred.vaultId;
       await this.plugin.saveSettings();
       new Notice(`SelfSync: now syncing '${vault}'`);
       this.close();
