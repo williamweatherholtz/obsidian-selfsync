@@ -819,6 +819,25 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
   }
 
+  // A reconcile EFFECT hits the API directly (unlike doConnect, which re-logs-in once on a 401 BEFORE it
+  // reconciles). So a routine token expiry DURING a connected session — on the poll/delta path — used to go
+  // straight to the classifier and strand the user in a false "sign-in rejected — check your password"
+  // block for up to the 600s self-heal reprobe (permanently on a WS-less client): the inverse of the
+  // auth-storm the FSM fixed. Re-run the effect ONCE after a single silent re-login when we CAN (a password
+  // is stored); a second 401 — or no stored password to renew with — propagates to classify → the correct
+  // blocked / re-auth state. Rebuilds `this.api` on the fresh token so the retry uses it. (fix ② 2026-08-01)
+  private async withSyncRelogin<T>(fn: () => Promise<T>): Promise<T> {
+    try { return await fn(); }
+    catch (e) {
+      if (!this.isAuthError(e) || !this.hasStoredPassword()) throw e;
+      this.log("sync token rejected mid-session — re-logging in once");
+      this.settings.authToken = undefined;
+      const t = await this.freshLogin();
+      this.api = this.buildApi(t);
+      return await fn();
+    }
+  }
+
   // Unbind this vault (keep local files); return to the unconfigured state.
   async disconnect() {
     this.settings.vaultId = "";
@@ -1043,6 +1062,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     const hotLoaded: string[] = [];
     const needRestart: string[] = [...ids].filter(isLoaded); // an update to a RUNNING plugin → reload needed to re-execute
     const newlyArrived = [...ids].filter((id) => !isLoaded(id));
+    // SECURITY (fix ① 2026-08-01): re-derive the private-vault gate FRESH here, at the moment of decision.
+    // `vaultIsPrivate` is a CACHED field (refreshed on connect + this device's own share mutations), and the
+    // hot-load path must NOT ride a stale value — a stale `true` is an RCE bypass of the R14 restart barrier:
+    // it can be left over from a previous (private) vault after a switch to a shared one, or predate an
+    // out-of-band readWrite grant on this vault (the delta/poll path that reaches here never refreshed it).
+    // Re-checking now — only when a plugin actually ARRIVED (rare) — makes the gate current on EVERY entry
+    // path; a shared or now-shareable vault re-derives `false` (fail-safe) and keeps the restart barrier.
+    if (newlyArrived.length && pm?.loadManifests && pm?.enablePlugin) await this.refreshVaultPrivacy();
     if (this.vaultIsPrivate && newlyArrived.length && pm?.loadManifests && pm?.enablePlugin) {
       try {
         await pm.loadManifests(); // register the newly-arrived manifest(s) so enablePlugin can find them
@@ -1403,9 +1430,19 @@ export default class NewLiveSyncPlugin extends Plugin {
       // without routing through switchTo — the base is FOREIGN and a plain reconcile could silently overwrite
       // local files (decide()'s B===L→pull branch, no conflict-copy). Force a safe merge-switch (switchTo
       // clears the stale base + unions; nothing lost), unless a switch is already pending.
-      if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.settings.baseVaultKey !== this.historyFloorKey() && this.base.paths().length) {
-        this.log(`base belonged to '${this.settings.baseVaultKey}' but now syncing '${this.historyFloorKey()}' — clearing the stale base (safe merge)`, true);
-        this.settings.pendingSwitch = "merge";
+      if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.base.paths().length) {
+        const stored = this.settings.baseVaultKey;
+        // fix ③: the key is now SERVER-qualified (`host|owner/vault`) so a repoint at a DIFFERENT server with
+        // the SAME vault name is detected (a server-blind key missed it → silent cross-server overwrite). An
+        // OLD stored key is server-blind (`owner/vault`, no `|`) — grandfather it to the CURRENT server so an
+        // upgrade doesn't force a spurious merge; a genuine later server/vault/owner change still trips.
+        const mismatch = stored.includes("|")
+          ? stored !== this.vaultIdentityKey()
+          : stored !== this.historyFloorKey();
+        if (mismatch) {
+          this.log(`base belonged to '${stored}' but now syncing '${this.vaultIdentityKey()}' — clearing the stale base (safe merge)`, true);
+          this.settings.pendingSwitch = "merge";
+        }
       }
       const switchMode = this.settings.pendingSwitch;
       if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); }
@@ -1416,7 +1453,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.startPolling();
       this.backoff = 3000;
       this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
-      this.settings.baseVaultKey = this.historyFloorKey(); // stamp the vault this base now belongs to (D0047 guard)
+      this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
       this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
       void this.refreshVaultPrivacy(); // re-evaluate the hot-load security gate (own + unshared?) each connect
       this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
@@ -1569,7 +1606,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // awaited scan succeeds, so a failure leaves the window still due. (The idle-poll early-return is only
   // reached when NOT forced, so it correctly stamps nothing.)
   // @audit-hash sha256:a29e1be4f50e47d3
-  private async doReconcileAll(): Promise<void> {
+  private doReconcileAll(): Promise<void> {
+    return this.withSyncRelogin(() => this.reconcileAllOnce()); // fix ②: a mid-session token expiry self-heals once
+  }
+  private async reconcileAllOnce(): Promise<void> {
     if (!this.api) throw new Error("not connected");
     // Local CONFIG edits fire no reliable event (mobile has no `raw` watcher) → a CONFIG-ONLY re-hash
     // runs at most every CONFIG_SCAN_INTERVAL_MS (cheap: only `.obsidian/` files). A missed local NOTE
@@ -1641,6 +1681,21 @@ export default class NewLiveSyncPlugin extends Plugin {
   // vault and an own vault of the same name never share state.
   private historyFloorKey(): string {
     return `${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`;
+  }
+  // Normalized server host — part of the vault IDENTITY so the SAME owner/vault NAME on a DIFFERENT server is
+  // a DIFFERENT vault (two servers trivially both host owner=""/vault="notes"; a server-blind key let one
+  // overwrite the other's local files on a repoint — fix ③). Host only (scheme/port aside) stays stable
+  // across an http/https or trailing-slash edit. (fix ③ 2026-08-01)
+  private serverHost(): string {
+    try { return new URL(this.settings.serverUrl).host.toLowerCase(); }
+    catch { return (this.settings.serverUrl ?? "").toLowerCase(); }
+  }
+  // The D0047 guard's vault-identity key: server-qualified `host|owner/vault`. The `|` delimiter can occur
+  // in neither a host (URL.host = alnum/dot/colon/hyphen) nor a vault name (lowercase/digits/dots/dash/
+  // underscore), so an OLD (pre-fix-③, server-blind `owner/vault`) stored key — which lacks it — is
+  // recognizable and grandfathered by the guard rather than forcing a spurious merge on upgrade.
+  private vaultIdentityKey(): string {
+    return `${this.serverHost()}|${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`;
   }
 
   // Is this (version, floor) a deletion-history RESET vs what this device last synced? True if the
@@ -1727,7 +1782,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // EFFECT: reconcile one path, then apply any live config reload it triggered. flushConfigReload
   // early-returns unless a `.obsidian/` file was actually written (pendingReload), so for a plain
   // note this is just the reconcile. THROWS on failure → engine offline + reconnect.
-  private async doReconcilePath(path: string, size: number): Promise<void> {
+  private doReconcilePath(path: string, size: number): Promise<void> {
+    return this.withSyncRelogin(() => this.reconcilePathOnce(path, size)); // fix ②: a mid-session token expiry self-heals once
+  }
+  private async reconcilePathOnce(path: string, size: number): Promise<void> {
     await reconcilePath(this.deps(), path, size);
     await this.flushConfigReload();
   }

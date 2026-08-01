@@ -269,7 +269,11 @@ export class SetupWizardModal extends Modal {
       // freshLogin — the only other place that clears the password — so clearing it here is what
       // actually honors the contract.
       const cred = wizardCredentials(this.s, vault, this.token, st.storePassword);
-      const vaultChanged = !!st.vaultId && st.vaultId !== cred.vaultId; // re-running setup and picking a DIFFERENT vault
+      // A vault CHANGE is any repoint that could put THIS device's base over DIFFERENT remote content: a new
+      // vault NAME *or* a new SERVER (the same name on another server is a different vault — fix ③). Route it
+      // through the safe merge-switch when local data exists, exactly like the "Switch vault" action; a plain
+      // reconfigure (same server + vault) still adopts directly.
+      const vaultChanged = !!st.vaultId && (st.vaultId !== cred.vaultId || st.serverUrl !== cred.serverUrl);
       st.serverUrl = cred.serverUrl; st.username = cred.username; st.password = cred.password;
       st.authToken = cred.authToken;
       // Changing to a DIFFERENT vault must NOT reconcile it against the OLD vault's base (a single global

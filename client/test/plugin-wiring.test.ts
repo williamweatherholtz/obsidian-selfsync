@@ -31,12 +31,14 @@ function spyApi() {
   // client now fails CLOSED on an absent/mismatched one (R12-PB2). Tests override for the mismatch case.
   let statusApiVersion: number | undefined = CLIENT_API_VERSION;
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
+  let failChangesAuthTimes = 0;                // number of leading changes() calls that 401 (a MID-SESSION token expiry on the poll path)
   let failStatus404 = false;                   // vault-gone: the status probe 404s (typed ConnError, endpoint=vaultStatus)
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
     __setChanges: (r: any) => void;
     __failChangesWith: (msg: string) => void;
+    __failChangesAuth: (n: number) => void;
     __failStatus404: () => void;
   } = {
     __calls: calls,
@@ -46,6 +48,7 @@ function spyApi() {
     __failStatusAuth: (n) => { failStatusAuthTimes = n; },
     __setChanges: (r: any) => { changesResp = r; },
     __failChangesWith: (msg: string) => { changesError = msg; },
+    __failChangesAuth: (n: number) => { failChangesAuthTimes = n; },
     __failStatus404: () => { failStatus404 = true; },
     async status() {
       rec("status", []);
@@ -53,7 +56,7 @@ function spyApi() {
       if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
       return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
     },
-    async changes(since) { rec("changes", [since]); if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
+    async changes(since) { rec("changes", [since]); if (failChangesAuthTimes > 0) { failChangesAuthTimes--; throw new ConnError("unauthorized", { status: 401, endpoint: Endpoint.Other, wasLogin: false }); } if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
     async getChunk(h) { rec("getChunk", [h]); return new Uint8Array(0); },
@@ -343,15 +346,59 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     const { p } = await bootPlugin();
     await p.io_.write("note.md", enc("hi"));
     await p.reconnect(); await flush();                 // full reconcile pushes note.md → base populated; stamps baseVaultKey
-    const key0 = "/" + p.settings.vaultId;
+    const key0 = "x|/" + p.settings.vaultId;            // server-qualified `host|owner/vault` (host x, own vault) — fix ③
     expect(p.settings.baseVaultKey).toBe(key0);         // the base is stamped with the vault it belongs to
     // Simulate the bug class: some path (e.g. the setup wizard's old behavior) changes the vault WITHOUT
     // going through switchTo — the base is now FOREIGN.
     p.settings.vaultId = "other";
     p.settings.pendingSwitch = undefined;
     await p.reconnect(); await flush();
-    expect(p.settings.baseVaultKey).toBe("/other");     // guard fired → merge-switch connected → re-stamped
+    expect(p.settings.baseVaultKey).toBe("x|/other");   // guard fired → merge-switch connected → re-stamped
     expect(dec(await p.io_.read("note.md"))).toBe("hi"); // local file NOT silently clobbered by a foreign-base pull
+    p.onunload();
+  });
+
+  // fix ③ (2026-08-01): the vault-identity key is SERVER-qualified, so repointing at a DIFFERENT server with
+  // the SAME vault name is detected (a server-blind `owner/vault` key missed it → silent cross-server
+  // overwrite). Two servers trivially both host owner=""/vault="default".
+  it("D0047 guard is SERVER-qualified: a different server with the same vault name is a different vault", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("hi"));
+    await p.reconnect(); await flush();
+    expect(p.settings.baseVaultKey).toBe("x|/" + p.settings.vaultId); // host x
+    p.settings.serverUrl = "http://otherhost";                       // repoint at a DIFFERENT server, SAME vault name
+    p.settings.pendingSwitch = undefined;
+    await p.reconnect(); await flush();
+    expect(p.settings.baseVaultKey).toBe("otherhost|/" + p.settings.vaultId); // guard tripped → merge-switch → re-stamped to the new server
+    expect(dec(await p.io_.read("note.md"))).toBe("hi");             // local NOT clobbered by server B's base
+    p.onunload();
+  });
+
+  // fix ③: an OLD (pre-fix) server-blind key is grandfathered to the CURRENT server, so an upgrade doesn't
+  // force a spurious merge for every existing user; it is silently upgraded to the server-qualified format.
+  it("D0047 guard grandfathers an old server-blind base key (no spurious merge on upgrade)", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("hi"));
+    await p.reconnect(); await flush();
+    p.settings.baseVaultKey = "/" + p.settings.vaultId;              // simulate a pre-fix persisted key (no `|`), same server+vault
+    p.settings.pendingSwitch = undefined;
+    await p.reconnect(); await flush();
+    expect(p.settings.baseVaultKey).toBe("x|/" + p.settings.vaultId); // recognized as the current vault → upgraded in place
+    expect(dec(await p.io_.read("note.md"))).toBe("hi");
+    p.onunload();
+  });
+
+  // fix ② (2026-08-01): a routine token expiry DURING a connected session (the poll/delta path hits the API
+  // directly) self-heals with ONE silent re-login instead of stranding the user in a false "sign-in
+  // rejected — check your password" block (the inverse of the auth-storm the FSM fixed).
+  it("mid-session token expiry on the poll path silently re-logs-in ONCE (no false auth block)", async () => {
+    const { p, api } = await bootPlugin(true, { settings: { storePassword: true, password: "p" } });
+    const loginsAfterConnect = p.loginCount;
+    api.__failChangesAuth(1);                            // the next changes() 401s once, then succeeds
+    api.__poke();                                        // a server poke → delta reconcile hits the expired token
+    await flush();
+    expect(p.loginCount).toBe(loginsAfterConnect + 1);  // re-logged-in exactly once, transparently
+    expect(p.statusText()).toBe("idle");                // recovered — NOT blocked in "check your password"
     p.onunload();
   });
 
@@ -407,16 +454,35 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     const anyp = p as any;
     const enabled: string[] = [];
     (p.app as any).plugins = { plugins: { alreadyRunning: {} }, loadManifests: async () => {}, enablePlugin: async (id: string) => { enabled.push(id); } };
-    anyp.vaultIsPrivate = true;
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }]; // own + unshared → the fresh re-check derives PRIVATE
+    anyp.listShareLinks = async () => [];
     await anyp.applyPluginCodeChange(new Set(["newplugin"]));
     expect(enabled).toContain("newplugin");                          // private + newly-arrived → hot-loaded, no restart
     enabled.length = 0;
     await anyp.applyPluginCodeChange(new Set(["alreadyRunning"]));
     expect(enabled).not.toContain("alreadyRunning");                 // an update to a RUNNING plugin → restart, not hot-reload
     enabled.length = 0;
-    anyp.vaultIsPrivate = false;                                     // shared / untrusted vault
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }]; // now shared: a rw peer can push code
     await anyp.applyPluginCodeChange(new Set(["fromapeer"]));
-    expect(enabled).not.toContain("fromapeer");                     // gate closed → NEVER auto-execute (the RCE barrier)
+    expect(enabled).not.toContain("fromapeer");                     // fresh re-check → NOT private → NEVER auto-execute (the RCE barrier)
+    p.onunload();
+  });
+
+  // fix ① (2026-08-01): the hot-load gate re-derives privacy FRESH at the decision point, so a
+  // `vaultIsPrivate` left STALE-true (e.g. from a previous private vault after a switch, or predating an
+  // out-of-band grant on the delta path — which never refreshed it) can't auto-execute a now-shared vault's
+  // plugin code. Closes the RCE-barrier bypass the security critique found.
+  it("hot-load re-checks privacy FRESH — a stale-true vaultIsPrivate does NOT auto-execute a now-shared vault's plugin (RCE gate)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const enabled: string[] = [];
+    (p.app as any).plugins = { plugins: {}, loadManifests: async () => {}, enablePlugin: async (id: string) => { enabled.push(id); } };
+    anyp.vaultIsPrivate = true;                                      // STALE: left over from a previous private vault
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }]; // vault is NOW shared
+    anyp.listShareLinks = async () => [];
+    await anyp.applyPluginCodeChange(new Set(["peerplugin"]));
+    expect(enabled).not.toContain("peerplugin");                    // fresh re-derive vetoes the stale true → restart barrier holds
+    expect(anyp.vaultIsPrivate).toBe(false);                        // and the cached field is corrected
     p.onunload();
   });
 
