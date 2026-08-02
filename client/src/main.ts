@@ -146,7 +146,7 @@ class ObsidianVaultIo implements VaultIo {
       const cfg = [...m.keys()].filter((k) => k.startsWith(".obsidian/")).length;
       // Log the scope only when it CHANGES — list() runs on every reconcile (incl. the periodic
       // config scan), so logging every time would spam. A changed count is the useful signal.
-      if (cfg !== this.lastCfgCount) { this.plugin.log(`config sync ON — ${cfg} .obsidian file(s) in scope`); this.lastCfgCount = cfg; }
+      if (cfg !== this.lastCfgCount) { this.plugin.log(`config sync on — syncing ${cfg} Obsidian settings file(s)`); this.lastCfgCount = cfg; }
     }
     return m;
   }
@@ -324,7 +324,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // issueStateMachineOrphanedAndImplicit D1). `realtimeConnected` (state === "live") drives the status
   // light's realtime-vs-polling distinction so green "Fully synced" never shows over a dead socket.
   private transport: TransportState = "offline";
-  private get realtimeConnected(): boolean { return this.transport === "live"; }
+  get realtimeConnected(): boolean { return this.transport === "live"; } // public: the settings card reads it too, so its dot colour matches the ribbon (no green-over-polling divergence)
   private lastFullScanAt = 0;   // wall-clock ms of the last WHOLE-VAULT reconcile (note-drift safety net)
   private rawBuffer = new Set<string>();      // config paths from "raw" events, coalesced before reconcile
   private rawDebounce?: number;               // debounce timer for the raw-event burst
@@ -377,7 +377,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       reconcilePath: (p, size) => this.doReconcilePath(p, size),
       rews: () => this.doRews(),
       teardown: () => this.doTeardown(),
-      onPhase: (p) => { if (p !== "connecting" && p !== "syncing") this.resuming = false; this.renderLight(p); }, // resume window ends once state settles
+      onPhase: (p) => { this.renderLight(p); },
       onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
       // Classify a transport failure into a typed class the engine's LinkState transitions on. Injected
       // because it needs settings context (is a password stored → can we silently re-login vs. must the
@@ -1100,19 +1100,15 @@ export default class NewLiveSyncPlugin extends Plugin {
   syncProgressText(): string {
     return this.syncPending > 0 ? `${this.syncPending} pending` : "";
   }
-  private resuming = false; // just returned from a context switch (mobile resume) and re-assessing sync state
-  isResuming(): boolean { return this.resuming; }
-  // User-facing status = the FSM phase + the transient resuming flag + the pending count, so "Syncing…"
-  // always says WHAT it's doing (checking / N pending) rather than a bare, seemingly-stuck label, and a
-  // post-resume re-assessment reads as "Resuming…". The dot COLOUR still comes from syncstate.light(phase).
+  // User-facing status = a PURE projection of the FSM Phase (+ the pending count / realtime / read-only
+  // facts). It reads NO persisted setting and NO loose flag: a vault switch and a mobile resume are
+  // TRANSIENTS that show as the normal connecting/syncing/idle projection — so the card can NEVER latch a
+  // stale label (the "Switching vault… applying your choice" that stuck on a persisted pendingSwitch even
+  // while fully synced — field bug 2026-08-02). The dot COLOUR comes from syncstate.light(phase); this maps
+  // the SAME phase to the card's label+detail, so the two never diverge.
   statusDisplay(phase: Phase): { label: string; detail: string } {
-    // A vault switch/fork in flight — persistent across a mobile suspend because pendingSwitch is SAVED
-    // (it clears only when the switch reconcile completes). So a long fork/switch reads as "Switching
-    // vault…" instead of a generic "Syncing…", and survives backgrounding, answering "did it finish?".
-    if (this.settings.pendingSwitch) return { label: "Switching vault…", detail: "applying your choice" };
-    if (this.resuming && (phase === "connecting" || phase === "syncing")) return { label: "Resuming…", detail: "reconnecting" };
     switch (phase) {
-      // A shown "syncing" always has real transfer work (effectiveLightPhase collapses a 0-pending check to
+      // A shown "syncing" always has real transfer work (effectivePhase collapses a 0-pending check to
       // idle), so the detail is the pending count — never "checking for changes" (a transition, not a state).
       case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "" };
       case "idle":       return this.settings.vaultReadOnly
@@ -1303,7 +1299,6 @@ export default class NewLiveSyncPlugin extends Plugin {
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);
-        if (this.syncPending > 0) this.resuming = false; // transfers started → show the count, not "Resuming…"
         this.renderLight(this.engine.phase());
         this.statusListener?.(); // refresh the settings status row if open
       },
@@ -1453,8 +1448,23 @@ export default class NewLiveSyncPlugin extends Plugin {
           this.settings.pendingSwitch = "merge";
         }
       }
+      // ALREADY-APPLIED GUARD (critique 2026-08-02): a persisted pendingSwitch clears only after switchTo
+      // RETURNS. If its reconcile is killed mid-flight on mobile (large vault) it never clears, and every
+      // reconnect RE-RUNS it — for an AUTHORITATIVE resolution (download=take-remote / upload=take-local)
+      // that silently RE-CLOBBERS local edits made since. But once the base already belongs to the TARGET
+      // vault, the switch has taken effect; re-running it is pure loss (or, for merge, wasteful re-merge).
+      // So: if the switch already applied (base == target key, non-empty), clear it and reconcile NORMALLY.
+      // (A not-yet-applied switch — base still the OLD vault — still replays, preserving R12-CA1.)
+      if (this.settings.pendingSwitch && this.settings.baseVaultKey === this.vaultIdentityKey() && this.base.paths().length > 0) {
+        this.log(`vault switch '${this.settings.pendingSwitch}' already applied (base belongs to the target) — clearing, syncing normally`, true);
+        this.settings.pendingSwitch = undefined; await this.saveSettings();
+      }
       const switchMode = this.settings.pendingSwitch;
-      if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); }
+      // DIAGNOSTIC: a switch that RE-RUNS every connect (its switchTo reconcile keeps getting interrupted
+      // before it returns AND the base never reaches the target) logs here each time — making the loop
+      // visible in the debug log so a genuinely-stuck switch is diagnosable, not guessed.
+      if (switchMode) this.log(`applying vault switch resolution '${switchMode}' (persisted pendingSwitch)`);
+      if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); this.log(`vault switch '${switchMode}' complete — pendingSwitch cleared`); }
       else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
       await this.flushConfigReload();
       this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
@@ -1751,8 +1761,6 @@ export default class NewLiveSyncPlugin extends Plugin {
   // instead of waiting for the periodic tick. Cheap: the scan skips unchanged files by (size, mtime).
   private onResume() {
     if (this.unloading) return;
-    this.resuming = true;                    // show "Resuming…" while we re-assess after the context switch
-    this.renderLight(this.engine.phase());
     this.engine.enqueue({ kind: "remote" }); // re-assess: reconcile now rather than at the next poll tick
     if (this.settings.configSync.enabled) this.lastConfigScanAt = 0; // also force a config re-scan
   }

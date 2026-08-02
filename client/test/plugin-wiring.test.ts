@@ -136,18 +136,14 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
-  it("statusDisplay gives actionable status — Syncing detail, Resuming after a context switch, idle realtime", async () => {
+  it("statusDisplay gives actionable status — a PURE projection of Phase (no setting/flag can latch a label)", async () => {
     const { p } = await bootPlugin();
     (p as any).syncPending = 3;
     expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "3 pending" });
     // A syncing phase with nothing pending is a CHECK, not a state (issueStatusLightFlicker): no
-    // "checking for changes" detail — and the light never even paints it (effectiveLightPhase collapses it to idle).
+    // "checking for changes" detail — and the light never even paints it (effectivePhase collapses it to idle).
     (p as any).syncPending = 0;
     expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "" });
-    (p as any).resuming = true; // just came back from a context switch
-    expect(p.statusDisplay("connecting").label).toBe("Resuming…");
-    expect(p.statusDisplay("syncing").label).toBe("Resuming…");
-    (p as any).resuming = false;
     (p as any).transport = "live"; // realtimeConnected is now a computed getter (transport === "live")
     expect(p.statusDisplay("idle").label).toBe("Fully synced");
     (p as any).transport = "offline";
@@ -156,9 +152,13 @@ describe("plugin wiring — producers → engine → effects", () => {
     (p as any).settings.vaultReadOnly = true;
     expect(p.statusDisplay("idle")).toEqual({ label: "Synced (read-only)", detail: "your edits stay on this device" });
     (p as any).settings.vaultReadOnly = false;
-    // A vault switch/fork in flight (pendingSwitch saved) shows a persistent "Switching vault…" state.
+    // PURE PROJECTION (field bug 2026-08-02): a persisted pendingSwitch (a SETTING) must NOT change the
+    // label — a switch is transient and shows as the normal syncing/idle projection, so it can't latch a
+    // stale "Switching vault… applying your choice" while actually synced.
     (p as any).settings.pendingSwitch = "download";
-    expect(p.statusDisplay("syncing").label).toBe("Switching vault…");
+    (p as any).syncPending = 2;
+    expect(p.statusDisplay("syncing")).toEqual({ label: "Syncing…", detail: "2 pending" }); // NOT "Switching vault…"
+    expect(p.statusDisplay("idle").label).toBe("Synced (polling)");                          // NOT "Switching vault…"
     (p as any).settings.pendingSwitch = undefined;
     p.onunload();
   });
@@ -402,6 +402,26 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     await flush();
     expect(p.loginCount).toBe(loginsAfterConnect + 1);  // re-logged-in exactly once, transparently
     expect(p.statusText()).toBe("idle");                // recovered — NOT blocked in "check your password"
+    p.onunload();
+  });
+
+  // Critique HIGH (2026-08-02): a persisted AUTHORITATIVE switch (download/upload) that lingered set — its
+  // switchTo reconcile killed mid-flight before clearing — must NOT re-run every connect (each re-run
+  // re-clobbers local edits). Once the base already belongs to the target vault, the switch has applied;
+  // the guard clears it and reconciles normally instead of repeating the lossy overwrite.
+  it("a lingering already-applied authoritative switch is cleared, NOT re-run (no re-clobber loop)", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("hi"));
+    await p.reconnect(); await flush();                  // base populated + baseVaultKey stamped to THIS vault
+    await p.io_.write("note.md", enc("CHANGED"));         // a local edit made after the switch had applied
+    p.settings.pendingSwitch = "download";               // stuck take-remote resolution (a re-run would clobber)
+    (p as any).logs.length = 0;                           // isolate this connect's log
+    await p.reconnect(); await flush();
+    expect(p.settings.pendingSwitch).toBeUndefined();     // the already-applied guard cleared it
+    const logs = (p as any).logs as string[];
+    expect(logs.some((l) => l.includes("already applied"))).toBe(true);                 // guard path taken…
+    expect(logs.some((l) => l.includes("applying vault switch resolution"))).toBe(false); // …switchTo NOT re-run
+    expect(dec(await p.io_.read("note.md"))).toBe("CHANGED"); // local edit survived — not re-clobbered
     p.onunload();
   });
 
