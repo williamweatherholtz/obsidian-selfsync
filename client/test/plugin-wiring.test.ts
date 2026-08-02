@@ -5,6 +5,7 @@ import { VaultIo, SyncApi } from "../src/sync";
 import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { ConnError, Endpoint } from "../src/connstate";
 import { TFile } from "obsidian";
+import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
 // In-memory VaultIo (enough for reconcile to run).
 function memIo(seed: Record<string, string> = {}): VaultIo {
@@ -544,6 +545,28 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }]; // now shared: a rw peer can push code
     await anyp.applyPluginCodeChange(new Set(["fromapeer"]));
     expect(enabled).not.toContain("fromapeer");                     // fresh re-check → NOT private → NEVER auto-execute (the RCE barrier)
+    p.onunload();
+  });
+
+  // cssTrustGate (2026-08-02, STPA-hunt finding): synced theme/snippet CSS from a SHARED vault gets a TRUST
+  // WARNING like plugin code (Obsidian hot-reloads it live); from a PRIVATE vault, a plain notice.
+  it("synced CSS from a SHARED vault warns to review it; from a PRIVATE vault it's a plain notice", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.listShareLinks = async () => [];
+    // SHARED (a readWrite grantee) → not private → trust warning.
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }];
+    __notices.length = 0;
+    anyp.pendingReload = new Set([".obsidian/snippets/evil.css"]);
+    await p.flushConfigReload();
+    expect(__notices.some((m) => /don't trust|review it/i.test(m))).toBe(true);   // untrusted CSS → warned
+    // PRIVATE (own + no grants) → plain notice, no trust warning.
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }];
+    __notices.length = 0;
+    anyp.pendingReload = new Set([".obsidian/snippets/mine.css"]);
+    await p.flushConfigReload();
+    expect(__notices.some((m) => /don't trust|review it/i.test(m))).toBe(false);  // own CSS → no scare
+    expect(__notices.some((m) => /CSS changed/i.test(m))).toBe(true);
     p.onunload();
   });
 

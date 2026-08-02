@@ -148,7 +148,8 @@ export class Plugin {
   registerDomEvent(target: any, type: string, cb: (e: any) => void) { target?.addEventListener?.(type, cb); }
   async loadData() { return this._data; } async saveData(d: any) { this._data = d; }
 }
-export class Notice { constructor(_m?: string) {} }
+export const __notices: string[] = []; // test-visible record of Notice messages (cleared per test that asserts)
+export class Notice { constructor(m?: string) { if (m) __notices.push(m); } }
 export class Modal {
   app: any; titleEl = fakeEl(); contentEl = fakeEl(); closed = false;
   constructor(app: any) { this.app = app; }

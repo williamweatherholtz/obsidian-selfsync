@@ -1040,7 +1040,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     // readWrite grant/link to anyone (refreshVaultPrivacy, fail-safe) — sync-delivered plugin code is OUR
     // OWN, so a newly-arrived plugin is hot-loaded live (applyPluginCodeChange) to remove the restart
     // friction. Any shared / shareable vault (a peer could push code) keeps the restart trust-barrier, as
-    // does CSS (still never auto-applied) and an update to an already-running plugin. Non-code, non-CSS
+    // does an update to an already-running plugin; CSS is handled separately below (Obsidian DOES hot-reload
+    // an enabled snippet/theme, so it gets a trust warning on a shared vault, not the restart barrier). Non-code, non-CSS
     // config (e.g. a plugin's data.json) is already on disk and read on next load.
     const touchedCss = paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"));
     const pluginIds = new Set<string>();
@@ -1049,8 +1050,21 @@ export default class NewLiveSyncPlugin extends Plugin {
 
     if (pluginIds.size > 0) {
       await this.applyPluginCodeChange(pluginIds);
-    } else if (touchedCss || touchedCore) {
-      new Notice("SelfSync: some synced settings (appearance / core) will apply after you fully close and reopen Obsidian.");
+    } else if (touchedCss) {
+      // CSS TRUST GATE (issueUntrustedCssApplied / cssTrustGate): synced theme/snippet CSS is EXECUTABLE-
+      // adjacent — Obsidian hot-reloads an ENABLED snippet/theme on file change (it does NOT wait for a
+      // restart), and CSS in the un-CSP'd renderer can hide/spoof content or exfil via `background:url(...)`.
+      // So on a SHARED / shareable vault a peer authored it → give it a TRUST WARNING like plugin CODE (the
+      // prior bland "will apply after restart" was BOTH missing the warning AND wrong: it applies live). On a
+      // provably-PRIVATE vault it's the user's own CSS → a plain notice. Fresh privacy re-check (like the
+      // hot-load gate) so a vault that became shared out-of-band still warns.
+      await this.refreshVaultPrivacy();
+      new Notice(this.vaultIsPrivate
+        ? "SelfSync: your synced theme/snippet CSS changed."
+        : "SelfSync: theme/snippet CSS arrived via SYNC from a shared vault and Obsidian may apply it LIVE. CSS can alter your interface, hide or spoof content, or leak activity — REVIEW it (Settings → Appearance) and remove anything from a source you don't trust.",
+        this.vaultIsPrivate ? 6000 : 15000);
+    } else if (touchedCore) {
+      new Notice("SelfSync: some synced core settings will apply after you fully close and reopen Obsidian.");
     } else {
       this.log(`applied synced config (${paths.length} file(s))`);
     }
