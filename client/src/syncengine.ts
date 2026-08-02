@@ -113,7 +113,7 @@ export class SyncEngine {
   // @audit-hash sha256:a2d4edee4c8b574c
   enqueue(ev: EngineEvent): void {
     if (this.state === "unloading") return;
-    if (ev.kind === "unload") { this.state = "unloading"; this.queue = []; this.fx.teardown(); this.fx.onPhase(this.phase()); return; }
+    if (ev.kind === "unload") { this.link = LINK_OK; this.state = "unloading"; this.queue = []; this.fx.teardown(); this.fx.onPhase(this.phase()); return; }
     // A repeat {path} for a path already queued coalesces — but keep the LARGER size, so a save
     // that grew the file past the RAM/size gate between the two events isn't judged on the stale
     // smaller size (which would bypass the pre-read skip). (Round-6 CONC)
@@ -179,9 +179,12 @@ export class SyncEngine {
   private async handle(ev: EngineEvent): Promise<void> {
     switch (ev.kind) {
       case "unload":
-        this.setState("unloading"); this.queue = []; this.fx.teardown(); return;
+        this.link = LINK_OK; this.setState("unloading"); this.queue = []; this.fx.teardown(); return;
       case "disconnect":
-        this.queue = []; this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
+        // F2: reset the health machine — a user-initiated disconnect is not a failure, so getLastIssue/
+        // isVaultGone (which read LinkState directly) must not keep reporting the stale blocked reason
+        // (e.g. 'this vault no longer exists') after the user has already disconnected.
+        this.link = LINK_OK; this.queue = []; this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
       case "connect": {
         // A transient backoff RETRY (link=retrying) keeps showing the down state so the light doesn't flash
         // connecting↔disconnected every attempt; a fresh connect, a self-heal re-probe, or a user reconnect

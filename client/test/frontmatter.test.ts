@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   hasFrontmatter, getManagedValue,
   normalizedContent, normalizedHash,
-  isCanonicalTimestamp, parseIso, isTimestampValue,
+  isCanonicalTimestamp, isTimestampValue,
   DEFAULT_IGNORED_TIMESTAMP_KEYS,
 } from "../src/frontmatter";
 
@@ -35,8 +35,12 @@ describe("content identity — always-on EOL/BOM normalization (the CRLF false-p
     const plain = "body only\n";
     expect(await normalizedHash(enc("﻿" + plain))).toBe(await normalizedHash(enc(plain)));
   });
-  it("multiple trailing newlines collapse to one (no spurious change)", () => {
+  it("multiple trailing newlines collapse (no spurious change)", () => {
     expect(normalizedContent("a\nb\n")).toBe(normalizedContent("a\nb\n\n\n"));
+  });
+  it("T4: a lone-CR (old Mac) and a final-newline TOGGLE are non-differences — consistent with merge3's sameIgnoringEol", () => {
+    expect(normalizedContent("a\rb")).toBe(normalizedContent("a\nb"));   // lone CR normalized (was not)
+    expect(normalizedContent("a\nb")).toBe(normalizedContent("a\nb\n")); // 0-vs-1 trailing newline now equal (was a difference)
   });
   it("a real body change still differs", async () => {
     expect(await normalizedHash(enc("hello\n"))).not.toBe(await normalizedHash(enc("HELLO\n")));
@@ -61,6 +65,11 @@ describe("content identity — value-shape-gated timestamp masking", () => {
     const x = "---\nupdated: reviewed by Alice\n---\nbody\n";
     const y = "---\nupdated: reviewed by Bob\n---\nbody\n";
     expect(normalizedContent(x, K)).not.toBe(normalizedContent(y, K)); // real content change, still synced
+  });
+  it("T1: a BARE-YEAR `created` edit is NOT masked — it still syncs (Date.parse used to eat it)", () => {
+    const x = "---\ncreated: 2020\n---\nbody\n";
+    const y = "---\ncreated: 2021\n---\nbody\n";
+    expect(normalizedContent(x, K)).not.toBe(normalizedContent(y, K)); // bare year isn't a timestamp SHAPE → real edit syncs
   });
   it("masks a PER-DEVICE key via the `-*` wildcard (updated-asi-laptop)", () => {
     const p = "---\ntitle: T\nupdated-asi-laptop: 2026-01-01T00:00:00-06:00\n---\nb\n";
@@ -105,15 +114,18 @@ describe("value-shape helpers", () => {
     expect(isCanonicalTimestamp("2026-01-01T00:00:00Z")).toBe(false);
     expect(isCanonicalTimestamp("2026-01-01")).toBe(false);
   });
-  it("parseIso strips YAML quotes and rejects non-dates", () => {
-    const ms = Date.UTC(2026, 0, 1, 0, 0, 0);
-    expect(parseIso('"2026-01-01T00:00:00+00:00"')).toBe(ms);
-    expect(parseIso("'2026-01-01T00:00:00+00:00'")).toBe(ms);
-    expect(parseIso("not a date")).toBeUndefined();
-  });
-  it("isTimestampValue accepts date-only and full datetimes, rejects prose/numbers-as-tags", () => {
+  it("isTimestampValue: ISO date/datetime SHAPES only — NOT bare years/integers (T1/T2, portable, no Date.parse)", () => {
     expect(isTimestampValue("2026-01-01")).toBe(true);
     expect(isTimestampValue("2026-01-01T00:00:00Z")).toBe(true);
+    expect(isTimestampValue("2026-01-01T00:00:00-06:00")).toBe(true);
+    expect(isTimestampValue("2026-01-01 12:00:00")).toBe(true);          // space separator
+    expect(isTimestampValue("2026-01-01T00:00:00.000Z")).toBe(true);     // milliseconds
+    expect(isTimestampValue('"2026-01-01"')).toBe(true);                 // quoted date
     expect(isTimestampValue("reviewed by Bob")).toBe(false);
+    // The T1/T2 regression: Date.parse accepted these as dates → they were MASKED and stopped syncing.
+    expect(isTimestampValue("2020")).toBe(false);                        // bare year (a curated publication year)
+    expect(isTimestampValue("5")).toBe(false);                           // a counter
+    expect(isTimestampValue("42")).toBe(false);
+    expect(isTimestampValue("3.14")).toBe(false);
   });
 });

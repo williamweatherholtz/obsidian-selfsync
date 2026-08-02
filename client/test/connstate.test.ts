@@ -85,9 +85,9 @@ describe("recoveryFor — no class both strands and loops", () => {
 
 describe("linkNext — the LinkState FSM", () => {
   const awaitUserRec = { kind: RecoveryKind.AwaitUser as const, reprobeSecs: 600 };
-  it("Connected and UserRetry both return to Ok", () => {
+  it("Connected returns a blocked link to Ok", () => {
     expect(linkNext({ kind: LinkKind.Blocked, reason: FailureKind.AuthRejected, recovery: awaitUserRec }, { kind: LinkEventKind.Connected })).toEqual(LINK_OK);
-    expect(linkNext({ kind: LinkKind.Blocked, reason: FailureKind.VaultGone, recovery: awaitUserRec }, { kind: LinkEventKind.UserRetry })).toEqual(LINK_OK);
+    expect(linkNext({ kind: LinkKind.Blocked, reason: FailureKind.VaultGone, recovery: awaitUserRec }, { kind: LinkEventKind.Connected })).toEqual(LINK_OK);
   });
   it("a Transient failure → Retrying, incrementing the attempt count", () => {
     const s1 = linkNext(LINK_OK, { kind: LinkEventKind.Failed, cls: { kind: FailureKind.Transient } });

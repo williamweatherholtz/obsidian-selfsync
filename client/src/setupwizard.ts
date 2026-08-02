@@ -234,11 +234,19 @@ export class SetupWizardModal extends Modal {
     await this.plugin.saveSettings(); // redeemShareLink authenticates via these persisted creds
     try {
       const ref = await this.plugin.redeemShareLink(this.pendingShareLink);
-      st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
-      await this.plugin.saveSettings();
       new Notice(`SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
       this.close();
-      void this.plugin.reconnect();
+      // V2 (2026-08-02): redeeming a share on a device that already has local notes must NOT silently
+      // reconcile them against the shared vault's base (a foreign base) — route through the safe merge-switch
+      // (clears the stale base + unions, nothing lost), exactly like the wizard's own vault-change path and
+      // the "Switch vault" action. A fresh/empty device adopts directly.
+      if (await this.plugin.hasLocalData()) {
+        await this.plugin.switchToVault(ref.vault, "merge", ref.owner, ref.perm === "read");
+      } else {
+        st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
+        await this.plugin.saveSettings();
+        void this.plugin.reconnect();
+      }
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`, 9000);
       this.render(); // stay signed in so the user can see the error / retry

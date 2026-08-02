@@ -38,7 +38,7 @@ export enum RecoveryKind { Backoff = "retryBackoff", After = "retryAfter", Slow 
 
 // The connection-health STATES and the EVENTS that drive them.
 export enum LinkKind { Ok = "ok", Retrying = "retrying", Blocked = "blocked" }
-export enum LinkEventKind { Connected = "connected", Failed = "failed", UserRetry = "userRetry" }
+export enum LinkEventKind { Connected = "connected", Failed = "failed" }
 
 // ---- the tagged error info (minted at the throw site; the classifier's only input) ----
 
@@ -131,8 +131,7 @@ export type LinkState =
 
 export type LinkEvent =
   | { kind: LinkEventKind.Connected }                 // connect effect succeeded
-  | { kind: LinkEventKind.Failed; cls: FailureClass } // connect effect failed with a classified cause
-  | { kind: LinkEventKind.UserRetry };                // user reconnect/reconfigure — leave the blocked state and try again
+  | { kind: LinkEventKind.Failed; cls: FailureClass };// connect effect failed with a classified cause
 
 // A blocked FailureClass → its BlockReason (only the AwaitUser classes reach here).
 function blockReasonOf(cls: FailureClass): BlockReason | null {
@@ -141,11 +140,12 @@ function blockReasonOf(cls: FailureClass): BlockReason | null {
 
 export const LINK_OK: LinkState = { kind: LinkKind.Ok };
 
-// PURE + TOTAL transition. `Connected` and `UserRetry` both return the link to a hopeful `Ok` (a connect
-// attempt is/looks in flight); a `Failed` maps the class through recoveryFor to either a Retrying (timer
-// armed) or a Blocked (await-user + self-heal re-probe) state.
+// PURE + TOTAL transition. `Connected` returns the link to `Ok`; a `Failed` maps the class through
+// recoveryFor to either a Retrying (timer armed) or a Blocked (await-user + self-heal re-probe) state.
+// (A user reconnect needs no distinct event: it routes through disconnect — which resets the link to Ok,
+// F2 — then connect, so the blocked reason clears without a dedicated UserRetry edge.)
 export function linkNext(s: LinkState, e: LinkEvent): LinkState {
-  if (e.kind === LinkEventKind.Connected || e.kind === LinkEventKind.UserRetry) return { kind: LinkKind.Ok };
+  if (e.kind === LinkEventKind.Connected) return { kind: LinkKind.Ok };
   const rec = recoveryFor(e.cls);
   if (rec.kind === RecoveryKind.AwaitUser) {
     const reason = blockReasonOf(e.cls)!; // AwaitUser ⟺ a block reason exists

@@ -33,6 +33,7 @@ function spyApi() {
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
   let failChangesAuthTimes = 0;                // number of leading changes() calls that 401 (a MID-SESSION token expiry on the poll path)
   let failStatus404 = false;                   // vault-gone: the status probe 404s (typed ConnError, endpoint=vaultStatus)
+  let statusHealth = "ready";                  // server vault health reported by status() ("error" => degraded/reindex-needed)
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
@@ -40,6 +41,7 @@ function spyApi() {
     __failChangesWith: (msg: string) => void;
     __failChangesAuth: (n: number) => void;
     __failStatus404: () => void;
+    __setStatusHealth: (s: string) => void;
   } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
@@ -50,11 +52,12 @@ function spyApi() {
     __failChangesWith: (msg: string) => { changesError = msg; },
     __failChangesAuth: (n: number) => { failChangesAuthTimes = n; },
     __failStatus404: () => { failStatus404 = true; },
+    __setStatusHealth: (s: string) => { statusHealth = s; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
-      return { status: "ready", detail: "", version: 0, apiVersion: statusApiVersion };
+      return { status: statusHealth, detail: "", version: 0, apiVersion: statusApiVersion };
     },
     async changes(since) { rec("changes", [since]); if (failChangesAuthTimes > 0) { failChangesAuthTimes--; throw new ConnError("unauthorized", { status: 401, endpoint: Endpoint.Other, wasLogin: false }); } if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
@@ -402,6 +405,29 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  // F2 (2026-08-02): a user-initiated disconnect resets LinkState, so getLastIssue/isVaultGone (which read
+  // the LinkState directly) stop reporting a stale blocked reason after the user has already disconnected.
+  it("disconnect resets LinkState — no stale vault-gone prompt after the user disconnects (F2)", async () => {
+    const { p, api } = await bootPlugin();
+    api.__failStatus404();                              // the status probe 404s → VaultGone → blocked
+    await p.reconnect(); await flush();
+    expect(p.isVaultGone()).toBe(true);                 // blocked{vaultGone}
+    await p.disconnect(); await flush();
+    expect(p.isVaultGone()).toBe(false);                // F2: the stale blocked reason is cleared
+    expect(p.getLastIssue() ?? "").toBe("");            // and no leaked issue text
+    p.onunload();
+  });
+
+  // F3 (2026-08-02): a synthetic serverDegraded failure sets a specific 'run reindex' message before
+  // throwing; the generic outer catch must NOT overwrite it (it did → the card showed 'Reconnecting…').
+  it("a serverDegraded (reindex-needed) message survives the generic catch (F3)", async () => {
+    const { p, api } = await bootPlugin();
+    api.__setStatusHealth("error");                     // status() not-ready → doConnect throws ServerDegraded synthetic
+    await p.reconnect(); await flush();
+    expect(p.getLastIssue() ?? "").toMatch(/reindex/i); // the actionable message survived (not clobbered)
+    p.onunload();
+  });
+
   it("removePluginFromServer purges ONLY that plugin's server files + drops it from the allowlist/view (explicit, bounded)", async () => {
     const { p, api } = await bootPlugin();
     const meta = (path: string) => ({ path, hash: path, size: 0, version: 1, chunks: [] as string[] });
@@ -421,6 +447,22 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     expect(deleted).not.toContain(".obsidian/plugins/keepme/main.js"); // a DIFFERENT plugin is untouched (bounded to the one plugin)
     expect(p.settings.configSync.pluginAllow).toEqual(["keepme"]);     // dropped from THIS device's allowlist
     expect(p.getServerPluginIds()).not.toContain("update-time-on-edit"); // gone from the synced-plugins view
+    p.onunload();
+  });
+
+  // S3 (2026-08-02): the plugin id is server/peer-influenced; a crafted id must never widen the delete
+  // beyond one plugin folder. An invalid id is rejected before any deleteFile call.
+  it("removePluginFromServer REJECTS a traversal / malformed plugin id (deletes nothing)", async () => {
+    const { p, api } = await bootPlugin();
+    api.__setChanges({ version: 1, upserts: [
+      { path: ".obsidian/plugins/keepme/main.js", hash: "h", size: 0, version: 1, chunks: [] as string[] },
+      { path: ".obsidian/app.json", hash: "h2", size: 0, version: 1, chunks: [] as string[] },
+    ], deletes: [] });
+    await p.reconnect(); await flush();
+    for (const bad of ["..", "../evil", "a/b", "", "."]) {
+      expect(await p.removePluginFromServer(bad)).toBe(0);          // rejected, no-op
+    }
+    expect(api.__calls.deleteFile ?? []).toHaveLength(0);           // NOTHING was deleted
     p.onunload();
   });
 

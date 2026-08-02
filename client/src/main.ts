@@ -661,6 +661,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // merge). Local installed copy is untouched.
   async removePluginFromServer(id: string): Promise<number> {
     if (!this.api) { new Notice("SelfSync: connect first, then remove a plugin from the server"); return 0; }
+    // S3 (2026-08-02): `id` is a single plugin-folder SEGMENT and (via pluginIdOf) is server/peer-influenced.
+    // Validate it before it builds a delete prefix, so a crafted id (`..`, a slash, empty) can never widen the
+    // deletion beyond one plugin folder. A real Obsidian plugin id starts alphanumeric and has no separators.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) { new Notice(`SelfSync: '${id}' is not a valid plugin id`); return 0; }
     const api = this.api;
     const manifest = await api.changes(0);
     const prefix = `.obsidian/plugins/${id}/`;
@@ -841,7 +845,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Unbind this vault (keep local files); return to the unconfigured state.
   async disconnect() {
     this.settings.vaultId = "";
-    await this.saveSettings();
+    this.lastIssue = undefined; // F2: clear the transient reason too (the engine resets LinkState) — a
+    await this.saveSettings();  // user-initiated disconnect is not an error state to keep reporting
     this.engine.enqueue({ kind: "disconnect" }); // → teardown (stops timers + closes ws), state off
     this.log("disconnected (local files kept)"); // the settings UI reflects it — no toast needed
   }
@@ -1441,6 +1446,10 @@ export default class NewLiveSyncPlugin extends Plugin {
           : stored !== this.historyFloorKey();
         if (mismatch) {
           this.log(`base belonged to '${stored}' but now syncing '${this.vaultIdentityKey()}' — clearing the stale base (safe merge)`, true);
+          // V2 (2026-08-02): don't merge SILENTLY — a union across two vaults is a real (if non-destructive)
+          // change the user should see. The merge is still the safe default (nothing is lost); the notice
+          // just makes it visible instead of happening behind the user's back.
+          new Notice("SelfSync: this vault changed since the last sync on this device — merging safely so nothing is lost.", 9000);
           this.settings.pendingSwitch = "merge";
         }
       }
@@ -1463,7 +1472,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       // blocked/lockedOut reason (sign-in rejected / version mismatch / vault gone / locked out …). Here we
       // set only the TRANSIENT fallback text (shown while `retrying`, when the link isn't blocked); the
       // vaultGone/session-expired/version cases are carried on the typed error, not a parallel bool/regex.
-      this.lastIssue = `Can't reach the server (${e?.message ?? e}). Retrying…`;
+      // F3: a SYNTHETIC failure (serverDegraded's 'run reindex', a version mismatch) already set a specific,
+      // actionable lastIssue before throwing its typed ConnError — don't overwrite it with the generic
+      // transient text (serverDegraded -> Retrying{Slow} reads lastIssue, so the clobber hid the reindex
+      // instruction behind 'Reconnecting…'). Only stamp the generic fallback for a real network/HTTP error.
+      if (!(e instanceof ConnError && e.info.synthetic !== undefined)) {
+        this.lastIssue = `Can't reach the server (${e?.message ?? e}). Retrying…`;
+      }
       throw e; // → engine.failWith: classify + advance LinkState + schedule the class-appropriate recovery
     }
   }
