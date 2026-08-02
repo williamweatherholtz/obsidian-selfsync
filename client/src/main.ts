@@ -1299,6 +1299,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);
+        if (this.syncPending > 0) this.engine.beginReconcile(); // real transfers in flight → escalate a connecting/idle state to "Syncing…"
         this.renderLight(this.engine.phase());
         this.statusListener?.(); // refresh the settings status row if open
       },
@@ -1415,10 +1416,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       // If this is a vault shared TO us, re-derive our permission from the server's grant so the
       // cached vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
       await this.refreshShareGrant(activeToken);
-      // Connection is now established (token + health OK). Flip the indicator from "Connecting…" to
-      // "Syncing…" before the initial reconcile — which is the bulk of the time and was showing
-      // "Connecting…" for its whole duration (critique/field bug). The engine settles to idle after.
-      this.engine.markReconciling();
+      // The initial reconcile below does NOT optimistically flip to "Syncing…" (the removed markReconciling):
+      // it stays "Connecting…" and escalates to "Syncing…" only when it's actually TRANSFERRING (onProgress /
+      // onBaseChanged → beginReconcile). So a healthy sync shows "Connecting…" → "Syncing… N" → "Fully
+      // synced", while a FAILING one (e.g. DNS drops mid-switch) stays "Connecting…"/"Reconnecting…" instead
+      // of collapsing to a false "Synced (polling)" (field 2026-08-02). The engine settles to idle on success.
       // A pending vault switch applies its chosen resolution ONCE, then reverts to normal reconcile.
       // CONC#5: clear pendingSwitchMode ONLY AFTER switchTo fully succeeds. Clearing it up-front meant
       // a mid-switch failure (network drop, throw) left the next reconnect doing a plain merge

@@ -103,6 +103,24 @@ A genuinely never-completing switch (a huge-vault reconcile killed before it eve
 remains outside scope — that needs an incremental/resumable switch reconcile; the diagnostic log surfaces
 it, and the guard prevents the re-clobber once any pass completes.
 
+## Follow-up field finding (same day, on 1.11.4): the initial reconcile faked "Synced"
+
+The owner's next log showed the switch now correctly ABORTING on the DNS outage (`connect FAILED …
+retrying in 3s`, the 1.11.4 fix) — but the card still read "Synced (polling)" during the failing attempts.
+Root cause, one layer deeper in the FSM: `markReconciling()` optimistically flipped `connecting`/
+`disconnected` → `reconciling` (→ phase "syncing") the moment the health check passed, BEFORE the initial
+reconcile. When that reconcile transferred nothing (failing on DNS), `syncPending` stayed 0 and
+`effectivePhase` collapsed `syncing`-0-pending → **idle → "Synced (polling)"** for the whole 30s attempt.
+
+A normal POLL never had this problem: it doesn't pre-flip — `beginReconcile()` escalates `idle` →
+`reconciling` only when there's genuine work, so a no-op poll stays idle without needing the collapse.
+
+**Fix:** make connect behave like a poll. Removed `markReconciling()`; broadened `beginReconcile()` to
+escalate from `idle` OR an in-flight connect (`connecting`/`disconnected`); and `onProgress(pending>0)` now
+calls it too. So the initial reconcile shows "Connecting…" and becomes "Syncing… N" ONLY while actually
+transferring — a failing/empty connect stays "Connecting…"/"Reconnecting…" and can never collapse to a
+false "Synced." `beginReconcile` is now the single door into `reconciling`. (Ships 1.11.5.)
+
 ## Acceptance
 
 Ships PATCH (bugfix). Full client vitest + tsc + keel green. Independent antagonistic critique before

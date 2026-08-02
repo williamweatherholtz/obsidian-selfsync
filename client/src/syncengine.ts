@@ -86,20 +86,18 @@ export class SyncEngine {
   // connected ones. Gates path/remote/rews (an event before/after a live connection is dropped).
   private isConnected(): boolean { return this.state === "reconciling" || this.state === "idle"; }
 
-  // @audit r2 2026-07-18 — FIXED (comment drift): two stacked, CONTRADICTORY doc blocks (one said "only
-  // upgrades connecting", the other "connecting OR offline") — a merge artifact. Collapsed to the accurate
-  // one matching the code. (Body unchanged → no @audit-hash.)
-  // Called AFTER the connect effect's health check passes (connection confirmed reachable), BEFORE the
-  // initial reconcile — so recovery shows "Syncing…" not a stale "offline"/"connecting". Upgrades from
-  // either "connecting" (fresh connect) or "offline" (a backoff retry that just reached the server) to
-  // "reconciling"; never overrides idle/unloading.
-  markReconciling(): void { if (this.state === "connecting" || this.state === "disconnected") this.setState("reconciling"); }
-
-  // Called by the reconcile EFFECT the instant it has genuine work — a non-empty delta, a history
-  // reset, or a config scan that actually mutates a file. A routine no-op poll never calls it, so a
-  // settled "idle" ("Fully synced") STAYS idle instead of blipping "Syncing…" every few seconds.
-  // Escalates only from a settled idle while connected; pump() returns it to idle when work drains.
-  beginReconcile(): void { if (this.state === "idle") this.setState("reconciling"); } // idle ⟹ connected
+  // Called by the reconcile EFFECT the instant it has genuine TRANSFER work — a non-empty delta, a history
+  // reset, a config mutation, or a pending>0 progress tick. Escalates to "reconciling" (→ "Syncing…") from a
+  // settled idle OR from an in-flight connect ("connecting" / "disconnected"-retrying). This is the ONLY way
+  // into "reconciling": the connect effect no longer optimistically pre-flips (the removed markReconciling),
+  // so the INITIAL reconcile shows "Syncing…" ONLY while it is actually transferring — a failing or empty
+  // connect reconcile stays "Connecting…" / "Reconnecting…" and can NEVER collapse to a FALSE "Synced"
+  // (field 2026-08-02: a DNS-failing 'upload' switch transferred nothing → reconciling-0-pending → idle →
+  // "Synced (polling)"). A no-op poll never calls it, so a settled idle STAYS idle (no "Syncing…" blip).
+  // pump() returns it to idle when work drains.
+  beginReconcile(): void {
+    if (this.state === "idle" || this.state === "connecting" || this.state === "disconnected") this.setState("reconciling");
+  }
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 

@@ -54,23 +54,25 @@ describe("SyncEngine — serial run-to-completion", () => {
     expect(h.e.getState()).toBe("idle");
   });
 
-  it("shows Syncing (not Connecting) once the connection is established during the initial reconcile", async () => {
+  it("the initial reconcile shows Connecting until it has real work, then Syncing (no optimistic pre-flip)", async () => {
     const h = harness();
-    const g = h.block("connect");                 // hold connect in-flight (models the long initial reconcile inside it)
+    const g = h.block("connect");                 // hold connect in-flight (models the initial reconcile inside it)
     h.e.enqueue({ kind: "connect" });
     await tick();
-    expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // before the connection is established
-    h.e.markReconciling();                        // connect effect signals: connected, now reconciling
-    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // the initial sync shows Syncing, not Connecting
+    expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // no transfer work yet → honest "Connecting…"
+    h.e.beginReconcile();                         // the reconcile effect found genuine work
+    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // NOW shows Syncing (escalated from connecting)
     g.resolve(); await tick();
     expect(h.e.getState()).toBe("idle");          // settles once connect returns
   });
 
-  it("markReconciling is a no-op unless connecting/offline", async () => {
+  it("a connect whose initial reconcile transfers NOTHING never shows a false syncing/idle (field 2026-08-02)", async () => {
     const h = harness();
-    h.e.enqueue({ kind: "connect" }); await tick(); // now idle
-    h.e.markReconciling();
-    expect(h.e.getState()).toBe("idle");            // not upgraded from a settled state
+    const g = h.block("connect");
+    h.e.enqueue({ kind: "connect" }); await tick();
+    expect(engineStateToPhase(h.e.getState())).toBe("connecting"); // no beginReconcile → stays connecting, NOT syncing/idle
+    g.reject(new Error("UnknownHostException")); await tick();
+    expect(h.e.getState()).toBe("disconnected");                   // failed → retrying — never a false "Synced (polling)"
   });
 
   it("beginReconcile escalates idle→reconciling only when connected (a no-op poll can't blip it)", async () => {
@@ -118,7 +120,7 @@ describe("SyncEngine — serial run-to-completion", () => {
     expect(h.phases.filter((p) => p === "connecting").length).toBe(1); // "connecting" projected exactly once
   });
 
-  it("a retry that reaches the server upgrades to syncing (via markReconciling), then idle", async () => {
+  it("a retry that reaches the server upgrades to syncing when it finds work, then idle", async () => {
     const h = harness();
     const g1 = h.block("connect");
     h.e.enqueue({ kind: "connect" }); await tick();
@@ -127,8 +129,8 @@ describe("SyncEngine — serial run-to-completion", () => {
     const g2 = h.block("connect");
     h.e.enqueue({ kind: "connect" }); await tick();
     expect(engineStateToPhase(h.e.getState())).toBe("retrying");
-    h.e.markReconciling();                                         // connect() confirmed reachability
-    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // recovery shows Syncing, not offline/connecting
+    h.e.beginReconcile();                                          // the reconcile found genuine work (server reachable again)
+    expect(engineStateToPhase(h.e.getState())).toBe("syncing");    // recovery shows Syncing only when actually transferring
     g2.resolve(); await tick();
     expect(h.e.getState()).toBe("idle");
   });
