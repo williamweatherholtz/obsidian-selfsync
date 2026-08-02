@@ -172,7 +172,16 @@ package ProjectStpaAnalysis {
         :>> statement = "The Sync Engine does not provide establish-connection when the link is down and recoverable, so sync does not resume — and nothing signals it has stopped trying. [H-10]";
     }
 
+    part uca22 : UnsafeControlAction {
+        :>> id = "c0f1a5cc-d016-4a10-9b20-a1b2c3d4d016"; :>> ucaType = UcaType::wrongTimingOrder;
+        :>> title = "UCA-22: delete-remote is applied based on a STALE version, after a concurrent commit advanced the file";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> context = "A device plans a delete-remote from a version it last saw (v5); meanwhile another device commits an edit (v5->v6). The server serializes the two but the delete carries no precondition.";
+        :>> statement = "Delete-remote provided based on a stale version — out of order with respect to a newer concurrent commit — so the server applies the tombstone and SUPERSEDES the newer edit; the editor pulls the tombstone and silently loses its change fleet-wide (a lost update). Unlike commit, delete had no optimistic-concurrency interlock. [H-1]";
+    }
+
     #Causes dependency from uca1 to h1;
+    #Causes dependency from uca22 to h1;
     #Causes dependency from uca21 to h10;
     #Causes dependency from uca2 to h1;
     #Causes dependency from uca3 to h1;
@@ -357,6 +366,10 @@ package ProjectStpaAnalysis {
         :>> causalFactor = "inadequate control algorithm (a delete path trusts a fallible listing without re-probing)";
         :>> title = "S-17: upload switch tombstones a file the listing falsely omits";
         :>> statement = "On an 'upload' vault switch, a still-present local file transiently omitted by a fallible io.list() (un-hydrated cloud placeholder / dir-enum hiccup / lock) is deleted-remote — a server tombstone that propagates delete-local to every peer — because switchUpload's remote-drop trusted the raw listing with no probePresence re-probe (the one delete path that lacked it, unlike reconcileOne/reconcileDelta) [H-1]. Mitigation: re-probe real absence before tombstoning on the switch path too (SR-14 extended to switchUpload; switchUploadProbeGuard 1.11.8)."; }
+    part s18 : LossScenario { :>> id = "9e4b1c07-5a2f-4d38-b6e1-8c0f3a92d5b4"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "missing control interlock (delete has no optimistic-concurrency guard, unlike commit)";
+        :>> title = "S-18: a stale delete supersedes a newer concurrent commit (lost update)";
+        :>> statement = "Device A commits an edit (v5->v6); device B, still based on v5, issues a delete-remote. The server (Vault::delete) computed a new version UNCONDITIONALLY — no expected_version precondition, unlike Vault::commit's CAS — so B's tombstone lands at v7 and supersedes A's edit; A pulls the tombstone and silently loses its change fleet-wide, with no conflict marker. A readWrite grantee could weaponize this to discard the owner's concurrent edit [H-1]. Mitigation: CAS-guard delete symmetric with commit — the reconcile delete carries its based-on version and 409s if the server advanced, then re-reconciles as edit-wins-pull, resurrecting the edit (SR-24; deleteRemoteCasGuard 1.11.10)."; }
 
     #Explains dependency from s1 to uca1;   #LeadsTo dependency from s1 to h1;
     #Explains dependency from s2 to uca2;   #LeadsTo dependency from s2 to h1;
@@ -375,6 +388,7 @@ package ProjectStpaAnalysis {
     #LeadsTo dependency from s15 to h9;
     #Explains dependency from s16 to uca21; #LeadsTo dependency from s16 to h10;
     #Explains dependency from s17 to uca6;  #LeadsTo dependency from s17 to h1;
+    #Explains dependency from s18 to uca22; #LeadsTo dependency from s18 to h1;
 
     // ================= Derived Safety Requirements =================
     // Each #Satisfies its SC + #Mitigates its UCA(s). safetyFunction names the REALIZING mechanism
@@ -518,7 +532,14 @@ package ProjectStpaAnalysis {
         :>> triggeringEvent = "the app returns to the foreground after a failed connect while backgrounded";
         :>> safeState = "a fresh connect is attempted promptly on resume; the retry is visible in the log";
         :>> safetyFunction = "REALIZED: resumeReattemptsConnection (1.11.7) — onResume kicks a connect when disconnected + logs it; verified by plugin-wiring 'mobile resume RE-ATTEMPTS a failed connection (not a dropped remote)'."; }
+    part sr24 : SafetyRequirement { :>> id = "c0f1a5cc-d318-4a10-9b20-a1b2c3d4d318"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-24: delete honors the same optimistic-concurrency (CAS) guard as commit";
+        :>> statement = "A reconcile-driven delete-remote must carry the version it is based on and be REJECTED (409) if the server has advanced past it — symmetric with commit's expected_version — so a stale delete cannot supersede a newer concurrent commit (no lost update). On the 409 the client re-reconciles and adopts the intervening edit (edit-wins-pull). A deliberate/authoritative delete (user gesture / adjudication / switch) omits the precondition and still always wins.";
+        :>> triggeringEvent = "a delete-remote races a concurrent commit on the same path from another device";
+        :>> safeState = "the stale delete 409s and the concurrent edit survives + is resurrected; a deliberate delete still propagates";
+        :>> safetyFunction = "REALIZED: deleteRemoteCasGuard (1.11.10) — server Vault::delete_checked(path, expected_version) mirrors commit's CAS (stale -> 409); client transport.deleteFile sends the based-on version + maps 409 -> CommitConflictError; the reconcile deleteRemote effect carries it. Verified by server cargo delete_cas_rejects_a_stale_delete_that_would_clobber_a_newer_commit + authoritative_delete_always_wins_and_absent_delete_is_a_noop, and client reconcile 'a stale delete 409s and the peer's concurrent edit is resurrected (edit-wins-pull), never lost'."; }
 
+    #Satisfies dependency from sr24 to sc1;  #Satisfies dependency from sr24 to sc8;  #Mitigates dependency from sr24 to uca22;
     #Satisfies dependency from sr1 to sc1;   #Mitigates dependency from sr1 to uca1;  #Mitigates dependency from sr1 to uca2;
     #Satisfies dependency from sr2 to sc2;   #Mitigates dependency from sr2 to uca4;
     #Satisfies dependency from sr3 to sc3;   #Mitigates dependency from sr3 to uca5;
@@ -557,6 +578,7 @@ package ProjectStpaAnalysis {
     #Analyzes dependency from uca4 to caPullFile;
     #Analyzes dependency from uca5 to caPullFile;
     #Analyzes dependency from uca6 to caDeleteRemote;
+    #Analyzes dependency from uca22 to caDeleteRemote;
     #Analyzes dependency from uca7 to caApplyConfig;
     #Analyzes dependency from uca8 to caApplyConfig;
     #Analyzes dependency from uca9 to caCommit;
@@ -593,6 +615,7 @@ package ProjectStpaAnalysis {
     #RealizedBy dependency from sr17 to c3Session;
     #RealizedBy dependency from sr18 to c3Session;
     #RealizedBy dependency from sr19 to c5ServerVault;
+    #RealizedBy dependency from sr24 to c5ServerVault;  // the delete CAS is the server vault's interlock
     #RealizedBy dependency from sr20 to c2SyncEngine;  // the status projection is the engine's (phase = fn of its FSMs)
     #RealizedBy dependency from sr21 to c2SyncEngine;
     #RealizedBy dependency from sr22 to c2SyncEngine;
@@ -606,4 +629,5 @@ package ProjectStpaAnalysis {
     #Senses dependency from s10 to fbAuthResponse;
     #Senses dependency from s11 to fbConnResult;
     #Senses dependency from s12 to fbRemoteManifest;
+    #Senses dependency from s18 to fbRemoteManifest; // the delete ignored the manifest's version (the CAS precondition it lacked)
 }
