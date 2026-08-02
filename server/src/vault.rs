@@ -676,7 +676,30 @@ impl Vault {
     // stat + a TOCTOU window); now a single remove_file that stays quiet on NotFound. The DI-R5#4
     // delete-by-raw-key + durable-before-mirror-removal design is correct — left as-is.
     // @audit-hash sha256:3f932351b032f42e
+    /// Authoritative delete — no optimistic-concurrency precondition, so the delete always wins. For
+    /// deliberate user gestures / adjudication / switch (and tests). CAS-guarded deletes (the reconcile
+    /// path) go through `delete_checked`.
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
+        self.delete_checked(path, None)
+    }
+
+    /// CAS-guarded delete, SYMMETRIC WITH `commit`'s optimistic concurrency (issueDeleteNoCasLostUpdate).
+    /// When `expected_version` is set, reject (AlreadyExists → 409 in the API layer) if the server has
+    /// advanced past it: a device holding a STALE base could otherwise delete a file another device just
+    /// edited, and the editor would pull the tombstone and silently lose its change fleet-wide (a lost
+    /// update, no conflict marker) — the exact class commit's CAS stops. On a 409 the client re-reconciles;
+    /// because `decide` keys on hashes, remote-advanced-since-base then reads as `edit-wins-pull` and the
+    /// edit is RESURRECTED, never lost. A MISSING file (already gone) needs no guard — the delete's goal is
+    /// already met, so it falls through to the None/404 path. `None` ⇒ authoritative (always wins).
+    pub fn delete_checked(&mut self, path: &str, expected_version: Option<u64>) -> std::io::Result<Option<Deletion>> {
+        if let Some(expected) = expected_version {
+            if let Some(m) = self.index.file_meta(path)? {
+                if expected != m.version {
+                    return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+                        format!("version conflict on delete of '{}': client based on v{expected}, server at v{}", path, m.version)));
+                }
+            }
+        }
         // DI-R5#4: a file committed BEFORE safe_rel_path was tightened (or ingested via the bind mount
         // + reindex, which doesn't apply safe_rel_path) may be an index key that no longer passes
         // safe_rel_path. It must still be DELETABLE — index.delete evicts by the exact raw key
@@ -1032,6 +1055,49 @@ mod tests {
         assert_eq!(v.changes(0).history_floor, 1, "precondition: genesis floor");
         v.reindex(false).unwrap(); // healthy + zero tombstones → the floor must not move
         assert_eq!(v.changes(0).history_floor, 1, "426: a healthy, tombstone-free reindex must not raise the floor");
+    }
+
+    // issueDeleteNoCasLostUpdate: DELETE must honor the SAME optimistic-concurrency guard as COMMIT.
+    // Without it, a device holding a STALE base can delete a file another device just edited, and the
+    // editor pulls the tombstone and silently loses its change fleet-wide (a lost update, no conflict
+    // marker) — the exact class commit's CAS stops. A stale-versioned delete_checked must 409
+    // (AlreadyExists) and leave the file intact; a current-versioned one proceeds.
+    #[test]
+    fn delete_cas_rejects_a_stale_delete_that_would_clobber_a_newer_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let mut put = |v: &mut Vault, body: &[u8]| {
+            let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None }).unwrap()
+        };
+        let base = put(&mut v, b"one").version;        // the version a lagging device last saw
+        let newer = put(&mut v, b"two").version;       // a concurrent edit the lagging device hasn't pulled
+        assert!(newer > base, "precondition: the edit advanced the version");
+
+        // The lagging device (still at `base`) tries to delete → CAS mismatch → rejected. Deleting here
+        // would DISCARD the "two" edit fleet-wide; the guard converts that silent loss into a 409.
+        let err = v.delete_checked("a.md", Some(base)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "a stale delete must 409, not clobber the newer commit");
+        assert!(v.file_meta("a.md").is_some(), "the file (and the newer edit) survives the rejected delete");
+
+        // A delete based on the CURRENT version — the non-racing case — proceeds normally.
+        assert!(v.delete_checked("a.md", Some(newer)).unwrap().is_some(), "a delete at the current version proceeds");
+        assert!(v.file_meta("a.md").is_none(), "the file is now deleted");
+    }
+
+    // The authoritative delete (expected_version = None) — a deliberate user gesture / adjudication /
+    // switch — ALWAYS wins, regardless of version; and a CAS delete of an ALREADY-ABSENT path is a
+    // no-op (goal already met), never a spurious 409.
+    #[test]
+    fn authoritative_delete_always_wins_and_absent_delete_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let h = sha256_hex(b"x"); v.put_chunk(&h, b"x").unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h], expected_version: None }).unwrap();
+        assert!(v.delete("a.md").unwrap().is_some(), "authoritative delete deletes");
+        assert!(v.file_meta("a.md").is_none(), "authoritative delete always wins");
+        // Now absent: a CAS delete with any expected_version is a no-op (404), not a conflict.
+        assert!(v.delete_checked("a.md", Some(999)).unwrap().is_none(), "delete of an absent path is a no-op, not a 409");
     }
 
     // CRITIQUE R+1 (issueVersionEpochRewind): the version counter must NOT rewind below its high-water

@@ -30,7 +30,7 @@ export interface SyncApi {
   getChunk(hash: string): Promise<Uint8Array>;
   putChunk(hash: string, bytes: Uint8Array): Promise<void>;
   commit(req: CommitRequest): Promise<FileMeta>;
-  deleteFile(path: string): Promise<void>;
+  deleteFile(path: string, expectedVersion?: number): Promise<void>; // expectedVersion = optional CAS base (reconcile delete-remote); omit for an authoritative delete
 }
 export type SyncState = { version: number };
 export type ChunkCache = Map<string, Uint8Array>;

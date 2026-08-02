@@ -352,8 +352,16 @@ export class HttpTransport implements SyncApi {
     if (r.status !== 200) throw new Error(`commit: HTTP ${r.status}`);
     return validateFileMeta(r.json);
   }
-  async deleteFile(path: string): Promise<void> {
-    const r = await httpReq({ url: this.v(`/file?path=${encodeURIComponent(path)}`), method: "DELETE", headers: this.auth(), throw: false });
+  async deleteFile(path: string, expectedVersion?: number): Promise<void> {
+    // Optional CAS precondition (issueDeleteNoCasLostUpdate): a reconcile-driven delete-remote sends the
+    // version it based the tombstone on so a stale delete can't silently supersede a newer concurrent
+    // commit; an authoritative delete (user gesture / adjudication / switch) omits it. Snake_case to match
+    // commit's wire field; older servers ignore the unknown query param (still always-wins there).
+    const cas = expectedVersion !== undefined ? `&expected_version=${expectedVersion}` : "";
+    const r = await httpReq({ url: this.v(`/file?path=${encodeURIComponent(path)}${cas}`), method: "DELETE", headers: this.auth(), throw: false });
+    // 409 = the server advanced past our base (a concurrent edit). Signal it as a conflict — like commit —
+    // so reconcile converges via edit-wins-pull on the next pass instead of losing the edit or looping.
+    if (r.status === 409) throw new CommitConflictError(`delete conflict on '${path}' (server version advanced)`);
     if (r.status !== 200 && r.status !== 404) throw new Error(`deleteFile: HTTP ${r.status}`);
   }
 

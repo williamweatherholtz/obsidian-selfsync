@@ -139,7 +139,14 @@ function fakeServer() {
     async getChunk(h) { return chunks.get(h)!; },
     async putChunk(h, b) { chunks.set(h, b); },
     async commit(r: CommitRequest) { const m: FileMeta = { ...r, version: ++version }; files.set(r.path, m); return m; },
-    async deleteFile(p) { if (files.delete(p)) deletions.push({ path: p, version: ++version }); },
+    async deleteFile(p, expectedVersion) {
+      const cur = files.get(p);
+      // CAS, like the real server (issueDeleteNoCasLostUpdate): a versioned delete based on a STALE
+      // version 409s (CommitConflictError) instead of clobbering the newer commit; an authoritative
+      // delete (no expectedVersion) always wins.
+      if (expectedVersion !== undefined && cur && cur.version !== expectedVersion) throw new CommitConflictError(`delete conflict on '${p}' (server advanced)`);
+      if (files.delete(p)) deletions.push({ path: p, version: ++version });
+    },
   };
   return { api, chunks, files, deletions };
 }
@@ -273,6 +280,40 @@ describe("SEC-DATA (critique R+1): a vanished LOCAL vault does not wipe the serv
     await reconcileAll(d);
     expect(files.has("n3.md")).toBe(false);     // the single delete-remote propagates (not guarded)
     expect(files.size).toBe(9);
+  });
+});
+
+describe("delete-remote CAS (issueDeleteNoCasLostUpdate): a stale delete cannot clobber a newer commit", () => {
+  it("passes the based-on remote version to deleteFile as the CAS precondition", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "a.md", "one");
+    const meta = await api.fileMeta("a.md");
+    const io = fakeIo();                                    // local ABSENT (user deleted a.md)
+    const base = new BaseStore(); base.set("a.md", { hash: meta!.hash }); // base in-sync with remote
+    let sent: number | undefined = -1;
+    const spy: SyncApi = { ...api, async deleteFile(p, ev) { sent = ev; return api.deleteFile(p, ev); } };
+    await reconcileAll(deps(spy, io, { base }));            // local absent + base==remote → delete-remote
+    expect(sent).toBe(meta!.version);                      // the CAS base = the remote version we saw
+    expect(files.has("a.md")).toBe(false);                 // no race → CAS matches → the delete propagates
+  });
+
+  it("a stale delete 409s and the peer's concurrent edit is resurrected (edit-wins-pull), never lost", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "a.md", "one");
+    const m0 = await api.fileMeta("a.md");
+    const io = fakeIo();                                    // local deleted a.md
+    const base = new BaseStore(); base.set("a.md", { hash: m0!.hash });
+    // Race the delete: the first attempt finds a peer has just committed a NEW edit → CAS mismatch → 409.
+    let raced = false;
+    const racing: SyncApi = { ...api, async deleteFile(p, ev) {
+      if (!raced) { raced = true; await serverPutBytes(api, "a.md", enc("peer-edit")); } // concurrent commit advances the server
+      return api.deleteFile(p, ev);                         // ev (stale) != current → the faithful mock 409s
+    }};
+    await reconcileAll(deps(racing, io, { base }));         // the per-file conflict is isolated; the pass does not throw
+    expect(files.has("a.md")).toBe(true);                  // NOT deleted — the peer's edit survived on the server
+    // Next pass (no race): remote(peer-edit) != base(one) → decide = edit-wins-pull → resurrect locally.
+    await reconcileAll(deps(api, io, { base }));
+    expect(dec(io.m.get("a.md")!)).toBe("peer-edit");      // the edit is restored locally; nothing was lost
   });
 });
 

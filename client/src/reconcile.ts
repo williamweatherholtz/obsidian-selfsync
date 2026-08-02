@@ -52,7 +52,7 @@ export type ReconcileEffect =
   | { kind: "restore" }                       // delete-local w/o a tombstone → re-push (+ report kept-absent)
   | { kind: "keptAbsentReadOnly" }            // same, but read-only → can't restore; report kept-absent + read-only
   | { kind: "removeLocal" }                   // delete-local with a real tombstone, not guarded → remove
-  | { kind: "deleteRemote" }                  // delete-remote, not guarded → executor re-probes absence, then deletes
+  | { kind: "deleteRemote"; version: number } // delete-remote, not guarded → executor re-probes absence, then CAS-deletes at `version`
   | { kind: "mergeOrConflict" };              // both sides diverged → three-way merge or conflict-copy
 
 // Facts the shell resolves BEFORE finalize (all synchronous booleans / counts — no IO inside finalize):
@@ -93,7 +93,7 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
     case "delete-remote":
       if (f.readOnly) return { kind: "reportReadOnly" };
       if (f.guardRemoteDelete) return { kind: "reportGuard" };
-      return { kind: "deleteRemote" };
+      return { kind: "deleteRemote", version: f.remoteVersion }; // CAS base: the remote version this delete is based on (issueDeleteNoCasLostUpdate)
     case "edit-wins-keep-local":
       if (f.readOnly) return { kind: "reportReadOnly" };
       return { kind: "push", version: f.remoteVersion, allowStamp: false };
@@ -1116,7 +1116,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // FLEET-WIDE. Still present/unknowable ⇒ KEEP; the next reconcile syncs it. (Bulk-loss already guarded
       // by guardRemoteDelete in finalize; this is the per-file confirmation.)
       if ((await probePresence(d.io, path)) !== "absent") return; // present OR indeterminate → keep; only definitive absence tombstones
-      await d.api.deleteFile(path); d.base.delete(path); d.onBaseChanged?.();
+      // CAS-guarded (issueDeleteNoCasLostUpdate): send the version this delete-remote was based on. If a
+      // peer edited the file since (server advanced), the delete 409s (CommitConflictError) → this file
+      // is held + re-reconciled next pass, where remote≠base reads as edit-wins-pull and the edit survives.
+      await d.api.deleteFile(path, eff.version); d.base.delete(path); d.onBaseChanged?.();
       return;
     case "mergeOrConflict":
       await reconcileMergeOrConflict(d, path, requireRemote(rmeta, action), action, baseEntry, localBytes);

@@ -268,12 +268,26 @@ pub async fn delete_file(
 ) -> Result<Json<Deletion>, AppError> {
     let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
+    // Optional optimistic-concurrency precondition (issueDeleteNoCasLostUpdate): the reconcile-driven
+    // delete-remote sends the version it based the tombstone on; a deliberate/authoritative delete omits
+    // it. Symmetric with commit's `expected_version`; an older client that never sends it keeps the
+    // prior always-wins behavior.
+    let expected_version = q.get("expected_version").and_then(|s| s.parse::<u64>().ok());
     let tx = h.tx.clone();
-    let p = path.clone();
+    let (p, o, vlt, u) = (path.clone(), owner.clone(), vault.clone(), user.clone());
     let d = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.delete(&p).map_err(|e| AppError::Internal(e.to_string())) // a delete failure is internal (R19 LOW): log + generic 500, don't leak the raw io/DB message
+        v.delete_checked(&p, expected_version).map_err(|e| match e.kind() {
+            // CAS mismatch: a stale delete raced a newer commit — a NORMAL concurrent-edit outcome. 409
+            // so the client re-reconciles (→ edit-wins-pull, resurrecting the edit). Debug-log, not error.
+            std::io::ErrorKind::AlreadyExists => {
+                log::debug!("[{o}/{vlt} delete by {u}] {p} -> 409 stale version (client re-reconciles)");
+                AppError::Conflict(e.to_string())
+            }
+            // Any other delete failure is internal (R19 LOW): log + generic 500, don't leak the raw io/DB message.
+            _ => AppError::Internal(e.to_string()),
+        })
     }).await?;
     match d {
         Some(d) => { log::info!("[{owner}/{vault} delete by {user}] {} -> v{}", path, d.version); let _ = tx.send(d.version); Ok(Json(d)) }

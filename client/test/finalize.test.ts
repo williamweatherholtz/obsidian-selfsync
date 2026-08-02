@@ -72,8 +72,10 @@ describe("finalize — pure reconcile decision table", () => {
     expect(kind("delete-local", { hasTombstone: true, guardDelete: true })).toBe("reportGuard");
   });
 
-  it("delete-remote: deletes, unless read-only (report) or a mass-remote-delete guard tripped (report)", () => {
+  it("delete-remote: deletes at the CAS version, unless read-only (report) or a mass-remote-delete guard tripped (report)", () => {
     expect(kind("delete-remote")).toBe("deleteRemote");
+    // The effect carries the based-on remote version as the CAS precondition (issueDeleteNoCasLostUpdate).
+    expect(finalize("delete-remote", facts())).toEqual({ kind: "deleteRemote", version: 7 });
     expect(kind("delete-remote", { readOnly: true })).toBe("reportReadOnly");
     expect(kind("delete-remote", { guardRemoteDelete: true })).toBe("reportGuard");
     // read-only takes precedence over the guard (both refuse, but no server call either way)
