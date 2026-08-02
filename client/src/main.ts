@@ -1763,7 +1763,19 @@ export default class NewLiveSyncPlugin extends Plugin {
   // instead of waiting for the periodic tick. Cheap: the scan skips unchanged files by (size, mtime).
   private onResume() {
     if (this.unloading) return;
-    this.engine.enqueue({ kind: "remote" }); // re-assess: reconcile now rather than at the next poll tick
+    // MOBILE (field 2026-08-02): a background suspend PAUSES the backoff reconnect timer (window.setTimeout),
+    // and a `remote` event is DROPPED while disconnected (the engine ignores work until connected). So a
+    // connection that failed/backed-off while suspended would NOT promptly re-attempt on resume — it looked
+    // stuck with "nothing indicating it's rechecking". If we're disconnected, cancel the stale (paused)
+    // backoff timer and re-attempt NOW (network/DNS is back on the foreground), and LOG it so the recheck is
+    // visible. If connected, just re-assess (reconcile). ("off" = user-disconnected → leave it alone.)
+    if (this.engine.getState() === "disconnected") {
+      if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
+      this.log("app resumed — re-checking the connection");
+      this.engine.enqueue({ kind: "connect" });
+    } else {
+      this.engine.enqueue({ kind: "remote" }); // connected → reconcile now rather than at the next poll tick
+    }
     if (this.settings.configSync.enabled) this.lastConfigScanAt = 0; // also force a config re-scan
   }
 

@@ -425,6 +425,23 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  // Mobile field 2026-08-02: a background suspend pauses the backoff reconnect timer, and a `remote` event is
+  // dropped while disconnected — so a failed connection didn't re-attempt on resume ("nothing indicates it's
+  // rechecking"). onResume now kicks a fresh connect when disconnected.
+  it("mobile resume RE-ATTEMPTS a failed connection (not a dropped remote)", async () => {
+    const { p, api } = await bootPlugin();
+    api.__failChanges(true);                              // the next reconcile fails → engine goes disconnected
+    api.__poke(); await flush();
+    expect((p as any).engine.getState()).toBe("disconnected");
+    const statusBefore = api.__calls.status?.length ?? 0;
+    api.__failChanges(false);                             // network/DNS back on the foreground
+    (p as any).onResume();                                // app returned to foreground
+    await flush();
+    expect(api.__calls.status?.length ?? 0).toBeGreaterThan(statusBefore); // a fresh CONNECT was attempted (status re-probed)
+    expect((p as any).engine.getState()).not.toBe("disconnected");         // recovered, not left stuck
+    p.onunload();
+  });
+
   // F2 (2026-08-02): a user-initiated disconnect resets LinkState, so getLastIssue/isVaultGone (which read
   // the LinkState directly) stop reporting a stale blocked reason after the user has already disconnected.
   it("disconnect resets LinkState — no stale vault-gone prompt after the user disconnects (F2)", async () => {
