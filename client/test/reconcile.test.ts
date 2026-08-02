@@ -707,6 +707,27 @@ describe("switchTo (one-time vault switch resolution)", () => {
     await expect(switchTo(deps(down, io, { onFileError: (p) => errs.push(p) }), "download")).rejects.toThrow(/ENOTFOUND/i);
     expect(errs).toEqual([]);
   });
+
+  // Field 2026-08-02: a switch reported NO progress, so a long/large upload sat on a bare
+  // "Connecting…"/"Syncing…" with no count and looked HUNG. Both switch directions now report onProgress
+  // (full count up front, decrementing to 0) — which also escalates the status to "Syncing… N pending".
+  it("upload reports progress (full count → 0) so it shows Syncing… N pending, not a hung Connecting", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "x.md": "LOCAL x", "y.md": "LOCAL y", "z.md": "LOCAL z" });
+    const progress: number[] = [];
+    await switchTo(deps(api, io, { onProgress: (n) => progress.push(n) }), "upload");
+    expect(progress[0]).toBe(3);                          // reported the full count up front
+    expect(progress[progress.length - 1]).toBe(0);        // decremented to 0 when done
+  });
+  it("download reports progress (full count → 0)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "A"); await serverPut(api, "b.md", "B");
+    const io = fakeIo({});
+    const progress: number[] = [];
+    await switchTo(deps(api, io, { onProgress: (n) => progress.push(n) }), "download");
+    expect(progress[0]).toBe(2);
+    expect(progress[progress.length - 1]).toBe(0);
+  });
 });
 
 describe("streamed reassembly of large downloads (B9 Part B)", () => {

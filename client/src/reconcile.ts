@@ -1203,12 +1203,16 @@ async function switchDownload(
   d: ReconcileDeps, remote: Map<string, FileMeta>, local: Map<string, { mtime: number; size: number }>,
   oldBase: Map<string, BaseEntry>, max: number, failed: number[],
 ): Promise<void> {
+  // Report PROGRESS like reconcileAll (field 2026-08-02: a switch reported nothing, so a long/large switch
+  // sat on a bare "Connecting…"/"Syncing…" with no count and looked HUNG). onProgress(pending) both drives
+  // the "N pending" detail AND escalates the status to "Syncing…" (main's onProgress → beginReconcile).
+  let pending = remote.size; d.onProgress?.(pending);
   for (const [p, meta] of remote) {
     // DI-6: adopt via applyPull — STREAMS a large file straight to disk (never buffered whole) and
     // buffer-verifies a small one, the same path reconcileAll uses. Only a large file we CAN'T stream
     // (no appendWrite) is size-gated + skipped.
     const streamable = meta.size >= STREAM_MIN_BYTES && !!d.io.appendWrite;
-    if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
+    if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); d.onProgress?.(--pending); continue; }
     try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
     catch (e) {
       // A WHOLE-SERVER outage (DNS can't resolve / connection refused) hits EVERY file identically. Abort
@@ -1220,6 +1224,7 @@ async function switchDownload(
       const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → clean re-adopt, not a conflict-copy
       if (holdForRetry(d, p, meta.version)) failed.push(meta.version);
     }
+    d.onProgress?.(--pending);
   }
   // BULK-DELETE GUARD (crit-round sync): mirroring removes local files the target lacks — but a target
   // reindexed over a PARTIAL directory reports status:"ready" while missing files, so mirroring it would
@@ -1244,6 +1249,10 @@ async function switchDownload(
 async function switchUpload(
   d: ReconcileDeps, remote: Map<string, FileMeta>, local: Map<string, { mtime: number; size: number }>, max: number,
 ): Promise<void> {
+  // Report PROGRESS (see switchDownload) so an active upload shows "Syncing… N pending" that DECREASES —
+  // not a static "Connecting…" that reads as hung. Count = the accepted, within-size local files to push.
+  let pending = [...local].filter(([p, info]) => accepts(d, p) && info.size <= max).length;
+  d.onProgress?.(pending);
   for (const [p, info] of local) {
     if (!accepts(d, p)) continue;
     if (info.size > max) { d.onSkip?.(p, info.size); continue; }
@@ -1254,6 +1263,7 @@ async function switchUpload(
       if (isConnectionError(e)) throw e; // whole-server outage → abort the switch (see switchDownload) rather than skip every file into a false "synced"
       d.onFileError?.(p, e); // R20: leave base null → retry conflict-copies, never a silent overwrite
     }
+    d.onProgress?.(--pending);
   }
   for (const p of remote.keys()) { // drop remote files this vault lacks
     if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { if (isConnectionError(e)) throw e; d.onFileError?.(p, e); } }
