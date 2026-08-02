@@ -17,7 +17,7 @@ import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
-import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
+import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
@@ -1372,110 +1372,9 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     try {
       this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
-      // Clear the ref BEFORE the awaits below: the close we just triggered fires asynchronously,
-      // and the close handler only suppresses a superseded socket via the `this.ws !== ws` check.
-      // Leaving this.ws pointing at the closing socket during the await would let its close enqueue
-      // a spurious {rews} that re-dials on top of this connect. (Round-6 CONC)
-      this.ws?.close(); this.ws = undefined;
-      let activeToken = await this.acquireToken();
-      this.api = this.buildApi(activeToken);
-      // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting
-      // on the resulting empty manifest could delete local files. Surface the operator action.
-      // status() is the first authed call; if the stored token was rejected (401), re-login ONCE
-      // and rebuild the transport (reactive auth — no proactive validation probe). A still-failing
-      // auth then throws → the engine backs off and retries.
-      let health;
-      try { health = await this.api.status(); }
-      catch (e) {
-        if (!this.isAuthError(e)) throw e;
-        this.log("token rejected — re-logging in");
-        this.settings.authToken = undefined;
-        activeToken = await this.freshLogin();
-        this.api = this.buildApi(activeToken);
-        health = await this.api.status();
-      }
-      // Version handshake: refuse to sync against a server on a different protocol/schema version
-      // (a self-hoster auto-updates the plugin independently of the server). A clear, actionable
-      // message beats an undiagnosable malformed-response retry loop — and the vault is untouched.
-      // R12-PB2: fail CLOSED — an absent apiVersion (a pre-versioning server, or a proxy that strips
-      // the field) means we CAN'T confirm compatibility, so don't sync (was: undefined skipped the
-      // check → failed open, the wrong default for the mixed-version case the gate exists for).
-      const vv = versionVerdict(health.apiVersion, CLIENT_API_VERSION); // pure decision (R12-PB2 fail-closed)
-      if (!vv.ok) {
-        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${vv.serverLabel}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
-        // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
-        this.log(this.lastIssue, !this.versionNoticeShown);
-        this.versionNoticeShown = true;
-        throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${vv.serverLabel}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
-      }
-      this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
-      if (health.status !== "ready") {
-        this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
-        this.log(this.lastIssue);
-        throw new ConnError("server vault not ready (reindex needed)", { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.Other });
-      }
-      // If this is a vault shared TO us, re-derive our permission from the server's grant so the
-      // cached vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
-      await this.refreshShareGrant(activeToken);
-      // The initial reconcile below does NOT optimistically flip to "Syncing…" (the removed markReconciling):
-      // it stays "Connecting…" and escalates to "Syncing…" only when it's actually TRANSFERRING (onProgress /
-      // onBaseChanged → beginReconcile). So a healthy sync shows "Connecting…" → "Syncing… N" → "Fully
-      // synced", while a FAILING one (e.g. DNS drops mid-switch) stays "Connecting…"/"Reconnecting…" instead
-      // of collapsing to a false "Synced (polling)" (field 2026-08-02). The engine settles to idle on success.
-      // A pending vault switch applies its chosen resolution ONCE, then reverts to normal reconcile.
-      // CONC#5: clear pendingSwitchMode ONLY AFTER switchTo fully succeeds. Clearing it up-front meant
-      // a mid-switch failure (network drop, throw) left the next reconnect doing a plain merge
-      // reconcile — silently DOWNGRADING an authoritative overwrite (download = take-remote, upload =
-      // take-local) into a merge that could conflict-copy or resurrect. Leaving it set until success
-      // makes the switch resolution durable across a failed attempt (it retries as the switch, not a merge).
-      // D0047 GUARD (vault-change-skips-transition class): the persisted base belongs to a specific
-      // owner/vaultId. If it doesn't match the vault we're about to sync — i.e. ANY path changed the vault
-      // without routing through switchTo — the base is FOREIGN and a plain reconcile could silently overwrite
-      // local files (decide()'s B===L→pull branch, no conflict-copy). Force a safe merge-switch (switchTo
-      // clears the stale base + unions; nothing lost), unless a switch is already pending.
-      if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.base.paths().length) {
-        const stored = this.settings.baseVaultKey;
-        // fix ③ (pure `vaultKeyMismatch`): the key is SERVER-qualified (`host|owner/vault`) so a repoint at a
-        // DIFFERENT server with the SAME vault name is detected (a server-blind key missed it → silent
-        // cross-server overwrite); an OLD server-blind stored key (no `|`) is grandfathered to the CURRENT
-        // server so an upgrade doesn't force a spurious merge; a genuine server/vault/owner change still trips.
-        if (vaultKeyMismatch(stored, this.vaultIdentityKey(), this.historyFloorKey())) {
-          this.log(`base belonged to '${stored}' but now syncing '${this.vaultIdentityKey()}' — clearing the stale base (safe merge)`, true);
-          // V2 (2026-08-02): don't merge SILENTLY — a union across two vaults is a real (if non-destructive)
-          // change the user should see. The merge is still the safe default (nothing is lost); the notice
-          // just makes it visible instead of happening behind the user's back.
-          new Notice("SelfSync: this vault changed since the last sync on this device — merging safely so nothing is lost.", 9000);
-          this.settings.pendingSwitch = "merge";
-        }
-      }
-      // ALREADY-APPLIED GUARD (critique 2026-08-02): a persisted pendingSwitch clears only after switchTo
-      // RETURNS. If its reconcile is killed mid-flight on mobile (large vault) it never clears, and every
-      // reconnect RE-RUNS it — for an AUTHORITATIVE resolution (download=take-remote / upload=take-local)
-      // that silently RE-CLOBBERS local edits made since. But once the base already belongs to the TARGET
-      // vault, the switch has taken effect; re-running it is pure loss (or, for merge, wasteful re-merge).
-      // So: if the switch already applied (base == target key, non-empty), clear it and reconcile NORMALLY.
-      // (A not-yet-applied switch — base still the OLD vault — still replays, preserving R12-CA1.)
-      if (switchAlreadyApplied(this.settings.pendingSwitch, this.settings.baseVaultKey, this.vaultIdentityKey(), this.base.paths().length > 0)) {
-        this.log(`vault switch '${this.settings.pendingSwitch}' already applied (base belongs to the target) — clearing, syncing normally`, true);
-        this.settings.pendingSwitch = undefined; await this.saveSettings();
-      }
-      const switchMode = this.settings.pendingSwitch;
-      // DIAGNOSTIC: a switch that RE-RUNS every connect (its switchTo reconcile keeps getting interrupted
-      // before it returns AND the base never reaches the target) logs here each time — making the loop
-      // visible in the debug log so a genuinely-stuck switch is diagnosable, not guessed.
-      if (switchMode) this.log(`applying vault switch resolution '${switchMode}' (persisted pendingSwitch)`);
-      if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); this.log(`vault switch '${switchMode}' complete — pendingSwitch cleared`); }
-      else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
-      await this.flushConfigReload();
-      this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
-      this.spinUpWs();
-      this.startPolling();
-      this.backoff = 3000;
-      this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
-      this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
-      this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
-      void this.refreshVaultPrivacy(); // re-evaluate the hot-load security gate (own + unshared?) each connect
-      this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
+      await this.establishSession();      // token + a healthy, version-COMPATIBLE server + a fresh share grant (throws otherwise)
+      await this.resolveAndApplySwitch(); // apply a pending vault switch (or the D0047 safe-merge), else a full reconcile
+      await this.finishConnect();         // live config + WS + poll + reset backoff + stamp the base key / privacy gate
     } catch (e: any) {
       // The connection FSM now owns the failure TAXONOMY + its user-facing label: the engine classifies
       // this error (engine.classify → LinkState), and getLastIssue/statusDisplay read the LinkState for a
@@ -1491,6 +1390,110 @@ export default class NewLiveSyncPlugin extends Plugin {
       }
       throw e; // → engine.failWith: classify + advance LinkState + schedule the class-appropriate recovery
     }
+  }
+
+  // Phase 1 of the connect: establish an authenticated, healthy, version-COMPATIBLE session, or THROW.
+  private async establishSession(): Promise<void> {
+    // Clear the ref BEFORE the awaits below: the close we just triggered fires asynchronously, and the close
+    // handler only suppresses a superseded socket via the `this.ws !== ws` check. Leaving this.ws pointing at
+    // the closing socket during the await would let its close enqueue a spurious {rews} that re-dials on top
+    // of this connect. (Round-6 CONC)
+    this.ws?.close(); this.ws = undefined;
+    let activeToken = await this.acquireToken();
+    this.api = this.buildApi(activeToken);
+    // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting on the
+    // resulting empty manifest could delete local files. Surface the operator action. status() is the first
+    // authed call; if the stored token was rejected (401), re-login ONCE and rebuild the transport (reactive
+    // auth — no proactive validation probe). A still-failing auth then throws → the engine backs off + retries.
+    let health;
+    try { health = await this.api.status(); }
+    catch (e) {
+      if (!this.isAuthError(e)) throw e;
+      this.log("token rejected — re-logging in");
+      this.settings.authToken = undefined;
+      activeToken = await this.freshLogin();
+      this.api = this.buildApi(activeToken);
+      health = await this.api.status();
+    }
+    // Version handshake: refuse to sync against a server on a different protocol/schema version (a self-hoster
+    // auto-updates the plugin independently of the server). A clear, actionable message beats an undiagnosable
+    // malformed-response retry loop — and the vault is untouched. R12-PB2: fail CLOSED — an absent apiVersion
+    // (pre-versioning server / a proxy that strips the field) means we CAN'T confirm compatibility → don't sync.
+    const vv = versionVerdict(health.apiVersion, CLIENT_API_VERSION); // pure decision (R12-PB2 fail-closed)
+    if (!vv.ok) {
+      this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${vv.serverLabel}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
+      // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
+      this.log(this.lastIssue, !this.versionNoticeShown);
+      this.versionNoticeShown = true;
+      throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${vv.serverLabel}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
+    }
+    this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
+    if (health.status !== "ready") {
+      this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
+      this.log(this.lastIssue);
+      throw new ConnError("server vault not ready (reindex needed)", { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.Other });
+    }
+    // If this is a vault shared TO us, re-derive our permission from the server's grant so the cached
+    // vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
+    await this.refreshShareGrant(activeToken);
+  }
+
+  // Phase 2: apply the vault-switch RESOLUTION for this connect (force a safe merge-switch on a FOREIGN base
+  // per D0047, drop an already-applied switch to avoid re-clobber), then run the switch or a full reconcile.
+  // The initial reconcile does NOT optimistically show "Syncing…" (removed markReconciling) — it stays
+  // "Connecting…" and escalates only on real transfer work, so a failing switch never fakes "Synced".
+  private async resolveAndApplySwitch(): Promise<void> {
+    // CONC#5: clear pendingSwitch ONLY AFTER switchTo fully succeeds — clearing up-front let a mid-switch
+    // failure downgrade an authoritative overwrite into a plain merge that could conflict-copy or resurrect.
+    // D0047 GUARD (vault-change-skips-transition): the persisted base belongs to a specific owner/vaultId. If
+    // it doesn't match the vault we're about to sync — ANY path changed the vault without switchTo — the base
+    // is FOREIGN and a plain reconcile could silently overwrite local files (decide()'s B===L→pull, no
+    // conflict-copy). Force a safe merge-switch (clears the stale base + unions; nothing lost), unless a switch
+    // is already pending.
+    if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.base.paths().length) {
+      const stored = this.settings.baseVaultKey;
+      // fix ③ (pure `vaultKeyMismatch`): the key is SERVER-qualified (`host|owner/vault`) so a repoint at a
+      // DIFFERENT server with the SAME vault name is detected; an OLD server-blind stored key (no `|`) is
+      // grandfathered to the CURRENT server so an upgrade doesn't force a spurious merge; a genuine change trips.
+      if (vaultKeyMismatch(stored, this.vaultIdentityKey(), this.historyFloorKey())) {
+        this.log(`base belonged to '${stored}' but now syncing '${this.vaultIdentityKey()}' — clearing the stale base (safe merge)`, true);
+        // V2 (2026-08-02): don't merge SILENTLY — a union across two vaults is a real (if non-destructive)
+        // change the user should see; the merge is still the safe default (nothing lost).
+        new Notice("SelfSync: this vault changed since the last sync on this device — merging safely so nothing is lost.", 9000);
+        this.settings.pendingSwitch = "merge";
+      }
+    }
+    // ALREADY-APPLIED GUARD (critique 2026-08-02): a persisted pendingSwitch clears only after switchTo
+    // RETURNS; if its reconcile is killed mid-flight on mobile it never clears, and every reconnect RE-RUNS it
+    // — for an authoritative resolution that RE-CLOBBERS local edits. Once the base already belongs to the
+    // TARGET vault the switch has taken effect; clear it and reconcile normally. (A not-yet-applied switch —
+    // base still the OLD vault — still replays, preserving R12-CA1.)
+    if (switchAlreadyApplied(this.settings.pendingSwitch, this.settings.baseVaultKey, this.vaultIdentityKey(), this.base.paths().length > 0)) {
+      this.log(`vault switch '${this.settings.pendingSwitch}' already applied (base belongs to the target) — clearing, syncing normally`, true);
+      this.settings.pendingSwitch = undefined; await this.saveSettings();
+    }
+    const switchMode = this.settings.pendingSwitch;
+    // DIAGNOSTIC: a switch that RE-RUNS every connect (switchTo keeps getting interrupted before it returns AND
+    // the base never reaches the target) logs here each time — making a genuinely-stuck switch visible.
+    if (switchMode) this.log(`applying vault switch resolution '${switchMode}' (persisted pendingSwitch)`);
+    if (switchMode) { await switchTo(this.deps(), switchMode); this.settings.pendingSwitch = undefined; await this.saveSettings(); this.log(`vault switch '${switchMode}' complete — pendingSwitch cleared`); }
+    else await this.reconcileFull(); // D0019: full reconcile WITH reset detection + notify (DI-H1)
+  }
+
+  // Phase 3: the connection is established + the initial reconcile is done — apply live config, open the WS +
+  // poll loop, reset the backoff, and stamp the durable facts (the server-qualified base key for the D0047
+  // guard, the last-synced time, and a re-evaluation of the hot-load privacy gate).
+  private async finishConnect(): Promise<void> {
+    await this.flushConfigReload();
+    this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
+    this.spinUpWs();
+    this.startPolling();
+    this.backoff = 3000;
+    this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
+    this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
+    this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
+    void this.refreshVaultPrivacy(); // re-evaluate the hot-load security gate (own + unshared?) each connect
+    this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
   }
 
   // EFFECT (teardown): stop timers + close the socket. Called on disconnect/unload by the engine.
@@ -1767,7 +1770,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // stuck with "nothing indicating it's rechecking". If we're disconnected, cancel the stale (paused)
     // backoff timer and re-attempt NOW (network/DNS is back on the foreground), and LOG it so the recheck is
     // visible. If connected, just re-assess (reconcile). ("off" = user-disconnected → leave it alone.)
-    if (this.engine.getState() === "disconnected") {
+    if (resumeAction(this.engine.getState()) === "connect") {
       if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
       this.log("app resumed — re-checking the connection");
       this.engine.enqueue({ kind: "connect" });

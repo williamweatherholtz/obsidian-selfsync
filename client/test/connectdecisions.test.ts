@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied } from "../src/connectdecisions";
+import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "../src/connectdecisions";
 
 // The pure connect-effect decisions extracted from doConnect (functional-decoupling D0036) — now testable
 // in isolation, instead of only through a full-connect integration test.
@@ -40,5 +40,16 @@ describe("switchAlreadyApplied — the re-clobber guard", () => {
   });
   it("pending + target key but EMPTY base → not applied (nothing established yet)", () => {
     expect(switchAlreadyApplied("merge", "x|/v", "x|/v", false)).toBe(false);
+  });
+});
+
+describe("resumeAction — mobile foreground/resume decision", () => {
+  it("a DISCONNECTED engine (failed connect, suspended backoff) → re-attempt with a fresh connect", () => {
+    expect(resumeAction("disconnected")).toBe("connect");
+  });
+  it("any other state → reassess (the engine gates a reconcile until connected; 'off' is left alone)", () => {
+    for (const s of ["idle", "reconciling", "connecting", "off", "unloading"]) {
+      expect(resumeAction(s)).toBe("reassess");
+    }
   });
 });

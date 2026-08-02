@@ -29,3 +29,13 @@ export function vaultKeyMismatch(storedKey: string, currentKey: string, historyK
 export function switchAlreadyApplied(pendingSwitch: string | undefined, baseVaultKey: string | undefined, currentKey: string, baseNonEmpty: boolean): boolean {
   return !!pendingSwitch && baseVaultKey === currentKey && baseNonEmpty;
 }
+
+// On a mobile foreground/resume: a DISCONNECTED engine is a connect that failed while backgrounded, whose
+// backoff reconnect timer was SUSPENDED by the OS — so it must be re-attempted with a fresh connect now that
+// the network is back (field 2026-08-02: it looked stuck, never rechecking). Any other state just re-assesses
+// (the engine gates a reconcile until connected, and leaves "off"/user-disconnected alone). Pure, so the
+// mobile-lifecycle decision — which WAS a field bug — is unit-testable instead of buried in the resume handler.
+export type ResumeAction = "connect" | "reassess";
+export function resumeAction(engineState: string): ResumeAction {
+  return engineState === "disconnected" ? "connect" : "reassess";
+}
