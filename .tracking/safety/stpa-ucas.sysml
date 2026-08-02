@@ -162,8 +162,18 @@ package ProjectStpaAnalysis {
         :>> context = "The session token is placed in a URL/query used to open the change channel, which proxies and servers log.";
         :>> statement = "The Session manager provides the token over a loggable channel (a URL query string), so it can be captured from logs and replayed. [H-4]";
     }
+    // L-5 deepening (D0036): the recovery-not-provided UCA. (H-9's misreported-state is reached by
+    // control-ALGORITHM flaws in the status projection — Step-4 scenarios s13-s15 — not by a commanded UCA.)
+    part uca21 : UnsafeControlAction {
+        :>> id = "c0f1a5cc-d015-4a10-9b20-a1b2c3d4d015"; :>> ucaType = UcaType::notProvided;
+        :>> title = "UCA-21: Sync Engine does not (re-)establish the connection while the link is down but recoverable";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> context = "The connection is down after a failure, but the server/network is reachable again (e.g. the app returns to the foreground on mobile after a suspend).";
+        :>> statement = "The Sync Engine does not provide establish-connection when the link is down and recoverable, so sync does not resume — and nothing signals it has stopped trying. [H-10]";
+    }
 
     #Causes dependency from uca1 to h1;
+    #Causes dependency from uca21 to h10;
     #Causes dependency from uca2 to h1;
     #Causes dependency from uca3 to h1;
     #Causes dependency from uca3 to h8;
@@ -323,6 +333,24 @@ package ProjectStpaAnalysis {
         :>> causalFactor = "missing feedback (no integrity re-check)";
         :>> title = "S-12: bit-rot laundered into known-good base";
         :>> statement = "A bit-rotted chunk is served; without re-hashing the reassembled bytes the client writes it to the note and stamps base = claimed hash, so the corruption is re-served to every device as authoritative [H-3]. Mitigation: verify reassembly hash before adopting (SR-3)."; }
+    // ---- L-5 deepening (D0036): H-9 is reached by control-ALGORITHM flaws in the status projection (s13-s15,
+    // no commanded UCA), H-10 by the recovery-not-provided UCA-21 (s16). Each is a shipped field bug (1.11.3-1.11.7). ----
+    part s13 : LossScenario { :>> id = "c0f1a5cc-d20d-4a10-9b20-a1b2c3d4d20d"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "inadequate control algorithm (status projection reads non-FSM state / pre-flips optimistically)";
+        :>> title = "S-13: the status projection reports a state the FSM is not in";
+        :>> statement = "The status projection reads a PERSISTED setting (pendingSwitch) or a loose flag (resuming) instead of the sync FSM, or optimistically pre-flips to 'syncing' before a connection is confirmed — so a stale setting latches a 'Switching vault…' label, or a failing/empty connect collapses (0-pending) to a FALSE 'Synced (polling)' while unreachable [H-9]. Mitigation: the card is a PURE projection of the FSM, and connect escalates to 'syncing' only on real transfer work (SR-20)."; }
+    part s14 : LossScenario { :>> id = "c0f1a5cc-d20e-4a10-9b20-a1b2c3d4d20e"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "missing feedback (a bulk operation reports no progress)";
+        :>> title = "S-14: a long operation reports no progress and reads as hung";
+        :>> statement = "A bulk operation (a vault switch) reports no progress, so the card sits on a static 'Connecting…'/'Syncing…' with no count during a long transfer and the user cannot tell whether work is happening [H-9]. Mitigation: every bulk operation reports a decrementing pending count (SR-21)."; }
+    part s15 : LossScenario { :>> id = "c0f1a5cc-d20f-4a10-9b20-a1b2c3d4d20f"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "inadequate control algorithm (per-file error isolation applied to a whole-connection failure)";
+        :>> title = "S-15: a whole-server outage is swallowed per-file and 'completes'";
+        :>> statement = "A whole-server outage (DNS unresolvable) hits every file identically, but the switch isolates each as a per-file skip and 'completes' with everything skipped, so the engine settles to idle and the card reports a FALSE 'synced' while the server is unreachable [H-9]. Mitigation: a whole-connection error aborts the pass instead of per-file skipping (SR-22)."; }
+    part s16 : LossScenario { :>> id = "c0f1a5cc-d210-4a10-9b20-a1b2c3d4d210"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "inadequate process model + missing trigger (suspended timer, dropped resume event)";
+        :>> title = "S-16: a mobile suspend pauses the backoff timer and resume doesn't re-attempt";
+        :>> statement = "On mobile the OS SUSPENDS the backoff reconnect timer (window.setTimeout) while backgrounded, and the foreground/resume handler enqueues a reconcile event the engine DROPS while disconnected — so a failed, recoverable connection is never re-attempted, and nothing signals it stopped trying [H-10]. Mitigation: on resume, cancel the paused timer and re-attempt a fresh connect immediately, with a visible log (SR-23)."; }
 
     #Explains dependency from s1 to uca1;   #LeadsTo dependency from s1 to h1;
     #Explains dependency from s2 to uca2;   #LeadsTo dependency from s2 to h1;
@@ -336,6 +364,10 @@ package ProjectStpaAnalysis {
     #Explains dependency from s10 to uca19; #LeadsTo dependency from s10 to h6;
     #Explains dependency from s11 to uca17; #LeadsTo dependency from s11 to h6;
     #Explains dependency from s12 to uca5;  #LeadsTo dependency from s12 to h3;
+    #LeadsTo dependency from s13 to h9;      // control-algorithm flaw (no commanded UCA) → H-9
+    #LeadsTo dependency from s14 to h9;
+    #LeadsTo dependency from s15 to h9;
+    #Explains dependency from s16 to uca21; #LeadsTo dependency from s16 to h10;
 
     // ================= Derived Safety Requirements =================
     // Each #Satisfies its SC + #Mitigates its UCA(s). safetyFunction names the REALIZING mechanism
@@ -453,7 +485,32 @@ package ProjectStpaAnalysis {
         :>> statement = "Bound the uncommitted/orphan chunk bytes a principal can accumulate per vault, so a writer cannot exhaust the owner's disk (availability).";
         :>> triggeringEvent = "a read-write grantee PUTs many chunks that never commit";
         :>> safeState = "storage bounded; other tenants unaffected";
-        :>> safetyFunction = "REALIZED: runtime orphan GC (SEC#4, round1DeferredHardening 0.10.32) — ContentStore::sweep_orphans reclaims unreferenced chunks older than a TTL, upload-driven + interval-gated, bounding abandoned-upload disk at RUNTIME (was startup/eviction-only). issueOrphanChunkQuota resolved. (All 19 STPA safety requirements are now realized by shipped work.)"; }
+        :>> safetyFunction = "REALIZED: runtime orphan GC (SEC#4, round1DeferredHardening 0.10.32) — ContentStore::sweep_orphans reclaims unreferenced chunks older than a TTL, upload-driven + interval-gated, bounding abandoned-upload disk at RUNTIME (was startup/eviction-only). issueOrphanChunkQuota resolved. (SR-1..SR-19 realize the L-1..L-4 analysis; SR-20..SR-23 below realize the L-5 deepening.)"; }
+    // ---- L-5 deepening (D0036): SR-20..SR-23 realize SC-9/SC-10, each a shipped fix (1.11.3-1.11.7) with a test. ----
+    part sr20 : SafetyRequirement { :>> id = "c0f1a5cc-d314-4a10-9b20-a1b2c3d4d314"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-20: the status is a truthful projection of the sync FSM";
+        :>> statement = "The status the user sees must be a pure projection of the sync state machines (EngineState + LinkState) — never derived from a persisted setting or a loose flag — and connect must escalate to 'syncing' only when actually transferring, so a failing/empty connect never reports synced.";
+        :>> triggeringEvent = "the status is rendered during any connect / switch / failure";
+        :>> safeState = "the reported state matches the FSM; a down/failing link reads as connecting/reconnecting, never synced";
+        :>> safetyFunction = "REALIZED: statusDisplayPureProjection (1.11.3) + connectPhaseNoOptimisticFlip (1.11.5, beginReconcile is the single work-gated door into reconciling); verified by plugin-wiring 'statusDisplay … a PURE projection (no setting/flag can latch a label)' + syncengine 'a connect whose initial reconcile transfers NOTHING never shows a false syncing/idle'."; }
+    part sr21 : SafetyRequirement { :>> id = "c0f1a5cc-d315-4a10-9b20-a1b2c3d4d315"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-21: every bulk operation reports progress";
+        :>> statement = "A bulk operation (a vault switch download/upload) must report a decrementing pending count, so an active long operation shows visible progress rather than a static label that reads as hung.";
+        :>> triggeringEvent = "a vault switch transfers many files";
+        :>> safeState = "the user sees 'Syncing… N pending' counting down (or a stalled count), not a static 'Connecting…'";
+        :>> safetyFunction = "REALIZED: switchReportsProgress (1.11.6) — switchDownload/switchUpload report onProgress like reconcileAll; verified by reconcile 'upload/download reports progress (full count → 0)'."; }
+    part sr22 : SafetyRequirement { :>> id = "c0f1a5cc-d316-4a10-9b20-a1b2c3d4d316"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-22: a whole-connection error aborts the pass";
+        :>> statement = "A whole-connection failure (DNS unresolvable / connection refused) must ABORT the current pass — including a vault switch — so the engine goes offline+backoff once, rather than isolating it per-file and 'completing' into a false synced.";
+        :>> triggeringEvent = "the server becomes unreachable mid-pass";
+        :>> safeState = "the pass aborts, the engine retries, and the status reads 'Reconnecting…'";
+        :>> safetyFunction = "REALIZED: switchAbortOnOutage (1.11.4) — switchDownload/switchUpload re-throw on isConnectionError like reconcileAll; verified by reconcile 'upload/download ABORTS on a whole-server outage (DNS)'."; }
+    part sr23 : SafetyRequirement { :>> id = "c0f1a5cc-d317-4a10-9b20-a1b2c3d4d317"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-23: keep attempting recovery of a recoverable link, incl. on resume";
+        :>> statement = "While a connection is down but recoverable, the client must keep attempting recovery; on a mobile foreground/resume it must cancel the OS-suspended backoff timer and re-attempt a fresh connect immediately, and log the recheck.";
+        :>> triggeringEvent = "the app returns to the foreground after a failed connect while backgrounded";
+        :>> safeState = "a fresh connect is attempted promptly on resume; the retry is visible in the log";
+        :>> safetyFunction = "REALIZED: resumeReattemptsConnection (1.11.7) — onResume kicks a connect when disconnected + logs it; verified by plugin-wiring 'mobile resume RE-ATTEMPTS a failed connection (not a dropped remote)'."; }
 
     #Satisfies dependency from sr1 to sc1;   #Mitigates dependency from sr1 to uca1;  #Mitigates dependency from sr1 to uca2;
     #Satisfies dependency from sr2 to sc2;   #Mitigates dependency from sr2 to uca4;
@@ -474,6 +531,10 @@ package ProjectStpaAnalysis {
     #Satisfies dependency from sr17 to sc6;  #Mitigates dependency from sr17 to uca19;
     #Satisfies dependency from sr18 to sc4;  #Mitigates dependency from sr18 to uca20;
     #Satisfies dependency from sr19 to sc6;
+    #Satisfies dependency from sr20 to sc9;
+    #Satisfies dependency from sr21 to sc9;
+    #Satisfies dependency from sr22 to sc9;
+    #Satisfies dependency from sr23 to sc10;  #Mitigates dependency from sr23 to uca21;
 
     // ============ ARCHITECTURE-FACING LINKAGE (for suspicion propagation, D0017) ============
     // These edges connect each analysis artifact to the control-structure element it DEPENDS ON,
@@ -503,6 +564,7 @@ package ProjectStpaAnalysis {
     #Analyzes dependency from uca18 to caRepairVault;
     #Analyzes dependency from uca19 to caAuthenticate;
     #Analyzes dependency from uca20 to caAuthenticate;
+    #Analyzes dependency from uca21 to caEstablishConn; // recovery: change the connect action → reassess UCA-21
     // SafetyRequirement #RealizedBy the controller accountable for it (change the controller ->
     // reassess whether its safety requirements still hold):
     #RealizedBy dependency from sr1 to c4Reconciler;
@@ -524,8 +586,13 @@ package ProjectStpaAnalysis {
     #RealizedBy dependency from sr17 to c3Session;
     #RealizedBy dependency from sr18 to c3Session;
     #RealizedBy dependency from sr19 to c5ServerVault;
+    #RealizedBy dependency from sr20 to c2SyncEngine;  // the status projection is the engine's (phase = fn of its FSMs)
+    #RealizedBy dependency from sr21 to c2SyncEngine;
+    #RealizedBy dependency from sr22 to c2SyncEngine;
+    #RealizedBy dependency from sr23 to c2SyncEngine;  // recovery (reconnect/backoff/resume) is the engine's
     // Scenario #Senses the feedback/sensor whose inadequacy drives it (change the feedback path ->
     // reassess the scenario). Only the feedback-cause scenarios carry this edge.
+    #Senses dependency from s14 to fbStatusIndicator; // no progress signal from a bulk op → the status feedback is inadequate
     #Senses dependency from s1 to fbRemoteManifest;
     #Senses dependency from s3 to fbLocalHashes;
     #Senses dependency from s7 to fbChangeNotice;

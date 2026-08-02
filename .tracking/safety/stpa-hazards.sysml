@@ -67,6 +67,20 @@ package ProjectHazards {
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "Content belonging to one isolation domain (an account, or a named vault) appears in another that was not granted it (e.g. two identities collapsing to one store, or a path escaping its vault). [L-1, L-2]";
     }
+    // ---- L-5 deepening (D0036, 2026-08-02): the feedback + connection-lifecycle loops the severity-first
+    // pass treated as cosmetic. H-9 is the feedback-truthfulness state; H-10 the recovery-cessation state. ----
+    part h9 : Hazard {
+        :>> id = "c0f1a5cc-c009-4a10-9b20-a1b2c3d4c009";
+        :>> title = "H-9: reported sync state does not match the actual system state";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The state the plugin reports to the user (status indicator/card + progress) does not match what the system is actually doing — e.g. it indicates synced/idle while it cannot reach the server or is mid-operation, or shows no intelligible progress during a long operation — so the user's understanding diverges from the actual state. [L-5]";
+    }
+    part h10 : Hazard {
+        :>> id = "c0f1a5cc-c00a-4a10-9b20-a1b2c3d4c00a";
+        :>> title = "H-10: the client ceases recovery of a recoverable connection";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The client stops attempting to recover a connection that could succeed (the link is down but the server/network is reachable again), so sync does not resume without manual intervention — while nothing in the reported state signals that it has stopped trying. [L-4, L-5]";
+    }
 
     #LeadsTo dependency from h1 to l1;
     #LeadsTo dependency from h2 to l1;
@@ -77,6 +91,9 @@ package ProjectHazards {
     #LeadsTo dependency from h7 to l2;
     #LeadsTo dependency from h8 to l1;
     #LeadsTo dependency from h8 to l2;
+    #LeadsTo dependency from h9 to l5;
+    #LeadsTo dependency from h10 to l4;
+    #LeadsTo dependency from h10 to l5;
 
     // ---- System Safety Constraints (SC-n): inversion of each hazard; WHAT, not how ----
     part sc1 : SystemSafetyConstraint {
@@ -127,6 +144,18 @@ package ProjectHazards {
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "The system must keep the content of distinct isolation domains (accounts, named vaults) separated, so content of one is never reachable through another. [H-8]";
     }
+    part sc9 : SystemSafetyConstraint {
+        :>> id = "c0f1a5cc-c109-4a10-9b20-a1b2c3d4c109";
+        :>> title = "SC-9: reported state must match actual state";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The state the plugin reports to the user must faithfully reflect the actual system state: it must never indicate success/synced when it is not, and must convey what it is doing — including progress on a long operation — intelligibly. [H-9]";
+    }
+    part sc10 : SystemSafetyConstraint {
+        :>> id = "c0f1a5cc-c10a-4a10-9b20-a1b2c3d4c10a";
+        :>> title = "SC-10: keep attempting recovery of a recoverable link";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> statement = "While a connection is down but recoverable, the client must keep attempting recovery — including promptly on a foreground/resume — and its reported state must reflect that it is retrying. [H-10]";
+    }
 
     #Inverts dependency from sc1 to h1;
     #Inverts dependency from sc2 to h2;
@@ -136,6 +165,8 @@ package ProjectHazards {
     #Inverts dependency from sc6 to h6;
     #Inverts dependency from sc7 to h7;
     #Inverts dependency from sc8 to h8;
+    #Inverts dependency from sc9 to h9;
+    #Inverts dependency from sc10 to h10;
 
     // ---- Controller responsibility -> SC (the Step-2 gate trace, now unblocked) ----
     // Who is responsible for enforcing each constraint (a controller may share an SC).
@@ -152,4 +183,7 @@ package ProjectHazards {
     #Enforces dependency from c6AccessControl to sc7; // revoke on grant/account removal (+ WS eviction)
     #Enforces dependency from c6AccessControl to sc8; // per-(owner,vault) authorization boundary
     #Enforces dependency from c5ServerVault to sc8;  // namespace keying + path-safety isolation
+    #Enforces dependency from c2SyncEngine to sc9;   // the status projection (phase = pure fn of the two FSMs) is truthful
+    #Enforces dependency from c1User to sc9;         // the display surfaces sync progress; the user reads the true state
+    #Enforces dependency from c2SyncEngine to sc10;  // reconnect/backoff + resume re-attempt keep a recoverable link recovering
 }
