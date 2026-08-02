@@ -351,6 +351,12 @@ package ProjectStpaAnalysis {
         :>> causalFactor = "inadequate process model + missing trigger (suspended timer, dropped resume event)";
         :>> title = "S-16: a mobile suspend pauses the backoff timer and resume doesn't re-attempt";
         :>> statement = "On mobile the OS SUSPENDS the backoff reconnect timer (window.setTimeout) while backgrounded, and the foreground/resume handler enqueues a reconcile event the engine DROPS while disconnected — so a failed, recoverable connection is never re-attempted, and nothing signals it stopped trying [H-10]. Mitigation: on resume, cancel the paused timer and re-attempt a fresh connect immediately, with a visible log (SR-23)."; }
+    // Found 2026-08-02 by an STPA-UCA hunt (the deepened analysis DISCOVERING an unshipped realization gap of an
+    // EXISTING UCA — UCA-6 delete-remote — on the vault-SWITCH path the prior pass never audited).
+    part s17 : LossScenario { :>> id = "3c639a49-2d63-4cfd-863f-7ff13ee9ed54"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "inadequate control algorithm (a delete path trusts a fallible listing without re-probing)";
+        :>> title = "S-17: upload switch tombstones a file the listing falsely omits";
+        :>> statement = "On an 'upload' vault switch, a still-present local file transiently omitted by a fallible io.list() (un-hydrated cloud placeholder / dir-enum hiccup / lock) is deleted-remote — a server tombstone that propagates delete-local to every peer — because switchUpload's remote-drop trusted the raw listing with no probePresence re-probe (the one delete path that lacked it, unlike reconcileOne/reconcileDelta) [H-1]. Mitigation: re-probe real absence before tombstoning on the switch path too (SR-14 extended to switchUpload; switchUploadProbeGuard 1.11.8)."; }
 
     #Explains dependency from s1 to uca1;   #LeadsTo dependency from s1 to h1;
     #Explains dependency from s2 to uca2;   #LeadsTo dependency from s2 to h1;
@@ -368,6 +374,7 @@ package ProjectStpaAnalysis {
     #LeadsTo dependency from s14 to h9;
     #LeadsTo dependency from s15 to h9;
     #Explains dependency from s16 to uca21; #LeadsTo dependency from s16 to h10;
+    #Explains dependency from s17 to uca6;  #LeadsTo dependency from s17 to h1;
 
     // ================= Derived Safety Requirements =================
     // Each #Satisfies its SC + #Mitigates its UCA(s). safetyFunction names the REALIZING mechanism
