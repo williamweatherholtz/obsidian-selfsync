@@ -1211,6 +1211,11 @@ async function switchDownload(
     if (meta.size > max && !streamable) { d.onSkip?.(p, meta.size); continue; }
     try { await applyPull(d, p, meta); d.retryBudget?.delete(p); }
     catch (e) {
+      // A WHOLE-SERVER outage (DNS can't resolve / connection refused) hits EVERY file identically. Abort
+      // the switch (like reconcileAll's loop) so the engine goes offline+backoff ONCE and the status reads
+      // "Reconnecting…" — NOT one-skip-per-file that "completes" the switch and settles to a false "synced"
+      // (field 2026-08-02: an 'upload' switch during a DNS outage logged a flood of skips + showed polling-synced).
+      if (isConnectionError(e)) throw e;
       d.onFileError?.(p, e);
       const prev = oldBase.get(p); if (prev) d.base.set(p, prev); // R19: restore pre-switch base → clean re-adopt, not a conflict-copy
       if (holdForRetry(d, p, meta.version)) failed.push(meta.version);
@@ -1246,10 +1251,11 @@ async function switchUpload(
       const { hash: h, bytes } = await pushFile(d, p);
       setBase(d, p, bytes, h);
     } catch (e) {
+      if (isConnectionError(e)) throw e; // whole-server outage → abort the switch (see switchDownload) rather than skip every file into a false "synced"
       d.onFileError?.(p, e); // R20: leave base null → retry conflict-copies, never a silent overwrite
     }
   }
   for (const p of remote.keys()) { // drop remote files this vault lacks
-    if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { d.onFileError?.(p, e); } }
+    if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { if (isConnectionError(e)) throw e; d.onFileError?.(p, e); } }
   }
 }

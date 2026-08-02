@@ -684,6 +684,29 @@ describe("switchTo (one-time vault switch resolution)", () => {
     expect(dec(m.get("n1.md")!)).toBe("one");
     expect(dec(m.get("n2.md")!)).toBe("two");
   });
+
+  // Field 2026-08-02: an 'upload' switch during a DNS outage logged a flood of per-file
+  // "UnknownHostException … skipped it" and then settled to a FALSE "Synced (polling)". A whole-server
+  // outage hits every file identically — the switch must ABORT (→ engine offline+backoff, "Reconnecting…"),
+  // exactly as reconcileAll's loop does, not skip every file into a completed-looking pass.
+  it("upload ABORTS on a whole-server outage (DNS) — no per-file skip flood, no false 'synced'", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "x.md": "LOCAL x", "y.md": "LOCAL y" });
+    const errs: string[] = [];
+    const down: SyncApi = { ...api, async commit() { throw new Error('Request Failed. UnknownHostException Unable to resolve host "notes2.example": No address associated with hostname'); } };
+    await expect(switchTo(deps(down, io, { onFileError: (p) => errs.push(p) }), "upload")).rejects.toThrow(/UnknownHost/i);
+    expect(errs).toEqual([]); // aborted on the first connection error — NOT one skip per file
+  });
+  it("download ABORTS on a whole-server outage (DNS) — no per-file skip flood", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "SERVER a");
+    await serverPut(api, "b.md", "SERVER b");
+    const io = fakeIo({});
+    const errs: string[] = [];
+    const down: SyncApi = { ...api, async getChunk() { throw new Error('getaddrinfo ENOTFOUND notes2.example'); } };
+    await expect(switchTo(deps(down, io, { onFileError: (p) => errs.push(p) }), "download")).rejects.toThrow(/ENOTFOUND/i);
+    expect(errs).toEqual([]);
+  });
 });
 
 describe("streamed reassembly of large downloads (B9 Part B)", () => {
