@@ -17,6 +17,7 @@ import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
+import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
@@ -1399,13 +1400,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       // R12-PB2: fail CLOSED — an absent apiVersion (a pre-versioning server, or a proxy that strips
       // the field) means we CAN'T confirm compatibility, so don't sync (was: undefined skipped the
       // check → failed open, the wrong default for the mixed-version case the gate exists for).
-      if (health.apiVersion !== CLIENT_API_VERSION) {
-        const server = health.apiVersion === undefined ? "an unknown version" : `v${health.apiVersion}`;
-        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${server}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
+      const vv = versionVerdict(health.apiVersion, CLIENT_API_VERSION); // pure decision (R12-PB2 fail-closed)
+      if (!vv.ok) {
+        this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${vv.serverLabel}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
         // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
         this.log(this.lastIssue, !this.versionNoticeShown);
         this.versionNoticeShown = true;
-        throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${server}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
+        throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${vv.serverLabel}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
       }
       this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
       if (health.status !== "ready") {
@@ -1434,14 +1435,11 @@ export default class NewLiveSyncPlugin extends Plugin {
       // clears the stale base + unions; nothing lost), unless a switch is already pending.
       if (!this.settings.pendingSwitch && this.settings.baseVaultKey && this.base.paths().length) {
         const stored = this.settings.baseVaultKey;
-        // fix ③: the key is now SERVER-qualified (`host|owner/vault`) so a repoint at a DIFFERENT server with
-        // the SAME vault name is detected (a server-blind key missed it → silent cross-server overwrite). An
-        // OLD stored key is server-blind (`owner/vault`, no `|`) — grandfather it to the CURRENT server so an
-        // upgrade doesn't force a spurious merge; a genuine later server/vault/owner change still trips.
-        const mismatch = stored.includes("|")
-          ? stored !== this.vaultIdentityKey()
-          : stored !== this.historyFloorKey();
-        if (mismatch) {
+        // fix ③ (pure `vaultKeyMismatch`): the key is SERVER-qualified (`host|owner/vault`) so a repoint at a
+        // DIFFERENT server with the SAME vault name is detected (a server-blind key missed it → silent
+        // cross-server overwrite); an OLD server-blind stored key (no `|`) is grandfathered to the CURRENT
+        // server so an upgrade doesn't force a spurious merge; a genuine server/vault/owner change still trips.
+        if (vaultKeyMismatch(stored, this.vaultIdentityKey(), this.historyFloorKey())) {
           this.log(`base belonged to '${stored}' but now syncing '${this.vaultIdentityKey()}' — clearing the stale base (safe merge)`, true);
           // V2 (2026-08-02): don't merge SILENTLY — a union across two vaults is a real (if non-destructive)
           // change the user should see. The merge is still the safe default (nothing is lost); the notice
@@ -1457,7 +1455,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       // vault, the switch has taken effect; re-running it is pure loss (or, for merge, wasteful re-merge).
       // So: if the switch already applied (base == target key, non-empty), clear it and reconcile NORMALLY.
       // (A not-yet-applied switch — base still the OLD vault — still replays, preserving R12-CA1.)
-      if (this.settings.pendingSwitch && this.settings.baseVaultKey === this.vaultIdentityKey() && this.base.paths().length > 0) {
+      if (switchAlreadyApplied(this.settings.pendingSwitch, this.settings.baseVaultKey, this.vaultIdentityKey(), this.base.paths().length > 0)) {
         this.log(`vault switch '${this.settings.pendingSwitch}' already applied (base belongs to the target) — clearing, syncing normally`, true);
         this.settings.pendingSwitch = undefined; await this.saveSettings();
       }
