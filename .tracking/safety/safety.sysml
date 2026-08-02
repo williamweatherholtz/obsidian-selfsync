@@ -61,4 +61,14 @@ package ProjectSafety {
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
         :>> statement = "A user is unable to capture, retrieve, or reconcile their notes when they need them. Priority: medium (availability). Traces to selfHoster + collaborator.";
     }
+    // L-5 (added 2026-08-02, D0036): the loss is a STATE — the user misled — NOT its consequences. A given
+    // divergence's damage (trust in unsafe data, wasted effort, abandonment) is DERIVED by analysing which
+    // UCAs/scenarios reach it, never pre-judged in the loss. Distinct from L-4: L-4 is the system unable to
+    // do its job; L-5 is the user's UNDERSTANDING of the system being wrong, even when the system works.
+    part l5 : Loss {
+        :>> id = "c0f1a5cc-a005-4a10-9b20-a1b2c3d4a005";
+        :>> title = "L-5: The user is misled by the plugin's UX";
+        :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The user's understanding of the system diverges from its actual state because the plugin's UX conveys a false or unintelligible picture of what it is doing, whether an operation succeeded, or how to act. The USER is a controller and the UX is feedback to their process model — any feedback capable of misrepresenting state affects this loss. Priority: medium (informed control + trust — the D0054 adoption risk). Traces to selfHoster + collaborator.";
+    }
 }

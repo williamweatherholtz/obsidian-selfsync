@@ -106,6 +106,14 @@ package EngineSkillRegistry {
         :>> triggerCondition = "Asked to critique / red-team / adversarially review the code, 'find bugs', 'where is this weak', 'another critique pass', or after a big change to a critical subsystem.";
         :>> writePolicy = WritePolicy::direct;
     }
+    part functionalDecoupling : AISkill {
+        :>> id = "fdec0c17-1a2b-4c3d-8e4f-5a6b7c8d9e02";
+        :>> title = "functional-decoupling";
+        :>> purpose = "Behavior-preserving refactor of a subsystem (D0036): walk it function by function and, where it earns its keep, split multi-responsibility functions, separate pure decision logic from side effects, and inject hard-wired deps at seams — improving testability + clarity and yielding clean control-structure seams for STPA as a byproduct. Grounded in Feathers (seams, characterization tests) / Bernhardt (functional-core/imperative-shell) / Fowler / SOLID / Cockburn + this repo's own idioms (EngineEffects/ReconcileDeps/pure classifiers). Distinct from function-audit (reviews idiom, no restructure), code-critique (hunts defects), stpa (analyses interactions). Deploys .engine/processes/functional-decoupling.sysml.";
+        :>> location = ".engine/skills/functional-decoupling/SKILL.md";
+        :>> triggerCondition = "Asked to decouple / refactor-for-testability / 'split these functions' / 'do the decoupling / functional-analysis pass', or a subsystem keeps sprouting hard-to-test interaction bugs.";
+        :>> writePolicy = WritePolicy::direct;
+    }
     part testResult : AISkill {
         :>> id = "b153edf8-6a01-4e3d-c746-6fa3f6f0f666";
         :>> title = "test-result";
