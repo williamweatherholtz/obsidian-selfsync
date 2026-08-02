@@ -728,6 +728,21 @@ describe("switchTo (one-time vault switch resolution)", () => {
     expect(progress[0]).toBe(2);
     expect(progress[progress.length - 1]).toBe(0);
   });
+
+  // FOUND by an STPA-UCA hunt (2026-08-02), not the field: the upload switch's remote-drop trusted the single
+  // io.list() snapshot with NO re-probe (unlike reconcileOne's delete-remote), so a file transiently omitted
+  // by a fallible list() (un-hydrated cloud placeholder / dir-enum hiccup / lock) was tombstoned FLEET-WIDE —
+  // issueFalseAbsenceDelete on the one delete path that didn't guard it.
+  it("upload switch does NOT tombstone a remote file that io.list() FALSELY omits (probePresence guard)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "keep.md", "on the server AND on local disk");
+    const io = fakeIo({ "x.md": "local only", "keep.md": "still on disk" });
+    const realList = io.list.bind(io);
+    io.list = async () => { const r = await realList(); r.delete("keep.md"); return r; }; // list() transiently under-reports keep.md
+    await switchTo(deps(api, io), "upload");
+    expect(files.has("keep.md")).toBe(true); // NOT tombstoned — probePresence (read) re-confirmed it present
+    expect(files.has("x.md")).toBe(true);    // the genuinely-local-only file is still pushed
+  });
 });
 
 describe("streamed reassembly of large downloads (B9 Part B)", () => {

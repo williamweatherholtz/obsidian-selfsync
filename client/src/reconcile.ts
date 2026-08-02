@@ -1266,6 +1266,15 @@ async function switchUpload(
     d.onProgress?.(--pending);
   }
   for (const p of remote.keys()) { // drop remote files this vault lacks
-    if (!local.has(p)) { try { await d.api.deleteFile(p); } catch (e) { if (isConnectionError(e)) throw e; d.onFileError?.(p, e); } }
+    if (local.has(p)) continue;
+    // EVIDENCED ABSENCE (issueFalseAbsenceDelete): io.list() can UNDER-REPORT a still-present file (an
+    // un-hydrated cloud placeholder, a dir that failed to enumerate, an OS/AV lock), so a file missing from
+    // the switch's single list() snapshot is not proof the user deleted it. Re-probe before tombstoning it
+    // FLEET-WIDE (deleteRemote → a server tombstone → delete-local on every peer) — exactly as reconcileOne's
+    // delete-remote does. Present OR indeterminate ⇒ KEEP it on the server; the next reconcile syncs it once
+    // the listing is accurate. (This was the one delete path that trusted the raw listing — sibling paths
+    // reconcileOne/reconcileDelta re-probe and switchDownload's local-mirror is bulk-ratio-guarded.)
+    if ((await probePresence(d.io, p)) !== "absent") continue;
+    try { await d.api.deleteFile(p); } catch (e) { if (isConnectionError(e)) throw e; d.onFileError?.(p, e); }
   }
 }
