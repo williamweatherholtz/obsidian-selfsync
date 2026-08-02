@@ -1066,7 +1066,7 @@ mod tests {
     fn delete_cas_rejects_a_stale_delete_that_would_clobber_a_newer_commit() {
         let dir = tempfile::tempdir().unwrap();
         let mut v = Vault::open(dir.path()).unwrap();
-        let mut put = |v: &mut Vault, body: &[u8]| {
+        let put = |v: &mut Vault, body: &[u8]| {
             let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
             v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None }).unwrap()
         };
