@@ -4,12 +4,6 @@ import { SyncApi } from "./sync";
 import { isInsecureRemote } from "./connstr";
 import { ConnError, Endpoint } from "./connstate";
 
-// A layered connection diagnosis: which link in the chain is broken, so the user gets an actionable
-// reason instead of a silent "offline". Addresses the #1 sync-support complaint — failures that don't
-// announce their cause. `layer` names the FIRST failing hop, checked in order.
-export type DiagnosisLayer = "unreachable" | "version" | "auth" | "vault" | "degraded" | "ok";
-export interface Diagnosis { ok: boolean; layer: DiagnosisLayer; detail: string }
-
 // R11-HIGH: Obsidian's requestUrl has NO timeout, so a half-open/stalled connection (VPN drop,
 // captive portal, dead NAT entry) hangs forever — and since the sync engine is serial, one hung
 // request wedges ALL sync with no error and no recovery (the offline/backoff machinery only fires
@@ -53,7 +47,7 @@ function errText(r: RequestUrlResponse, fallback: string): string {
 
 // RequestUrlResponse.json is a getter that JSON-parses .text and THROWS on a non-JSON body — and a
 // reverse proxy / captive portal can answer 200 with an HTML error page. Read it defensively so a
-// "never throws" path (diagnose) actually never throws: returns undefined on an absent/invalid body.
+// caller that must not throw on a bad body stays safe: returns undefined on an absent/invalid body.
 function tryJson(r: RequestUrlResponse): unknown {
   try { return r.json; } catch { return undefined; }
 }
@@ -141,46 +135,6 @@ export class HttpTransport implements SyncApi {
     } catch {
       return "";
     }
-  }
-
-  // Diagnose the connection layer-by-layer and return the FIRST thing that's wrong, with an
-  // actionable message. Never throws — a diagnosis is exactly what you want when things are broken.
-  // Checks: reachable (DNS/TLS/server) → protocol version → session auth → vault present → not degraded.
-  static async diagnose(baseUrl: string, token?: string, vault?: string, owner?: string): Promise<Diagnosis> {
-    const url = normBase(baseUrl);
-    // 1) Reachable? /health is unauthenticated.
-    let health: RequestUrlResponse;
-    try {
-      health = await httpReq({ url: `${url}/health`, method: "GET", throw: false });
-    } catch {
-      return { ok: false, layer: "unreachable", detail: "Can't reach the server. Check the URL, that it's running, and TLS/DNS. On a phone, use the server's https address, not localhost." };
-    }
-    if (health.status !== 200) {
-      return { ok: false, layer: "unreachable", detail: `The server answered HTTP ${health.status} on /health — it may be starting up or misconfigured behind the reverse proxy.` };
-    }
-    // 2) Protocol version match? (tryJson: a 200 with a non-JSON body — proxy/captive-portal HTML —
-    // must NOT throw out of this never-throws diagnostic; an unreadable body just skips the check.)
-    const serverVersion = (tryJson(health) as { apiVersion?: unknown } | undefined)?.apiVersion;
-    if (typeof serverVersion === "number" && serverVersion !== CLIENT_API_VERSION) {
-      return { ok: false, layer: "version", detail: `Version mismatch: the server speaks protocol v${serverVersion}, this plugin speaks v${CLIENT_API_VERSION}. Update whichever is older so both match.` };
-    }
-    // 3) Session valid? Needs a token + a vault to probe an authenticated endpoint.
-    if (!token) return { ok: false, layer: "auth", detail: "Reachable, but you're not signed in on this device. Open setup and sign in." };
-    if (!vault) return { ok: true, layer: "ok", detail: "Server reachable and the protocol matches. No vault selected yet." };
-    const scope = owner ? `/api/u/${encodeURIComponent(owner)}/${encodeURIComponent(vault)}` : `/api/v/${encodeURIComponent(vault)}`;
-    let st: RequestUrlResponse;
-    try {
-      st = await httpReq({ url: `${url}${scope}/status`, method: "GET", headers: bearer(token), throw: false });
-    } catch {
-      return { ok: false, layer: "unreachable", detail: "Reached /health but the sync endpoint timed out — a proxy may be dropping the connection." };
-    }
-    if (st.status === 401) return { ok: false, layer: "auth", detail: "Your saved session was rejected. Sign in again — your token may have expired or been revoked." };
-    if (st.status === 404) return { ok: false, layer: "vault", detail: `The vault '${vault}'${owner ? ` owned by ${owner}` : ""} isn't on the server — it may have been deleted, or the share was revoked.` };
-    if (st.status !== 200) return { ok: false, layer: "unreachable", detail: `The sync endpoint answered HTTP ${st.status}.` };
-    // 4) Vault healthy (not a degraded/corrupt index)? (tryJson: same non-JSON-200 guard as above.)
-    const body = tryJson(st) as { status?: string } | undefined;
-    if (body?.status === "error") return { ok: false, layer: "degraded", detail: "The server's index for this vault needs repair — run a reindex from the admin page. Sync is paused so it won't act on a partial manifest." };
-    return { ok: true, layer: "ok", detail: "All good: server reachable, protocol matches, signed in, and the vault is ready." };
   }
 
   // Returns the session token AND whether the account must set a new password before use (IA.3.5.9 —

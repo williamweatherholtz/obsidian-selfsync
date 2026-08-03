@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { HttpTransport } from "../src/transport";
-import { CommitConflictError, CLIENT_API_VERSION } from "../src/protocol";
+import { CommitConflictError } from "../src/protocol";
 
-// transport.ts is the client's HTTP layer: error/status mapping, the layered diagnose() ladder, the
+// transport.ts is the client's HTTP layer: error/status mapping, the
 // 30 s timeout race, plain-text error surfacing, and login's mustChange gate. It was the biggest
 // client test gap (343 LOC, ~21 LOC of tests). We drive the REAL transport over a controllable
 // `requestUrl` (the only obsidian value it imports), asserting SPECIFIC outcomes — never a tautology.
@@ -108,61 +108,6 @@ describe("errText: surface the server's plain-text message", () => {
     await expect(HttpTransport.createVault(HTTPS, "tok", "v")).rejects.toThrow(/create vault: HTTP 400/);
     req.mockResolvedValueOnce(res(400, { text: "" })); // empty → fall back
     await expect(HttpTransport.createVault(HTTPS, "tok", "v")).rejects.toThrow(/create vault: HTTP 400/);
-  });
-});
-
-describe("diagnose() layered ladder — reports the FIRST failing hop", () => {
-  it("unreachable when /health throws or is non-200", async () => {
-    req.mockRejectedValueOnce(new Error("DNS"));
-    expect((await HttpTransport.diagnose(HTTPS)).layer).toBe("unreachable");
-    req.mockResolvedValueOnce(res(502));
-    expect((await HttpTransport.diagnose(HTTPS)).layer).toBe("unreachable");
-  });
-  it("version when the server's apiVersion differs", async () => {
-    req.mockResolvedValueOnce(res(200, { json: { apiVersion: CLIENT_API_VERSION + 1 } }));
-    const d = await HttpTransport.diagnose(HTTPS);
-    expect(d).toMatchObject({ ok: false, layer: "version" });
-  });
-  it("auth when reachable+matched but no token; ok-no-vault when token but no vault", async () => {
-    req.mockResolvedValueOnce(res(200, { json: { apiVersion: CLIENT_API_VERSION } }));
-    expect((await HttpTransport.diagnose(HTTPS)).layer).toBe("auth");
-    req.mockResolvedValueOnce(res(200, { json: { apiVersion: CLIENT_API_VERSION } }));
-    expect(await HttpTransport.diagnose(HTTPS, "tok")).toMatchObject({ ok: true, layer: "ok" });
-  });
-  it("auth on 401, vault on 404, degraded on status=error, ok when all pass", async () => {
-    // each diagnose does 2 requests: /health then /status
-    const health = res(200, { json: { apiVersion: CLIENT_API_VERSION } });
-    req.mockResolvedValueOnce(health).mockResolvedValueOnce(res(401));
-    expect((await HttpTransport.diagnose(HTTPS, "tok", "v")).layer).toBe("auth");
-    req.mockResolvedValueOnce(health).mockResolvedValueOnce(res(404));
-    expect((await HttpTransport.diagnose(HTTPS, "tok", "v")).layer).toBe("vault");
-    req.mockResolvedValueOnce(health).mockResolvedValueOnce(res(200, { json: { status: "error" } }));
-    expect((await HttpTransport.diagnose(HTTPS, "tok", "v")).layer).toBe("degraded");
-    req.mockResolvedValueOnce(health).mockResolvedValueOnce(res(200, { json: { status: "ok" } }));
-    expect(await HttpTransport.diagnose(HTTPS, "tok", "v")).toMatchObject({ ok: true, layer: "ok" });
-  });
-});
-
-describe("diagnose() never throws even when the body isn't JSON (A1)", () => {
-  // A reverse proxy / captive portal can answer 200 with an HTML body; the REAL RequestUrlResponse.json
-  // is a getter that THROWS on non-JSON. diagnose() is documented "never throws" — it must swallow that
-  // and keep laddering, not blow up exactly when the user is diagnosing a broken proxy. Fail-first: with
-  // the old raw `health.json` / `st.json` reads these threw a SyntaxError instead of resolving.
-  function resHtml200() {
-    return {
-      status: 200, text: "<html>captive portal</html>", arrayBuffer: new ArrayBuffer(0),
-      get json(): unknown { throw new SyntaxError("Unexpected token < in JSON"); },
-    };
-  }
-  it("a 200 /health with a non-JSON body does not throw; the version check is skipped", async () => {
-    req.mockResolvedValueOnce(resHtml200());
-    // token but no vault → after the (skipped) version check it returns ok-no-vault; the point is it RESOLVES.
-    await expect(HttpTransport.diagnose(HTTPS, "tok")).resolves.toMatchObject({ ok: true });
-  });
-  it("a 200 /status with a non-JSON body does not throw; unreadable body is not treated as degraded", async () => {
-    const health = res(200, { json: { apiVersion: CLIENT_API_VERSION } });
-    req.mockResolvedValueOnce(health).mockResolvedValueOnce(resHtml200());
-    await expect(HttpTransport.diagnose(HTTPS, "tok", "v")).resolves.toMatchObject({ ok: true, layer: "ok" });
   });
 });
 

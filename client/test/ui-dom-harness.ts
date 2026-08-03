@@ -41,7 +41,6 @@ export function fakePlugin(over: any = {}) {
     disconnect: vi.fn(async () => {}),
     signOut: vi.fn(async () => {}),
     recreateVault: vi.fn(async () => {}),
-    diagnoseConnection: vi.fn(async () => ({ ok: true, steps: [] })),
     addDeviceLink: vi.fn(() => "selfsync://link"),
     autoDeviceName: vi.fn(async () => "Test Device"),
     getConfigConflicts: () => settings.configConflicts,

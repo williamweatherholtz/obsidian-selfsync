@@ -234,9 +234,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       st.nameEl.createSpan({ text: disp.label + (disp.detail ? ` ${disp.detail}` : "") });
       const issue = this.plugin.getLastIssue();
       if (phase !== "idle" && issue) st.setDesc(issue);
-      // Diagnose is always available: it names the first broken link so a silent offline — or a
-      // "looks fine but isn't syncing" — gets an actionable reason instead of a shrug.
-      st.addButton((b) => b.setButtonText("Diagnose").onClick(() => void this.runDiagnosis()));
+      // No "Diagnose" button: the status line above IS the diagnosis — a pure projection of the live
+      // connection FSM (blockedTip names the actionable cause: version mismatch / sign-in / vault-gone /
+      // reconnecting). A separate out-of-band probe only duplicated that and could falsely say "all good"
+      // when the pipe was fine but sync wasn't converging (an L-5 misleading-UX gap). Removed 1.11.11.
       if (phase === "retrying" || phase === "blocked" || phase === "lockedOut") { // a down link — any reason
         st.addButton((b) => b.setButtonText("Reconnect").onClick(() => this.plugin.reconnect()));
         // D0021: the vault was deleted server-side — offer a deliberate re-create-from-this-device.
@@ -253,17 +254,6 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
   private showDeviceLink(): void {
     new DeviceLinkModal(this.app, this.plugin.addDeviceLink()).open();
-  }
-
-  // Run the layered connection diagnosis and show the first broken link with an actionable message.
-  private async runDiagnosis(): Promise<void> {
-    new Notice("SelfSync: checking the connection…");
-    try {
-      const d = await this.plugin.diagnoseConnection();
-      new Notice(`SelfSync — ${d.ok ? "OK" : d.layer}: ${d.detail}`, d.ok ? 6000 : 12000);
-    } catch (e: any) {
-      new Notice(`SelfSync: diagnosis failed — ${e?.message ?? e}`);
-    }
   }
 
   // Obsidian configuration — the opt-in .obsidian surface (notes/attachments always sync, so no
