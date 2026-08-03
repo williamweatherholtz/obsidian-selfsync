@@ -370,6 +370,10 @@ package ProjectStpaAnalysis {
         :>> causalFactor = "missing control interlock (delete has no optimistic-concurrency guard, unlike commit)";
         :>> title = "S-18: a stale delete supersedes a newer concurrent commit (lost update)";
         :>> statement = "Device A commits an edit (v5->v6); device B, still based on v5, issues a delete-remote. The server (Vault::delete) computed a new version UNCONDITIONALLY — no expected_version precondition, unlike Vault::commit's CAS — so B's tombstone lands at v7 and supersedes A's edit; A pulls the tombstone and silently loses its change fleet-wide, with no conflict marker. A readWrite grantee could weaponize this to discard the owner's concurrent edit [H-1]. Mitigation: CAS-guard delete symmetric with commit — the reconcile delete carries its based-on version and 409s if the server advanced, then re-reconciles as edit-wins-pull, resurrecting the edit (SR-24; deleteRemoteCasGuard 1.11.10)."; }
+    part s19 : LossScenario { :>> id = "5f2a7c30-8b41-4e6d-91c2-3a0e8d54f9b6"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> causalFactor = "inadequate feedback (a multi-phase connect reports no sub-phase or timing)";
+        :>> title = "S-19: an opaque 'Connecting…' can't be told apart from a hung connect";
+        :>> statement = "doConnect runs several phases (sign-in -> server status -> share grant -> remote-manifest fetch -> local scan -> reconcile) all under one 'Connecting…' label with no sub-phase and no timing, and logs nothing between them on the happy path. When a phase is slow (a 30s-timeout-bound status(), a large manifest fetch), the USER — a controller acting on this feedback — cannot distinguish a slow-but-progressing connect from a stuck one, and has no signal to locate the stall, so they may force-quit / re-setup / conclude the plugin is broken [H-9 -> L-5]. Parallels S-14 (a bulk op that reports no progress). Mitigation: name each connect sub-phase as the 'Connecting…' detail + log it with elapsed time, so a slow phase is visible and located (SR-25; connectPhaseVisibility 1.12.0)."; }
 
     #Explains dependency from s1 to uca1;   #LeadsTo dependency from s1 to h1;
     #Explains dependency from s2 to uca2;   #LeadsTo dependency from s2 to h1;
@@ -386,6 +390,7 @@ package ProjectStpaAnalysis {
     #LeadsTo dependency from s13 to h9;      // control-algorithm flaw (no commanded UCA) → H-9
     #LeadsTo dependency from s14 to h9;
     #LeadsTo dependency from s15 to h9;
+    #LeadsTo dependency from s19 to h9;      // opaque connect feedback → the user's model diverges (slow read as hung) → H-9 → L-5
     #Explains dependency from s16 to uca21; #LeadsTo dependency from s16 to h10;
     #Explains dependency from s17 to uca6;  #LeadsTo dependency from s17 to h1;
     #Explains dependency from s18 to uca22; #LeadsTo dependency from s18 to h1;
@@ -538,7 +543,14 @@ package ProjectStpaAnalysis {
         :>> triggeringEvent = "a delete-remote races a concurrent commit on the same path from another device";
         :>> safeState = "the stale delete 409s and the concurrent edit survives + is resurrected; a deliberate delete still propagates";
         :>> safetyFunction = "REALIZED: deleteRemoteCasGuard (1.11.10) — server Vault::delete_checked(path, expected_version) mirrors commit's CAS (stale -> 409); client transport.deleteFile sends the based-on version + maps 409 -> CommitConflictError; the reconcile deleteRemote effect carries it. Verified by server cargo delete_cas_rejects_a_stale_delete_that_would_clobber_a_newer_commit + authoritative_delete_always_wins_and_absent_delete_is_a_noop, and client reconcile 'a stale delete 409s and the peer's concurrent edit is resurrected (edit-wins-pull), never lost'."; }
+    part sr25 : SafetyRequirement { :>> id = "c0f1a5cc-d319-4a10-9b20-a1b2c3d4d319"; :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
+        :>> title = "SR-25: the connect reports its sub-phase + timing";
+        :>> statement = "While connecting, the status must name the current sub-phase (signing in / checking the server / checking access / fetching changes / scanning local files / reconciling) as the 'Connecting…' detail, and log each with elapsed time, so a slow phase is visible and locatable rather than an opaque 'Connecting…' that reads as hung. The label stays the pure FSM projection; the sub-phase is the detail.";
+        :>> triggeringEvent = "a connect phase (sign-in / server status / manifest fetch / local scan) takes long enough to look stuck";
+        :>> safeState = "the user sees which sub-phase is running + how long it has taken, distinguishing a slow connect from a hung one";
+        :>> safetyFunction = "REALIZED: connectPhaseVisibility (1.12.0) — a reconcile onStage hook + a connect-gated setConnectStage name each sub-phase as the 'Connecting…' detail and log it with cumulative elapsed; verified by reconcile 'fires onStage in order: fetching changes -> scanning local files -> reconciling N' + plugin-wiring 'surfaces the live connect sub-phase as the Connecting… detail, cleared after connect'."; }
 
+    #Satisfies dependency from sr25 to sc9;  // realizes the L-5 constraint (adequate, truthful UX feedback) on the connect loop
     #Satisfies dependency from sr24 to sc1;  #Satisfies dependency from sr24 to sc8;  #Mitigates dependency from sr24 to uca22;
     #Satisfies dependency from sr1 to sc1;   #Mitigates dependency from sr1 to uca1;  #Mitigates dependency from sr1 to uca2;
     #Satisfies dependency from sr2 to sc2;   #Mitigates dependency from sr2 to uca4;
@@ -616,6 +628,7 @@ package ProjectStpaAnalysis {
     #RealizedBy dependency from sr18 to c3Session;
     #RealizedBy dependency from sr19 to c5ServerVault;
     #RealizedBy dependency from sr24 to c5ServerVault;  // the delete CAS is the server vault's interlock
+    #RealizedBy dependency from sr25 to c2SyncEngine;   // the connect status is the engine's projection (phase = fn of its FSMs)
     #RealizedBy dependency from sr20 to c2SyncEngine;  // the status projection is the engine's (phase = fn of its FSMs)
     #RealizedBy dependency from sr21 to c2SyncEngine;
     #RealizedBy dependency from sr22 to c2SyncEngine;
@@ -630,4 +643,5 @@ package ProjectStpaAnalysis {
     #Senses dependency from s11 to fbConnResult;
     #Senses dependency from s12 to fbRemoteManifest;
     #Senses dependency from s18 to fbRemoteManifest; // the delete ignored the manifest's version (the CAS precondition it lacked)
+    #Senses dependency from s19 to fbStatusIndicator; // the connect's inadequate sub-phase feedback is the status indicator (same sensor as S-14)
 }
