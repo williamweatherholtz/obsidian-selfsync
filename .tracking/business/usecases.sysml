@@ -141,6 +141,92 @@ package ProjectUseCases {
         :>> extensions = "Removing a folder from the list resumes management on its next genuine change. | A path not under any excluded folder is managed normally. | Excluding a folder never deletes or rewrites frontmatter already present in those notes.";
     }
 
+    // ===== Backfill (2026-08-03, owner-directed): use cases for organically-discovered capabilities =====
+    use case ucEnableMfa : UseCase {
+        :>> id = "c0f1a5cc-b201-4a10-9b20-a1b2c3d402a1"; :>> title = "Add a second factor to my account";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user (often an admin) hardens their account with TOTP two-factor auth, from the plugin or the admin console.";
+        :>> mainSuccess = "The user enrols an authenticator (scans/enters the secret), confirms a 6-digit code, and is shown one-time recovery codes to save; from then on sign-in requires the code.";
+        :>> extensions = "Having lost the authenticator, they sign in with a single-use recovery code. | An operator can REQUIRE MFA for admins, and a fresh admin can still enrol before being forced to use it. | Disabling MFA needs a current code.";
+    }
+    use case ucChangePassword : UseCase {
+        :>> id = "c0f1a5cc-b202-4a10-9b20-a1b2c3d402a2"; :>> title = "Change my password and end other sessions";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user whose password may have leaked (or who just wants to rotate it) changes it themselves, without an admin.";
+        :>> mainSuccess = "The user enters the current + new password; the change succeeds, every OTHER session is revoked, and this device keeps a fresh token — so a leaked credential can be self-remediated.";
+        :>> extensions = "Other token-only devices are told they'll need the new password to sign back in. | Repeated wrong current-password guesses are throttled. | An admin can reset a forgotten password, which forces a change on next use.";
+    }
+    use case ucManageAccounts : UseCase {
+        :>> id = "c0f1a5cc-b203-4a10-9b20-a1b2c3d402a3"; :>> title = "Manage accounts on my server";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "The operator manages the people with accounts on the server from the admin console.";
+        :>> mainSuccess = "From /admin the operator lists accounts and can create one, delete one, promote/revoke admin, reset a password, and inspect any account's vaults + health — no file editing, no database.";
+        :>> extensions = "A password reset is temporary — the account must set a new one on next use, and its sessions are revoked. | The bootstrap admin can't be deleted or demoted. | Account-admin actions aren't reachable on the public port (the admin surface is private by default).";
+    }
+    use case ucControlRegistration : UseCase {
+        :>> id = "c0f1a5cc-b204-4a10-9b20-a1b2c3d402a4"; :>> title = "Control who can register";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "The operator decides whether new accounts can be created, and hands out invites when registration is closed.";
+        :>> mainSuccess = "The operator toggles registration open or closed; when closed, they issue a labelled single-use invite (a token or a copyable account-creation link) that lets exactly one person register, and can revoke an unused invite.";
+        :>> extensions = "Registration is CLOSED by default. | A used or revoked invite can't be reused. | A vault share link also authorizes one account creation under closed registration (see ucOnboardFromShareLink).";
+    }
+    use case ucOnboardFromShareLink : UseCase {
+        :>> id = "c0f1a5cc-b205-4a10-9b20-a1b2c3d402a5"; :>> title = "Join from a vault share link as a new user";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "Someone with no account yet receives a vault share link and gets onto the shared vault in one flow — the link is the whole onboarding (D0037).";
+        :>> mainSuccess = "Opening the link, the newcomer chooses Create account (or Log in); a valid single-use link authorizes the new account EVEN when registration is closed; the account is created, the share is redeemed, and the device adopts the shared vault — signed in and syncing.";
+        :>> extensions = "If they already have an account they sign in and redeem instead. | The link is single-use; a username collision costs the link (one-shot), and the owner can revoke a pending link. | Account creation + grant + session are atomic — a failure leaves no orphan account and no burned link.";
+    }
+    use case ucOnboardFromAccountLink : UseCase {
+        :>> id = "c0f1a5cc-b206-4a10-9b20-a1b2c3d402a6"; :>> title = "Create an account from an account-creation link";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "The operator sends a new person a selfsync-invite:// account-creation link so they can make an account without the server being open to the public.";
+        :>> mainSuccess = "The newcomer pastes the link into SelfSync setup; the server + single-use invite are prefilled; they pick a username + password and their account is created even though open registration is closed; they then set up sync normally.";
+        :>> extensions = "The invite is single-use and revocable. | Unlike a vault share link, this attaches no vault — it just makes the account. | The link carries no password, only the server + invite token.";
+    }
+    use case ucCheckSyncState : UseCase {
+        :>> id = "c0f1a5cc-b207-4a10-9b20-a1b2c3d402a7"; :>> title = "Trust what the UI says about sync";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user glances at SelfSync to answer 'are my notes safely synced right now?' and can rely on the answer.";
+        :>> mainSuccess = "One indicator (ribbon + status card) shows the true state — Fully synced / Syncing N pending / Reconnecting / Read-only — as a pure projection of the sync engine; when healthy it reads synced and the user trusts it.";
+        :>> extensions = "When the link is down it turns and NAMES the actionable cause (sign-in / version mismatch / vault gone / reconnecting) with a Reconnect action — it never falsely reads 'synced'. | It never gets stuck on a stale 'Switching…'/'Connecting…'. | On mobile (no status bar) a command speaks the state as a toast.";
+    }
+    use case ucRepairVault : UseCase {
+        :>> id = "c0f1a5cc-b208-4a10-9b20-a1b2c3d402a8"; :>> title = "Repair a degraded vault";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A vault's server-side index is degraded (corrupt, or empty-with-data on disk); the operator gets it healthy again.";
+        :>> mainSuccess = "Most degraded vaults auto-reindex from disk on next access; for the rest, the operator clicks Repair (plugin or admin console) and the manifest is rebuilt from the materialized files, clearing the error and re-syncing connected clients.";
+        :>> extensions = "A health chip flags which vaults need repair; a healthy vault shows none. | Force-reindex drops truly-unrecoverable entries so the rest of the vault is saved. | Storage stays bounded meanwhile via orphan-chunk GC + a deliberate tombstone prune.";
+    }
+    use case ucReviewAuditLog : UseCase {
+        :>> id = "c0f1a5cc-b209-4a10-9b20-a1b2c3d402a9"; :>> title = "Review the security audit trail";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "The operator reviews what security-relevant actions happened on the server, for accountability or a compliance posture.";
+        :>> mainSuccess = "Every security event (sign-in success/failure, lockout, account/registration/invite/share/vault/admin change, authorization denial) is emitted as one structured JSON line with who/what/when/outcome/source-IP, which the operator collects and reviews.";
+        :>> extensions = "Log fields are injection-hardened (control chars stripped, bounded length). | The posture maps to CMMC L2 / NIST 800-171 AU controls; CUI-specific controls are formally N/A for a no-CUI deployment (D0027).";
+    }
+    use case ucSyncSelfHeals : UseCase {
+        :>> id = "c0f1a5cc-b20a-4a10-9b20-a1b2c3d402aa"; :>> title = "Sync recovers on its own after a drop";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "The connection drops (network blip, server restart, laptop sleep, mobile suspend); sync comes back without the user doing anything.";
+        :>> mainSuccess = "The client detects the dropped WebSocket, backs off and reconnects on its own, re-reconciles only what changed, and the indicator returns to Fully synced — no manual reconnect needed.";
+        :>> extensions = "On mobile resume, a suspended backoff timer is re-triggered proactively so it doesn't stall. | A whole-server outage backs off once instead of flooding per-file errors. | The user can still force an immediate Reconnect.";
+    }
+    use case ucManageVaults : UseCase {
+        :>> id = "c0f1a5cc-b20b-4a10-9b20-a1b2c3d402ab"; :>> title = "Create, switch, fork, or delete a vault";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user keeps more than one vault and moves this device between them, or spins up / tears down a vault.";
+        :>> mainSuccess = "From the switcher the user creates a new named vault, switches this device to another owned or shared vault (download/upload/merge, destructive modes confirmed), forks the current content into a new vault they own, or deletes a vault they own.";
+        :>> extensions = "If the server vault was deleted, the client offers Re-create from this device rather than losing data. | Forking a read-only share gives an editable copy without touching the original. | Switching never silently deletes local-only or remote-only files without confirmation.";
+    }
+    use case ucMigrateFromLiveSync : UseCase {
+        :>> id = "c0f1a5cc-b20c-4a10-9b20-a1b2c3d402ac"; :>> title = "Migrate off obsidian-livesync";
+        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
+        :>> description = "A LiveSync user moves to SelfSync to escape CouchDB + confusing settings while keeping free, strong conflict resolution.";
+        :>> mainSuccess = "They stand up the single-binary server (no CouchDB), install the plugin via BRAT, run the guided setup on their existing vault, and their notes + customizations sync with un-paywalled three-way merge and a status they can understand.";
+        :>> extensions = "Their themes/snippets/plugins travel via opt-in config sync without one device wiping another. | Nothing is lost pointing a full vault at a fresh server (restore + never-clobber guards). | Each setting has one clear home, unlike LiveSync's toggle maze.";
+    }
+
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
     #DependsOn dependency from ucFirstRunSetup to selfHoster;
     #DependsOn dependency from ucFirstRunSetup to n1GuidedSetup;
@@ -177,4 +263,33 @@ package ProjectUseCases {
     #DependsOn dependency from ucTimestampOnlyNoConflict to nNoMetadataConflicts;
     #DependsOn dependency from ucExcludedFolderUntouched to selfHoster;
     #DependsOn dependency from ucExcludedFolderUntouched to nTimestampFidelity;
+
+    // ---- backfill traceability (2026-08-03) ----
+    #DependsOn dependency from ucEnableMfa to selfHoster;
+    #DependsOn dependency from ucEnableMfa to nAccountSecurity;
+    #DependsOn dependency from ucChangePassword to selfHoster;
+    #DependsOn dependency from ucChangePassword to nAccountSecurity;
+    #DependsOn dependency from ucManageAccounts to selfHostOperator;
+    #DependsOn dependency from ucManageAccounts to nAccountAdministration;
+    #DependsOn dependency from ucControlRegistration to selfHostOperator;
+    #DependsOn dependency from ucControlRegistration to nAccountAdministration;
+    #DependsOn dependency from ucOnboardFromShareLink to collaborator;
+    #DependsOn dependency from ucOnboardFromShareLink to nOnboardNewUser;
+    #DependsOn dependency from ucOnboardFromAccountLink to collaborator;
+    #DependsOn dependency from ucOnboardFromAccountLink to nOnboardNewUser;
+    #DependsOn dependency from ucCheckSyncState to selfHoster;
+    #DependsOn dependency from ucCheckSyncState to nHonestStatus;
+    #DependsOn dependency from ucCheckSyncState to n1SingleIndicator;
+    #DependsOn dependency from ucRepairVault to selfHostOperator;
+    #DependsOn dependency from ucRepairVault to nVaultHealth;
+    #DependsOn dependency from ucReviewAuditLog to selfHostOperator;
+    #DependsOn dependency from ucReviewAuditLog to nAuditability;
+    #DependsOn dependency from ucSyncSelfHeals to selfHoster;
+    #DependsOn dependency from ucSyncSelfHeals to nReliableSync;
+    #DependsOn dependency from ucManageVaults to selfHoster;
+    #DependsOn dependency from ucManageVaults to nVaultManagement;
+    #DependsOn dependency from ucMigrateFromLiveSync to migratingUser;
+    #DependsOn dependency from ucMigrateFromLiveSync to goal2SimpleBackend;
+    // Tie the existing general admin use case to the new administration Need too.
+    #DependsOn dependency from ucAdministerServer to nAccountAdministration;
 }
