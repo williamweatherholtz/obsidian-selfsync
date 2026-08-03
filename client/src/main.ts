@@ -1124,7 +1124,7 @@ export default class NewLiveSyncPlugin extends Plugin {
         // "Fully synced" is a mode error (it implies your changes are safe on the server). Say so.
         ? { label: "Synced (read-only)", detail: "your edits stay on this device" }
         : { label: this.realtimeConnected ? "Fully synced" : "Synced (polling)", detail: "" };
-      case "connecting": return { label: "Connecting…", detail: "" };
+      case "connecting": return { label: "Connecting…", detail: this.connectStage || "" }; // the live sub-phase (signing in / checking the server / fetching changes / scanning / reconciling)
       // A down link, decomposed by the connection FSM. `retrying` = transient backoff; `lockedOut` / `blocked`
       // carry their SPECIFIC reason (429 wait, or sign-in rejected / version mismatch / vault gone …) from
       // the LinkState — no more one-size "offline".
@@ -1367,8 +1367,25 @@ export default class NewLiveSyncPlugin extends Plugin {
   // pending switch), then spin up the WS + poll. THROWS on any failure; the engine catches it,
   // goes offline, and arms the backoff reconnect. No re-entrancy flags here: the engine guarantees
   // exactly one effect runs at a time, so the old CONC-3 interleave is impossible by construction.
+  // Connect sub-phase surfacing (L-5). "Connecting…" spans several network round-trips — sign-in → server
+  // check → remote-manifest fetch → local scan → reconcile — that used to log NOTHING between them, so a
+  // slow phase (e.g. a 30s-timeout-bound status() or a big manifest fetch) read as hung with zero insight.
+  // setConnectStage names the current sub-phase: shown as the "Connecting…" DETAIL (card/tooltip) AND logged
+  // with cumulative elapsed, so a stall is both visible and timed. Gated on `connecting` so a poll/remote
+  // reconcile (which also fires onStage) never logs or paints a stage.
+  private connecting = false;
+  private connectStartedAt = 0;
+  private connectStage = "";
+  private setConnectStage(stage: string): void {
+    if (!this.connecting) return;
+    this.connectStage = stage;
+    this.log(`connect: ${stage} (+${((Date.now() - this.connectStartedAt) / 1000).toFixed(1)}s)`);
+    this.renderLight(); // repaint the "Connecting…" detail (paintLight's dedupe key includes the tip)
+  }
+
   private async doConnect(): Promise<void> {
     this.lastIssue = undefined;
+    this.connecting = true; this.connectStartedAt = Date.now(); this.connectStage = "";
     // crit-round (sync F4): a connect means the realtime socket is not (yet) live. Reset the flag up
     // front so the status light can't briefly show green "Fully synced" during connect→idle before the
     // new socket's open handler fires (the close handler's `this.ws !== ws` early-return can otherwise
@@ -1379,8 +1396,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
     try {
       this.log(`connecting to ${this.settings.serverUrl} as '${this.settings.username}'`);
+      this.setConnectStage("signing in");
       await this.establishSession();      // token + a healthy, version-COMPATIBLE server + a fresh share grant (throws otherwise)
-      await this.resolveAndApplySwitch(); // apply a pending vault switch (or the D0047 safe-merge), else a full reconcile
+      await this.resolveAndApplySwitch(); // apply a pending vault switch (or the D0047 safe-merge), else a full reconcile — drives the fetching/scanning/reconciling stages via onStage
+      this.setConnectStage("finishing up");
       await this.finishConnect();         // live config + WS + poll + reset backoff + stamp the base key / privacy gate
     } catch (e: any) {
       // The connection FSM now owns the failure TAXONOMY + its user-facing label: the engine classifies
@@ -1396,6 +1415,8 @@ export default class NewLiveSyncPlugin extends Plugin {
         this.lastIssue = `Can't reach the server (${e?.message ?? e}). Retrying…`;
       }
       throw e; // → engine.failWith: classify + advance LinkState + schedule the class-appropriate recovery
+    } finally {
+      this.connecting = false; this.connectStage = ""; // leave "connecting" → the stage detail is no longer shown (phase moves to idle/reconciling)
     }
   }
 
@@ -1408,6 +1429,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws?.close(); this.ws = undefined;
     let activeToken = await this.acquireToken();
     this.api = this.buildApi(activeToken);
+    this.setConnectStage("checking the server"); // status() is the first authed round-trip (30s timeout) — a common stall point
     // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting on the
     // resulting empty manifest could delete local files. Surface the operator action. status() is the first
     // authed call; if the stored token was rejected (401), re-login ONCE and rebuild the transport (reactive
@@ -1442,6 +1464,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     // If this is a vault shared TO us, re-derive our permission from the server's grant so the cached
     // vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
+    this.setConnectStage("checking your access");
     await this.refreshShareGrant(activeToken);
   }
 
@@ -1708,6 +1731,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     const kept: string[] = [];
     const d = this.deps();
     d.onKeptAbsent = (p) => kept.push(p);
+    d.onStage = (s) => this.setConnectStage(s); // drive the connect sub-phase (no-op off the connect path — setConnectStage gates on `connecting`)
     const resp = await reconcileAll(d);
     this.noteHistory(resp.version, resp.history_floor, kept);
   }

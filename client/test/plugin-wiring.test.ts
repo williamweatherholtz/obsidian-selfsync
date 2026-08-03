@@ -164,6 +164,16 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("surfaces the live connect sub-phase as the 'Connecting…' detail, cleared after connect (L-5)", async () => {
+    const { p } = await bootPlugin();
+    // A COMPLETED connect leaves no stale stage → no detail latches under "Connecting…".
+    expect(p.statusDisplay("connecting")).toEqual({ label: "Connecting…", detail: "" });
+    // MID-connect the live sub-phase shows as the DETAIL; the label stays the pure FSM projection.
+    (p as any).connectStage = "fetching changes from the server";
+    expect(p.statusDisplay("connecting")).toEqual({ label: "Connecting…", detail: "fetching changes from the server" });
+    p.onunload();
+  });
+
   it("a config-related UI event (css-change) triggers a config scan — event-driven, not just polled", async () => {
     const { p, fire, api } = await bootPlugin(true, { settings: { configSync: { enabled: true } } });
     const before = api.__calls.changes?.length ?? 0;

@@ -837,6 +837,26 @@ describe("streamed reassembly of large downloads (B9 Part B)", () => {
   });
 });
 
+describe("reconcile sub-phase reporting (connect legibility, L-5)", () => {
+  it("fires onStage in order: fetching changes → scanning local files → reconciling N", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "one");
+    await serverPut(api, "b.md", "two");
+    const io = fakeIo({ "a.md": "one", "c.md": "local" }); // 2 local files → count surfaces in the 3rd stage
+    const stages: string[] = [];
+    await reconcileAll(deps(api, io, { onStage: (s) => stages.push(s) }));
+    expect(stages[0]).toBe("fetching changes from the server"); // BEFORE the changes() manifest fetch (the slow first hop)
+    expect(stages[1]).toBe("scanning local files");             // BEFORE io.list()
+    expect(stages[2]).toBe("reconciling 2 local file(s)");       // AFTER the list, with the count
+  });
+  it("is a no-op when onStage is not wired (poll/remote reconciles don't report stages)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "a.md", "one");
+    const io = fakeIo({ "a.md": "one" });
+    await expect(reconcileAll(deps(api, io))).resolves.toBeDefined(); // no onStage → no throw, normal pass
+  });
+});
+
 describe("read-only shared vault (never mutates the server)", () => {
   it("does not upload a local-only file (skips the push)", async () => {
     const { api, files } = fakeServer();

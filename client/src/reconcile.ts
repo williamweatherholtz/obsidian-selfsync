@@ -261,6 +261,10 @@ export interface ReconcileDeps {
   // the start and as each pending file completes — the consumer should throttle. Files that don't need
   // syncing are never counted, so this is "work left", not "files examined". Used for the "N pending" text.
   onProgress?: (pending: number) => void;
+  // Coarse SUB-PHASE of a full reconcile (fetching the remote manifest → scanning local files →
+  // reconciling), so a caller can surface WHERE a long initial pass is (the connect path drives the
+  // "Connecting…" detail + a timed log from this). Fires only on the paths that wire it; a no-op otherwise.
+  onStage?: (stage: string) => void;
   // A config file whose reconcile can't be resolved additively — a removal (base present →
   // gone) or a same-file divergence. NEVER auto-deleted (could lose data a device merely
   // couldn't hold) and NEVER auto-pulled-back (would resurrect a genuine removal); recorded
@@ -630,6 +634,7 @@ async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Arr
 // Returns the ChangesResponse it fetched (version + history_floor) so the caller can run the D0019
 // reset detection on the CONNECT path too, not just the poll path.
 export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
+  d.onStage?.("fetching changes from the server"); // the remote manifest fetch — can be the slow first hop
   const resp = await d.api.changes(0);
   const remote = new Map<string, FileMeta>();
   for (const f of resp.upserts) remote.set(f.path, f);
@@ -640,7 +645,9 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     for (const p of remote.keys()) { const m = /^\.obsidian\/plugins\/([^/]+)\//.exec(p); if (m) rp.add(m[1]); }
     d.onRemotePlugins([...rp]);
   }
+  d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
   const local = await d.io.list();
+  d.onStage?.(`reconciling ${local.size} local file(s)`); // planning + per-file work now begins
   // Bulk-delete guard (C2, widened): a server manifest that has LOST a suspicious fraction of our
   // synced history — not only one that is exactly empty — is the signature of index loss (partial
   // restore / reindex over an incomplete dir), not a genuine mass delete. Count the base paths this
