@@ -104,6 +104,22 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.settings.ignoredTimestampKeys).toEqual(["updated"]);
   });
 
+  it("the Timestamp changes section is a collapsible (default collapsed) that toggles on header click", () => {
+    const p = fakePlugin({
+      settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["created"], excludedFolders: [] },
+    });
+    const { containerEl } = renderTab(p);
+    const header = [...containerEl.querySelectorAll(".selfsync-collapse-header")]
+      .find((h) => h.textContent?.includes("Timestamp changes")) as HTMLElement;
+    expect(header).toBeTruthy();                 // a native setHeading() row, made a collapse header
+    const body = header.nextElementSibling as HTMLElement;
+    expect(body.style.display).toBe("none");     // default COLLAPSED (owner: not seen most of the time)
+    header.click();
+    expect(body.style.display).toBe("");         // expands on header click
+    header.click();
+    expect(body.style.display).toBe("none");     // collapses again
+  });
+
   it("P2: toggling a category (Core settings) also applies immediately", () => {
     const { containerEl } = renderTab(plugin);
     flipToggle(toggleByName(containerEl, "Core settings"));

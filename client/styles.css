@@ -12,3 +12,15 @@
   color: var(--text-muted);
   margin-right: 8px;
 }
+
+/* Collapsible section header: a native Setting().setHeading() row made clickable, with a native lucide
+   chevron before the title (the same collapse affordance Obsidian uses elsewhere). Used for the
+   synced-plugin list and the default-collapsed Timestamp-changes section. */
+.selfsync-collapse-header { cursor: pointer; }
+.selfsync-collapse-chevron {
+  display: inline-flex;
+  align-items: center;
+  margin-right: var(--size-4-1, 4px);
+  color: var(--text-muted);
+}
+.selfsync-collapse-chevron svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }

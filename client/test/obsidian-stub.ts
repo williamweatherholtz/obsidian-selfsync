@@ -69,6 +69,17 @@ class ButtonComponent {
   setTooltip() { return this; }
   onClick(cb: () => any) { if (HAS_DOM) this.buttonEl.addEventListener("click", cb); return this; }
 }
+// A borderless icon action (Obsidian's ExtraButtonComponent) — the small "X"/gear used in list rows. The
+// stub renders a real <button.clickable-icon> so a DOM test can click it (real Obsidian uses a div; the
+// stub keeps it a button so existing querySelector("button") wiring checks still work).
+class ExtraButtonComponent {
+  extraSettingsEl: any = fakeEl();
+  constructor(parent: any) { if (HAS_DOM) { this.extraSettingsEl = augment(document.createElement("button")); this.extraSettingsEl.classList.add("clickable-icon"); parent.appendChild(this.extraSettingsEl); } }
+  setIcon() { return this; }
+  setTooltip() { return this; }
+  setDisabled(_d: boolean) { return this; }
+  onClick(cb: () => any) { if (HAS_DOM) this.extraSettingsEl.addEventListener("click", cb); return this; }
+}
 class TextComponent {
   inputEl: any = fakeEl();
   constructor(parent: any) { if (HAS_DOM) { this.inputEl = augment(document.createElement("input")); this.inputEl.type = "text"; parent.appendChild(this.inputEl); } }
@@ -115,6 +126,7 @@ export class Setting {
   setClass(c: string) { this.settingEl.addClass?.(c); return this; }
   addToggle(cb: (t: ToggleComponent) => any) { cb(new ToggleComponent(this.controlEl)); return this; }
   addButton(cb: (b: ButtonComponent) => any) { cb(new ButtonComponent(this.controlEl)); return this; }
+  addExtraButton(cb: (b: ExtraButtonComponent) => any) { cb(new ExtraButtonComponent(this.controlEl)); return this; }
   addText(cb: (t: TextComponent) => any) { cb(new TextComponent(this.controlEl)); return this; }
   addTextArea(cb: (t: TextAreaComponent) => any) { cb(new TextAreaComponent(this.controlEl)); return this; }
   addDropdown(cb: (d: DropdownComponent) => any) { cb(new DropdownComponent(this.controlEl)); return this; }

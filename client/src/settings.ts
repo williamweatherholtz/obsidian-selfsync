@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest, setIcon } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import { addExcluded, removeExcluded, matchFolders } from "./excludedFolders";
 
@@ -150,6 +150,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
   private statusGroup?: SettingGroup;
   private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
+  private timestampExpanded?: boolean; // persists the (default-collapsed) Timestamp-changes section state
 
   display(): void {
     const { containerEl } = this; containerEl.empty();
@@ -255,10 +256,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         }
       } else {
         st.addButton((b) => b.setButtonText("Add a device").onClick(() => this.showDeviceLink()));
-        // "Disconnect" (stop syncing, keep the login) moved to Advanced — "Sign out" is the primary
-        // stop action; a bare disconnect is the rarer case.
       }
     });
+    // Reconfigure / Disconnect — moved UP from Advanced into the top Connection area (owner). Reconfigure
+    // re-opens setup; Disconnect stops syncing but keeps the login ("Sign out" above does both).
+    g.addSetting((st) => st.setName("Connection").setDesc("Reconfigure re-opens setup. Disconnect stops syncing but keeps your login.")
+      .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup()))
+      .addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); })));
   }
 
   private showDeviceLink(): void {
@@ -344,7 +348,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       .setDesc("Show a sync-status icon in the open note's header.")
       .addToggle((tg) => tg.setValue(s.editorStatus).onChange((v) => this.plugin.setEditorStatus(v))));
     g.addSetting((st) => st.setName("Store password on this device")
-      .setDesc("Keep your password on this device for silent reconnect. Your session idle-expires after a period of inactivity (a security default); with this on, SelfSync signs back in automatically instead of asking you to Reconfigure. Off = more secure (token-only) but you re-enter your password when the session expires. (Admins can lengthen or disable the server-side window via SESSION_IDLE_TIMEOUT_SECS.)")
+      .setDesc("Stay signed in on this device. Off is more secure — you re-enter your password if the session expires.")
       .addToggle((tg) => tg.setValue(s.storePassword).onChange(async (v) => {
         s.storePassword = v;
         if (!v) s.password = ""; // token-only: forget the password immediately (the token stays)
@@ -371,38 +375,51 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s))));
-    g.addSetting((st) => st.setName("Connection").setDesc("Reconfigure re-opens setup (server/account/vault). Disconnect stops syncing on this device but keeps your login — 'Sign out' above does both.")
-      .addButton((b) => b.setButtonText("Reconfigure").onClick(() => this.plugin.openSetup()))
-      .addButton((b) => b.setButtonText("Disconnect").onClick(async () => { await this.plugin.disconnect(); this.display(); })));
+    // (Reconfigure / Disconnect moved UP to the top Connection area — see fillStatus.)
   }
 
-  // Timestamp-ignore controls: the master toggle, the ignored-date-field list, and the excluded-folders list
-  // (each row a Remove button; an add row with folder-path autocomplete). Identity-only — nothing here ever
-  // edits a note, so enabling has no counted-consent step. Re-render on change (mirrors renderPluginChecklist).
+  // Collapsible section built from Obsidian's OWN components (no custom disclosure widget): a native
+  // `Setting().setHeading()` row made clickable, with a native lucide chevron (`setIcon`) that rotates — the
+  // same affordance Obsidian uses for its collapsible sections. The body toggles below it; `onToggle`
+  // persists the open state across the tab's re-renders. Returns the body element to render rows into.
+  private collapsible(c: HTMLElement, title: string, open: boolean, onToggle: (open: boolean) => void): HTMLElement {
+    const header = new Setting(c).setHeading().setClass("selfsync-collapse-header");
+    const chevron = header.nameEl.createSpan({ cls: "selfsync-collapse-chevron" });
+    header.nameEl.createSpan({ text: title });
+    const body = c.createDiv();
+    let isOpen = open;
+    const paint = () => { setIcon(chevron, isOpen ? "chevron-down" : "chevron-right"); body.style.display = isOpen ? "" : "none"; };
+    header.settingEl.addEventListener("click", () => { isOpen = !isOpen; onToggle(isOpen); paint(); });
+    paint();
+    return body;
+  }
+
+  // Timestamp-ignore controls, in a DEFAULT-COLLAPSED section (rarely touched — owner). Identity-only:
+  // nothing here ever edits a note. Each list is a validated add / little-X-remove row (no free-text blob,
+  // no huge Remove button); the list is easily restorable, so no scary warning. Re-render on change.
   private renderIgnoreTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
-    const g = new SettingGroup(c).setHeading("Timestamp changes");
-    g.addSetting((st) => st.setName("Ignore timestamp-only changes")
+    const body = this.collapsible(c, "Timestamp changes", this.timestampExpanded ?? false, (v) => { this.timestampExpanded = v; });
+    new Setting(body).setName("Ignore timestamp-only changes")
       .setDesc("Don't treat a note that differs only in a date field (created, updated, …) as a change or conflict. SelfSync never edits these fields.")
       .addToggle((tg) => tg.setValue(s.ignoreTimestampChanges).onChange(async (v) => {
         s.ignoreTimestampChanges = v; // identity-only: safe to toggle freely, never touches a note's content
-        await this.plugin.saveSettings();
-        this.display();
-      })));
+        await this.plugin.saveSettings(); this.display();
+      }));
     if (!s.ignoreTimestampChanges) return;
-    // Ignored date fields — a validated ADD-a-row list (not a free-text blob), so a malformed / duplicate /
-    // unmatchable key can't slip in (poka-yoke; mirrors the excluded-folders + plugin-checklist rows).
-    g.addSetting((st) => st.setName("Ignored date fields")
-      .setDesc("Frontmatter keys treated as dates. Trailing * is a wildcard — updated-* matches updated-laptop, updated-phone."));
+    // Ignored date fields — a validated ADD-a-row list (not a free-text blob), each row removable by a little
+    // X (poka-yoke; the validator rejects malformed/duplicate keys). Mirrors the plugin-checklist rows.
+    new Setting(body).setName("Ignored date fields")
+      .setDesc("Frontmatter keys treated as dates. Trailing * is a wildcard — updated-* matches updated-laptop, updated-phone.");
     for (const key of s.ignoredTimestampKeys) {
-      g.addSetting((st) => st.setName(key)
-        .addButton((b) => b.setButtonText("Remove").onClick(async () => {
+      new Setting(body).setName(key)
+        .addExtraButton((b) => b.setIcon("x").setTooltip("Remove").onClick(async () => {
           s.ignoredTimestampKeys = s.ignoredTimestampKeys.filter((k) => k !== key);
           await this.plugin.saveSettings(); this.display();
-        })));
+        }));
     }
-    g.addSetting((st) => {
-      let input: { getValue(): string; setValue(v: string): unknown } | undefined;
-      st.setName("Add a date field");
+    {
+      let input: { getValue(): string } | undefined;
+      const st = new Setting(body).setName("Add a date field");
       st.addText((t) => { input = t; t.setPlaceholder("e.g. updated or updated-*"); });
       st.addButton((b) => b.setButtonText("Add field").onClick(async () => {
         const res = validateTimestampKey(input?.getValue() ?? "", s.ignoredTimestampKeys);
@@ -410,33 +427,32 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         s.ignoredTimestampKeys = [...s.ignoredTimestampKeys, res.key];
         await this.plugin.saveSettings(); this.display();
       }));
-    });
-    // Safety: never let the list get stranded (an emptied list ignores nothing). Offered only when it has
-    // drifted from the defaults, so the common case shows no extra row.
+    }
+    // Easily restorable, so no warning needed: offer "Restore defaults" only when the list has drifted.
     if (!sameKeySet(s.ignoredTimestampKeys, DEFAULT_IGNORED_TIMESTAMP_KEYS)) {
-      g.addSetting((st) => st.setName("Restore default date fields")
+      new Setting(body).setName("Restore default date fields")
         .addButton((b) => b.setButtonText("Restore defaults").onClick(async () => {
           s.ignoredTimestampKeys = [...DEFAULT_IGNORED_TIMESTAMP_KEYS];
           await this.plugin.saveSettings(); this.display();
-        })));
+        }));
     }
-    g.addSetting((st) => st.setName("Excluded folders")
-      .setDesc("Folders where date-only changes still count (sync raw)."));
+    new Setting(body).setName("Excluded folders")
+      .setDesc("Folders where date-only changes still count (sync raw).");
     for (const folder of s.excludedFolders) {
-      g.addSetting((st) => st.setName(folder)
-        .addButton((b) => b.setButtonText("Remove").onClick(async () => {
+      new Setting(body).setName(folder)
+        .addExtraButton((b) => b.setIcon("x").setTooltip("Remove").onClick(async () => {
           await this.plugin.setExcludedFolders(removeExcluded(s.excludedFolders, folder)); this.display();
-        })));
+        }));
     }
-    g.addSetting((st) => {
+    {
       let input: { getValue(): string } | undefined;
-      st.setName("Add a folder");
+      const st = new Setting(body).setName("Add a folder");
       st.addText((t) => { input = t; t.setPlaceholder("Folder to exclude"); new FolderSuggest(this.app, t.inputEl as HTMLInputElement, () => this.plugin.getAllFolders()); });
       st.addButton((b) => b.setButtonText("Add folder").onClick(async () => {
         const v = (input?.getValue() ?? "").trim();
         if (v) { await this.plugin.setExcludedFolders(addExcluded(s.excludedFolders, v)); this.display(); }
       }));
-    });
+    }
   }
 
   private copyDebugInfo(s: NewLiveSyncSettings): void {
@@ -525,11 +541,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // and "Available from the sync" groups so the row logic lives in one place.
   private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string): void {
     if (!ids.length) return;
-    const expanded = this.pluginsExpanded ?? ids.length <= 8;
-    const details = c.createEl("details"); (details as unknown as { open: boolean }).open = expanded;
-    details.addEventListener("toggle", () => { this.pluginsExpanded = (details as unknown as { open: boolean }).open; });
-    details.createEl("summary", { text: summaryLabel }).setAttribute("style", "cursor:pointer;font-size:13px;opacity:.85;margin:4px 0;");
-    const body = details.createDiv();
+    const body = this.collapsible(c, summaryLabel, this.pluginsExpanded ?? ids.length <= 8, (v) => { this.pluginsExpanded = v; });
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
       const here = installed.has(id);
