@@ -137,7 +137,9 @@ export class SettingGroup {
   constructor(containerEl?: any) {
     if (HAS_DOM && containerEl?.createEl) {
       this.containerEl = containerEl.createEl("div", { cls: "setting-group" });
-      this.headingEl = this.containerEl.createEl("div", { cls: "setting-group-heading" });
+      // The heading is a .setting-item (like real Obsidian's setHeading) so an added control's
+      // `.closest(".setting-item")` resolves to it — the collapsible() header-toggle derivation.
+      this.headingEl = this.containerEl.createEl("div", { cls: "setting-group-heading setting-item setting-item-heading" });
       this.listEl = this.containerEl.createEl("div", { cls: "setting-group-list" });
     } else {
       this.containerEl = this.headingEl = this.listEl = fakeEl();
@@ -147,7 +149,8 @@ export class SettingGroup {
   addClass(...c: string[]) { this.containerEl.addClass?.(...c); return this; }
   addSetting(cb: (s: Setting) => void) { cb(new Setting(this.listEl)); return this; }
   addSearch() { return this; }
-  addExtraButton() { return this; }
+  // addExtraButton adds a control to the group HEADING (matches Obsidian) — the collapsible chevron.
+  addExtraButton(cb: (b: ExtraButtonComponent) => any) { cb(new ExtraButtonComponent(this.headingEl)); return this; }
 }
 
 export class Plugin {

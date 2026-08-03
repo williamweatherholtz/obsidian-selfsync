@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest, setIcon } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest, ExtraButtonComponent } from "obsidian";
 import type NewLiveSyncPlugin from "./main";
 import { addExcluded, removeExcluded, matchFolders } from "./excludedFolders";
 
@@ -380,27 +380,32 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
   // Collapsible section built from Obsidian's OWN components: the header is a REAL `SettingGroup` section
   // heading — the SAME component as "Synced community plugins"/"Advanced" — so it renders identically to
-  // the other section headings on every theme. (Two earlier attempts used `Setting().setHeading()`, an
-  // inline heading ROW, which mobile themes style far more subtly than a group heading — the repeated
-  // "looks the same, not a heading" bug.) We toggle the group's public `listEl` (the body) and render
-  // rows into it; a native lucide chevron sits before the heading text. `onToggle` persists the open
-  // state across the tab's re-renders. Returns the body element to render rows into.
+  // the other section headings on every theme. The chevron is added with `addExtraButton` — the DOCUMENTED
+  // way to put a control in a SettingGroup heading — so it lands IN the heading rather than being placed by
+  // guessing the group's internal DOM (an earlier `listEl.previousElementSibling` guess was wrong on mobile
+  // Obsidian: the chevron ended up inside the list card, divorced from the label). The whole heading row is
+  // a toggle target, derived from the button via the stable `.setting-item` class (no structure guessing).
+  // We toggle the group's public `listEl` (the body) and render rows into it. Returns that body element.
   private collapsible(c: HTMLElement, title: string, open: boolean, onToggle: (open: boolean) => void): HTMLElement {
     const group = new SettingGroup(c).setHeading(title).addClass("selfsync-collapse-group");
-    // The heading element is the sibling immediately before the (public) listEl — reached via the DOM so we
-    // don't depend on any internal SettingGroup class name (robust across Obsidian versions).
-    const heading = group.listEl.previousElementSibling as HTMLElement | null;
     let isOpen = open;
-    let chevron: HTMLElement | undefined;
+    let btn: ExtraButtonComponent | undefined;
     const paint = () => {
-      if (chevron) setIcon(chevron, isOpen ? "chevron-down" : "chevron-right");
+      btn?.setIcon(isOpen ? "chevron-down" : "chevron-right");
       group.listEl.style.display = isOpen ? "" : "none";
     };
+    const toggle = () => { isOpen = !isOpen; onToggle(isOpen); paint(); };
+    group.addExtraButton((b) => { btn = b; b.setTooltip("Expand or collapse").onClick(() => toggle()); });
+    // The heading row itself toggles too — found from the button we just added (its `.setting-item`
+    // ancestor is the heading), so we never assume the group's internal structure.
+    const heading = (btn?.extraSettingsEl?.closest?.(".setting-item") ?? null) as HTMLElement | null;
     if (heading) {
-      chevron = heading.createSpan({ cls: "selfsync-collapse-chevron" });
-      heading.insertBefore(chevron, heading.firstChild);
-      heading.style.cursor = "pointer";
-      heading.addEventListener("click", () => { isOpen = !isOpen; onToggle(isOpen); paint(); });
+      heading.addClass("selfsync-collapse-header");
+      heading.addEventListener("click", (e) => {
+        // The chevron button already toggles on its own click; ignore its bubbled event (no double-toggle).
+        if (btn && btn.extraSettingsEl.contains(e.target as Node)) return;
+        toggle();
+      });
     }
     paint();
     return group.listEl;
