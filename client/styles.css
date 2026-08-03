@@ -16,9 +16,8 @@
 /* Collapsible section header: a native Setting().setHeading() row made clickable, with a native lucide
    chevron before the title (the same collapse affordance Obsidian uses elsewhere). Used for the
    synced-plugin list and the default-collapsed Timestamp-changes section. */
-.selfsync-collapse-header { cursor: pointer; }
-/* Ensure the row reads as a HEADING even on themes that render .setting-item-heading subtly. */
-.selfsync-collapse-header .setting-item-name { font-weight: var(--font-semibold, 600); }
+/* The collapse header is a real SettingGroup heading (same component as the other section headings), so
+   it needs no font/weight overrides — only the chevron affordance. Cursor is set inline in JS on the heading. */
 .selfsync-collapse-chevron {
   display: inline-flex;
   align-items: center;

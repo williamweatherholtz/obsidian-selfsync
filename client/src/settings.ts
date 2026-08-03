@@ -378,23 +378,32 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     // (Reconfigure / Disconnect moved UP to the top Connection area — see fillStatus.)
   }
 
-  // Collapsible section built from Obsidian's OWN components (no custom disclosure widget): a native
-  // `Setting().setHeading()` row made clickable, with a native lucide chevron (`setIcon`) that rotates — the
-  // same affordance Obsidian uses for its collapsible sections. The body toggles below it; `onToggle`
-  // persists the open state across the tab's re-renders. Returns the body element to render rows into.
+  // Collapsible section built from Obsidian's OWN components: the header is a REAL `SettingGroup` section
+  // heading — the SAME component as "Synced community plugins"/"Advanced" — so it renders identically to
+  // the other section headings on every theme. (Two earlier attempts used `Setting().setHeading()`, an
+  // inline heading ROW, which mobile themes style far more subtly than a group heading — the repeated
+  // "looks the same, not a heading" bug.) We toggle the group's public `listEl` (the body) and render
+  // rows into it; a native lucide chevron sits before the heading text. `onToggle` persists the open
+  // state across the tab's re-renders. Returns the body element to render rows into.
   private collapsible(c: HTMLElement, title: string, open: boolean, onToggle: (open: boolean) => void): HTMLElement {
-    // setName(title).setHeading() is THE canonical section heading — it styles the NAME as a heading. (An
-    // earlier attempt called setHeading() with a manual span and got no heading style — the "looks the same,
-    // not a heading" bug.) The native lucide chevron is inserted BEFORE the title, like a section-collapse.
-    const header = new Setting(c).setName(title).setHeading().setClass("selfsync-collapse-header");
-    const chevron = header.nameEl.createSpan({ cls: "selfsync-collapse-chevron" });
-    header.nameEl.insertBefore(chevron, header.nameEl.firstChild);
-    const body = c.createDiv();
+    const group = new SettingGroup(c).setHeading(title).addClass("selfsync-collapse-group");
+    // The heading element is the sibling immediately before the (public) listEl — reached via the DOM so we
+    // don't depend on any internal SettingGroup class name (robust across Obsidian versions).
+    const heading = group.listEl.previousElementSibling as HTMLElement | null;
     let isOpen = open;
-    const paint = () => { setIcon(chevron, isOpen ? "chevron-down" : "chevron-right"); body.style.display = isOpen ? "" : "none"; };
-    header.settingEl.addEventListener("click", () => { isOpen = !isOpen; onToggle(isOpen); paint(); });
+    let chevron: HTMLElement | undefined;
+    const paint = () => {
+      if (chevron) setIcon(chevron, isOpen ? "chevron-down" : "chevron-right");
+      group.listEl.style.display = isOpen ? "" : "none";
+    };
+    if (heading) {
+      chevron = heading.createSpan({ cls: "selfsync-collapse-chevron" });
+      heading.insertBefore(chevron, heading.firstChild);
+      heading.style.cursor = "pointer";
+      heading.addEventListener("click", () => { isOpen = !isOpen; onToggle(isOpen); paint(); });
+    }
     paint();
-    return body;
+    return group.listEl;
   }
 
   // Timestamp-ignore controls, in a DEFAULT-COLLAPSED section (rarely touched — owner). Identity-only:

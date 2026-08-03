@@ -109,14 +109,16 @@ describe("settings tab renders and wires its controls", () => {
       settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["created"], excludedFolders: [] },
     });
     const { containerEl } = renderTab(p);
-    const header = Array.from(containerEl.querySelectorAll(".selfsync-collapse-header"))
-      .find((h) => h.textContent?.includes("Timestamp changes")) as HTMLElement;
-    expect(header).toBeTruthy();                 // a native setHeading() row, made a collapse header
-    const body = header.nextElementSibling as HTMLElement;
+    // The collapse header is a real SettingGroup heading (matches the other section headings).
+    const group = Array.from(containerEl.querySelectorAll(".selfsync-collapse-group"))
+      .find((g) => g.querySelector(".setting-group-heading")?.textContent?.includes("Timestamp changes")) as HTMLElement;
+    expect(group).toBeTruthy();
+    const heading = group.querySelector(".setting-group-heading") as HTMLElement;
+    const body = group.querySelector(".setting-group-list") as HTMLElement;   // the group's listEl = the toggled body
     expect(body.style.display).toBe("none");     // default COLLAPSED (owner: not seen most of the time)
-    header.click();
+    heading.click();
     expect(body.style.display).toBe("");         // expands on header click
-    header.click();
+    heading.click();
     expect(body.style.display).toBe("none");     // collapses again
   });
 
