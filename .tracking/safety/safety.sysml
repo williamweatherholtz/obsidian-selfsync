@@ -71,4 +71,14 @@ package ProjectSafety {
         :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
         :>> statement = "The user's understanding of the system diverges from its actual state because the plugin's UX conveys a false or unintelligible picture of what it is doing, whether an operation succeeded, or how to act. The USER is a controller and the UX is feedback to their process model — any feedback capable of misrepresenting state affects this loss. Priority: medium (informed control + trust — the D0054 adoption risk). Traces to selfHoster + collaborator.";
     }
+    // SCOPE DECISION (2026-08-03, owner): a resource/efficiency loss — a would-be "L-6": battery / mobile
+    // data / storage / CPU — is deliberately NOT modeled as a Loss. Rationale: (1) LIMITED CONTROL AUTHORITY
+    // — these ride mostly on the user's device, network, and vault SIZE, outside the plugin's control, so a
+    // Loss (which asserts we must prevent the outcome) overstates our authority; (2) it would MUDDY the
+    // otherwise clean, owned loss set (L-1..L-5 are outcomes we genuinely own). It stays a QUALITY concern —
+    // a candidate monitored INDICATOR (D0088/D0089: a direction-goal measure with no enforced threshold)
+    // IF/WHEN performance regresses — but is NOT added as an indicator now either: perf is not a current
+    // concern after the connect-phase + scan-skip-persist + config-walk-parallel + hashing tightening
+    // (1.12.0-1.12.6). If a justified concern emerges, promote it to an INDICATOR, not a Loss (avoids the
+    // Goodhart trap, D0088). The owner considered L-6 on 2026-08-03 and chose to keep it out.
 }
