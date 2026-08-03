@@ -520,18 +520,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
           .setValue(cs.pluginDir?.[id] ?? this.plugin.communityConfigDir() ?? "download")
           .onChange((v) => void this.plugin.setPluginDir(id, v as ConfigDirection)));
       }
-      // Explicit PURGE: delete this plugin's files from the server so it stops lingering in the sync — a
-      // deliberate, bounded, user-initiated removal (the grow-only enabled-list is untouched, so it can
-      // never cascade). Only for plugins actually ON the server.
-      if (onServer.has(id)) {
-        st.addButton((b) => b.setButtonText("Remove from server").onClick(async () => {
-          const nm = manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id;
-          if (!(await confirmModal(this.app, { title: `Remove '${nm}' from the sync?`, body: "Deletes this plugin's files from the server so it stops appearing here. Your local copy (if installed) is untouched. If another device still syncs it, it can reappear.", confirmText: "Remove from server", warn: true }))) return;
-          const n = await this.plugin.removePluginFromServer(id);
-          new Notice(`SelfSync: removed '${nm}' from the server (${n} file${n === 1 ? "" : "s"})`);
-          this.display();
-        }));
-      }
+      // NB: no per-plugin "Remove from server" button (issuePluginRemoveButtonClutter) — it took a whole
+      // button per row for a RARE need. Removing a plugin's files from the server is an owner/admin task,
+      // done from the admin interface; the client keeps `removePluginFromServer` (tested) for that path, just
+      // not as per-row UI clutter.
     }
   }
 }

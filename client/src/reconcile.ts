@@ -664,7 +664,6 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   }
   d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
   const local = await d.io.list();
-  d.onStage?.(`reconciling ${local.size} local file(s)`); // planning + per-file work now begins
   // Bulk-delete guard (C2, widened): a server manifest that has LOST a suspicious fraction of our
   // synced history — not only one that is exactly empty — is the signature of index loss (partial
   // restore / reindex over an incomplete dir), not a genuine mass delete. Count the base paths this
@@ -716,14 +715,27 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   }
   if (declined.length) d.onDeclined?.(declined); // surface "N files on the server aren't in your sync selection"
   let pending = pendingPaths.size; d.onProgress?.(pending);
+  // "checking", NOT "reconciling": this pass EXAMINES every file to detect changes but transfers only what
+  // changed — with nothing changed it does 0 work and completes to "Fully synced". The old "reconciling N
+  // files" read as "syncing N" and looked like work when there was none (owner: "says reconciling but not
+  // doing anything"). Real transfer work shows separately as "Syncing… N pending" via onProgress.
+  const total = paths.length;
+  d.onStage?.(`checking ${total} files for changes`);
   // Files are reconciled with bounded CONCURRENCY (Finding 1) under the shared error-isolation contract:
   // per-file errors stay isolated (one bad file never aborts the pass); a whole-connection failure aborts.
   // Hold the cursor below any failed change so it's retried next poll (R14 sync#1) — covering a failed
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
+  let examined = 0;
   await isolatedPass(d, paths, failedRemote,
     (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardRemoteDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
-    (p) => { if (pendingPaths.has(p)) d.onProgress?.(--pending); },
+    (p) => {
+      if (pendingPaths.has(p)) d.onProgress?.(--pending);
+      // Examination progress: a SLOW full pass (a first-run re-hash before the scan-skip stamps persist)
+      // then shows MOVEMENT instead of a frozen "checking N" (owner: "stuck on label"), and a genuine hang
+      // is pinpointed — the count freezes at the stuck file. Coarse (every 250) to bound the log noise.
+      if (++examined % 250 === 0) d.onStage?.(`checked ${examined}/${total} files`);
+    },
   );
   advanceCursor(d, resp.version, failedRemote); // authoritative server version, held below the earliest failure
   return resp;

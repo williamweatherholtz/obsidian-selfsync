@@ -994,7 +994,9 @@ describe("reconcile sub-phase reporting (connect legibility, L-5)", () => {
     await reconcileAll(deps(api, io, { onStage: (s) => stages.push(s) }));
     expect(stages[0]).toBe("fetching changes from the server"); // BEFORE the changes() manifest fetch (the slow first hop)
     expect(stages[1]).toBe("scanning local files");             // BEFORE io.list()
-    expect(stages[2]).toBe("reconciling 2 local file(s)");       // AFTER the list, with the count
+    // AFTER the list + classification, keyed on the examined-set size (paths = local ∪ remote ∪ base).
+    // "checking … for changes" (not "reconciling") — it examines, transferring only what changed.
+    expect(stages[2]).toMatch(/^checking \d+ files for changes$/);
   });
   it("is a no-op when onStage is not wired (poll/remote reconciles don't report stages)", async () => {
     const { api } = fakeServer();
