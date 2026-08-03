@@ -88,28 +88,23 @@ export class ShareManageModal extends Modal {
       return;
     }
 
-    c.createEl("p", { text: "Grant another account access to this vault. Read-only can pull but never push." })
+    c.createEl("p", { text: "Share this vault by sending a single-use link. Whoever you send it to redeems it once to gain access — they can create an account or sign in right from the link. Read-only can pull but never push." })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;");
 
+    // Who this vault is shared with (redeemed grants), each revocable. D0037: access is GRANTED by a
+    // redeemed link, not by typing a username — so there is no add-by-username row anymore.
     if (v.grants.length === 0) {
-      c.createEl("div", { text: "Not shared with anyone.", cls: "setting-item-description" });
+      c.createEl("div", { text: "Not shared with anyone yet.", cls: "setting-item-description" });
     }
     for (const gr of v.grants) {
       new Setting(c).setName(gr.grantee).setDesc(gr.perm === "readWrite" ? "read-write" : "read-only")
         .addButton((b) => b.setButtonText("Remove").setWarning().onClick(() => void this.revoke(v.vault, gr.grantee)));
     }
-    // Add-a-grant row: grantee username + permission + Add.
-    let grantee = "";
-    let perm: SharePerm = "readWrite";
-    new Setting(c)
-      .addText((t) => t.setPlaceholder("username to share with").onChange((val) => { grantee = val.trim(); }))
-      .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(perm).onChange((val) => { perm = val as SharePerm; }); })
-      .addButton((b) => b.setButtonText("Add").setCta().onClick(() => void this.grant(v.vault, grantee, perm)));
-    // D0023: or share via a single-use LINK — no username needed. Copies the link to send out-of-band.
+    // Share via a single-use LINK — the canonical way to grant access (D0037). Copies the link to send.
     let linkPerm: SharePerm = "readWrite";
-    new Setting(c).setName("Or share via link").setDesc("Single-use — anyone you send it to can redeem it once to gain access.")
+    new Setting(c).setName("Share via link").setDesc("Single-use — the recipient redeems it once (creating an account or signing in) to gain access.")
       .addDropdown((dd) => { dd.addOption("readWrite", "read-write"); dd.addOption("read", "read-only"); dd.setValue(linkPerm).onChange((val) => { linkPerm = val as SharePerm; }); })
-      .addButton((b) => b.setButtonText("Create link").onClick(() => void this.makeLink(v.vault, linkPerm)));
+      .addButton((b) => b.setButtonText("Create link").setCta().onClick(() => void this.makeLink(v.vault, linkPerm)));
 
     // Pending (unredeemed) links for THIS vault, with revoke. Redeemed ones already appear as grants above.
     const pending = this.links.filter((l) => l.redeemed_by === null && l.vault === current);
@@ -122,17 +117,6 @@ export class ShareManageModal extends Modal {
       }
     }
     new Setting(c).addButton((b) => b.setButtonText("Done").onClick(() => this.close()));
-  }
-
-  private async grant(vault: string, grantee: string, perm: SharePerm) {
-    if (!grantee) { new Notice("SelfSync: enter a username to share with"); return; }
-    try {
-      await this.plugin.shareVault(vault, grantee, perm);
-      new Notice(`SelfSync: shared '${vault}' with ${grantee}`);
-      await this.load();
-    } catch (e: any) {
-      new Notice(`SelfSync: ${e?.message ?? e}`);
-    }
   }
 
   private async revoke(vault: string, grantee: string) {

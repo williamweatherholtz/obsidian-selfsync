@@ -916,10 +916,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   async myVaultShares(): Promise<VaultShares[]> {
     return this.withAuth((t) => HttpTransport.myVaults(this.settings.serverUrl, t));
   }
-  async shareVault(vault: string, grantee: string, perm: SharePerm): Promise<void> {
-    await this.withAuth((t) => HttpTransport.shareCreate(this.settings.serverUrl, t, vault, grantee, perm));
-    await this.refreshVaultPrivacy(); // sharing may make the vault non-private → re-gate hot-load
-  }
+  // D0037: shareVault (grantee-username) retired — access is granted by redeeming a share link.
+  // unshareVault (revoke) stays: a redeemed link mints the same grant, revoked the same way.
   async unshareVault(vault: string, grantee: string): Promise<void> {
     await this.withAuth((t) => HttpTransport.shareDelete(this.settings.serverUrl, t, vault, grantee));
     await this.refreshVaultPrivacy();

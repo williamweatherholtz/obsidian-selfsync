@@ -183,6 +183,31 @@ impl AppState {
         self.cfg.data_root.join(user.as_str()).join(vault.as_str())
     }
 
+    // Best-effort "last used" for a vault: the newest server-side modification time among its
+    // .sync-index.db* files (the index is rewritten on every commit, so its mtime is when the server
+    // last wrote the vault — real activity, covers deletions, not client-spoofable). Epoch seconds, or
+    // None if there's no index yet (a vault with no data) or the name is invalid. A pure fs::metadata
+    // read — no schema migration, and honest given the per-vault segmented storage (D0005). (D0037)
+    pub fn vault_last_write(&self, user: &str, vault: &str) -> Option<u64> {
+        let (usern, vaultn) = (SafeName::parse(user)?, SafeName::parse(vault)?);
+        let dir = self.ns_dir(&usern, &vaultn);
+        let rd = std::fs::read_dir(&dir).ok()?;
+        let mut newest: Option<u64> = None;
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            // The SQLite index + its WAL/SHM sidecars — all bumped by a commit.
+            if !name.to_string_lossy().starts_with(".sync-index.db") { continue; }
+            if let Ok(secs) = entry.metadata()
+                .and_then(|m| m.modified())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).map_err(|e| std::io::Error::other(e.to_string())))
+                .map(|d| d.as_secs())
+            {
+                newest = Some(newest.map_or(secs, |n| n.max(secs)));
+            }
+        }
+        newest
+    }
+
     // Open (and cache) the namespace for (user, vault). Parses the names into SafeName (the only way to
     // reach ns_dir); an invalid name is InvalidInput.
     pub fn vault(&self, user: &str, vault: &str) -> std::io::Result<VaultHandle> {

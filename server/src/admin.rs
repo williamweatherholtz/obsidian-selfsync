@@ -61,6 +61,9 @@ pub struct VaultShares {
     // Admin-UX: per-vault health so the operator sees which vaults need repair, and Reindex becomes
     // status-driven instead of a guessed action. "ready" | "error" (corrupt index) | "missing".
     status: String,
+    // "Last used" — the vault's newest server-side write time (.sync-index.db mtime), epoch secs, or
+    // null for a vault with no data yet. A derived view, not stored state (D0037).
+    last_used: Option<u64>,
 }
 
 // Open a vault (in a blocking context — a cold open runs verify_and_gc) and report its health. Never
@@ -89,14 +92,20 @@ pub async fn my_vaults(
             (v.clone(), g)
         }).collect()
     };
-    // Probe each vault's health off the async worker (cold opens walk + rehash). Operators have few vaults.
+    // Probe each vault's health + last-write OFF the async worker (cold opens walk + rehash; last-write
+    // is fs::metadata syscalls). Operators have few vaults. (last_used moved in here per critique — it
+    // must not run blocking fs I/O on the shared async runtime.)
     let (st2, owner, vlist) = (st.clone(), user.clone(), vaults.clone());
-    let statuses = tokio::task::spawn_blocking(move || {
-        vlist.into_iter().map(|v| { let s = vault_health(&st2, &owner, &v); (v, s) }).collect::<Vec<_>>()
+    let probed = tokio::task::spawn_blocking(move || {
+        vlist.into_iter().map(|v| {
+            let status = vault_health(&st2, &owner, &v);
+            let last_used = st2.vault_last_write(&owner, &v);
+            (v, status, last_used)
+        }).collect::<Vec<_>>()
     }).await.map_err(|e| AppError::Internal(format!("vault-status join failed: {e}")))?;
-    let out = statuses.into_iter().map(|(vault, status)| {
+    let out = probed.into_iter().map(|(vault, status, last_used)| {
         let grants = grants_by_vault.get(&vault).cloned().unwrap_or_default();
-        VaultShares { vault, grants, status }
+        VaultShares { vault, grants, status, last_used }
     }).collect();
     Ok(Json(out))
 }
@@ -151,46 +160,10 @@ pub async fn user_set_password(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
-pub struct ShareReq {
-    vault: String,
-    grantee: String,
-    perm: Perm,
-}
-// Grant a share on one of the caller's OWN vaults to another account.
-pub async fn share_create(
-    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Json(mut req): Json<ShareReq>,
-) -> Result<StatusCode, AppError> {
-    req.grantee = req.grantee.trim().to_ascii_lowercase(); // usernames are case-insensitive
-    if !safe_name(&req.vault) || !safe_name(&req.grantee) {
-        return Err(AppError::BadRequest("invalid vault or grantee".into()));
-    }
-    // The caller can only share a vault they actually own.
-    if !st.list_vaults(&user).iter().any(|v| v == &req.vault) {
-        return Err(AppError::NotFound);
-    }
-    if req.grantee == user {
-        return Err(AppError::BadRequest("cannot share a vault with its owner".into()));
-    }
-    // R15 sec#2: DON'T reveal whether the grantee account exists. A per-name exists()→400 vs 200
-    // difference is a username-enumeration oracle — and this endpoint now serves on the PUBLIC port
-    // (owner self-service sharing), so any authenticated user could enumerate the whole user base one
-    // guess at a time, defeating the deliberate de-oracling of login/register (SEC-MED-1). Record the
-    // grant for any well-formed name; it's inert until an account with that name exists, then it
-    // activates. (Owners can pre-share by name; a typo just creates a harmless dormant grant.)
-    // R16 MEDIUM-1: but bound it — a per-owner grant CAP (checked atomically under the same lock as
-    // the grant, so no TOCTOU) keeps a malicious user from inflating the globally-scanned .shares.json
-    // now that any well-formed name is accepted. An upsert of an existing grantee is always allowed.
-    let mut g = lock(&st.shares)?;
-    let is_upsert = g.permission(&user, &req.vault, &req.grantee).is_some();
-    if !is_upsert && g.owner_grant_count(&user) >= crate::shares::MAX_GRANTS_PER_OWNER {
-        return Err(AppError::BadRequest("you've reached the maximum number of shares for this account".into()));
-    }
-    g.grant(&user, &req.vault, &req.grantee, req.perm).map_err(|e| AppError::Internal(e.to_string()))?;
-    drop(g);
-    audit(action::SHARE_GRANT, &user, &format!("{}/{} -> {}", user, req.vault, req.grantee), outcome::SUCCESS, &ip);
-    Ok(StatusCode::OK)
-}
+// NOTE (D0037): the grantee-username grant path (POST /api/admin/shares / share_create) and its
+// username-autocomplete helper (GET /api/admin/usernames) were RETIRED. Share LINKS are the sole
+// owner-facing way to grant a share; a redeemed link mints the same D0008 Grant, so the ACL and the
+// revoke path below (share_delete) are unchanged. Onboarding a brand-new recipient is share_redeem_register.
 
 #[derive(Deserialize)]
 pub struct ShareDelReq {
@@ -284,6 +257,99 @@ pub async fn share_link_redeem(
     }
     audit(action::SHARE_LINK_REDEEM, &user, &format!("{}/{} -> {}", r.owner, r.vault, user), outcome::SUCCESS, &ip);
     Ok(Json(RedeemLinkResp { owner: r.owner, vault: r.vault, perm: r.perm }))
+}
+
+#[derive(Deserialize)]
+pub struct RedeemRegisterReq { token: String, username: String, password: String }
+#[derive(Serialize)]
+pub struct RedeemRegisterResp { token: String, owner: String, vault: String, perm: Perm }
+
+// D0037 onboarding: redeem a vault share link AS A BRAND-NEW ACCOUNT, in one PUBLIC call (no prior
+// login). The valid, single-use, expiring link is itself the authorization to create the account —
+// so this works even when registration is Closed (link-as-invite). Exactly one link ⇒ one account ⇒
+// one grant: we peek the link to authorize, create the account, then CLAIM (single-use) + grant, and
+// on any follow-on failure roll BOTH the claim and the just-created account back so a recoverable
+// error neither burns the invite nor leaves an orphan account. Returns a session token so the client
+// is immediately signed in. (An existing account uses the authed /api/share-redeem instead.)
+pub async fn share_redeem_register(
+    State(st): State<AppState>, ClientIp(ip): ClientIp, Json(mut req): Json<RedeemRegisterReq>,
+) -> Result<Json<RedeemRegisterResp>, AppError> {
+    req.username = req.username.trim().to_ascii_lowercase(); // case-insensitive: canonicalize
+    if !safe_name(&req.username) {
+        return Err(AppError::BadRequest(format!("invalid username — {}", crate::users::NAME_RULE)));
+    }
+    crate::auth::validate_password_policy(&req.password)?; // IA.3.5.7 — same policy as register
+    // CLAIM THE LINK FIRST (single-use, atomic). This is the authorization gate AND the anti-enumeration
+    // bound: because a valid link is consumed on the first probe, an account-existence collision below
+    // costs the link (one-shot) — exactly like a closed-registration invite (auth::register consumes the
+    // invite even on a 409). A non-consuming peek-then-exists check would be an UNLIMITED username oracle
+    // for any link-holder (critique). Claiming before creating the account also means a crash between
+    // steps leaves NO orphan account (the link is spent, but nothing unauthorized persists).
+    let Some(r) = lock(&st.share_links)?.redeem(&req.token, &req.username) else {
+        audit(action::SHARE_LINK_REDEEM, "-", "-", outcome::FAILURE, &ip);
+        return Err(AppError::BadRequest("this share link is invalid, expired, or already used".into()));
+    };
+    if req.username == r.owner {
+        // The owner is testing their own link. Restore it (this only ever reveals the owner's OWN name,
+        // not other accounts, so it's safe to leave redeemable for the intended recipient).
+        let _ = lock(&st.share_links)?.unredeem(&req.token);
+        return Err(AppError::BadRequest("this is your own share link — sign in to your existing account instead".into()));
+    }
+    // Create the account (argon2 offloaded + auth-permit bounded, exactly like auth::register). register
+    // reports the existence collision itself; we do NOT restore the link on AlreadyExists, so a name
+    // probe is one-shot per link. A TRANSIENT error restores the link so a legit user can retry.
+    let permit = crate::auth::acquire_auth(&st).await?;
+    let users = st.users.clone();
+    let (u, p) = (req.username.clone(), req.password.clone());
+    let created = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut g = users.lock().map_err(|_| std::io::Error::other("users lock poisoned"))?;
+        g.register(&u, &p)
+    }).await.map_err(|e| AppError::Internal(format!("auth join failed: {e}")))?;
+    match created {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Link stays consumed (one-shot enumeration bound). No account was created to roll back.
+            return Err(AppError::Conflict("an account with that name already exists — sign in and redeem the link instead, or ask for a new link".into()));
+        }
+        Err(_) => { let _ = lock(&st.share_links)?.unredeem(&req.token); return Err(AppError::BadRequest("could not register".into())); }
+    }
+    // Mint the grant, bounded by the owner's cap (parity with share_link_redeem). On a recoverable
+    // failure, roll BACK the claim AND remove the just-created account so nothing dangles. A failed
+    // rollback is LOGGED (not swallowed) so an orphan is diagnosable rather than silent (critique).
+    {
+        let mut g = lock(&st.shares)?;
+        let is_upsert = g.permission(&r.owner, &r.vault, &req.username).is_some();
+        if !is_upsert && g.owner_grant_count(&r.owner) >= crate::shares::MAX_GRANTS_PER_OWNER {
+            drop(g);
+            let _ = lock(&st.share_links)?.unredeem(&req.token);
+            rollback_account(&st, &req.username, "owner-at-cap");
+            return Err(AppError::BadRequest("the vault owner has reached their maximum number of shares".into()));
+        }
+        if let Err(e) = g.grant(&r.owner, &r.vault, &req.username, r.perm) {
+            drop(g);
+            let _ = lock(&st.share_links)?.unredeem(&req.token);
+            rollback_account(&st, &req.username, "grant-failed");
+            return Err(AppError::Internal(e.to_string()));
+        }
+    }
+    // Sign the new account in (a session token, exactly what /api/login returns).
+    let session = lock(&st.tokens)?.issue(&req.username).map_err(|e| AppError::Internal(e.to_string()))?;
+    log::info!("[share-redeem-register] new account '{}' redeemed {}/{}", req.username, r.owner, r.vault);
+    audit(action::ACCOUNT_CREATE, &req.username, &req.username, outcome::SUCCESS, &ip);
+    audit(action::SHARE_LINK_REDEEM, &req.username, &format!("{}/{} -> {}", r.owner, r.vault, req.username), outcome::SUCCESS, &ip);
+    Ok(Json(RedeemRegisterResp { token: session, owner: r.owner, vault: r.vault, perm: r.perm }))
+}
+
+// Remove a just-created account when the follow-on grant fails (share_redeem_register rollback). A
+// failed removal is LOGGED, never swallowed, so a rare orphan account is diagnosable (critique).
+fn rollback_account(st: &AppState, username: &str, why: &str) {
+    match lock(&st.users) {
+        Ok(mut u) => if let Err(e) = u.remove(username) {
+            log::error!("[share-redeem-register] {why}: failed to roll back orphan account '{username}': {e}");
+        },
+        Err(_) => log::error!("[share-redeem-register] {why}: users lock poisoned rolling back account '{username}'"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -417,19 +483,9 @@ pub async fn users_list(
     Ok(Json(out))
 }
 
-// Grantee autocomplete (D0021): the username list for share typeahead + fuzzy match. SERVER-ADMIN
-// only (critique R8 security): a full account-table dump must not be reachable by any authenticated
-// user — in MERGE mode /api/admin/* rides the public port, so an ungated list would be an
-// enumeration oracle worse than the per-name check the rest of the system de-oracles. The common
-// operator IS the admin, so autocomplete still works for them; a non-admin owner falls back to
-// typing the grantee (share_create deliberately does NOT verify existence — a dormant grant to a
-// not-yet-registered name is allowed, precisely so it can't be used as an enumeration oracle).
-pub async fn usernames(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
-) -> Result<Json<Vec<String>>, AppError> {
-    require_admin(&st, &user, "-")?;
-    Ok(Json(lock(&st.users)?.usernames()))
-}
+// (D0037) GET /api/admin/usernames was RETIRED with the grantee-username share path — its only
+// consumer was the grantee autocomplete. Sharing is now link-based (no username typing), so the
+// account-table dump is no longer exposed at all.
 
 // Promote an account to server-admin (D0021) — server-admin only. The account must exist.
 pub async fn admin_grant(

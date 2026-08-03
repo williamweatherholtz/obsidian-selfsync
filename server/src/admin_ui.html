@@ -48,6 +48,16 @@
     border: 1px dashed var(--accent); border-radius: 7px; padding: 8px 10px; word-break: break-all; margin-top: 8px; }
   .card-title { display:flex; justify-content: space-between; align-items:center; }
   label.inline { font-size: 13px; color: var(--muted); }
+  /* A real on/off toggle switch (D0037) — replaces the registration checkbox. */
+  .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; cursor: pointer; inset: 0; background: var(--line);
+    border-radius: 999px; transition: .15s; }
+  .switch .slider::before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px;
+    top: 3px; background: var(--ink); border-radius: 50%; transition: .15s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(20px); background: #06122e; }
+  .lastused { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -166,7 +176,8 @@ async function dashboard() {
   $("out").onclick = (e) => { e.preventDefault(); signOut(); };
 
   let html = `<h2>Two-factor authentication</h2><div class="panel" id="mfa"><div class="empty">Loading…</div></div>`;
-  html += `<h2>My vaults &amp; sharing</h2><div class="panel" id="vaults"><div class="empty">Loading…</div></div>`;
+  html += `<h2>My vaults</h2><div class="panel" id="vaults"><div class="empty">Loading…</div></div>`;
+  html += `<h2>Sharing</h2><div class="panel" id="sharing"><div class="empty">Loading…</div></div>`;
   if (me.is_server_admin) {
     html += `<h2>Accounts</h2><div class="panel" id="users"><div class="empty">Loading…</div></div>`;
     html += `<h2>Registration</h2><div class="panel" id="reg"><div class="empty">Loading…</div></div>`;
@@ -175,6 +186,7 @@ async function dashboard() {
   $("app").innerHTML = html;
   await renderMfa();
   await renderVaults();
+  await renderSharing();
   if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); }
 }
 
@@ -236,77 +248,123 @@ function healthChip(status) {
   return `<span class="perm readWrite">needs repair</span>`;
 }
 
+// Compact relative "last used" (D0037). Takes epoch seconds; empty for a vault with no activity yet.
+function relTime(secs) {
+  if (!secs) return "";
+  const d = Math.max(0, Math.floor(Date.now() / 1000) - secs);
+  if (d < 60) return "just now";
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  if (d < 2592000) return `${Math.floor(d / 86400)}d ago`;
+  return new Date(secs * 1000).toISOString().slice(0, 10);
+}
+
+// "My vaults": health + last-used + repair/delete. Sharing lives in its own section (renderSharing).
 async function renderVaults() {
-  // Fetch the vaults + the username list (for grantee autocomplete + fuzzy validation). The username
-  // list is safe here: the admin surface is private by default (D0021 split).
-  const [vaults, names] = await Promise.all([
-    api("GET", "/api/admin/vaults"),
-    api("GET", "/api/admin/usernames").catch(() => []),
-  ]);
+  const vaults = await api("GET", "/api/admin/vaults");
   const box = $("vaults");
   if (!vaults.length) { box.innerHTML = `<div class="empty">You own no vaults yet.</div>`; return; }
-  const dl = `<datalist id="userlist">${names.map(n => `<option value="${esc(n)}"></option>`).join("")}</datalist>`;
   let h = "";
   for (const v of vaults) {
-    const rows = v.grants.length
-      ? v.grants.map(g => `<tr><td>${esc(g.grantee)}</td><td><span class="perm ${g.perm}">${g.perm}</span></td>
-          <td style="text-align:right"><button class="danger" data-revoke="${esc(v.vault)}|${esc(g.grantee)}">Revoke</button></td></tr>`).join("")
-      : `<tr><td colspan="3" class="empty">Not shared.</td></tr>`;
-    // Reindex is shown only when the vault isn't healthy (vaults auto-repair on access, so a manual
-    // reindex is a rare, signal-driven action — not an always-present button inviting cargo-cult clicks).
-    // Repair is offered ONLY for a genuinely degraded vault. "ready" needs none; "missing" has no data
-    // to repair (the reindex endpoint 404s on it), so its chip says "no data yet" and shows no button —
-    // the chip and the action agree.
+    // Repair only for a genuinely degraded vault ("ready"/"missing" show none — chip and action agree).
     const repairBtn = (v.status === "ready" || v.status === "missing") ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
-    h += `<div style="margin-bottom:14px"><div class="vault">${esc(v.vault)} ${healthChip(v.status)}
+    const used = v.last_used ? `<span class="lastused">last used ${esc(relTime(v.last_used))}</span>` : `<span class="lastused">no activity yet</span>`;
+    h += `<div style="margin-bottom:10px"><div class="vault">${esc(v.vault)} ${healthChip(v.status)} ${used}
         <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button>
-        ${repairBtn}</div>
-      <table><tr><th>Shared with</th><th>Access</th><th></th></tr>${rows}</table>
-      <div class="row" style="margin-top:8px">
-        <input placeholder="grantee username" list="userlist" data-g="${esc(v.vault)}" style="flex:1;min-width:140px" />
-        <select data-perm="${esc(v.vault)}"><option value="read">read-only</option><option value="readWrite">read-write</option></select>
-        <button data-share="${esc(v.vault)}">Share</button>
-      </div></div>`;
+        ${repairBtn}</div></div>`;
   }
-  box.innerHTML = dl + h;
-  box.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
-    const [vault, grantee] = b.dataset.revoke.split("|");
-    try { await api("DELETE", "/api/admin/shares", { vault, grantee }); await renderVaults(); setMsg("Share revoked.", "ok"); }
-    catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
-  });
+  box.innerHTML = h;
   // Owner self-service vault delete (D0021) — a typed confirmation guards the destructive action.
   box.querySelectorAll("[data-delvault]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.delvault;
     if (!confirm(`Delete YOUR vault "${vault}"?\n\nThis removes its data on the server. Devices still syncing it will stop until you re-create or switch; their LOCAL files are untouched.`)) return;
     const typed = prompt(`Type the vault name "${vault}" to confirm deletion:`);
     if (typed !== vault) { setMsg("Delete cancelled — the name didn't match.", "err"); return; }
-    try { await api("DELETE", "/api/vault", { vault }); await renderVaults(); setMsg("Vault deleted.", "ok"); }
+    try { await api("DELETE", "/api/vault", { vault }); await renderVaults(); await renderSharing(); setMsg("Vault deleted.", "ok"); }
     catch (e) { setMsg("Delete failed: " + e.message, "err"); }
   });
-  // One-click repair of your OWN vault (D0022) — shown only when the health chip isn't "OK" (vaults
-  // auto-repair on access, so this is a signal-driven action). Force-repair (dropping unrecoverable
-  // entries) lives under Accounts → your account → Vaults, where the per-vault force option is offered.
+  // One-click repair of your OWN vault (D0022) — shown only when the health chip isn't "OK".
   box.querySelectorAll("[data-reindex]").forEach(b => b.onclick = async () => {
     const vault = b.dataset.reindex;
     try { const r = await api("POST", "/api/admin/reindex", { owner: me.username, vault, force: false });
       await renderVaults(); setMsg(`Repaired ${vault} — now at v${r.version}.`, "ok"); }
     catch (e) { setMsg(`Repair failed: ${e.message}. If files are unrecoverable, use Force under Accounts → your account → Vaults.`, "err"); }
   });
-  box.querySelectorAll("[data-share]").forEach(b => b.onclick = async () => {
-    const vault = b.dataset.share;
-    const grantee = box.querySelector(`[data-g="${CSS.escape(vault)}"]`).value.trim();
-    const perm = box.querySelector(`[data-perm="${CSS.escape(vault)}"]`).value;
-    if (!grantee) { setMsg("Enter a username to share with.", "err"); return; }
-    // Fuzzy guard: warn on a grantee that isn't in the known-accounts list, with a "did you mean"
-    // suggestion — a client-side convenience only. (The server does NOT verify existence on
-    // share_create — a dormant grant to a future account is allowed, to avoid an enumeration oracle.)
-    if (names.length && !names.includes(grantee)) {
-      const sug = names.filter(n => n.toLowerCase().includes(grantee.toLowerCase())).slice(0, 3);
-      setMsg(`No account "${grantee}".` + (sug.length ? ` Did you mean: ${sug.join(", ")}?` : " Check the username."), "err");
-      return;
-    }
-    try { await api("POST", "/api/admin/shares", { vault, grantee, perm }); await renderVaults(); setMsg("Shared.", "ok"); }
-    catch (e) { setMsg("Share failed: " + e.message, "err"); }
+}
+
+// D0037: a SINGLE sharing section (not per-vault). Pick a vault + permission → create a single-use
+// share LINK to send; whoever redeems it (creating an account or signing in) gains access. Below:
+// active (unredeemed) links to revoke, and who each vault is shared with (redeemed grants) to revoke.
+// The grantee-username path is gone — links are the canonical way to grant access.
+async function renderSharing() {
+  const box = $("sharing");
+  let vaults, links;
+  try {
+    [vaults, links] = await Promise.all([
+      api("GET", "/api/admin/vaults"),
+      api("GET", "/api/share-links"),
+    ]);
+  } catch (e) { box.innerHTML = `<div class="msg err">Couldn't load sharing: ${esc(e.message)}</div>`; return; }
+  if (!vaults.length) { box.innerHTML = `<div class="empty">You own no vaults to share yet.</div>`; return; }
+
+  const vaultOpts = vaults.map(v => `<option value="${esc(v.vault)}">${esc(v.vault)}</option>`).join("");
+  // Redeemed grants across all owned vaults — who has access.
+  const grants = [];
+  for (const v of vaults) for (const g of (v.grants || [])) grants.push({ vault: v.vault, grantee: g.grantee, perm: g.perm });
+  const grantRows = grants.length
+    ? grants.map(g => `<tr><td class="vault">${esc(g.vault)}</td><td>${esc(g.grantee)}</td>
+        <td><span class="perm ${g.perm}">${g.perm}</span></td>
+        <td style="text-align:right"><button class="danger" data-revoke="${esc(g.vault)}|${esc(g.grantee)}">Revoke</button></td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">No vault is shared with anyone yet.</td></tr>`;
+  // Pending (unredeemed) links.
+  const pending = links.filter(l => !l.redeemed_by);
+  const linkRows = pending.length
+    ? pending.map(l => `<tr><td class="vault">${esc(l.vault)}</td><td><span class="perm ${l.perm}">${l.perm}</span></td>
+        <td class="muted">${l.label ? esc(l.label) : ""}${l.expires_at ? "" : " · no expiry"}</td>
+        <td style="text-align:right"><button class="danger" data-revlink="${esc(l.id)}">Revoke</button></td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">No active share links.</td></tr>`;
+
+  box.innerHTML = `
+    <div class="row">
+      <select id="shvault">${vaultOpts}</select>
+      <select id="shperm"><option value="read">read-only</option><option value="readWrite">read-write</option></select>
+      <button id="shcreate">Create share link</button>
+    </div>
+    <div id="shnew"></div>
+    <div class="muted" style="font-weight:600;margin-top:16px">Active share links</div>
+    <table><tr><th>Vault</th><th>Access</th><th>Label</th><th></th></tr>${linkRows}</table>
+    <div class="muted" style="font-weight:600;margin-top:16px">Shared with</div>
+    <table><tr><th>Vault</th><th>Account</th><th>Access</th><th></th></tr>${grantRows}</table>`;
+
+  $("shcreate").onclick = async () => {
+    const vault = $("shvault").value, perm = $("shperm").value;
+    try {
+      const r = await api("POST", "/api/share-links", { vault, perm });
+      const token = r.token;
+      // The link carries the server the RECIPIENT's plugin must connect to. We prefill this admin page's
+      // origin, but in a split/reverse-proxied deployment that may be the PRIVATE admin address — so it's
+      // an EDITABLE field defaulting to location.origin, and the link is (re)assembled from it (critique).
+      $("shnew").innerHTML = `
+        <div class="muted" style="font-size:12px;margin-top:8px">Public server address the recipient's SelfSync connects to — edit if it differs from this admin page's address:</div>
+        <div class="row" style="margin-top:4px"><input id="shserver" value="${esc(location.origin)}" style="flex:1;min-width:220px" /></div>
+        <div class="token" id="shlink"></div>
+        <div class="row" style="margin-top:6px"><button id="shcopy" class="ghost">Copy link</button>
+          <span class="muted" style="font-size:12px">Single-use — the recipient redeems it in SelfSync (creating an account or signing in) to gain access.</span></div>`;
+      const build = () => `selfsync-share://redeem?server=${encodeURIComponent($("shserver").value.trim())}&token=${encodeURIComponent(token)}`;
+      const paint = () => { $("shlink").textContent = build(); };
+      $("shserver").oninput = paint; paint();
+      $("shcopy").onclick = async () => { try { await navigator.clipboard.writeText(build()); setMsg("Share link copied.", "ok"); } catch { setMsg("Select the link above and copy it.", ""); } };
+      setMsg("Share link created — check the server address, then copy it below.", "ok");
+    } catch (e) { setMsg("Couldn't create the link: " + e.message, "err"); }
+  };
+  box.querySelectorAll("[data-revlink]").forEach(b => b.onclick = async () => {
+    try { await api("DELETE", "/api/share-links/" + encodeURIComponent(b.dataset.revlink)); await renderSharing(); setMsg("Share link revoked.", "ok"); }
+    catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
+  });
+  box.querySelectorAll("[data-revoke]").forEach(b => b.onclick = async () => {
+    const [vault, grantee] = b.dataset.revoke.split("|");
+    try { await api("DELETE", "/api/admin/shares", { vault, grantee }); await renderSharing(); setMsg("Access revoked.", "ok"); }
+    catch (e) { setMsg("Revoke failed: " + e.message, "err"); }
   });
 }
 
@@ -413,8 +471,9 @@ async function renderReg() {
   const open = r.mode === "open";
   $("reg").innerHTML = `<div class="card-title">
       <div>New-account registration
-        <div class="muted" style="font-size:13px">${open ? "OPEN — anyone can create an account." : "CLOSED — only invite tokens (below) can create accounts."}</div></div>
-      <label class="inline" style="cursor:pointer;user-select:none"><input type="checkbox" id="regtoggle" ${open ? "checked" : ""} /> <span>${open ? "Open" : "Closed"}</span></label>
+        <div class="muted" style="font-size:13px">${open ? "OPEN — anyone can create an account." : "CLOSED — new accounts need an invite token (below) or a vault share link."}</div></div>
+      <div class="row" style="gap:8px;flex:none"><span class="muted">${open ? "Open" : "Closed"}</span>
+        <label class="switch"><input type="checkbox" id="regtoggle" ${open ? "checked" : ""} /><span class="slider"></span></label></div>
     </div>`;
   $("regtoggle").onchange = async (e) => {
     const wantOpen = e.target.checked;

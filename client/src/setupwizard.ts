@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { HttpTransport } from "./transport";
+import { HttpTransport, type SharePerm } from "./transport";
 import { parseSetupLink } from "./connstr";
 import { isShareLink, parseShareLink } from "./sharelink";
 import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
@@ -171,6 +171,19 @@ export class SetupWizardModal extends Modal {
   private async doLogin() {
     if (!canLogIn(this.s)) { new Notice("SelfSync: enter the server, username, and password"); return; }
     try {
+      // D0037 onboarding: creating a NEW account off a share link goes through ONE call that creates
+      // the account (authorized by the link itself, so it works even when registration is CLOSED),
+      // redeems the share, and returns a session — then we adopt the vault. A plain register on a
+      // closed server would 403; this is the link-as-invite path.
+      if (this.pendingShareLink && this.s.mode === "register") {
+        const { server, token } = parseShareLink(this.pendingShareLink);
+        const r = await HttpTransport.redeemRegister(server, token, this.s.username, this.s.password);
+        this.token = r.token;
+        this.persistSession();
+        await this.plugin.saveSettings();
+        await this.adoptRedeemed({ owner: r.owner, vault: r.vault, perm: r.perm });
+        return;
+      }
       if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password);
       const { token, mustChange } = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
       this.token = token;
@@ -227,29 +240,43 @@ export class SetupWizardModal extends Modal {
   // Redeem finish: persist the just-established session, redeem the shared vault, adopt it as this
   // device's sync target, and reconnect. This is the guided path a share link takes on a device that
   // wasn't set up — server came from the link, credentials from the login above.
-  private async finishRedeem() {
+  // Persist the just-established session so authenticated calls (redeemShareLink) work; token-only at
+  // rest by default (the password is kept only in storePassword mode).
+  private persistSession() {
     const st = this.plugin.settings;
     st.serverUrl = this.s.server; st.username = this.s.username; st.authToken = this.token;
-    st.password = st.storePassword ? this.s.password : ""; // token-only at rest by default
+    st.password = st.storePassword ? this.s.password : "";
+  }
+
+  private async finishRedeem() {
+    this.persistSession();
     await this.plugin.saveSettings(); // redeemShareLink authenticates via these persisted creds
     try {
       const ref = await this.plugin.redeemShareLink(this.pendingShareLink);
-      new Notice(`SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
-      this.close();
-      // V2 (2026-08-02): redeeming a share on a device that already has local notes must NOT silently
-      // reconcile them against the shared vault's base (a foreign base) — route through the safe merge-switch
-      // (clears the stale base + unions, nothing lost), exactly like the wizard's own vault-change path and
-      // the "Switch vault" action. A fresh/empty device adopts directly.
-      if (await this.plugin.hasLocalData()) {
-        await this.plugin.switchToVault(ref.vault, "merge", ref.owner, ref.perm === "read");
-      } else {
-        st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
-        await this.plugin.saveSettings();
-        void this.plugin.reconnect();
-      }
+      await this.adoptRedeemed(ref);
     } catch (e: any) {
       new Notice(`SelfSync: ${e?.message ?? e}`, 9000);
       this.render(); // stay signed in so the user can see the error / retry
+    }
+  }
+
+  // Adopt an ALREADY-redeemed shared vault as this device's sync target. Shared by finishRedeem (the
+  // existing-account login path) and the D0037 redeem-register onboarding path (which redeems as part
+  // of account creation). The session must already be persisted (both callers persistSession first).
+  private async adoptRedeemed(ref: { owner: string; vault: string; perm: SharePerm }) {
+    const st = this.plugin.settings;
+    new Notice(`SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
+    this.close();
+    // V2 (2026-08-02): redeeming a share on a device that already has local notes must NOT silently
+    // reconcile them against the shared vault's base (a foreign base) — route through the safe merge-switch
+    // (clears the stale base + unions, nothing lost), exactly like the wizard's own vault-change path and
+    // the "Switch vault" action. A fresh/empty device adopts directly.
+    if (await this.plugin.hasLocalData()) {
+      await this.plugin.switchToVault(ref.vault, "merge", ref.owner, ref.perm === "read");
+    } else {
+      st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
+      await this.plugin.saveSettings();
+      void this.plugin.reconnect();
     }
   }
 

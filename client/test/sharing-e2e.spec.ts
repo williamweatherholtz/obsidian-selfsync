@@ -35,11 +35,13 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
     await fs.writeFile(path.join(alice.root, "n.md"), "from alice");
     await reconcileAll(dep(alice));
 
-    // alice shares "team" read-write with bob
-    await NodeTransport.grant(base, aliceTok, "team", "bob", "readWrite");
+    // alice shares "team" read-write with bob — via a single-use LINK bob redeems (D0037: the
+    // grantee-username grant path is retired; access is granted by redeeming a link).
+    const bobTok = await NodeTransport.login(base, "bob", "vaultpw12");
+    const bobLink = await NodeTransport.createShareLink(base, aliceTok, "team", "readWrite");
+    await NodeTransport.redeemShareLink(base, bobTok, bobLink);
 
     // bob syncs alice's shared vault (owner-qualified transport) and gets the note
-    const bobTok = await NodeTransport.login(base, "bob", "vaultpw12");
     const bob = mkClient(root("bob"), new NodeTransport(base, bobTok, "team", "alice"));
     await reconcileAll(dep(bob));
     expect(dec(await bob.io.read("n.md"))).toBe("from alice");
@@ -50,9 +52,10 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
     await reconcileAll(dep(alice));
     expect(dec(await alice.io.read("n.md"))).toBe("edited by bob");
 
-    // carol has a READ-ONLY share: she pulls the current content...
-    await NodeTransport.grant(base, aliceTok, "team", "carol", "read");
+    // carol has a READ-ONLY share (again via a redeemed link): she pulls the current content...
     const carolTok = await NodeTransport.login(base, "carol", "vaultpw12");
+    const carolLink = await NodeTransport.createShareLink(base, aliceTok, "team", "read");
+    await NodeTransport.redeemShareLink(base, carolTok, carolLink);
     const carol = mkClient(root("carol"), new NodeTransport(base, carolTok, "team", "alice"));
     await reconcileAll(ro(carol));
     expect(dec(await carol.io.read("n.md"))).toBe("edited by bob");
@@ -112,5 +115,40 @@ describe.skipIf(!canRun)("cross-user vault sharing (E2E)", () => {
     await NodeTransport.leaveShare(base, freshTok, "owner1", "mine");
     expect(await NodeTransport.rawSharedStatus(base, freshTok, "owner1", "mine")).toBe(403);
     expect((await NodeTransport.listShared(base, freshTok)).some((s) => s.owner === "owner1")).toBe(false);
+  }, 60000);
+
+  // D0037: a BRAND-NEW account onboards off a vault share link in one call (link-as-invite), even
+  // under CLOSED registration, and immediately syncs the shared vault with the returned session token.
+  it("a new account redeems a share LINK to onboard (link-as-invite) under closed registration", async () => {
+    const admin = await NodeTransport.login(base, "admin", "admin");
+    const setReg = (mode: string) => fetch(`${base}/api/admin/registration`, {
+      method: "PUT", headers: { authorization: `Bearer ${admin}`, "content-type": "application/json" }, body: JSON.stringify({ mode }),
+    });
+    expect((await setReg("closed")).ok).toBe(true); // the scenario the bypass is for
+
+    // owner2 has a vault + a note + a read-write share link.
+    await NodeTransport.createUser(base, admin, "owner2", "vaultpw12");
+    const ownerTok = await NodeTransport.login(base, "owner2", "vaultpw12");
+    await NodeTransport.createVault(base, ownerTok, "shared2");
+    const owner = mkClient(root("owner2"), new NodeTransport(base, ownerTok, "shared2"));
+    await fs.writeFile(path.join(owner.root, "doc.md"), "hi from owner2");
+    await reconcileAll(dep(owner));
+    const link = await NodeTransport.createShareLink(base, ownerTok, "shared2", "readWrite");
+
+    // A brand-new user (no account) redeem-registers off the link — ONE call creates the account
+    // (authorized by the link even under closed registration), redeems, and returns a session token.
+    const r = await NodeTransport.redeemRegister(base, link, "newbie", "Newbie-pass-1");
+    expect(r).toMatchObject({ owner: "owner2", vault: "shared2", perm: "readWrite" });
+    expect(r.token.length).toBeGreaterThan(0);
+
+    // The returned session syncs the shared vault (owner-qualified) and gets the note.
+    const recip = mkClient(root("newbie"), new NodeTransport(base, r.token, "shared2", "owner2"));
+    await reconcileAll(dep(recip));
+    expect(dec(await recip.io.read("doc.md"))).toBe("hi from owner2");
+
+    // single-use: the link can't onboard a second account.
+    await expect(NodeTransport.redeemRegister(base, link, "newbie2", "Newbie2-pass-1")).rejects.toThrow();
+
+    await setReg("open"); // leave the shared test server as we found it
   }, 60000);
 });

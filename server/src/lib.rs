@@ -74,7 +74,9 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         // enumeration surface) and all account-admin endpoints stay private below.
         .route("/api/admin/me", get(admin::me))
         .route("/api/admin/vaults", get(admin::my_vaults))
-        .route("/api/admin/shares", post(admin::share_create).delete(admin::share_delete))
+        // D0037: the grantee-username grant path (POST) was retired — sharing is link-based. Only the
+        // grant REVOKE remains here (a redeemed link mints the same D0008 Grant, revoked the same way).
+        .route("/api/admin/shares", axum::routing::delete(admin::share_delete))
         // D0023 capability share-links — owner-scoped create/list/revoke + an AuthToken-gated redeem.
         // On the shared surface (like the owner share ops above) so they're reachable on the public
         // port in the default split. Redeem is a distinct path (not /share-links/:id) to avoid a
@@ -82,6 +84,9 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         .route("/api/share-links", post(admin::share_link_create).get(admin::share_link_list))
         .route("/api/share-links/:id", axum::routing::delete(admin::share_link_revoke))
         .route("/api/share-redeem", post(admin::share_link_redeem))
+        // D0037 onboarding: PUBLIC (no login) — redeem a vault share link AS a new account. The valid
+        // single-use link authorizes account creation even under Closed registration (link-as-invite).
+        .route("/api/share-redeem-register", post(admin::share_redeem_register))
         // IA.3.5.3: self-service MFA (TOTP) — AuthToken-gated, safe on both surfaces (the admin page
         // surfaces enroll/confirm/disable for privileged accounts; login verifies the second factor).
         .route("/api/mfa/status", get(mfa::status))
@@ -120,7 +125,7 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             // Management API (authority behind the web admin UI). Account/registration/invite
             // management for the server-admin. (Owner-scoped me/vaults/shares moved to the shared
             // base above so they're reachable on the public port in split mode — R14 sec#4.)
-            .route("/api/admin/usernames", get(admin::usernames)) // grantee autocomplete (private surface)
+            // D0037: /api/admin/usernames retired with the grantee-username share path (its only consumer).
             .route("/api/admin/reindex", post(admin::reindex))
             .route("/api/admin/vault", axum::routing::delete(admin::vault_delete)) // per-vault delete (RC-4)
             .route("/api/admin/prune-history", post(admin::prune_history)) // deliberate tombstone prune (tombstonePrune/D0019)

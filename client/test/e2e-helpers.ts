@@ -71,11 +71,14 @@ export class NodeTransport implements SyncApi {
     if (!cp.ok) throw new Error(`createUser forced-change ${cp.status}`);
   }
   // A vault owner grants a share on their own vault (owner-scoped; any owner may call).
-  static async grant(base: string, ownerToken: string, vault: string, grantee: string, perm: "read" | "readWrite"): Promise<void> {
-    const r = await fetch(`${base}/api/admin/shares`, {
-      method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify({ vault, grantee, perm }),
+  // D0037: onboarding — redeem a vault share link AS a brand-new account in one public call (no prior
+  // login). Returns a session token + the granted vault. Used to exercise the link-as-invite path.
+  static async redeemRegister(base: string, linkToken: string, username: string, password: string): Promise<{ token: string; owner: string; vault: string; perm: string }> {
+    const r = await fetch(`${base}/api/share-redeem-register`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: linkToken, username, password }),
     });
-    if (!r.ok) throw new Error(`grant ${r.status}`);
+    if (!r.ok) throw new Error(`redeemRegister ${r.status}`);
+    return (await r.json()) as { token: string; owner: string; vault: string; perm: string };
   }
   // login variant that exposes the must_change_password signal (mirrors HttpTransport.login).
   static async loginFull(base: string, u: string, p: string): Promise<{ token: string; mustChange: boolean }> {

@@ -157,26 +157,21 @@ test.describe("MFA (two-factor)", () => {
 // ---- My vaults & sharing ------------------------------------------------------------------------
 
 test.describe("my vaults & sharing", () => {
-  test("share create then revoke round-trips in the grants table", async ({ page }) => {
+  // D0037: sharing is a single section driven by a vault dropdown that mints a single-use LINK (the
+  // grantee-username input is gone). Create a link, then revoke it, round-trips in the Sharing section.
+  test("create a share link then revoke it round-trips in the Sharing section", async ({ page }) => {
     await loginAdmin(page);
-    await createAccount(page, "carol");            // so carol is a known grantee (fuzzy-check passes)
-    await page.reload();                           // re-fetch the known-usernames list so carol is in it
-    await expect(page.locator("#vaults")).toBeVisible();
-    await page.fill('[data-g="default"]', "carol");
-    await page.selectOption('[data-perm="default"]', "readWrite");
-    await page.click('[data-share="default"]');
-    await expect(page.locator("#vaults")).toContainText("carol");
-    await expect(page.locator('[data-revoke="default|carol"]')).toBeVisible();
-    await page.click('[data-revoke="default|carol"]');
-    await expect(page.locator("#msg")).toContainText("Share revoked");
-    await expect(page.locator('[data-revoke="default|carol"]')).toHaveCount(0);
-  });
-
-  test("sharing to an unknown username is blocked client-side with a suggestion", async ({ page }) => {
-    await loginAdmin(page);
-    await page.fill('[data-g="default"]', "nosuchuser");
-    await page.click('[data-share="default"]');
-    await expect(page.locator("#msg")).toContainText("No account");
+    await expect(page.locator("#sharing")).toBeVisible();
+    await page.selectOption("#shvault", "default");
+    await page.selectOption("#shperm", "readWrite");
+    await page.click("#shcreate");
+    await expect(page.locator("#shnew")).toContainText("selfsync-share://"); // the copyable link
+    // Reload so the new pending link appears in the Active share links table, then revoke it.
+    await page.reload();
+    await expect(page.locator("[data-revlink]")).toBeVisible();
+    await page.click("[data-revlink]");
+    await expect(page.locator("#msg")).toContainText("Share link revoked");
+    await expect(page.locator("[data-revlink]")).toHaveCount(0);
   });
 
   test("A5: a healthy (ready) vault shows an OK chip and NO Repair button", async ({ page }) => {

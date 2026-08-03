@@ -205,12 +205,8 @@ export class HttpTransport implements SyncApi {
   static async myVaults(baseUrl: string, token: string): Promise<VaultShares[]> {
     return apiJson<VaultShares[]>({ url: `${normBase(baseUrl)}/api/admin/vaults`, method: "GET", headers: bearer(token) }, "my vaults");
   }
-  static async shareCreate(baseUrl: string, token: string, vault: string, grantee: string, perm: SharePerm): Promise<void> {
-    await apiVoid({
-      url: `${normBase(baseUrl)}/api/admin/shares`, method: "POST", contentType: "application/json",
-      headers: bearer(token), body: JSON.stringify({ vault, grantee, perm }),
-    }, "share");
-  }
+  // D0037: shareCreate (POST /api/admin/shares, grantee-username) was retired — sharing is link-based.
+  // shareDelete (revoke) stays: a redeemed link mints the same D0008 grant, revoked the same way.
   static async shareDelete(baseUrl: string, token: string, vault: string, grantee: string): Promise<void> {
     await apiVoid({
       url: `${normBase(baseUrl)}/api/admin/shares`, method: "DELETE", contentType: "application/json",
@@ -237,6 +233,18 @@ export class HttpTransport implements SyncApi {
       url: `${normBase(baseUrl)}/api/share-redeem`, method: "POST", contentType: "application/json",
       headers: bearer(token), body: JSON.stringify({ token: linkToken }),
     }, "redeem");
+  }
+  // D0037 onboarding: redeem a vault share link AS a brand-new account, in one PUBLIC call (no prior
+  // login). The valid single-use link authorizes account creation even under Closed registration
+  // (link-as-invite). Returns the granted vault + a session token so the caller is signed in.
+  static async redeemRegister(baseUrl: string, linkToken: string, username: string, password: string): Promise<SharedVaultRef & { token: string }> {
+    if (isInsecureRemote(baseUrl)) {
+      throw new Error("Refusing to send a new password over an unencrypted http:// connection to a remote server. Use an https:// address.");
+    }
+    return apiJson<SharedVaultRef & { token: string }>({
+      url: `${normBase(baseUrl)}/api/share-redeem-register`, method: "POST", contentType: "application/json",
+      body: JSON.stringify({ token: linkToken, username, password }),
+    }, "redeem & register");
   }
 
   private auth() { return bearer(this.token); }

@@ -97,8 +97,11 @@ async fn admin_creates_and_lists_users() {
 async fn owner_grants_and_revokes_a_share() {
     let base = spawn().await;
     let admin = login(&base, "admin").await;
-    // grant admin's "default" vault to bob (read)
-    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"bob","perm":"read"})).await, 200);
+    // D0037: a grant is established by REDEEMING a share link (the grantee-username POST path is retired);
+    // the grant-REVOKE path (DELETE /api/admin/shares) is unchanged.
+    let token = post_json(&base, "/api/share-links", &admin, json!({"vault":"default","perm":"read","label":"for bob"})).await.1["token"].as_str().unwrap().to_string();
+    let bob = login(&base, "bob").await;
+    assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 200);
     let (_s, vaults) = get(&base, "/api/admin/vaults", &admin).await;
     let def = vaults.as_array().unwrap().iter().find(|v| v["vault"] == "default").unwrap();
     assert_eq!(def["grants"][0]["grantee"], json!("bob"));
@@ -164,8 +167,10 @@ async fn bootstrap_admin_password_change_is_refused(/* R15 sec#1 */) {
 async fn deleting_a_vault_purges_its_share_grants(/* R17: no stale-grant reactivation */) {
     let base = spawn().await;
     let admin = login(&base, "admin").await; // owns the bootstrap "default" vault
-    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"bob","perm":"read"})).await, 200);
+    // D0037: establish the grant via a redeemed share link (the grantee-username path is retired).
+    let token = post_json(&base, "/api/share-links", &admin, json!({"vault":"default","perm":"read"})).await.1["token"].as_str().unwrap().to_string();
     let bob = login(&base, "bob").await;
+    assert_eq!(post_json(&base, "/api/share-redeem", &bob, json!({"token": token})).await.0, 200);
     assert!(!get(&base, "/api/shared", &bob).await.1.as_array().unwrap().is_empty(), "bob sees the shared vault");
     // Deleting the vault must also drop its grant, so recreating a vault of the same name later
     // doesn't silently re-grant bob.
@@ -173,14 +178,55 @@ async fn deleting_a_vault_purges_its_share_grants(/* R17: no stale-grant reactiv
     assert!(get(&base, "/api/shared", &bob).await.1.as_array().unwrap().is_empty(), "grant purged with the vault");
 }
 
+// D0037: onboarding — a brand-new account can redeem a vault share link in ONE public call, even
+// under CLOSED registration (the valid single-use link is itself the authorization = link-as-invite).
+// Exactly one link ⇒ one account ⇒ one grant; the returned session token signs the new account in.
 #[tokio::test]
-async fn share_create_does_not_reveal_grantee_existence(/* R15 sec#2 */) {
+async fn share_redeem_register_onboards_a_new_account_under_closed_registration() {
     let base = spawn().await;
-    let admin = login(&base, "admin").await; // owns "default"; "bob" exists, "ghost-user" does not
-    // Sharing to a NON-EXISTENT account returns the SAME 200 as sharing to a real one — no
-    // username-enumeration oracle on the public surface; the grant is dormant until the name registers.
-    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"ghost-user","perm":"read"})).await, 200);
-    assert_eq!(send(&base, "POST", "/api/admin/shares", &admin, json!({"vault":"default","grantee":"bob","perm":"read"})).await, 200);
+    let admin = login(&base, "admin").await;
+    // Close registration, then confirm plain registration is refused without an invite — the scenario
+    // the link-as-invite bypass is for.
+    assert_eq!(send(&base, "PUT", "/api/admin/registration", &admin, json!({"mode":"closed"})).await, 200);
+    assert_eq!(send(&base, "POST", "/api/register", &admin, json!({"username":"dana","password":"Danapw123","invite":""})).await, 403);
+    // admin mints a share link for "default"; a NEW user "dana" redeems-registers off it.
+    let token = post_json(&base, "/api/share-links", &admin, json!({"vault":"default","perm":"readWrite","label":"for dana"})).await.1["token"].as_str().unwrap().to_string();
+    let (rs, rv) = post_json(&base, "/api/share-redeem-register", "", json!({"token": token, "username":"dana", "password":"Danapw123"})).await;
+    assert_eq!(rs, 200, "the link authorized account creation even under closed registration");
+    assert_eq!((rv["owner"].as_str(), rv["vault"].as_str(), rv["perm"].as_str()), (Some("admin"), Some("default"), Some("readWrite")));
+    let session = rv["token"].as_str().unwrap();
+    assert!(!session.is_empty(), "a session token is returned so the new account is signed in");
+    // The session works AND reaches the freshly-granted vault.
+    assert_eq!(get(&base, "/api/u/admin/default/status", session).await.0, 200, "onboarded account reaches the shared vault");
+    // dana is a real account now (can log in with the password they chose).
+    let dana_login = reqwest::Client::new().post(format!("{base}/api/login"))
+        .json(&json!({"username":"dana","password":"Danapw123"})).send().await.unwrap();
+    assert_eq!(dana_login.status().as_u16(), 200, "the onboarded account can log in with its chosen password");
+    // single-use: the link can't onboard a second account.
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token": token, "username":"erin", "password":"Erinpw123"})).await.0, 400, "a consumed link can't onboard again");
+}
+
+// D0037: the onboarding endpoint rejects a bad/expired/used token (uniform 400, no account created)
+// and a username collision (409), and won't let the owner onboard as themselves.
+#[tokio::test]
+async fn share_redeem_register_rejects_bad_token_and_collisions() {
+    let base = spawn().await;
+    let admin = login(&base, "admin").await;
+    // Garbage token → 400, and no "nope" account is created.
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token":"nope", "username":"nope", "password":"Nopepw123"})).await.0, 400);
+
+    // The owner can't onboard as themselves off their own link → 400, but the link SURVIVES (owner-self
+    // only ever reveals the owner's OWN name, so it stays redeemable for the intended recipient).
+    let t1 = post_json(&base, "/api/share-links", &admin, json!({"vault":"default","perm":"read"})).await.1["token"].as_str().unwrap().to_string();
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token": t1, "username":"admin", "password":"Adminpw123"})).await.0, 400);
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token": t1, "username":"dana", "password":"Danapw123"})).await.0, 200, "owner self-redeem did not burn the link");
+
+    // Anti-enumeration bound: an existing-username collision → 409 AND consumes the link (one-shot), so a
+    // link-holder gets at most ONE account-existence bit per link — parity with a closed-registration
+    // invite (which is also consumed on a duplicate). A second probe with the same link is uniformly 400.
+    let t2 = post_json(&base, "/api/share-links", &admin, json!({"vault":"default","perm":"read"})).await.1["token"].as_str().unwrap().to_string();
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token": t2, "username":"bob", "password":"Bobpw1234"})).await.0, 409);
+    assert_eq!(post_json(&base, "/api/share-redeem-register", "", json!({"token": t2, "username":"erin", "password":"Erinpw123"})).await.0, 400, "the collision probe consumed the link (one-shot enumeration bound)");
 }
 
 #[tokio::test]
@@ -190,9 +236,10 @@ async fn owner_share_endpoints_reachable_on_public_surface_but_not_account_admin
     // Owner-scoped share management IS reachable on the public port (was admin-router-only → 404).
     assert_eq!(get(&base, "/api/admin/vaults", &bob).await.0, 200);
     assert_eq!(get(&base, "/api/admin/me", &bob).await.0, 200);
+    // Share-links (the canonical grant path, D0037) are reachable on the public surface too.
+    assert_eq!(get(&base, "/api/share-links", &bob).await.0, 200);
     // Account-admin endpoints stay OFF the public surface (404, not exposed).
     assert_eq!(get(&base, "/api/admin/users", &bob).await.0, 404);
-    assert_eq!(get(&base, "/api/admin/usernames", &bob).await.0, 404);
 }
 
 #[tokio::test]
