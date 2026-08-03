@@ -109,7 +109,7 @@ describe("settings tab renders and wires its controls", () => {
       settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["created"], excludedFolders: [] },
     });
     const { containerEl } = renderTab(p);
-    const header = [...containerEl.querySelectorAll(".selfsync-collapse-header")]
+    const header = Array.from(containerEl.querySelectorAll(".selfsync-collapse-header"))
       .find((h) => h.textContent?.includes("Timestamp changes")) as HTMLElement;
     expect(header).toBeTruthy();                 // a native setHeading() row, made a collapse header
     const body = header.nextElementSibling as HTMLElement;

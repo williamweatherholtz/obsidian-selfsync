@@ -383,9 +383,12 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // same affordance Obsidian uses for its collapsible sections. The body toggles below it; `onToggle`
   // persists the open state across the tab's re-renders. Returns the body element to render rows into.
   private collapsible(c: HTMLElement, title: string, open: boolean, onToggle: (open: boolean) => void): HTMLElement {
-    const header = new Setting(c).setHeading().setClass("selfsync-collapse-header");
+    // setName(title).setHeading() is THE canonical section heading — it styles the NAME as a heading. (An
+    // earlier attempt called setHeading() with a manual span and got no heading style — the "looks the same,
+    // not a heading" bug.) The native lucide chevron is inserted BEFORE the title, like a section-collapse.
+    const header = new Setting(c).setName(title).setHeading().setClass("selfsync-collapse-header");
     const chevron = header.nameEl.createSpan({ cls: "selfsync-collapse-chevron" });
-    header.nameEl.createSpan({ text: title });
+    header.nameEl.insertBefore(chevron, header.nameEl.firstChild);
     const body = c.createDiv();
     let isOpen = open;
     const paint = () => { setIcon(chevron, isOpen ? "chevron-down" : "chevron-right"); body.style.display = isOpen ? "" : "none"; };
