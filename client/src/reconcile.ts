@@ -523,39 +523,56 @@ async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHa
   return { kind: "none" };
 }
 
+// Thrown from the streamed-pull seam guard when the racing edit is a CONFIG file: config uses ADJUDICATION
+// (onConfigConflict), never a note-style conflict copy, so the pull must ABORT (leave the local edit in
+// place) rather than overwrite. Caught in applyPull → return; it never escapes applyPull, so a caller's
+// isConnectionError check can't misread it. (Only reachable for a >8 MiB `.obsidian/` file.)
+class StreamRaceAbort extends Error { constructor() { super("stream race: config adjudication"); this.name = "StreamRaceAbort"; } }
+
 // `expectLocalHash` is the local content hash the reconcile decision was based on. `guardRace`
 // is true for reconcile-driven pulls (a racing local edit/create must be preserved) and false for
 // explicit overwrites (a switch or user adjudication, where adopting remote IS the intent).
 async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expectLocalHash: string | null = null, guardRace = false): Promise<void> {
   if (rmeta.size >= STREAM_MIN_BYTES && d.io.appendWrite) {
-    // Streamed large file: run the racing-edit check BEFORE streaming (streamFileToDisk writes +
-    // renames atomically, so there's no post-fetch/pre-write seam to insert it into). The narrow
-    // window of an edit landing DURING a multi-second large-file stream is the accepted residual.
-    const race: RaceOutcome = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : { kind: "none" };
-    if (race.kind === "config-race") return; // config race → adjudicate, don't overwrite the local edit
+    // Streamed large file. The racing-edit check runs in the temp-write→rename SEAM (beforeRename), NOT
+    // before streaming: streamFileToDisk writes to a temp and only renames over `path` in close(), so `path`
+    // is UNTOUCHED until the rename — a save landing DURING the multi-second stream is caught here and
+    // preserved, closing the large-file loss window (issueStreamedPullMidEditLoss; the buffered path already
+    // re-checks after the fetch). conflictCopyIfRaced reads the ORIGINAL on-disk file (which still holds the
+    // racing edit), NEVER the post-rename result — so it can't relaunder wrong bytes into base like the
+    // retired post-write re-read; base is set ONLY to rmeta.hash.
+    let seamRace: RaceOutcome = { kind: "none" };
+    const beforeRename = guardRace
+      ? async () => {
+          seamRace = await conflictCopyIfRaced(d, path, expectLocalHash);
+          if (seamRace.kind === "config-race") throw new StreamRaceAbort(); // >8 MiB config: adjudicate, never overwrite
+        }
+      : undefined;
     try {
-      // streamFileToDisk now verifies the whole-file hash INCREMENTALLY, BEFORE its atomic rename
-      // (R17), so a bad manifest aborts without ever overwriting `path` — no post-write re-read (which
-      // regressed racing-write/conflict-copy safety) and no full-file re-buffer.
-      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash)) {
+      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash, beforeRename)) {
         d.base.set(path, { hash: rmeta.hash });
         d.onBaseChanged?.();
         return;
       }
     } catch (e) {
-      // The stream failed AFTER a racing-edit conflict copy was written, but nothing was overwritten
-      // — so that copy is just a redundant duplicate of the current file. Remove the orphan before
-      // propagating (issueConflictCopyCosmetic). Best-effort; the reconcile still fails the path.
-      if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } }
+      if (e instanceof StreamRaceAbort) return; // config-race adjudicated: no copy written, local intact, onConfigConflict already fired
+      // Do NOT delete a seam conflict copy on failure (issueStreamedPullMidEditLoss / critic finding).
+      // beforeRename runs AFTER the hash-verify, so once a copy exists the only thing that can throw is
+      // close(); if it throws AFTER the rename applied, `path` is already REMOTE and the copy is the SOLE
+      // surviving racing edit — deleting it would LOSE the user's data. A redundant conflict copy (bytes ==
+      // the current file) is cosmetic + recoverable; a lost edit is not. (close() must never throw after the
+      // rename succeeds — see openAppend's contract — so a normal before-rename failure leaves a harmless dup.)
       throw e;
     }
-    // streamFileToDisk returned false → fall back to the buffered path. The racing-edit copy (if any)
-    // is already made above, so DON'T re-check/re-copy here (that produced a duplicate copy).
+    // Defensive fallback: streamFileToDisk returns false ONLY when io.appendWrite is absent, which the branch
+    // guard already excluded — unreachable today. Kept as a safe buffered pull with its own racing-edit check.
     const bytes = await fetchVerified(d, rmeta);
+    const race: RaceOutcome = guardRace ? await conflictCopyIfRaced(d, path, expectLocalHash) : { kind: "none" };
+    if (race.kind === "config-race") return;
     try {
       await d.io.write(path, bytes);
     } catch (e) {
-      if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } } // R14 sync#4
+      if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } } // path untouched on a buffered-write throw → the copy is a redundant dup
       throw e;
     }
     setBase(d, path, bytes, rmeta.hash);

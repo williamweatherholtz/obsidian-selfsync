@@ -115,6 +115,11 @@ class ObsidianVaultIo implements VaultIo {
     return {
       append: async (bytes: Uint8Array) => { await fh.write(bytes); },
       close: async () => {
+        // CONTRACT (issueStreamedPullMidEditLoss): this must NEVER throw AFTER the rename succeeds. The
+        // streamed-pull seam writes a racing-edit conflict copy just before calling close(); applyPull
+        // deliberately does NOT delete that copy if close() throws, because a post-rename throw would mean
+        // `path` is already overwritten and the copy is the sole surviving edit. Everything after the rename
+        // here is therefore best-effort + non-throwing (fsyncHandle swallows errors; onConfigWritten is pure).
         await fh.sync(); await fh.close(); await fs.promises.rename(tmp, abs);
         // Fsync the PARENT DIRECTORY so the rename's directory entry is durable, not just the file
         // contents (R22-DI: the server's atomic_write/write_mirror already do this). Without it, a

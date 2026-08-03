@@ -131,7 +131,7 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
 // instead of buffering + concatenating the whole file. Returns false if the io can't stream
 // (mobile) so the caller falls back to the buffered path. Chunks are appended in list order,
 // so reassembly is correct. A mid-stream failure aborts (discards the partial) and rethrows.
-export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: string[], expectedSize: number, expectedHash: string): Promise<boolean> {
+export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: string[], expectedSize: number, expectedHash: string, beforeRename?: () => Promise<void>): Promise<boolean> {
   if (!ctx.io.appendWrite) return false;
   const h = await ctx.io.appendWrite(path);
   try {
@@ -158,6 +158,11 @@ export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: strin
     if (got !== expectedHash) {
       throw new Error(`streamed reassembly of '${path}' failed the whole-file hash (got ${got.slice(0, 12)}, expected ${expectedHash.slice(0, 12)}) — not applying (bad chunk manifest?)`);
     }
+    // Racing-edit SEAM (issueStreamedPullMidEditLoss): the temp is fully written + hash-verified but NOT yet
+    // renamed over `path`, so `path` still holds any edit that landed during the stream. beforeRename runs
+    // HERE to preserve it (a conflict copy of the original) before close() renames remote over it. A throw
+    // here (incl. the config-adjudication abort) hits the catch → h.abort() discards the temp, `path` intact.
+    if (beforeRename) await beforeRename();
     await h.close();
     return true;
   } catch (e) {

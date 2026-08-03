@@ -837,6 +837,83 @@ describe("streamed reassembly of large downloads (B9 Part B)", () => {
   });
 });
 
+describe("streamed pull racing-edit safety (issueStreamedPullMidEditLoss)", () => {
+  const remote = "R".repeat(9 * 1024 * 1024); // >= STREAM_MIN_BYTES → the streamed pull path
+  // An io whose streamed writer injects a local edit DURING the stream (first append), simulating a save
+  // that lands mid-download. Optionally throws from close() AFTER the rename applied (a post-rename failure).
+  function injectingIo(seed: Record<string, string>, target: string, racing: string, closeThrowsAfterRename = false) {
+    const io = fakeIo(seed);
+    const orig = io.appendWrite!.bind(io);
+    (io as any).appendWrite = async (p: string) => {
+      const h = await orig(p);
+      let injected = false;
+      return {
+        append: async (b: Uint8Array) => { if (!injected && p === target) { io.m.set(p, enc(racing)); injected = true; } await h.append(b); },
+        close: closeThrowsAfterRename && p === target
+          ? async () => { await h.close(); throw new Error("post-rename fsync boom"); } // rename applied, THEN a failure
+          : h.close,
+        abort: h.abort,
+      };
+    };
+    return io;
+  }
+
+  it("preserves a mid-stream local edit as a conflict copy — the large-file loss window is closed (fail-first)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "big.md", remote);
+    const io = injectingIo({ "big.md": "orig" }, "big.md", "my unsaved edit");
+    const base = new BaseStore(); base.set("big.md", { hash: await sha256hex(enc("orig")) }); // local==base → decide=pull, expectLocalHash=hash(orig)
+    const conf: string[] = [];
+    await reconcileAll(deps(api, io, { base, onConflict: (p) => conf.push(p) }));
+    const copies = [...io.m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);                                  // the racing edit was preserved…
+    expect(dec(io.m.get(copies[0])!)).toBe("my unsaved edit");      // …as a conflict copy of the CURRENT (racing) bytes
+    expect(dec(io.m.get("big.md")!)).toBe(remote);                  // remote applied to the path
+    expect(base.get("big.md")!.hash).toBe(files.get("big.md")!.hash); // base = remote hash (NOT re-read)
+    expect(conf).toContain("big.md");                              // onConflict fired for the original
+  });
+
+  it("makes NO spurious copy when there is no racing edit (every-pass seam re-read is false-positive-safe)", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "big.md", remote);
+    const io = fakeIo({ "big.md": "orig" }); // no injection → the file is unchanged at the seam
+    const base = new BaseStore(); base.set("big.md", { hash: await sha256hex(enc("orig")) });
+    await reconcileAll(deps(api, io, { base }));
+    expect([...io.m.keys()].filter((k) => k.includes("(conflict")).length).toBe(0);
+    expect(dec(io.m.get("big.md")!)).toBe(remote);
+    expect(base.get("big.md")!.hash).toBe(files.get("big.md")!.hash);
+  });
+
+  it("a >8 MiB CONFIG file edited mid-stream ABORTS (adjudicate) — never overwrites the local edit, no note-style copy", async () => {
+    const cfg = ".obsidian/big.json";
+    const { api } = fakeServer();
+    await serverPut(api, cfg, remote);
+    const io = injectingIo({ [cfg]: "orig-config" }, cfg, "my config edit");
+    const base = new BaseStore(); base.set(cfg, { hash: await sha256hex(enc("orig-config")) });
+    const confConflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, onConfigConflict: (p) => confConflicts.push(p) }));
+    expect(dec(io.m.get(cfg)!)).toBe("my config edit");            // local config edit NOT overwritten
+    expect([...io.m.keys()].filter((k) => k.includes("(conflict")).length).toBe(0); // config uses adjudication, not copies
+    expect(confConflicts).toContain(cfg);                          // adjudication fired
+    expect(base.get(cfg)!.hash).toBe(await sha256hex(enc("orig-config"))); // base unchanged (remote NOT adopted)
+  });
+
+  it("a close() failure AFTER the rename does NOT delete the sole surviving racing edit (critic fix)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "big.md", remote);
+    const io = injectingIo({ "big.md": "orig" }, "big.md", "my unsaved edit", /*closeThrowsAfterRename*/ true);
+    const base = new BaseStore(); base.set("big.md", { hash: await sha256hex(enc("orig")) });
+    const errs: string[] = [];
+    await reconcileAll(deps(api, io, { base, onFileError: (p) => errs.push(p) }));
+    // The pull FAILED post-rename, but the racing edit must SURVIVE — deleting the copy would lose the sole
+    // remaining copy of the user's edit (`path` is already the remote at that point). Fail-first without the fix.
+    const copies = [...io.m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);
+    expect(dec(io.m.get(copies[0])!)).toBe("my unsaved edit"); // the edit is preserved, not orphan-deleted
+    expect(errs).toContain("big.md");                          // the failure surfaced (isolated per-file)
+  });
+});
+
 describe("reconcile sub-phase reporting (connect legibility, L-5)", () => {
   it("fires onStage in order: fetching changes → scanning local files → reconciling N", async () => {
     const { api } = fakeServer();
