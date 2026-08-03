@@ -11,9 +11,9 @@ describe("ConfigDirectionModal", () => {
     const onChoose = vi.fn(); const onCancel = vi.fn();
     const m = new ConfigDirectionModal(makeApp(), ".obsidian", false, onChoose, onCancel);
     m.onOpen();
-    expect(buttonByText(m.contentEl, "Use the synced version")).toBeTruthy();
+    expect(buttonByText(m.contentEl, "Use the server's version")).toBeTruthy();
     expect(buttonByText(m.contentEl, "Use this device's")).toBeTruthy();
-    buttonByText(m.contentEl, "Use the synced version").click();
+    buttonByText(m.contentEl, "Use the server's version").click();
     expect(onChoose).toHaveBeenCalledWith("download");
     expect(onCancel).not.toHaveBeenCalled();
   });
@@ -30,7 +30,7 @@ describe("ConfigDirectionModal", () => {
     const onChoose = vi.fn();
     const m = new ConfigDirectionModal(makeApp(), ".obsidian", true, onChoose);
     m.onOpen();
-    expect(buttonByText(m.contentEl, "Use the synced version")).toBeTruthy();
+    expect(buttonByText(m.contentEl, "Use the server's version")).toBeTruthy();
     expect(buttonByText(m.contentEl, "Use this device's")).toBeFalsy();
     expect(m.contentEl.textContent).toContain("read-only shared vault");
   });

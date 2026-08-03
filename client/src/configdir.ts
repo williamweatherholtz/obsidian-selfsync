@@ -19,16 +19,17 @@ export class ConfigDirectionModal extends Modal {
   onOpen() {
     this.titleEl.setText("Set up settings sync");
     const c = this.contentEl; c.empty();
-    c.createEl("p", { text: `Turning on sync for ${this.label}. Where this device's settings differ from the synced copy, which should win to START? Only files that differ change — everything else is left alone, and after this, later edits on either side reconcile normally.` })
+    c.createEl("p", { text: `Turning on sync for ${this.label}. Where this device's settings differ from the copy on the server, which should win to START? Only files that differ change — everything else is left alone, and after this, later edits on either side reconcile normally.` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;");
 
-    new Setting(c).setName("Use the synced settings")
-      .setDesc("Adopt what's already synced, replacing this device's version where they differ (download).")
-      .addButton((b) => b.setButtonText("Use the synced version").onClick(() => this.pick("download")));
+    // "The server's" (not "synced"): both sides are synced, so name which one WINS.
+    new Setting(c).setName("Use the server's settings")
+      .setDesc("Adopt what's on the server, replacing this device's version where they differ (download).")
+      .addButton((b) => b.setButtonText("Use the server's version").onClick(() => this.pick("download")));
 
     if (!this.readOnly) {
       new Setting(c).setName("Use this device's settings")
-        .setDesc("Make this device's settings the shared ones, overwriting the synced copy where they differ (upload).")
+        .setDesc("Make this device's settings the shared ones, overwriting the server's copy where they differ (upload).")
         .addButton((b) => b.setButtonText("Use this device's").setWarning().onClick(() => this.pick("upload")));
     } else {
       c.createEl("p", { text: "This is a read-only shared vault, so it can only adopt the owner's settings (download)." })

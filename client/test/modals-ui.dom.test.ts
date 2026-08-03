@@ -37,7 +37,7 @@ describe("ChangePasswordModal", () => {
 });
 
 describe("ConfigConflictModal (adjudication)", () => {
-  it("'Use this device's' resolves the group as local; 'Use the synced version' as remote", async () => {
+  it("'Use this device's' resolves the group as local; 'Use the server's version' as remote", async () => {
     const plugin = fakePlugin({ settings: { configConflicts: [".obsidian/app.json"] } });
     const m = new ConfigConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush(); // render() is async (fetches conflict sides)
@@ -48,7 +48,7 @@ describe("ConfigConflictModal (adjudication)", () => {
     // Re-open fresh to test the other side (render re-runs after resolve).
     const m2 = new ConfigConflictModal(plugin.app, plugin as any);
     m2.onOpen(); await flush();
-    buttonByText(m2.contentEl, "Use the synced version").click();
+    buttonByText(m2.contentEl, "Use the server's version").click();
     await flush();
     expect(plugin.resolveConfigGroup).toHaveBeenCalledWith([".obsidian/app.json"], "remote");
   });

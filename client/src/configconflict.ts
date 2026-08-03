@@ -22,7 +22,7 @@ export class ConfigConflictModal extends Modal {
       return;
     }
     c.createEl("p", {
-      text: "These settings and plugins differ across your devices. Nothing was deleted or overwritten — for each, keep this device's version or take the synced (other device's) version.",
+      text: "These settings and plugins differ across your devices. Nothing was deleted or overwritten — for each, keep this device's version or take the server's (your other device's) version.",
     }).setAttribute("style", "font-size:13px;margin-bottom:12px;opacity:.85;");
 
     for (const g of groups) {
@@ -30,15 +30,15 @@ export class ConfigConflictModal extends Modal {
       let local = false, remote = false;
       for (const p of g.paths) { const s = await this.plugin.configConflictSides(p); local ||= s.local; remote ||= s.remote; }
       const desc = local && remote ? "Differs across your devices."
-        : local ? "On this device, not on the synced version."
-        : "On the synced version, not on this device.";
+        : local ? "On this device, not on the server's version."
+        : "On the server's version, not on this device.";
       new Setting(c)
         .setName(g.label)
         .setDesc(desc)
-        // Standardized vocabulary ("this device's" / "the synced version") + no CTA on this unbiased
+        // Standardized vocabulary ("this device's" / "the server's version") + no CTA on this unbiased
         // both-edited choice, matching the note-conflict modal.
         .addButton((b) => b.setButtonText("Use this device's").onClick(() => void this.resolve(g, "local")))
-        .addButton((b) => b.setButtonText("Use the synced version").onClick(() => void this.resolve(g, "remote")));
+        .addButton((b) => b.setButtonText("Use the server's version").onClick(() => void this.resolve(g, "remote")));
     }
   }
 

@@ -162,7 +162,7 @@ describe("settings tab renders and wires its controls", () => {
 
   it("Set up / Reconfigure opens the setup wizard; Show sync log opens the log", () => {
     const { containerEl } = renderTab(plugin);
-    const setup = buttonByText(containerEl, "Set up SelfSync") || buttonByText(containerEl, "Reconfigure");
+    const setup = buttonByText(containerEl, "Set up SelfSync") || buttonByText(containerEl, "Setup");
     expect(setup).toBeTruthy();
     setup.click();
     expect(plugin.openSetup).toHaveBeenCalled();

@@ -18,3 +18,15 @@
    Obsidian styles it). The whole heading row toggles. Used for the synced-plugin list and the
    default-collapsed Timestamp-changes section. */
 .selfsync-collapse-header { cursor: pointer; }
+
+/* Status hero: the live sync state is the first thing in the tab, so the dot + state label read as one
+   prominent line (the dot's colour is set inline, mirroring the ribbon). Kept a native Setting row —
+   only the label weight/size is nudged up so "Fully synced" / "Reconnecting…" reads at a glance. */
+.selfsync-status-hero .setting-item-name { display: flex; align-items: center; }
+.selfsync-status-label { font-weight: var(--font-semibold, 600); font-size: var(--font-ui-medium, 1em); }
+
+/* Action buttons carry a leading lucide glyph + label (native icons — theme-coloured, consistent on
+   every device; a warn/exit action like Sign out inherits the red tint). Flex-align the icon to the text. */
+.selfsync-icon-btn { display: inline-flex; align-items: center; }
+.selfsync-btn-icon { display: inline-flex; align-items: center; margin-right: 5px; }
+.selfsync-btn-icon svg { width: var(--icon-s, 15px); height: var(--icon-s, 15px); }
