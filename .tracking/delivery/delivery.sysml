@@ -824,6 +824,14 @@ package ProjectDelivery {
         // REVIEW — the per-sitting human gate (D0049) for the 1.12.5 batch (label/progress + button declutter).
         // HONESTLY PENDING the owner's on-device review of 1.12.5.
         verification sittingReview20260802g : Test { :>> id = "bf8b157a-e049-4144-3bf0-968b712ef1e1"; :>> method = VerificationMethod::confirmation; :>> procedureText = "Per-sitting human review (D0049) for the 1.12.5 batch. Covers reconcileExamProgress (the owner reported 'says reconciling but not doing anything' / 'stuck on label' -> honest 'checking N' label + live progress; a UX + diagnostic fix) and removePluginServerButton (the owner directed removing the per-plugin 'Remove from server' button as clutter). HONESTLY PENDING: the owner has NOT reviewed the shipped 1.12.5 on-device; R1 stamped only on that explicit review — AND the reconcile-stall root cause (slow re-hash vs hard hang) is only DIAGNOSED by this change, not yet confirmed fixed (awaits the owner's next connect log)."; }
+        // Owner sign-off 2026-08-03 ('reviewed and looks good') — explicit acceptance of the shipped content
+        // of reviews c–g (1.12.0–1.12.6), after living with it on-device (incl. the connect logs that
+        // CONFIRMED the reconcile stall was a one-time re-hash that completes, resolving g's open caveat).
+        part sittingReview20260802cR1 : TestResult { :>> id = "e2b91741-9357-4a05-b6ca-0d4f3c2b7052"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "62b8a03"; :>> judgedAt = "2026-08-03"; :>> judgedBy = "wweatherholtz"; }
+        part sittingReview20260802dR1 : TestResult { :>> id = "f3ca2852-a468-4b16-c7db-1e503d3c8163"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "62b8a03"; :>> judgedAt = "2026-08-03"; :>> judgedBy = "wweatherholtz"; }
+        part sittingReview20260802eR1 : TestResult { :>> id = "04db3963-b579-4c27-d8ec-2f614e4d9274"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "62b8a03"; :>> judgedAt = "2026-08-03"; :>> judgedBy = "wweatherholtz"; }
+        part sittingReview20260802fR1 : TestResult { :>> id = "15ec4a74-c68a-4d38-e9fd-30725f5ea385"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "62b8a03"; :>> judgedAt = "2026-08-03"; :>> judgedBy = "wweatherholtz"; }
+        part sittingReview20260802gR1 : TestResult { :>> id = "260d5b85-d79b-4e49-fa0e-41836a6fb496"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "62b8a03"; :>> judgedAt = "2026-08-03"; :>> judgedBy = "wweatherholtz"; }
         // ===== Sprint wsSupersededGuard (2026-08-02) — 1.12.6: the WS-push STPA-UCA hunt's one real bug — the
         // open/error handlers lacked the superseded-socket identity guard that close has. =====
         action wsSupersededGuard;
