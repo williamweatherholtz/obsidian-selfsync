@@ -234,6 +234,55 @@ package ProjectBusiness {
         :>> priority = Priority::must;
     }
 
+    // ---- Backfill (2026-08-03, owner-directed): Needs for capabilities that shipped organically with
+    // no upstream "what/why" — accounts/auth, operator administration, one-link onboarding, honest
+    // status (STPA L-5), vault health, and auditability. Rooting them makes requirement-rootedness +
+    // tier-satisfaction guard them going forward (the same lesson as the nConfigSync orphan, D0011). ----
+    requirement nAccountSecurity : Need {
+        :>> id = "c0f1a5cc-e201-4a10-9b20-a1b2c3d40201";
+        :>> title = "My account is protected by strong authentication I control";
+        :>> source = NeedSource::safety;
+        :>> statement = "A user's account is protected by a strong password and an optional second factor they enrol themselves (with recovery codes); they can change their password and end other sessions at will; repeated wrong guesses are throttled; and neither the plaintext password nor a standing secret is ever exposed. Signing in never reveals which accounts exist.";
+        :>> priority = Priority::must;
+    }
+    requirement nAccountAdministration : Need {
+        :>> id = "c0f1a5cc-e202-4a10-9b20-a1b2c3d40202";
+        :>> title = "The operator controls who can have an account";
+        :>> source = NeedSource::operator;
+        :>> statement = "The operator decides who may register — closed by default, fully open, or by single-use invite — and can create, delete, promote, and reset accounts through an admin interface, without editing files or operating a database.";
+        :>> priority = Priority::should;
+    }
+    requirement nOnboardNewUser : Need {
+        :>> id = "c0f1a5cc-e203-4a10-9b20-a1b2c3d40203";
+        :>> title = "Someone new can join with a single link";
+        :>> source = NeedSource::customer;
+        :>> statement = "A person with no account yet can be brought on board with one link: a vault share link lets them create an account (or sign in) and start syncing the shared vault, and an account-creation link lets them make an account even when open registration is closed — without the operator hand-provisioning them first.";
+        :>> marketJustification = "One-link onboarding removes the account-provisioning friction that otherwise makes self-hosted sharing hard to adopt.";
+        :>> priority = Priority::should;
+    }
+    requirement nHonestStatus : Need {
+        :>> id = "c0f1a5cc-e204-4a10-9b20-a1b2c3d40204";
+        :>> title = "The UI never misleads me about my data's sync state";
+        :>> source = NeedSource::safety;
+        :>> statement = "Every sync indicator is a truthful projection of the actual sync engine: it never shows 'synced' or 'OK' when the connection is down or sync is not converging, it never gets stuck on a stale state, and when something is wrong it names the actionable cause. The user can always trust what the UI tells them about whether their notes are safely synced.";
+        :>> marketJustification = "Ambiguous, stuck, or falsely-green sync state erodes trust and is a top LiveSync confusion; an always-honest status is both a differentiator and a safety property (STPA L-5).";
+        :>> priority = Priority::must;
+    }
+    requirement nVaultHealth : Need {
+        :>> id = "c0f1a5cc-e205-4a10-9b20-a1b2c3d40205";
+        :>> title = "I can keep vaults healthy and storage bounded";
+        :>> source = NeedSource::operator;
+        :>> statement = "A vault whose index is degraded self-heals on access; when it cannot, a one-click repair rebuilds it from what is on disk; and storage stays bounded — unreferenced data is swept and the operator can deliberately reclaim deletion history — all without a database to babysit.";
+        :>> priority = Priority::should;
+    }
+    requirement nAuditability : Need {
+        :>> id = "c0f1a5cc-e206-4a10-9b20-a1b2c3d40206";
+        :>> title = "Security-relevant actions are recorded for accountability";
+        :>> source = NeedSource::regulatory;
+        :>> statement = "Every security-relevant action — sign-in success and failure, lockout, account/registration/invite/share/vault/admin changes, and authorization denials — is recorded as structured, reviewable audit data carrying who/what/when/outcome/source, so an operator can hold the deployment to a compliance posture.";
+        :>> priority = Priority::should;
+    }
+
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
     #DependsOn dependency from nReliableSync to goal2SimpleBackend;
@@ -253,4 +302,18 @@ package ProjectBusiness {
     #DependsOn dependency from n3Unpaywalled to goal3ConflictMerge;
     #DependsOn dependency from nTimestampFidelity to goal3ConflictMerge;
     #DependsOn dependency from nNoMetadataConflicts to goal3ConflictMerge;
+
+    // ---- backfill lineage (2026-08-03) ----
+    // Account auth + auditability decompose the security Need; administration + onboarding are
+    // post-launch capabilities off the Brief (like nVaultSharing); honest status decomposes the
+    // clear-config goal; vault health decomposes the simple-backend goal.
+    #DependsOn dependency from nAccountSecurity to nxSecurity;
+    #DependsOn dependency from nAuditability to nxSecurity;
+    #DependsOn dependency from nAccountAdministration to selfsyncBrief;
+    #DependsOn dependency from nOnboardNewUser to selfsyncBrief;
+    #DependsOn dependency from nHonestStatus to goal1ClearConfig;
+    #DependsOn dependency from nVaultHealth to goal2SimpleBackend;
+    // Also root the two pre-existing cross-cutting Needs that had no Brief lineage edge.
+    #DependsOn dependency from nxMobile to selfsyncBrief;
+    #DependsOn dependency from nxSecurity to selfsyncBrief;
 }
