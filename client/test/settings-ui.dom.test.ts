@@ -68,6 +68,42 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.saveSettings).toHaveBeenCalled();
   });
 
+  it("timestamp-ignore: date fields are a validated add/remove LIST (not a free-text blob)", async () => {
+    const p = fakePlugin({
+      settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["created", "updated"], excludedFolders: [] },
+    });
+    let { containerEl } = renderTab(p);
+    expect(rowByName(containerEl, "created")).toBeTruthy();   // each key is its own row…
+    expect(rowByName(containerEl, "updated")).toBeTruthy();
+    rowByName(containerEl, "created").querySelector("button").click(); // …with a Remove button
+    await flush();
+    expect(p.settings.ignoredTimestampKeys).toEqual(["updated"]);
+    expect(p.saveSettings).toHaveBeenCalled();
+    // Re-render after the mutation; add a VALID new field via the input + Add field button.
+    containerEl = renderTab(p).containerEl;
+    typeInto(inputByPlaceholder(containerEl, "e.g. updated or updated-*"), "reviewed-*");
+    buttonByText(containerEl, "Add field").click();
+    await flush();
+    expect(p.settings.ignoredTimestampKeys).toEqual(["updated", "reviewed-*"]);
+  });
+
+  it("timestamp-ignore: an INVALID or DUPLICATE date field is REJECTED, not added (error prevention)", async () => {
+    const p = fakePlugin({
+      settings: { ignoreTimestampChanges: true, ignoredTimestampKeys: ["updated"], excludedFolders: [] },
+    });
+    const { containerEl } = renderTab(p);
+    // A key with a colon would break the YAML key → rejected, list unchanged (no re-render).
+    typeInto(inputByPlaceholder(containerEl, "e.g. updated or updated-*"), "created: 2020");
+    buttonByText(containerEl, "Add field").click();
+    await flush();
+    expect(p.settings.ignoredTimestampKeys).toEqual(["updated"]);
+    // A case-insensitive duplicate → rejected too.
+    typeInto(inputByPlaceholder(containerEl, "e.g. updated or updated-*"), "Updated");
+    buttonByText(containerEl, "Add field").click();
+    await flush();
+    expect(p.settings.ignoredTimestampKeys).toEqual(["updated"]);
+  });
+
   it("P2: toggling a category (Core settings) also applies immediately", () => {
     const { containerEl } = renderTab(plugin);
     flipToggle(toggleByName(containerEl, "Core settings"));

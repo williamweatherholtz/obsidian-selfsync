@@ -11,13 +11,22 @@ class FolderSuggest extends AbstractInputSuggest<string> {
   selectSuggestion(value: string): void { this.setValue(value); this.close(); }
 }
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
-import { DEFAULT_IGNORED_TIMESTAMP_KEYS } from "./frontmatter";
+import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
 import { ChangePasswordModal, ShareManageModal } from "./accountui";
+
+// Case-insensitive set equality for the ignored-date-field list (so "Restore defaults" only shows when the
+// list has genuinely drifted from the defaults, regardless of order/case).
+function sameKeySet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (xs: readonly string[]) => new Set(xs.map((x) => x.toLowerCase()));
+  const bs = norm(b);
+  return [...norm(a)].every((x) => bs.has(x));
+}
 
 export interface NewLiveSyncSettings {
   serverUrl: string;
@@ -373,27 +382,46 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderIgnoreTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
     const g = new SettingGroup(c).setHeading("Timestamp changes");
     g.addSetting((st) => st.setName("Ignore timestamp-only changes")
-      .setDesc("When a note differs only in a date field (created/updated/etc.), don't treat it as a change or a conflict. SelfSync never edits these fields — if another plugin rewrites them on every edit, SelfSync ignores that churn rather than fighting it. (Line-ending and BOM differences are always ignored, regardless of this setting.)")
+      .setDesc("Don't treat a note that differs only in a date field (created, updated, …) as a change or conflict. SelfSync never edits these fields.")
       .addToggle((tg) => tg.setValue(s.ignoreTimestampChanges).onChange(async (v) => {
         s.ignoreTimestampChanges = v; // identity-only: safe to toggle freely, never touches a note's content
         await this.plugin.saveSettings();
         this.display();
       })));
     if (!s.ignoreTimestampChanges) return;
+    // Ignored date fields — a validated ADD-a-row list (not a free-text blob), so a malformed / duplicate /
+    // unmatchable key can't slip in (poka-yoke; mirrors the excluded-folders + plugin-checklist rows).
     g.addSetting((st) => st.setName("Ignored date fields")
-      .setDesc("Frontmatter keys treated as dates — one per line. A trailing * is a wildcard (e.g. updated-* matches per-device keys like updated-laptop). Only values that actually look like a date are ignored, so a non-date value under the same key still syncs.")
-      .addTextArea((t) => {
-        t.setValue(s.ignoredTimestampKeys.join("\n"));
-        (t.inputEl as HTMLTextAreaElement).rows = 5;
-        // Commit on blur so a mid-edit keystroke doesn't churn settings; empty → restore the defaults.
-        t.inputEl.addEventListener("blur", async () => {
-          const keys = t.getValue().split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
-          s.ignoredTimestampKeys = [...new Set(keys.length ? keys : DEFAULT_IGNORED_TIMESTAMP_KEYS)];
-          await this.plugin.saveSettings();
-        });
+      .setDesc("Frontmatter keys treated as dates. Trailing * is a wildcard — updated-* matches updated-laptop, updated-phone."));
+    for (const key of s.ignoredTimestampKeys) {
+      g.addSetting((st) => st.setName(key)
+        .addButton((b) => b.setButtonText("Remove").onClick(async () => {
+          s.ignoredTimestampKeys = s.ignoredTimestampKeys.filter((k) => k !== key);
+          await this.plugin.saveSettings(); this.display();
+        })));
+    }
+    g.addSetting((st) => {
+      let input: { getValue(): string; setValue(v: string): unknown } | undefined;
+      st.setName("Add a date field");
+      st.addText((t) => { input = t; t.setPlaceholder("e.g. updated or updated-*"); });
+      st.addButton((b) => b.setButtonText("Add field").onClick(async () => {
+        const res = validateTimestampKey(input?.getValue() ?? "", s.ignoredTimestampKeys);
+        if ("error" in res) { new Notice(`SelfSync: ${res.error}`); return; } // prevent the bad entry, tell the user why
+        s.ignoredTimestampKeys = [...s.ignoredTimestampKeys, res.key];
+        await this.plugin.saveSettings(); this.display();
       }));
+    });
+    // Safety: never let the list get stranded (an emptied list ignores nothing). Offered only when it has
+    // drifted from the defaults, so the common case shows no extra row.
+    if (!sameKeySet(s.ignoredTimestampKeys, DEFAULT_IGNORED_TIMESTAMP_KEYS)) {
+      g.addSetting((st) => st.setName("Restore default date fields")
+        .addButton((b) => b.setButtonText("Restore defaults").onClick(async () => {
+          s.ignoredTimestampKeys = [...DEFAULT_IGNORED_TIMESTAMP_KEYS];
+          await this.plugin.saveSettings(); this.display();
+        })));
+    }
     g.addSetting((st) => st.setName("Excluded folders")
-      .setDesc("Folders where a timestamp-only difference is NOT ignored (they sync raw). Their notes still sync normally."));
+      .setDesc("Folders where date-only changes still count (sync raw)."));
     for (const folder of s.excludedFolders) {
       g.addSetting((st) => st.setName(folder)
         .addButton((b) => b.setButtonText("Remove").onClick(async () => {

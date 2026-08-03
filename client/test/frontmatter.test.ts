@@ -3,7 +3,7 @@ import {
   hasFrontmatter, getManagedValue,
   normalizedContent, normalizedHash,
   isCanonicalTimestamp, isTimestampValue,
-  DEFAULT_IGNORED_TIMESTAMP_KEYS,
+  DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey,
 } from "../src/frontmatter";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -127,5 +127,30 @@ describe("value-shape helpers", () => {
     expect(isTimestampValue("5")).toBe(false);                           // a counter
     expect(isTimestampValue("42")).toBe(false);
     expect(isTimestampValue("3.14")).toBe(false);
+  });
+});
+
+describe("validateTimestampKey — settings array-input poka-yoke", () => {
+  const ok = (r: { key: string } | { error: string }) => ("key" in r ? r.key : `ERR:${r.error}`);
+  it("accepts plain keys, wildcard keys, and spaced keys (all the default shapes)", () => {
+    for (const k of DEFAULT_IGNORED_TIMESTAMP_KEYS) expect(ok(validateTimestampKey(k, []))).toBe(k);
+    expect(ok(validateTimestampKey("reviewed-*", []))).toBe("reviewed-*");
+    expect(ok(validateTimestampKey("date accessed", []))).toBe("date accessed");
+  });
+  it("trims surrounding whitespace", () => {
+    expect(ok(validateTimestampKey("  updated  ", []))).toBe("updated");
+  });
+  it("rejects an empty entry", () => {
+    expect(validateTimestampKey("   ", [])).toEqual({ error: expect.stringContaining("enter") });
+  });
+  it("rejects a key with a colon (would break the YAML key)", () => {
+    expect("error" in validateTimestampKey("created: 2020", [])).toBe(true);
+  });
+  it("rejects unmatchable junk (brackets / mid-string wildcard)", () => {
+    expect("error" in validateTimestampKey("up*dated", [])).toBe(true);   // wildcard only allowed as a trailing char
+    expect("error" in validateTimestampKey("[weird]", [])).toBe(true);
+  });
+  it("rejects a case-insensitive duplicate (matching is case-insensitive)", () => {
+    expect(validateTimestampKey("Updated", ["updated"])).toEqual({ error: expect.stringContaining("already") });
   });
 });
