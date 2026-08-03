@@ -2,6 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
+import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
@@ -33,6 +34,8 @@ import { androidModelFromUA, platformDisplayName, usableModel } from "./devicena
 // burns battery on a large mobile vault; config changes are infrequent so ~2-min latency is fine,
 // and desktop gets instant config sync via the raw watcher regardless. (R11-#3; a config-ONLY scan
 // that skips re-hashing notes is the deeper fix, planned for the config-sync round.)
+const CONFIG_ENUM_CONCURRENCY = 12; // max concurrent adapter.list/stat calls in the .obsidian walk (issueConfigWalkSlow)
+const CONFIG_WALK_SLOW_MS = 1000;   // log the config-walk shape (folders/files/seconds) only when it's this slow
 const CONFIG_SCAN_INTERVAL_MS = 30_000; // config-only re-hash cadence — the BACKSTOP for a config change
 // that fires no UI event. Cheap because reconcileLocalConfig skips unchanged files by (size, mtime).
 // The primary detector is event-driven: the `raw` FS event (desktop) + css-change/layout-change proxies
@@ -148,31 +151,29 @@ class ObsidianVaultIo implements VaultIo {
       if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size, ctime: f.stat.ctime });
     }
     if (this.plugin.settings.configSync.enabled) {
-      await this.enumerateConfig(".obsidian", m);
-      const cfg = [...m.keys()].filter((k) => k.startsWith(".obsidian/")).length;
-      // Log the scope only when it CHANGES — list() runs on every reconcile (incl. the periodic
-      // config scan), so logging every time would spam. A changed count is the useful signal.
+      // Enumerate the hidden .obsidian/ tree via a BOUNDED-PARALLEL walk (issueConfigWalkSlow): the old
+      // recursion awaited every adapter.list/stat one at a time, so a plugin-heavy tree cost seconds on a
+      // latency-bound (mobile) adapter — this runs the calls concurrently under a global cap. A dir that
+      // can't be listed is skipped (NOT treated as empty — reconcile's per-file probe guards a false delete),
+      // and logged so a cloud-drive placeholder / lock hiccup is diagnosable.
+      const t0 = Date.now();
+      const { entries, stats } = await walkConfigTree(
+        ".obsidian",
+        this.plugin.app.vault.adapter as unknown as WalkAdapter,
+        (p) => this.passes(p),
+        CONFIG_ENUM_CONCURRENCY,
+        (dir, e: any) => this.plugin.log(`config enumeration couldn't list '${dir}' (${e?.message ?? e}) — files under it are left as-is, NOT treated as deleted`),
+      );
+      for (const [p, st] of entries) m.set(p, st);
+      const ms = Date.now() - t0;
+      const cfg = entries.size;
+      // Log the scope only when it CHANGES — list() runs on every reconcile, so logging every time spams.
       if (cfg !== this.lastCfgCount) { this.plugin.log(`config sync on — syncing ${cfg} Obsidian settings file(s)`); this.lastCfgCount = cfg; }
+      // Diagnostic: surface a SLOW config walk with its shape (folders/files/seconds) so a multi-second
+      // scan is visible + attributable, and the parallelization's effect is measurable. Only when slow.
+      if (ms >= CONFIG_WALK_SLOW_MS) this.plugin.log(`config scan: ${stats.dirs} folder(s) + ${stats.files} file(s) in ${(ms / 1000).toFixed(1)}s`);
     }
     return m;
-  }
-
-  // Recursively enumerate the hidden .obsidian/ config surface via the low-level
-  // adapter (getFiles() can't see it), keeping only paths that pass the filter.
-  private async enumerateConfig(dir: string, m: Map<string, { mtime: number; size: number; ctime?: number }>): Promise<void> {
-    const adapter = this.plugin.app.vault.adapter;
-    let listing: { files: string[]; folders: string[] };
-    // A directory we can't enumerate must NOT be silently treated as empty: that fabricates absence for
-    // every file under it. Reconcile's delete-remote now independently re-confirms absence per file
-    // (confirmedAbsent), so this can no longer cause a false mass-deletion — but LOG the miss so a
-    // cloud-drive placeholder (OneDrive Files-On-Demand) / lock hiccup is diagnosable rather than silent.
-    try { listing = await adapter.list(dir); }
-    catch (e: any) { this.plugin.log(`config enumeration couldn't list '${dir}' (${e?.message ?? e}) — files under it are left as-is, NOT treated as deleted`); return; }
-    for (const file of listing.files) {
-      if (!this.passes(file)) continue;
-      try { const st = await adapter.stat(file); m.set(file, { mtime: st?.mtime ?? 0, size: st?.size ?? 0, ctime: st?.ctime }); } catch { /* skip unreadable */ }
-    }
-    for (const folder of listing.folders) await this.enumerateConfig(folder, m);
   }
 
   async read(path: string): Promise<Uint8Array> {
