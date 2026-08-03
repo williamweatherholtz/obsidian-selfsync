@@ -409,7 +409,7 @@ package ProjectStpaAnalysis {
         :>> statement = "Re-read live local content immediately before a pull/merge and preserve any divergent edit as a conflict copy.";
         :>> triggeringEvent = "a local save races an in-flight download";
         :>> safeState = "both the local edit and the remote version retained";
-        :>> safetyFunction = "REALIZED: conflictCopyIfRaced + liveLocal re-read (DI-3/DI-R2#5/DI-R3#1). Residual (accepted): a sub-window TOCTOU on very large streamed pulls."; }
+        :>> safetyFunction = "REALIZED on BOTH pull paths: the BUFFERED path (small files) re-reads live local + conflict-copies AFTER the fetch (DI-3/DI-R2#5/DI-R3#1); and (streamedPullRacingEditGuard 1.12.1) the STREAMED large-file path now re-reads in the temp-write→rename SEAM — after the incremental hash-verify, before the atomic rename — reusing conflictCopyIfRaced on the ORIGINAL on-disk file, closing the PREVIOUSLY-ACCEPTED sub-window TOCTOU on very large (>=8 MiB) streamed pulls (issueStreamedPullMidEditLoss; found by the chunking STPA-hunt, owner directed the fix). Shared residual (both paths, pre-existing): an UNREADABLE racing edit (AV lock / unhydrated cloud placeholder) collapses to none via readOrNull, so remote overwrites it."; }
     part sr3 : SafetyRequirement { :>> id = "c0f1a5cc-d303-4a10-9b20-a1b2c3d4d303"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> title = "SR-3: verify downloaded content before adopting";
         :>> statement = "Do not write or adopt downloaded bytes as base unless they match the claimed content hash.";
