@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 // "obsidian" is aliased to test/obsidian-stub.ts (see vitest.config.ts).
 import NewLiveSyncPlugin, { ApiClient } from "../src/main";
 import { VaultIo, SyncApi } from "../src/sync";
@@ -128,9 +128,33 @@ async function bootPlugin(configured = true, opts: { preOnload?: (p: TestPlugin)
   return { p, fire, api: p.api_ };
 }
 
+// Track EVERY window timer a test schedules so afterEach can force-clear any the plugin's onunload
+// missed — a leaked reconnect-backoff setTimeout or poll setInterval would otherwise fire during a
+// LATER test (real Node timers persist across tests) and mutate its state. That cross-test leak is the
+// root cause of the intermittent "D0047 guard is SERVER-qualified" flake: a stray reconnect re-stamped
+// baseVaultKey mid-assertion. (issuePluginWiringTimerLeak, D0047 — a correction becomes a guard.)
+let liveTimers = new Set<any>();
 beforeEach(() => {
-  // main.ts uses window.setTimeout/setInterval; provide them in the node test env.
-  (globalThis as any).window = { setTimeout: setTimeout.bind(globalThis), clearTimeout: clearTimeout.bind(globalThis), setInterval: setInterval.bind(globalThis), clearInterval: clearInterval.bind(globalThis) };
+  liveTimers = new Set();
+  // main.ts uses window.setTimeout/setInterval; provide them in the node test env, tracking live ids.
+  const track = (fn: (...a: any[]) => any, oneShot: boolean) => (cb: (...a: any[]) => void, ms?: number, ...rest: any[]) => {
+    const id = fn((...a: any[]) => { if (oneShot) liveTimers.delete(id); cb(...a); }, ms, ...rest);
+    liveTimers.add(id);
+    return id;
+  };
+  (globalThis as any).window = {
+    setTimeout: track(setTimeout.bind(globalThis), true),
+    clearTimeout: (id: any) => { liveTimers.delete(id); clearTimeout(id); },
+    setInterval: track(setInterval.bind(globalThis), false),
+    clearInterval: (id: any) => { liveTimers.delete(id); clearInterval(id); },
+  };
+});
+afterEach(() => {
+  // Force-clear anything a test left scheduled (Node's clearTimeout/clearInterval both accept a Timeout
+  // handle, so clearing both ways is safe) — guarantees timer isolation between tests regardless of
+  // whether every code path's onunload cleared its own timers.
+  for (const id of liveTimers) { clearTimeout(id); clearInterval(id); }
+  liveTimers.clear();
 });
 
 describe("plugin wiring — producers → engine → effects", () => {

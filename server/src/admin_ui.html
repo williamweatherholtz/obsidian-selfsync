@@ -496,9 +496,25 @@ async function renderInvites() {
       <button id="addi">Create invite</button>
     </div><div id="newtok"></div>`;
   $("addi").onclick = async () => {
-    try { const r = await api("POST", "/api/admin/invites", { label: $("il").value.trim() });
-      $("newtok").innerHTML = `<div class="token">${esc(r.token)}</div><div class="muted" style="font-size:12px;margin-top:4px">Copy this now — it's shown once. Share it with the person; they enter it when registering.</div>`;
-      await renderInvites();
+    try {
+      const r = await api("POST", "/api/admin/invites", { label: $("il").value.trim() });
+      const invite = r.token;
+      // D0037: surface the invite as a copyable ACCOUNT-CREATION LINK (selfsync-invite://) the recipient
+      // pastes into SelfSync setup — plus the raw token for manual entry. Editable server address (like
+      // share links) so it's correct in split/proxied deploys. We do NOT re-render the panel here (that
+      // would wipe the shown link); the new invite appears in the list on the next refresh.
+      $("newtok").innerHTML = `
+        <div class="muted" style="font-size:12px;margin-top:8px">Account-creation link — the recipient pastes it into SelfSync setup to create an account (works even when registration is closed). Edit the server address if your public URL differs from this admin page:</div>
+        <div class="row" style="margin-top:4px"><input id="invserver" value="${esc(location.origin)}" style="flex:1;min-width:220px" /></div>
+        <div class="token" id="invlink"></div>
+        <div class="row" style="margin-top:6px"><button id="invcopy" class="ghost">Copy link</button>
+          <span class="muted" style="font-size:12px">…or share the raw token below for manual entry. Shown once — single-use.</span></div>
+        <div class="token" style="border-style:solid">${esc(invite)}</div>`;
+      const build = () => `selfsync-invite://register?server=${encodeURIComponent($("invserver").value.trim())}&token=${encodeURIComponent(invite)}`;
+      const paint = () => { $("invlink").textContent = build(); };
+      $("invserver").oninput = paint; paint();
+      $("invcopy").onclick = async () => { try { await navigator.clipboard.writeText(build()); setMsg("Account-creation link copied.", "ok"); } catch { setMsg("Select the link above and copy it.", ""); } };
+      setMsg("Invite created — copy the link or token below.", "ok");
     } catch (e) { setMsg("Create failed: " + e.message, "err"); }
   };
   box.querySelectorAll("[data-inv]").forEach(b => b.onclick = async () => {

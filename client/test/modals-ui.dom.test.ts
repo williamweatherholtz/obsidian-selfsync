@@ -183,6 +183,28 @@ describe("SetupWizardModal", () => {
     expect(changePw).toHaveBeenCalledWith("https://s.example", "temp-tok", "Temp1234", "BrandNew12");
     expect(listVaults).toHaveBeenCalledWith("https://s.example", "fresh-tok"); // proceeds with the fresh token
   });
+
+  it("D0037: pasting an account-creation (invite) link prefills the server + registers WITH the invite token", async () => {
+    const register = vi.spyOn(HttpTransport, "register").mockResolvedValue(undefined);
+    const login = vi.spyOn(HttpTransport, "login").mockResolvedValue({ token: "tok", mustChange: false });
+    vi.spyOn(HttpTransport, "listVaults").mockResolvedValue(["notes"]);
+    const plugin = fakePlugin();
+    const m = new SetupWizardModal(plugin.app, plugin as any);
+    m.onOpen();
+    buttonByText(m.contentEl, "Paste a link")!.click();
+    typeInto(textByName(m.contentEl, "Link"), "selfsync-invite://register?server=https://s.example&token=inv-xyz");
+    buttonByText(m.contentEl, "Use link")!.click();
+    await flush();
+    // Back on the main pane: server prefilled, register mode preselected (the "Create & log in" button).
+    expect((textByName(m.contentEl, "Server URL") as HTMLInputElement).value).toBe("https://s.example");
+    typeInto(textByName(m.contentEl, "Username"), "newbie");
+    typeInto(textByName(m.contentEl, "Password"), "Newbie123");
+    buttonByText(m.contentEl, "Create & log in")!.click();
+    await flush();
+    // The invite token is threaded into register, so it works on a closed server.
+    expect(register).toHaveBeenCalledWith("https://s.example", "newbie", "Newbie123", "inv-xyz");
+    expect(login).toHaveBeenCalled();
+  });
 });
 
 afterEach(() => vi.restoreAllMocks());

@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import { HttpTransport, type SharePerm } from "./transport";
 import { parseSetupLink } from "./connstr";
 import { isShareLink, parseShareLink } from "./sharelink";
+import { isInviteLink, parseInviteLink } from "./invitelink";
 import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
 import type NewLiveSyncPlugin from "./main";
 
@@ -53,8 +54,8 @@ export class SetupWizardModal extends Modal {
       c.createEl("p", { text: `Someone shared a vault with you on ${this.s.server}. Sign in to your account on that server to get access — you don't need to be set up first.` })
         .setAttribute("style", "font-size:13px;margin-bottom:10px;");
     } else {
-      new Setting(c).setName("Have a setup link?").setDesc("Prefill the server and account from a link created on another device.")
-        .addButton((b) => b.setButtonText("Paste setup link").onClick(() => this.promptSetupLink()));
+      new Setting(c).setName("Have a link?").setDesc("Prefill from a setup, account-creation, or vault share link.")
+        .addButton((b) => b.setButtonText("Paste a link").onClick(() => this.promptSetupLink()));
     }
 
     // ── Server ──
@@ -79,6 +80,12 @@ export class SetupWizardModal extends Modal {
           this.s.loggedIn = false; this.s.vaults = []; this.s.password = ""; this.render();
         }));
     } else {
+      // D0037: opened from an account-creation link — tell the user their account will be created here
+      // (register mode is preselected) and that it works on a closed server.
+      if (this.s.invite) {
+        c.createEl("p", { text: "You're using an account-creation link — create your account below. It works even if sign-ups are otherwise closed." })
+          .setAttribute("style", "font-size:13px;color:var(--color-green);margin:2px 0 8px;");
+      }
       new Setting(c).setName("Mode")
         .addDropdown((dd) => dd.addOption("login", "Log in").addOption("register", "Create account")
           .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
@@ -124,10 +131,10 @@ export class SetupWizardModal extends Modal {
 
   private promptSetupLink() {
     const c = this.contentEl; c.empty();
-    this.titleEl.setText("Paste setup link");
+    this.titleEl.setText("Paste a link");
     let text = "";
-    new Setting(c).setName("Setup link").setDesc("selfsync://… from another device")
-      .addText((t) => t.setPlaceholder("selfsync://connect?…").onChange((v) => { text = v; }));
+    new Setting(c).setName("Link").setDesc("A setup link (selfsync://), an account-creation link (selfsync-invite://), or a vault share link (selfsync-share://).")
+      .addText((t) => t.setPlaceholder("selfsync…://…").onChange((v) => { text = v; }));
     new Setting(c)
       .addButton((b) => b.setButtonText("Back").onClick(() => this.render()))
       .addButton((b) => b.setButtonText("Use link").setCta().onClick(() => {
@@ -139,6 +146,18 @@ export class SetupWizardModal extends Modal {
           try {
             this.pendingShareLink = text;
             this.s.server = parseShareLink(text).server;
+            this.s.serverOk = false; this.serverMsg = "";
+            this.render();
+          } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
+          return;
+        }
+        // D0037: an account-creation (invite) link — prefill the server + the invite token and put the
+        // wizard in "create account" mode, so registering works even on a CLOSED server. Unlike a share
+        // link this attaches no vault: the user just makes their account, then picks/creates a vault.
+        if (isInviteLink(text)) {
+          try {
+            const link = parseInviteLink(text);
+            this.s.server = link.server; this.s.invite = link.token; this.s.mode = "register";
             this.s.serverOk = false; this.serverMsg = "";
             this.render();
           } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
@@ -184,7 +203,9 @@ export class SetupWizardModal extends Modal {
         await this.adoptRedeemed({ owner: r.owner, vault: r.vault, perm: r.perm });
         return;
       }
-      if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password);
+      // D0037: pass the invite token (from an account-creation link) so register succeeds on a CLOSED
+      // server. Empty when there's no invite — ordinary open-registration behavior is unchanged.
+      if (this.s.mode === "register") await HttpTransport.register(this.s.server, this.s.username, this.s.password, this.s.invite ?? "");
       const { token, mustChange } = await HttpTransport.login(this.s.server, this.s.username, this.s.password);
       this.token = token;
       // IA.3.5.9: an admin-created/reset account must set a new password before ANY other call (every

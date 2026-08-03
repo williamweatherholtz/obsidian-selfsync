@@ -26,6 +26,8 @@ export interface WizardState {
   vaults: string[];           // fetched after login
   chosenVault: string;        // an existing vault
   newVault: string;           // a to-be-created vault name
+  invite?: string;            // D0037: an account-creation invite token (from an invite link), consumed
+                              // by register on a CLOSED server. Empty/undefined ⇒ ordinary registration.
 }
 
 // The single-pane wizard has no step machine — it enables two actions as their inputs fill in:
