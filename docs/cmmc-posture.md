@@ -47,7 +47,7 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 | 3.1.8 limit unsuccessful logon attempts | MET | per-account throttle (10/5min → 429), argon2 permit pool; per-IP flood = OPERATOR (proxy) |
 | **3.1.9 system-use / consent banner** | **MET** | `SYNC_LOGIN_BANNER` shown pre-auth in the admin page + setup wizard (via `/health`) |
 | 3.1.10 session lock (screen lock) | OPERATOR | endpoint OS / Obsidian, not a sync server |
-| **3.1.11 terminate session after inactivity** | **PARTIAL** | token idle-expiry (30 min) terminates on app-close/network-loss + a 30-day absolute cap; a connected-but-idle app slides `last_used` via keepalives, so this is liveness-based, not user-inactivity (screen-lock is the OS, 3.1.10) |
+| **3.1.11 terminate session after inactivity** | **OPERATOR (opt-in)** | token idle-expiry EXISTS but is **default-off** — the default terminates only at the 30-day absolute cap (+ revoke / password-change). A compliance-seeking operator ENABLES inactivity termination by setting `SESSION_IDLE_TIMEOUT_SECS` to a positive value (e.g. `1800` for 30 min); an active app slides `last_used` and never idle-expires. Default-off avoids re-login-on-every-reopen for personal single-user self-hosts. (Screen-lock is the OS, 3.1.10) |
 | 3.1.12 monitor/control remote access | MET / OPERATOR | all remote access token-gated + audited + revocable; central monitoring = SIEM (SSP) |
 | 3.1.20 control external connections | OPERATOR | firewall / proxy exposure; safe defaults (localhost admin split, no CORS) support it |
 

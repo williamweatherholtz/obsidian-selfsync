@@ -59,10 +59,12 @@ non-localhost access.** Plain HTTP is fine only for `127.0.0.1` testing.
   append-only sink** (e.g. filter your log processor on the JSON `action` field or the `audit` target)
   and set a retention policy. The client IP is taken from `X-Forwarded-For`/`X-Real-IP`, so your reverse
   proxy must set it honestly (Caddy does by default).
-- **Session inactivity timeout.** A session token idle-expires after `SESSION_IDLE_TIMEOUT_SECS`
-  (default **1800** = 30 min) of no server activity, in addition to the 30-day absolute lifetime; an
-  actively-syncing device slides its own timer and never expires. Lower it for stricter environments;
-  set `0` to disable idle expiry (absolute cap only). Endpoint screen-lock for a walked-away device is
+- **Session inactivity timeout.** Idle expiry is **OFF by default** (`SESSION_IDLE_TIMEOUT_SECS=0`) — a
+  session token then lives its full 30-day absolute lifetime (or until revoke / password-change), so a
+  personal self-host doesn't re-login every time the app reopens after a break. **Opt in** to inactivity
+  termination (NIST 800-171 3.1.11) by setting `SESSION_IDLE_TIMEOUT_SECS` to a positive value (e.g.
+  `1800` = 30 min) of no server activity; an actively-syncing device slides its own timer and never
+  expires. Endpoint screen-lock for a walked-away device is
   the operating system's job, not the server's.
 - **Never publish the server's `:8080` port to the internet.** Only the reverse proxy's `443`
   should be public. In the Caddy stack the sync port has **no host `ports:` at all** — Caddy reaches

@@ -11,13 +11,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // matters now that vaults can be shared across accounts.
 const TOKEN_TTL_SECS: u64 = 30 * 24 * 3600; // absolute lifetime cap
 
-// SEC-CMMC (AC.3.1.11 — terminate a session after inactivity): in addition to the 30-day ABSOLUTE
-// cap, a session idle-expires after this many seconds with NO server activity. A syncing client polls
-// (≤60s) + WS-pings, so an active device slides its `last_used` and never idle-expires; a device whose
-// app is closed / not syncing stops touching the server and its token dies after the idle window, then
-// re-login is required. Configurable via SESSION_IDLE_TIMEOUT_SECS; default 30 min. 0 disables idle
-// expiry (absolute cap only). Endpoint screen-lock for a walked-away-but-open app is AC.3.1.10 (the OS).
-const DEFAULT_IDLE_TTL_SECS: u64 = 30 * 60;
+// AC.3.1.11 (terminate a session after inactivity) — an OPT-IN control (issueTokenIdleReloginFriction).
+// In addition to the 30-day ABSOLUTE cap, a session CAN idle-expire after this many seconds with NO server
+// activity. DEFAULT 0 = idle expiry OFF: a personal single-user self-host stays logged in across app-close /
+// idle gaps and only re-authenticates at the 30-day absolute cap (or on revoke / password change) — the
+// 30-min default made the plugin re-login on every reopen after a break (owner field report). A compliance-
+// seeking operator ENABLES inactivity termination by setting SESSION_IDLE_TIMEOUT_SECS to a positive value
+// (e.g. 1800 for 30 min). A syncing client polls (≤60s) + WS-pings, so an ACTIVE device slides its
+// `last_used` and never idle-expires; only a closed/not-syncing device's token dies after the window WHEN
+// ENABLED. Endpoint screen-lock for a walked-away-but-open app is AC.3.1.10 (the OS).
+const DEFAULT_IDLE_TTL_SECS: u64 = 0; // idle expiry OFF by default; SESSION_IDLE_TIMEOUT_SECS opts in
 // last_used is persisted, but to avoid a disk write on EVERY request we only re-save the slid value
 // once it has advanced by more than this; so at most one write per token per interval, not per call.
 const SLIDE_PERSIST_SECS: u64 = 60;
@@ -187,8 +190,9 @@ mod tests {
     }
 
     #[test]
-    fn idle_expires_a_stale_token_but_keeps_an_active_one() { // CMMC AC.3.1.11
+    fn idle_expires_a_stale_token_but_keeps_an_active_one() { // CMMC AC.3.1.11 (when ENABLED)
         let (_d, mut s) = store();
+        s.idle_ttl_secs = 30 * 60; // OPT IN to inactivity termination (the default is now 0/off) — test the control
         let active = s.issue("alice").unwrap();
         let stale = s.issue("bob").unwrap();
         // Backdate bob's last_used beyond the idle window; alice stays recent.
@@ -198,6 +202,22 @@ mod tests {
         assert_eq!(s.resolve(&active).as_deref(), Some("alice"), "an active token still resolves (and slides)");
         assert_eq!(s.resolve(&stale), None, "an idle token is idle-expired");
         assert!(!s.file.tokens.contains_key(&hb), "the idle-expired token is pruned");
+    }
+
+    #[test]
+    fn default_has_no_idle_expiry_only_the_absolute_cap() { // issueTokenIdleReloginFriction
+        // The DEFAULT (SESSION_IDLE_TIMEOUT_SECS unset) is now 0 = idle expiry OFF, so a long-idle token still
+        // resolves (no re-login-on-every-reopen); only the 30-day absolute cap / revoke terminate it.
+        let (_d, mut s) = store();
+        assert_eq!(s.idle_ttl_secs, 0, "idle expiry is OFF by default (opt-in via SESSION_IDLE_TIMEOUT_SECS)");
+        let tok = s.issue("carol").unwrap();
+        let h = sha256_hex(&tok);
+        let n = now();
+        s.file.tokens.get_mut(&h).unwrap().last_used = n.saturating_sub(365 * 24 * 3600); // "idle a year"
+        assert_eq!(s.resolve(&tok).as_deref(), Some("carol"), "with idle off, a long-idle (but within absolute cap) token still resolves");
+        // …and the absolute cap still terminates it: a token issued already past its absolute expiry is gone.
+        s.file.tokens.get_mut(&h).unwrap().expires_at = n.saturating_sub(1);
+        assert_eq!(s.resolve(&tok), None, "the 30-day absolute cap still expires the token");
     }
 
     #[test]
