@@ -28,6 +28,7 @@ function spyApi() {
   let changesError: string | null = null; // D0021: settable custom error (e.g. an HTTP 404) from changes()
   let changesResp: any = { version: 0, upserts: [], deletes: [] }; // D0019: settable so a test can advance history_floor / rewind version
   let wsOnChanged: (() => void) | null = null;
+  const wsSockets: any[] = []; // each fake WS connectWs() hands out, so a test can fire open/error/close on a superseded one
   // Default to the client's version — a real current server ALWAYS advertises api_version, and the
   // client now fails CLOSED on an absent/mismatched one (R12-PB2). Tests override for the mismatch case.
   let statusApiVersion: number | undefined = CLIENT_API_VERSION;
@@ -43,6 +44,7 @@ function spyApi() {
     __failChangesAuth: (n: number) => void;
     __failStatus404: () => void;
     __setStatusHealth: (s: string) => void;
+    __wsSockets: any[];
   } = {
     __calls: calls,
     __poke: () => wsOnChanged?.(),
@@ -67,7 +69,18 @@ function spyApi() {
     async putChunk(h, b) { rec("putChunk", [h, b]); },
     async commit(r) { rec("commit", [r]); return { ...r, version: 1 } as FileMeta; },
     async deleteFile(p) { rec("deleteFile", [p]); },
-    connectWs(onChanged) { rec("connectWs", []); wsOnChanged = onChanged; return { addEventListener() {}, close() {} } as unknown as WebSocket; },
+    connectWs(onChanged) {
+      rec("connectWs", []); wsOnChanged = onChanged;
+      const listeners: Record<string, Function[]> = {};
+      const ws = {
+        addEventListener(type: string, cb: Function) { (listeners[type] ??= []).push(cb); },
+        close() {},
+        __fire(type: string) { for (const cb of [...(listeners[type] ?? [])]) cb(); }, // test hook: dispatch a WS event
+      };
+      wsSockets.push(ws);
+      return ws as unknown as WebSocket;
+    },
+    __wsSockets: wsSockets,
   };
   return api;
 }
@@ -127,6 +140,26 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(api.__calls.changes?.length ?? 0).toBeGreaterThanOrEqual(1); // initial reconcileAll
     expect(api.__calls.connectWs?.length).toBe(1);   // spun up the WS
     expect(p.statusText()).toBe("idle");
+    p.onunload();
+  });
+
+  it("a SUPERSEDED WS socket's late open/error does NOT disturb the current live socket (issueWsSupersededOpenError)", async () => {
+    const { p, api } = await bootPlugin();
+    const ws1 = api.__wsSockets[0];
+    ws1.__fire("open");                                   // ws1 opens → transport live
+    expect(p.realtimeConnected).toBe(true);
+    (p as any).spinUpWs();                                 // supersede: this.ws is now ws2 (ws1 closed + orphaned)
+    const ws2 = api.__wsSockets[api.__wsSockets.length - 1];
+    expect(ws2).not.toBe(ws1);
+    ws2.__fire("open");                                    // ws2 opens → still live
+    expect(p.realtimeConnected).toBe(true);
+    // A LATE error from the SUPERSEDED ws1 (racing the abort) must be IGNORED — it must NOT degrade the
+    // current live ws2 (which would give a false "Synced (polling)" + pin the poll to 4s). Fail-first:
+    // without the this.ws!==ws guard on the error handler, this flips realtimeConnected to false.
+    ws1.__fire("error");
+    expect(p.realtimeConnected).toBe(true);
+    ws1.__fire("open");                                    // a late open from the superseded socket is likewise ignored
+    expect(p.realtimeConnected).toBe(true);
     p.onunload();
   });
 

@@ -1564,11 +1564,21 @@ export default class NewLiveSyncPlugin extends Plugin {
     ws.addEventListener("message", () => { this.lastWsActivity = Date.now(); });
     this.startWsLiveness(ws);
     ws.addEventListener("open", () => {
+      if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down (issueWsSupersededOpenError)
       this.log("ws channel open (instant sync)");
       this.lastWsActivity = Date.now();
       this.applyTransport("opened", ws); // → live: realtime health + downshift the poll to a slow backstop (Finding 3a)
     });
-    ws.addEventListener("error", () => { this.log("ws unavailable — polling fallback active"); this.applyTransport("errored", ws); });
+    // GUARD the error handler too (issueWsSupersededOpenError): a late `error` from a SUPERSEDED old socket
+    // (racing the abort supersession triggers) would otherwise applyTransport("errored") and degrade the
+    // CURRENT live socket → false "Synced (polling)" + the poll pinned to 4s until the next socket cycle. The
+    // FSM's design (transportstate.ts) requires ALL socket events to honor the identity check — close + the
+    // liveness tick already do; open/error must match.
+    ws.addEventListener("error", () => {
+      if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
+      this.log("ws unavailable — polling fallback active");
+      this.applyTransport("errored", ws);
+    });
     ws.addEventListener("close", () => {
       if (this.unloading || !this.api || this.ws !== ws) return; // superseded/torn down
       // The FSM owns the recovery fork (R11-#7): a close of a socket that had opened → a DELAYED re-dial
