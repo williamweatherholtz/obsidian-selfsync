@@ -1,5 +1,9 @@
 # SelfSync — Vault Sharing & Management Interface (design spec)
 
+> **Superseded in part by D0037 (2026-08-03):** the grantee-username grant path described here was
+> retired — share **links** are now the canonical way to grant access, and a vault share link can
+> onboard a brand-new account (create-account-or-login). This spec is kept as design history; D0037 wins.
+
 **Date:** 2026-07-04 · **Status:** design, pending review · **Tracks Need:** `nVaultSharing`
 
 ## Goal

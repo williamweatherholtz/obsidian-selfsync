@@ -1,5 +1,9 @@
 # SelfSync — Capability Share-Links (design spec)
 
+> **Extended by D0037 (2026-08-03):** share-links are now the CANONICAL grant path (the grantee-username
+> path was retired), and a vault share link can onboard a brand-new account via `POST /api/share-redeem-register`
+> (link-as-invite, works under closed registration). This spec is kept as design history; D0037 wins.
+
 **Status:** proposed (awaiting review). Extends vault sharing (D0008). Serves `nVaultSharing`.
 
 ## Goal
