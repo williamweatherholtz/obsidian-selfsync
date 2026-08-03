@@ -914,6 +914,76 @@ describe("streamed pull racing-edit safety (issueStreamedPullMidEditLoss)", () =
   });
 });
 
+describe("persisted scan-skip hint (issueScanSkipHintNotPersisted)", () => {
+  // A base as it comes back from disk AFTER a reload: built by round-tripping toJSON (the data.json shape),
+  // so it carries the now-persisted (size,mtime) stamps. fakeIo.list reports { mtime: 0, size: length }.
+  async function reloadedBase(path: string, content: string): Promise<BaseStore> {
+    const prior = new BaseStore();
+    prior.set(path, { hash: await sha256hex(enc(content)) });
+    prior.stampStat(path, enc(content).length, 0); // matches fakeIo.list's (size=length, mtime=0)
+    return new BaseStore(JSON.parse(JSON.stringify(prior.toJSON())));
+  }
+
+  it("T2/T5: an unchanged file skips the read AND does nothing (no re-hash, no write/remove) after a reload", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "hello");                 // remote == base → in-sync
+    const io = fakeIo({ "n.md": "hello" });
+    let reads = 0, writes = 0, removes = 0;
+    const or = io.read.bind(io), ow = io.write.bind(io), orm = io.remove.bind(io);
+    (io as any).read = async (p: string) => { reads++; return or(p); };
+    (io as any).write = async (p: string, b: Uint8Array) => { writes++; return ow(p, b); };
+    (io as any).remove = async (p: string) => { removes++; return orm(p); };
+    const base = await reloadedBase("n.md", "hello");
+    await reconcileAll(deps(api, io, { base }));
+    expect(reads).toBe(0);   // the PERSISTED stamp let the reload skip the read+SHA-256 (the whole point)
+    expect(writes).toBe(0);  // scan-hit + remote==base → in-sync → noop (null localBytes never dereffed)
+    expect(removes).toBe(0);
+    expect(dec(io.m.get("n.md")!)).toBe("hello");
+  });
+
+  it("T3: a STALE stamp (mtime differs) does NOT mask a changed file — it is re-read + reconciled", async () => {
+    const { api, files } = fakeServer();
+    await serverPut(api, "n.md", "old");                   // remote == base
+    const io = fakeIo({ "n.md": "changed!!" });            // local edited while off (9 bytes, not "old")
+    let reads = 0; const or = io.read.bind(io);
+    (io as any).read = async (p: string) => { reads++; return or(p); };
+    const prior = new BaseStore();
+    prior.set("n.md", { hash: await sha256hex(enc("old")) });
+    prior.stampStat("n.md", 3, 999);                       // stale: size 3, mtime 999 ≠ local (9, 0)
+    const base = new BaseStore(JSON.parse(JSON.stringify(prior.toJSON())));
+    await reconcileAll(deps(api, io, { base }));
+    expect(reads).toBeGreaterThan(0);                      // mismatch → NOT skipped → the edit is seen…
+    expect(files.get("n.md")!.hash).toBe(await sha256hex(enc("changed!!"))); // …and pushed
+  });
+
+  it("T4 (safety): a LYING stamp colliding with a remote change makes a CONFLICT COPY, never a silent overwrite", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "z".repeat(20));          // remote diverged from base
+    const io = fakeIo({ "n.md": "x".repeat(13) });         // on-disk content (13 bytes) — an out-of-band edit…
+    const prior = new BaseStore();
+    prior.set("n.md", { hash: await sha256hex(enc("y".repeat(13))) }); // …whose base.hash is DIFFERENT content…
+    prior.stampStat("n.md", 13, 0);                        // …but (size,mtime) COINCIDE → the stamp "lies" (scan-hit)
+    const base = new BaseStore(JSON.parse(JSON.stringify(prior.toJSON())));
+    const conf: string[] = [];
+    await reconcileAll(deps(api, io, { base, onConflict: (p) => conf.push(p) }));
+    const copies = [...io.m.keys()].filter((k) => k.includes("(conflict"));
+    expect(copies.length).toBe(1);                         // the un-hashed local edit was PRESERVED…
+    expect(dec(io.m.get(copies[0])!)).toBe("x".repeat(13)); // …as a conflict copy (applyPull re-reads live)…
+    expect(conf).toContain("n.md");                        // …never silently clobbered by the remote pull
+  });
+
+  it("T6: a persisted stamp for an ABSENT local file does NOT mask the deletion (delete-remote still fires)", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "n.md", "hello");                 // present on the server (== base)
+    const io = fakeIo({});                                 // …but GONE locally
+    let deletes = 0; const od = api.deleteFile.bind(api);
+    (api as any).deleteFile = async (p: string, ev?: number) => { deletes++; return od(p, ev); };
+    const base = await reloadedBase("n.md", "hello");      // base still has n.md + its stamp
+    await reconcileAll(deps(api, io, { base }));
+    expect(deletes).toBeGreaterThan(0); // absence detected + propagated — scan-hit requires locallyPresent, so the stamp can't mask a gone file
+  });
+});
+
 describe("reconcile sub-phase reporting (connect legibility, L-5)", () => {
   it("fires onStage in order: fetching changes → scanning local files → reconciling N", async () => {
     const { api } = fakeServer();

@@ -1301,6 +1301,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       excludedFolders: this.settings.excludedFolders,
       // Live (size, mtime) for a single path — the scan-skip hint the cosmetic override stamps so a
       // timestamp/EOL-only note isn't re-hashed every pass. Notes only (getAbstractFileByPath).
+      // INVARIANT (issueScanSkipHintNotPersisted): mtime here MUST come from the SAME source as list()'s
+      // mtime (TFile.stat.mtime, main.ts list()) — now that the stamp is PERSISTED, a divergent source
+      // (e.g. adapter.stat vs TFile.stat, different rounding) could make a reloaded stamp falsely match and
+      // skip a changed file. Keep both on TFile.stat.mtime.
       statOf: (p) => { const f = this.app.vault.getAbstractFileByPath(p); return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime } : undefined; },
       readOnly: this.settings.vaultReadOnly,
       maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care

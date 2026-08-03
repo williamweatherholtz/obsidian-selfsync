@@ -3,7 +3,8 @@
 // can then skip the read+SHA-256 for a file whose (size, mtime) are unchanged — the standard
 // rsync/Syncthing scan optimization. They're a hint only: absent/stale ⇒ fall back to hashing,
 // so correctness never depends on them, and a real local edit is caught by the event path
-// (reconcilePath always reads) regardless.
+// (reconcilePath always reads) regardless. Persisted across restart (toJSON,
+// issueScanSkipHintNotPersisted) so a reload doesn't re-hash the whole vault.
 // `normHash` = the NORMALIZED content hash (managed timestamp keys masked) at the last sync. Unlike the
 // (size, mtime) perf hint, it is identity-meaningful — it lets a copy/re-stamp (raw hash differs, normHash
 // equal) be recognized as "no genuine change", so it IS persisted (see toJSON).
@@ -22,24 +23,30 @@ export class BaseStore {
   delete(path: string): void { this.m.delete(path); }
   paths(): string[] { return [...this.m.keys()]; }
   // Record the on-disk (size, mtime) of a file we've just confirmed equals its base, so the next
-  // whole-vault pass can skip re-hashing it. In-memory only (no persist) — an optimization hint.
+  // whole-vault pass can skip re-hashing it. Persisted (see toJSON) so the skip survives a reload
+  // (issueScanSkipHintNotPersisted) — still a hint: absent/stale ⇒ fall back to hashing.
   stampStat(path: string, size: number, mtime: number): void {
     const e = this.m.get(path);
     if (e) { e.size = size; e.mtime = mtime; }
   }
-  // Persist hash + text only — NOT the (size, mtime) scan-skip hint (R15 sync#3). The hint is a
-  // session-only optimization: dropping it here means a fresh start re-hashes every file once (the
-  // connect reconcile does that anyway) and re-stamps in memory, so the missed-event backstop is
-  // fully restored on restart rather than weakened by a stale persisted stamp — while the recurring
-  // in-session 15-min re-hash (the actual perf win) is still eliminated.
-  // @audit r2 2026-07-18 — EXEMPLARY, no change: deliberately persists only hash+text, DROPPING the
-  // (size,mtime) scan-skip hint — so a restart rebuilds the stamp from a fresh full pass rather than
-  // trusting a stale persisted hint. Correct instinct: never let a perf hint outlive its verifying session.
-  toJSON(): Record<string, { hash: string; text?: string; normHash?: string }> {
+  // Persist hash + text + normHash AND the (size, mtime) scan-skip hint (issueScanSkipHintNotPersisted,
+  // 2026-08-02 — REVERSES the earlier drop-on-persist). Dropping the stamp meant EVERY plugin reload re-read
+  // + re-hashed the WHOLE vault on the first connect (owner: "reconciling ~1100 files, changed nothing") —
+  // the field cost that motivated this. Persisting it makes a reload trust the same (size,mtime) heuristic
+  // the in-session skip already uses, so an unchanged vault reconnects cheaply. TRADEOFF (the exact
+  // rsync/Syncthing residual the in-session skip ALREADY accepts, now spanning restarts): a file changed OUT
+  // of Obsidian while the plugin was off, preserving BOTH size AND mtime, isn't re-hashed on reload — a
+  // DELAY (caught on the next edit event / any size|mtime change), never data loss, and never hides a REMOTE
+  // change (those are detected via the server manifest, independent of the local scan-skip). The stamp is
+  // internally consistent: stampStat only sets size/mtime on an entry right after confirming content == its
+  // hash. (Owner-directed; ships as a recorded delivery design choice + spec/critique/TDD.)
+  toJSON(): Record<string, { hash: string; text?: string; normHash?: string; size?: number; mtime?: number }> {
     return Object.fromEntries([...this.m].map(([p, e]) => {
-      const o: { hash: string; text?: string; normHash?: string } = { hash: e.hash };
+      const o: { hash: string; text?: string; normHash?: string; size?: number; mtime?: number } = { hash: e.hash };
       if (e.text !== undefined) o.text = e.text;
       if (e.normHash !== undefined) o.normHash = e.normHash;
+      if (e.size !== undefined) o.size = e.size;
+      if (e.mtime !== undefined) o.mtime = e.mtime;
       return [p, o];
     }));
   }

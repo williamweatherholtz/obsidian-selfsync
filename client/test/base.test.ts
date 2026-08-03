@@ -22,18 +22,18 @@ describe("BaseStore", () => {
     expect(s2.get("n.md")?.normHash).toBe("norm1");
   });
 
-  it("R15 sync#3: the (size,mtime) scan-skip hint is NOT persisted by toJSON (session-only)", () => {
+  it("PERSISTS the (size,mtime) scan-skip hint through toJSON/reload so a reload skips re-hashing (issueScanSkipHintNotPersisted)", () => {
+    // Reverses R15 sync#3: dropping the hint made EVERY reload re-hash the whole vault (owner field report).
+    // Now the hint is persisted (same rsync/Syncthing heuristic the in-session skip uses, spanning restarts).
     const b = new BaseStore();
     b.set("a.md", { hash: "h1", text: "hi" });
     b.stampStat("a.md", 123, 456);
-    // In-memory the hint is present (drives the in-session scan-skip)…
     expect(b.get("a.md")).toMatchObject({ size: 123, mtime: 456 });
-    // …but toJSON (what persists to data.json) carries only hash + text, so a stale stamp can't
-    // survive a restart and weaken the missed-event backstop.
     const j = b.toJSON()["a.md"] as Record<string, unknown>;
-    expect(j).toEqual({ hash: "h1", text: "hi" });
-    expect(j.size).toBeUndefined();
-    expect(j.mtime).toBeUndefined();
+    expect(j).toMatchObject({ hash: "h1", text: "hi", size: 123, mtime: 456 });
+    // …and it survives a real serialize→reload round-trip (data.json shape).
+    const reloaded = new BaseStore(JSON.parse(JSON.stringify(b.toJSON())));
+    expect(reloaded.get("a.md")).toMatchObject({ hash: "h1", size: 123, mtime: 456 });
   });
 });
 
