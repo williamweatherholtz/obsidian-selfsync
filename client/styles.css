@@ -6,12 +6,8 @@
   margin-right: 6px;
 }
 
-/* Connection fact value: sits in the control area (right), muted, with a gap before any action
-   button that follows it. Label-left / value-right, single line — keeps the rows compact. */
-.selfsync-value {
-  color: var(--text-muted);
-  margin-right: 8px;
-}
+/* (The old .selfsync-value inline fact value was retired — fact values now render as the row
+   description so a long value like the server URL can't push the action buttons off the card.) */
 
 /* Collapsible section header: a real SettingGroup heading (so it matches the other section headings)
    made clickable, with the chevron added via addExtraButton (a native clickable-icon in the heading —

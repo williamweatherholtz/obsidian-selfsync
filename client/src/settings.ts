@@ -191,9 +191,11 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // One connection fact: label on the LEFT (row name), value on the RIGHT (control area), with an
   // optional management action button after the value — the old "Manage" section folded in here.
   private factRow(g: SettingGroup, label: string, value: string, extra?: (st: Setting) => void): void {
+    // The value goes in the DESCRIPTION (full-width, wraps) — not an inline control-area span. A long
+    // value (e.g. the server URL) otherwise competes with the action buttons for width and pushes them
+    // off the card on a narrow screen (owner-reported overflow). The control row then holds only buttons.
     g.addSetting((st) => {
-      st.setName(label);
-      st.controlEl.createSpan({ cls: "selfsync-value", text: value });
+      st.setName(label).setDesc(value);
       extra?.(st);
     });
   }
