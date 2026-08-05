@@ -142,13 +142,8 @@ package ProjectUseCases {
     }
 
     // ===== Backfill (2026-08-03, owner-directed): use cases for organically-discovered capabilities =====
-    use case ucEnableMfa : UseCase {
-        :>> id = "c0f1a5cc-b201-4a10-9b20-a1b2c3d402a1"; :>> title = "Add a second factor to my account";
-        :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
-        :>> description = "A user (often an admin) hardens their account with TOTP two-factor auth, from the plugin or the admin console.";
-        :>> mainSuccess = "The user enrols an authenticator (scans/enters the secret), confirms a 6-digit code, and is shown one-time recovery codes to save; from then on sign-in requires the code.";
-        :>> extensions = "Having lost the authenticator, they sign in with a single-use recovery code. | An operator can REQUIRE MFA for admins, and a fresh admin can still enrol before being forced to use it. | Disabling MFA needs a current code.";
-    }
+    // (ucEnableMfa "Add a second factor" was RETIRED by D0038 (2026-08-05) — MFA is deprecated; the
+    // flag-gated code is retained, but the use case no longer applies while MFA is off.)
     use case ucChangePassword : UseCase {
         :>> id = "c0f1a5cc-b202-4a10-9b20-a1b2c3d402a2"; :>> title = "Change my password and end other sessions";
         :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
@@ -264,9 +259,7 @@ package ProjectUseCases {
     #DependsOn dependency from ucExcludedFolderUntouched to selfHoster;
     #DependsOn dependency from ucExcludedFolderUntouched to nTimestampFidelity;
 
-    // ---- backfill traceability (2026-08-03) ----
-    #DependsOn dependency from ucEnableMfa to selfHoster;
-    #DependsOn dependency from ucEnableMfa to nAccountSecurity;
+    // ---- backfill traceability (2026-08-03) ---- (ucEnableMfa edges removed with its retirement, D0038)
     #DependsOn dependency from ucChangePassword to selfHoster;
     #DependsOn dependency from ucChangePassword to nAccountSecurity;
     #DependsOn dependency from ucManageAccounts to selfHostOperator;

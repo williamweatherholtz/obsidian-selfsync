@@ -242,7 +242,7 @@ package ProjectBusiness {
         :>> id = "c0f1a5cc-e201-4a10-9b20-a1b2c3d40201";
         :>> title = "My account is protected by strong authentication I control";
         :>> source = NeedSource::safety;
-        :>> statement = "A user's account is protected by a strong password and an optional second factor they enrol themselves (with recovery codes); they can change their password and end other sessions at will; repeated wrong guesses are throttled; and neither the plaintext password nor a standing secret is ever exposed. Signing in never reveals which accounts exist.";
+        :>> statement = "A user's account is protected by a strong password; they can change their password and end other sessions at will; repeated wrong guesses are throttled; and neither the plaintext password nor a standing secret is ever exposed. Signing in never reveals which accounts exist. (D0038: TOTP MFA was deprecated — the plugin cannot answer a TOTP challenge — so a second factor is no longer part of this Need; the flag-gated code is retained for a web-admin-only re-enable.)";
         :>> priority = Priority::must;
     }
     requirement nAccountAdministration : Need {
