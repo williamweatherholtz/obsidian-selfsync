@@ -1,6 +1,8 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
-import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi } from "./sync";
+import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi, fetchFileBytes } from "./sync";
+import { sha256hex } from "./chunker";
+import { classifyPushPull, lineDiff, PushDirection, DiffLine, PluginPushPreview, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
@@ -674,6 +676,69 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (choice === "remote") new Notice("SelfSync: fully close and reopen Obsidian to load the updated plugin.", 8000);
     return done;
   }
+  // Preview for the Push/Pull confirm (nPushPullPreview): classify what an authoritative Push/Pull will do
+  // to each file of this plugin's folder + expose a LAZY per-file content diff — so the overwrite is an
+  // INFORMED choice, not a blind one. Pure classification/diff live in pushpreview.ts; this only gathers the
+  // local + server hashes they need. Read-only (hashes + on-demand fetches, never mutates); null if offline.
+  // Uses the SAME union (pluginFilePaths) + hash basis (server FileMeta.hash vs local sha256, both whole-file
+  // sha256 for un-normalized config) as forcePlugin, so the preview can't disagree with what Push/Pull does.
+  async pluginPushPullPreview(id: string, direction: PushDirection): Promise<PluginPushPreview | null> {
+    if (!this.api) { new Notice("SelfSync: connect first to preview a push or pull"); return null; }
+    if (isSelfPluginId(id, this.selfFolderId())) return null; // never inspect SelfSync's own credential folder
+    const d = this.deps();
+    const local = await d.io.list();
+    const serverMetas = new Map((await d.api.changes(0)).upserts.map((f) => [f.path, f] as const));
+    const paths = pluginFilePaths([...local.keys()], [...serverMetas.keys()], id);
+    // Memory bounds (crit finding 1): the real pull STREAMS big files to disk, so the preview must not slurp
+    // them whole. Read a local file to hash ONLY when it's small AND same-size as the server's (the only case
+    // where a hash tells us more than the size already does); a differing size already means "differs", and a
+    // large file is left content-uncompared (→ conservatively an overwrite). Diffs are size-gated below too.
+    const HASH_CAP = 1 << 20;       // 1 MiB — above this, don't read a file just to hash it
+    const files: { path: string; local: SideState; server: SideState }[] = [];
+    for (const p of paths) {
+      const meta = serverMetas.get(p);
+      const server: SideState = meta ? { present: true, hash: meta.hash } : { present: false };
+      const lEntry = local.get(p);
+      let localSide: SideState;
+      if (!lEntry) {
+        localSide = { present: false };
+      } else if (meta && meta.size === lEntry.size && lEntry.size <= HASH_CAP) {
+        // Ambiguous (same size, small): a hash resolves unchanged-vs-overwrite. An unreadable file matches
+        // what the REAL action sees — push's readOrNull treats it as absent (→ delete), pull's applyPull
+        // overwrites the existing file — so presence is direction-aware here.
+        try { localSide = { present: true, hash: await sha256hex(await d.io.read(p)) }; }
+        catch { localSide = direction === "push" ? { present: false } : { present: true }; }
+      } else {
+        // Different size (→ definitely differs) or large (→ don't read): present, content uncompared.
+        localSide = { present: true };
+      }
+      files.push({ path: p, local: localSide, server });
+    }
+    const changes = classifyPushPull(files, direction);
+    const dev = this.deviceLabel();
+    const DIFF_CAP = 512 << 10; // 512 KiB — above this, "Show diff" won't fetch/decode the file
+    // A changed TEXT file's diff, loaded ON DEMAND (only when its row is expanded): old = the TARGET being
+    // overwritten, new = the SOURCE winning. Size-gated before any fetch; non-utf8 → "binary".
+    const loadDiff = async (path: string): Promise<DiffLine[] | "binary" | "too-large"> => {
+      const meta = serverMetas.get(path);
+      if (Math.max(local.get(path)?.size ?? 0, meta?.size ?? 0) > DIFF_CAP) return "too-large";
+      const dec = (b: Uint8Array): string | null => { try { return new TextDecoder("utf-8", { fatal: true }).decode(b); } catch { return null; } };
+      const localText = local.has(path) ? dec(await d.io.read(path)) : "";
+      const serverText = meta ? dec(await fetchFileBytes(d.api, d.cache, meta.chunks)) : "";
+      if (localText === null || serverText === null) return "binary";
+      const [oldT, newT] = direction === "push" ? [serverText, localText] : [localText, serverText];
+      return lineDiff(oldT, newT) ?? "too-large";
+    };
+    return {
+      direction,
+      name: this.getPluginDisplayName(id) || id,
+      fromLabel: direction === "push" ? `this device (${dev})` : "the server",
+      toLabel: direction === "push" ? "the server + your other devices" : `this device (${dev})`,
+      changes,
+      loadDiff,
+    };
+  }
+
   // Community-plugin ids the SERVER holds (from the last full reconcile) — lets the settings UI offer
   // plugins this device hasn't installed yet, so a fresh vault can adopt an existing vault's plugin set.
   private serverPluginIds = new Set<string>();

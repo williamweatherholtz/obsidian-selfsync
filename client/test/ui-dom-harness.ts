@@ -38,6 +38,11 @@ export function fakePlugin(over: any = {}) {
     setPluginSync: vi.fn(async (id: string, on: boolean) => { const set = new Set(settings.configSync.pluginAllow); if (on) set.add(id); else set.delete(id); settings.configSync.pluginAllow = [...set]; await p.applyConfigSyncChange(); }),
     pushPlugin: vi.fn(async () => 0),
     pullPlugin: vi.fn(async () => 0),
+    pluginPushPullPreview: vi.fn(async (id: string, direction: "push" | "pull") => ({
+      direction, name: id, fromLabel: "this device (Test)", toLabel: "the server",
+      changes: [{ path: `.obsidian/plugins/${id}/data.json`, op: "overwrite" as const }],
+      loadDiff: vi.fn(async () => [{ type: "del" as const, text: "old" }, { type: "add" as const, text: "new" }]),
+    })),
     getServerPluginIds: vi.fn(() => [] as string[]),
     installAllServerPlugins: vi.fn(async () => {}),
     statusDisplay: vi.fn((phase: string) => ({ label: phase === "idle" ? "Fully synced" : phase === "syncing" ? "Syncing…" : phase === "connecting" ? "Connecting…" : phase === "offline" ? "Offline — retrying" : "Not connected", detail: "" })),

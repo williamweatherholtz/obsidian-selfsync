@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // Destructive confirms now go through an in-app modal (confirm.ts) instead of window.confirm; auto-accept
 // so the Sign-out wiring test still fires. (Its own behaviour is covered by inspection, not this stub.)
 vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
+vi.mock("../src/pushpreviewmodal", () => ({ pushPreviewModal: vi.fn(async () => true) }));
 import { NewLiveSyncSettingTab } from "../src/settings";
 import { fakePlugin, toggleByName, buttonByText, flipToggle, rowByName, inputByPlaceholder, typeInto, flush } from "./ui-dom-harness";
 

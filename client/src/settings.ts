@@ -14,6 +14,7 @@ import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigS
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
+import { pushPreviewModal } from "./pushpreviewmodal";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -625,16 +626,21 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         // Already-synced + installed on a read-write vault: the old "first-contact direction" dropdown was
         // INERT here (it only governed a no-base first contact), so it's replaced by the actions that
         // actually DO something now — Push this device's copy to the server, or Pull the server's copy here.
-        // Each is a confirmed authoritative overwrite of THIS plugin's files (issuePluginDirectionInert).
-        const nm = manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id;
+        // Each is a confirmed authoritative overwrite of THIS plugin's files (issuePluginDirectionInert),
+        // now fronted by a per-file PREVIEW (nPushPullPreview) instead of a generic warning.
         st.addExtraButton((b) => b.setIcon("upload").setTooltip("Push this device's copy to the server")
           .onClick(async () => {
-            if (!(await confirmModal(this.app, { title: `Push ${nm}?`, body: `Overwrite the server's copy of ${nm} with this device's — the server and your other devices will match this device. Any unpulled changes to ${nm} on other devices are replaced.`, confirmText: "Push", warn: true }))) return;
+            // Preview WHAT the overwrite does (which files, to/from where) before confirming — nPushPullPreview.
+            const preview = await this.plugin.pluginPushPullPreview(id, "push");
+            if (!preview) return; // offline — the plugin already surfaced a notice
+            if (!(await pushPreviewModal(this.app, preview))) return;
             await this.plugin.pushPlugin(id); this.display();
           }));
         st.addExtraButton((b) => b.setIcon("download").setTooltip("Pull the server's copy to this device")
           .onClick(async () => {
-            if (!(await confirmModal(this.app, { title: `Pull ${nm}?`, body: `Replace this device's copy of ${nm} with the server's. This device's unpushed changes to ${nm} are discarded; fully close and reopen Obsidian afterwards to load the updated plugin.`, confirmText: "Pull", warn: true }))) return;
+            const preview = await this.plugin.pluginPushPullPreview(id, "pull");
+            if (!preview) return;
+            if (!(await pushPreviewModal(this.app, preview))) return;
             await this.plugin.pullPlugin(id); this.display();
           }));
       }
