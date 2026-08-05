@@ -659,9 +659,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         // fresh accurate preview run only on click. `act` runs the shared preview→confirm→apply flow.
         let pushB: ExtraButtonComponent, pullB: ExtraButtonComponent;
         const act = async (dir: "push" | "pull") => {
-          // NO hard guard on the converged cache (critique §1): a click ALWAYS runs the accurate preview, so
-          // the manual override can recover an out-of-band divergence the (size,mtime) stamp missed — e.g. a
-          // locally-corrupted file that Pull would restore. The grey-out is a HINT, never a lock.
+          // HARD guard (owner-directed 2026-08-05, reversing the §1 hint): when converged there's no real
+          // action, so block the click too — the convergence state refreshes within ~a second, so a genuinely-
+          // concurrent remote edit is a brief wait, and in exchange a live button ALWAYS means a real overwrite
+          // (never misleading). The rare out-of-band size+mtime-preserved divergence is an accepted residual
+          // (already an auto-sync blindspot). setDisabled alone doesn't block a click on the extra-button el, so
+          // this guard is what enforces the no-op.
+          if (this.pluginCleanCache.get(id)) return;
           const preview = await this.plugin.pluginPushPullPreview(id, dir);
           if (!preview) return; // offline — the plugin already surfaced a notice
           if (!(await pushPreviewModal(this.app, preview))) return; // (shows "nothing to change" for a true no-op)
@@ -672,13 +676,11 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         st.addExtraButton((b) => { pushB = b; b.setIcon("upload").setTooltip("Push this device's copy to the server").onClick(() => void act("push")); });
         st.addExtraButton((b) => { pullB = b; b.setIcon("download").setTooltip("Pull the server's copy to this device").onClick(() => void act("pull")); });
         const applyClean = (clean: boolean) => {
-          // DIM as a hint (not setDisabled — a disabled-looking-but-clickable control is confusing, and CSS
-          // pointer-events could actually block the click and re-introduce the §1 lock). Buttons stay fully
-          // clickable; the tooltip explains the hint + that a click still works.
-          pushB.extraSettingsEl.style.opacity = clean ? "0.4" : "";
-          pullB.extraSettingsEl.style.opacity = clean ? "0.4" : "";
-          pushB.setTooltip(clean ? "Already in sync — click to re-check or force a push" : "Push this device's copy to the server");
-          pullB.setTooltip(clean ? "Already in sync — click to re-check or force a pull" : "Pull the server's copy to this device");
+          // DISABLE when there's no real action (owner-directed): setDisabled for the visual/disabled state,
+          // and the act() guard blocks the click. A live button therefore always means a real overwrite.
+          pushB.setDisabled(clean); pullB.setDisabled(clean);
+          pushB.setTooltip(clean ? "Already in sync — nothing to push" : "Push this device's copy to the server");
+          pullB.setTooltip(clean ? "Already in sync — nothing to pull" : "Pull the server's copy to this device");
         };
         const cachedClean = this.pluginCleanCache.get(id);
         if (cachedClean !== undefined) applyClean(cachedClean); // instant (no flicker) on a re-render
