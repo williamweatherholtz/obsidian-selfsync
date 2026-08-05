@@ -75,8 +75,10 @@ class ButtonComponent {
 class ExtraButtonComponent {
   extraSettingsEl: any = fakeEl();
   constructor(parent: any) { if (HAS_DOM) { this.extraSettingsEl = augment(document.createElement("button")); this.extraSettingsEl.classList.add("clickable-icon"); parent.appendChild(this.extraSettingsEl); } }
-  setIcon() { return this; }
-  setTooltip() { return this; }
+  // Reflect the icon + tooltip as attributes (like Obsidian sets aria-label for tooltips) so an
+  // icon-only button — which has no text — is still findable + assertable in a DOM test.
+  setIcon(icon?: string) { if (HAS_DOM && icon) this.extraSettingsEl.setAttribute("data-icon", icon); return this; }
+  setTooltip(t?: string) { if (HAS_DOM && t) this.extraSettingsEl.setAttribute("aria-label", t); return this; }
   setDisabled(_d: boolean) { return this; }
   onClick(cb: () => any) { if (HAS_DOM) this.extraSettingsEl.addEventListener("click", cb); return this; }
 }

@@ -182,6 +182,29 @@ export function isJunkFile(path: string): boolean {
   return false;
 }
 
+// True if `id` names SelfSync's OWN plugin folder — the CURRENT id or any legacy id, matched
+// CASE-INSENSITIVELY (on a case-insensitive FS `Obsidian-LiveSync/` is the same folder as the real
+// self plugin). This folder holds this device's server + credentials and must never sync. Single
+// source of truth for the self-exclusion, shared by shouldSync's filter and the Push/Pull force path
+// (which bypasses shouldSync), so the two can't drift (SEC-R2#1 + LEGACY_SELF_IDS).
+export function isSelfPluginId(id: string, selfPluginId: string): boolean {
+  const idLc = id.toLowerCase();
+  return [selfPluginId, ...LEGACY_SELF_IDS].filter(Boolean).some((s) => s.toLowerCase() === idLc);
+}
+
+// The UNION of local + server file paths under ONE community plugin's folder (.obsidian/plugins/<id>/),
+// junk excluded, sorted. This is the exact file set a deliberate Push (make the server match this device)
+// or Pull (adopt the server's copy here) acts on: every file present on EITHER side, so a Push also
+// removes server files this device lacks, and a Pull also removes local files the server lacks. Pure +
+// total for unit testing; the caller resolves each path authoritatively (resolveConfigConflict).
+export function pluginFilePaths(localPaths: readonly string[], serverPaths: readonly string[], id: string): string[] {
+  const prefix = CONFIG_PREFIX + "plugins/" + id + "/";
+  const set = new Set<string>();
+  for (const p of localPaths) if (p.startsWith(prefix) && !isJunkFile(p)) set.add(p);
+  for (const p of serverPaths) if (p.startsWith(prefix) && !isJunkFile(p)) set.add(p);
+  return [...set].sort();
+}
+
 // True if `path` should participate in sync given the selection and this device's own
 // SelfSync plugin id (the folder that must never sync).
 export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId: string): boolean {
@@ -202,8 +225,7 @@ export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId:
   const pl = p.toLowerCase();
   if (pl.startsWith("plugins/")) {
     const idLc = pl.slice("plugins/".length).split("/")[0];
-    const selfIds = [selfPluginId, ...LEGACY_SELF_IDS].filter(Boolean).map((s) => s.toLowerCase());
-    if (selfIds.includes(idLc)) return false;
+    if (isSelfPluginId(idLc, selfPluginId)) return false; // shared self-exclusion (case-insensitive + legacy)
   }
 
   // (2) recognized categories

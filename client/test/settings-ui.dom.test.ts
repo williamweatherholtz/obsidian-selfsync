@@ -170,6 +170,20 @@ describe("settings tab renders and wires its controls", () => {
     expect(plugin.showLog).toHaveBeenCalled();
   });
 
+  it("a synced+installed plugin offers Push/Pull that force the plugin's files to a side", async () => {
+    const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ["dataview"] } } });
+    p.app.plugins.manifests = { dataview: { id: "dataview", name: "Dataview" } }; // installed ⇒ "here"
+    const { containerEl } = renderTab(p);
+    const push = containerEl.querySelector('[aria-label*="Push this device"]') as HTMLElement;
+    const pull = containerEl.querySelector('[aria-label*="Pull the server"]') as HTMLElement;
+    expect(push).toBeTruthy(); // the inert direction dropdown is gone; real actions in its place
+    expect(pull).toBeTruthy();
+    push.click(); await flush(); // confirm is auto-accepted (mocked)
+    expect(p.pushPlugin).toHaveBeenCalledWith("dataview");
+    pull.click(); await flush();
+    expect(p.pullPlugin).toHaveBeenCalledWith("dataview");
+  });
+
   it("the community-plugins bulk toggle 'Sync all' path applies immediately when community is on", () => {
     plugin = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: [] } } });
     // With no installed community plugins the bulk row may not render; assert the section renders at least.

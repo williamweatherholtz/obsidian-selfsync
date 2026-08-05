@@ -1,5 +1,40 @@
 import { describe, it, expect } from "vitest";
-import { shouldSync, isJunkFile, pluginIdOf, DEFAULT_CONFIG_SYNC, ConfigSyncSelection, isEnabledListConfig, mergeEnabledPluginsJson } from "../src/configsync";
+import { shouldSync, isJunkFile, pluginIdOf, pluginFilePaths, isSelfPluginId, DEFAULT_CONFIG_SYNC, ConfigSyncSelection, isEnabledListConfig, mergeEnabledPluginsJson } from "../src/configsync";
+
+describe("isSelfPluginId — the self-folder exclusion Push/Pull must honor (case-insensitive + legacy)", () => {
+  it("matches the current self id case-INSENSITIVELY (a case-variant folder is the same on a CI filesystem)", () => {
+    expect(isSelfPluginId("selfsync", "selfsync")).toBe(true);
+    expect(isSelfPluginId("SelfSync", "selfsync")).toBe(true);      // case-variant → still self (credential-safety)
+    expect(isSelfPluginId("SELFSYNC", "selfsync")).toBe(true);
+    expect(isSelfPluginId("dataview", "selfsync")).toBe(false);
+  });
+  it("matches LEGACY self ids (a leftover old-id folder still holds old credentials)", () => {
+    expect(isSelfPluginId("new-livesync", "selfsync")).toBe(true);
+    expect(isSelfPluginId("New-LiveSync", "selfsync")).toBe(true);  // legacy, case-insensitive
+  });
+});
+
+describe("pluginFilePaths — the file set a Push/Pull acts on (union of local+server under the plugin folder)", () => {
+  it("unions both sides, scoped to the plugin folder, junk excluded, sorted", () => {
+    const local = [".obsidian/plugins/dataview/main.js", ".obsidian/plugins/dataview/data.json", ".obsidian/plugins/other/main.js", "Note.md"];
+    const server = [".obsidian/plugins/dataview/main.js", ".obsidian/plugins/dataview/styles.css", ".obsidian/plugins/dataview/.DS_Store"];
+    // dataview files from BOTH sides (so a Push removes a server-only file, a Pull removes a local-only
+    // file); other-plugin + note excluded; junk excluded; sorted.
+    expect(pluginFilePaths(local, server, "dataview")).toEqual([
+      ".obsidian/plugins/dataview/data.json",   // local-only → a Pull removes it locally
+      ".obsidian/plugins/dataview/main.js",     // both
+      ".obsidian/plugins/dataview/styles.css",  // server-only → a Push removes it on the server
+    ]);
+  });
+  it("never reaches outside the exact plugin folder (no id-prefix bleed)", () => {
+    // "dataview" must not match "dataview-extra": exact folder segment only.
+    const paths = [".obsidian/plugins/dataview/main.js", ".obsidian/plugins/dataview-extra/main.js"];
+    expect(pluginFilePaths(paths, [], "dataview")).toEqual([".obsidian/plugins/dataview/main.js"]);
+  });
+  it("empty when neither side has the plugin", () => {
+    expect(pluginFilePaths(["Note.md"], [".obsidian/plugins/x/main.js"], "dataview")).toEqual([]);
+  });
+});
 
 const SELF = "obsidian-selfsync";
 const on = (over: Partial<ConfigSyncSelection> = {}): ConfigSyncSelection =>

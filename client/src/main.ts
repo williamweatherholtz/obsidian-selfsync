@@ -17,7 +17,7 @@ import { transportTransition, TransportState, TransportEvent } from "./transport
 import { CLIENT_API_VERSION } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
-import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, ConfigSurface, ConfigDirection } from "./configsync";
+import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, ConfigSurface, ConfigDirection } from "./configsync";
 import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -617,11 +617,43 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (on) (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : (dir ?? this.communityConfigDir() ?? "download");
     await this.applyConfigSyncChange();
   }
-  // Change an already-synced plugin's first-contact direction (per-plugin override of the surface).
-  async setPluginDir(id: string, dir: ConfigDirection): Promise<void> {
-    const cs = this.settings.configSync;
-    (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : dir;
-    await this.applyConfigSyncChange();
+  // Deliberately force ONE synced plugin's files to a side NOW — the honest replacement for the old
+  // "first-contact direction" dropdown, which was inert once the plugin had a shared base (it only ever
+  // governed a no-base first contact). PUSH makes the server (and other devices) match THIS device;
+  // PULL replaces this device's copy with the server's. Each is an authoritative overwrite of exactly
+  // this plugin's folder (.obsidian/plugins/<id>/**), acting on the UNION of local+server files so a
+  // file only one side has is added/removed accordingly. Reuses the tested per-path resolveConfigConflict.
+  async pushPlugin(id: string): Promise<number> { return this.forcePlugin(id, "local"); }
+  async pullPlugin(id: string): Promise<number> { return this.forcePlugin(id, "remote"); }
+  private async forcePlugin(id: string, choice: "local" | "remote"): Promise<number> {
+    if (!this.api) { new Notice("SelfSync: connect first, then push or pull a plugin"); return 0; }
+    // Defense in depth: never push to a read-only share (the UI only offers Push on a read-write vault).
+    if (choice === "local" && this.settings.vaultReadOnly) { new Notice("SelfSync: this is a read-only vault — you can only pull"); return 0; }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) { new Notice(`SelfSync: '${id}' is not a valid plugin id`); return 0; }
+    // HARD guard: never push/pull SelfSync's OWN folder — its data.json holds this device's server +
+    // credentials, which must never sync. forcePlugin BYPASSES shouldSync, so it uses the SAME shared
+    // self-exclusion (case-insensitive + LEGACY_SELF_IDS), not a weaker exact-case check (critique #1).
+    if (isSelfPluginId(id, this.selfFolderId())) { new Notice("SelfSync: can't push or pull SelfSync itself"); return 0; }
+    const d = this.deps();
+    const local = [...(await d.io.list()).keys()];
+    const server = (await d.api.changes(0)).upserts.map((f) => f.path);
+    const paths = pluginFilePaths(local, server, id);
+    const nm = this.getPluginDisplayName(id) || id;
+    // Not atomic (each resolve re-bases its own path), so a mid-loop failure leaves a PARTIAL overwrite —
+    // report it instead of swallowing the rejection (critique #2); the rest reconciles on the next sync.
+    let done = 0;
+    let failed: unknown = null;
+    try { for (const p of paths) { await resolveConfigConflict(d, p, choice); done++; } }
+    catch (e) { failed = e; }
+    void this.persist(); // the base changed
+    this.settingsRefresh?.();
+    if (failed) {
+      new Notice(`SelfSync: ${choice === "local" ? "push" : "pull"} of ${nm} stopped after ${done}/${paths.length} file(s): ${(failed as { message?: string })?.message ?? failed}. The rest will reconcile on the next sync — you can retry.`, 10000);
+      return done;
+    }
+    new Notice(`SelfSync: ${choice === "local" ? "pushed" : "pulled"} ${nm} — ${paths.length} file${paths.length === 1 ? "" : "s"} ${choice === "local" ? "to the server" : "from the server"}.`, 7000);
+    if (choice === "remote") new Notice("SelfSync: fully close and reopen Obsidian to load the updated plugin.", 8000);
+    return done;
   }
   // Community-plugin ids the SERVER holds (from the last full reconcile) — lets the settings UI offer
   // plugins this device hasn't installed yet, so a fresh vault can adopt an existing vault's plugin set.

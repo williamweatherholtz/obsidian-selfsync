@@ -10,7 +10,7 @@ class FolderSuggest extends AbstractInputSuggest<string> {
   renderSuggestion(value: string, el: HTMLElement): void { el.setText(value); }
   selectSuggestion(value: string): void { this.setValue(value); this.close(); }
 }
-import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface, ConfigDirection } from "./configsync";
+import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
@@ -596,13 +596,21 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       if (on && !here) st.setDesc("downloads from the sync (not installed here yet)");
       else if (on && ro) st.setDesc("download only (read-only vault)");
       else if (on) {
-        st.addDropdown((dd) => dd
-          // "Use server's" (not "Use synced"): both sides are "synced", so name the one that WINS —
-          // the copy on the server — paired with "Use this device's" (owner feedback).
-          .addOption("download", "Use server's")
-          .addOption("upload", "Use this device's")
-          .setValue(cs.pluginDir?.[id] ?? this.plugin.communityConfigDir() ?? "download")
-          .onChange((v) => void this.plugin.setPluginDir(id, v as ConfigDirection)));
+        // Already-synced + installed on a read-write vault: the old "first-contact direction" dropdown was
+        // INERT here (it only governed a no-base first contact), so it's replaced by the actions that
+        // actually DO something now — Push this device's copy to the server, or Pull the server's copy here.
+        // Each is a confirmed authoritative overwrite of THIS plugin's files (issuePluginDirectionInert).
+        const nm = manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id;
+        st.addExtraButton((b) => b.setIcon("upload").setTooltip("Push this device's copy to the server")
+          .onClick(async () => {
+            if (!(await confirmModal(this.app, { title: `Push ${nm}?`, body: `Overwrite the server's copy of ${nm} with this device's — the server and your other devices will match this device. Any unpulled changes to ${nm} on other devices are replaced.`, confirmText: "Push", warn: true }))) return;
+            await this.plugin.pushPlugin(id); this.display();
+          }));
+        st.addExtraButton((b) => b.setIcon("download").setTooltip("Pull the server's copy to this device")
+          .onClick(async () => {
+            if (!(await confirmModal(this.app, { title: `Pull ${nm}?`, body: `Replace this device's copy of ${nm} with the server's. This device's unpushed changes to ${nm} are discarded; fully close and reopen Obsidian afterwards to load the updated plugin.`, confirmText: "Pull", warn: true }))) return;
+            await this.plugin.pullPlugin(id); this.display();
+          }));
       }
       // NB: no per-plugin "Remove from server" button (issuePluginRemoveButtonClutter) — it took a whole
       // button per row for a RARE need. Removing a plugin's files from the server is an owner/admin task,

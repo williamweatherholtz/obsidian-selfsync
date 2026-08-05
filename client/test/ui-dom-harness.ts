@@ -8,6 +8,9 @@ export function makeApp(): any {
     workspace: { on: () => ({}), getActiveViewOfType: () => null, onLayoutReady: (cb: any) => cb(), trigger: () => {} },
     vault: { on: () => ({}), adapter: {}, getAbstractFileByPath: () => null },
     setting: { close: () => {} },
+    // Installed community-plugin manifests (renderPluginChecklist reads app.plugins.manifests). Empty by
+    // default; a test that needs an "installed" plugin populates it before rendering.
+    plugins: { manifests: {} as Record<string, { id: string; name: string }> },
   };
 }
 
@@ -33,7 +36,8 @@ export function fakePlugin(over: any = {}) {
     setConfigSurface: vi.fn(async (surface: string, on: boolean) => { (settings.configSync as any)[surface] = on; await p.applyConfigSyncChange(); }),
     communityConfigDir: vi.fn(() => undefined),
     setPluginSync: vi.fn(async (id: string, on: boolean) => { const set = new Set(settings.configSync.pluginAllow); if (on) set.add(id); else set.delete(id); settings.configSync.pluginAllow = [...set]; await p.applyConfigSyncChange(); }),
-    setPluginDir: vi.fn(async () => {}),
+    pushPlugin: vi.fn(async () => 0),
+    pullPlugin: vi.fn(async () => 0),
     getServerPluginIds: vi.fn(() => [] as string[]),
     installAllServerPlugins: vi.fn(async () => {}),
     statusDisplay: vi.fn((phase: string) => ({ label: phase === "idle" ? "Fully synced" : phase === "syncing" ? "Syncing…" : phase === "connecting" ? "Connecting…" : phase === "offline" ? "Offline — retrying" : "Not connected", detail: "" })),
