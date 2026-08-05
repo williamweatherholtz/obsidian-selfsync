@@ -179,7 +179,15 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // card themes group settings). The Status hero is a member group so FSM ticks refresh JUST its row
   // in place (fillStatus) — no whole-tab rebuild that would drop focus/scroll in the sections below.
   display(): void {
-    const { containerEl } = this; containerEl.empty();
+    const { containerEl } = this;
+    // PRESERVE SCROLL across the rebuild (owner-reported: toggling a control jumped the page to the top). Many
+    // handlers call display() — a full containerEl.empty()+rebuild — which otherwise discards the scroll
+    // position. Capture the scrolling ancestor's scrollTop BEFORE emptying (its metrics are still valid) and
+    // restore it after; the sections rebuild at the same heights, so the user stays put. Centralised here so
+    // EVERY re-render is covered, not by per-handler vigilance.
+    const scroller = this.scrollEl();
+    const savedTop = scroller?.scrollTop ?? 0;
+    containerEl.empty();
     const s = this.plugin.settings;
     const configured = Boolean(s.vaultId && s.serverUrl && s.username);
 
@@ -188,13 +196,28 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.fillStatus();
     this.plugin.statusListener = () => this.fillStatus();
     this.plugin.settingsRefresh = () => this.display(); // re-render when the conflict count changes
-    if (!configured) return; // unconfigured: only the Status hero + Set up / Redeem buttons
+    if (configured) {
+      this.renderConnection(containerEl, s);       // ② server / account / vault facts + manage actions
+      this.renderWhatSyncs(containerEl, s);        // ③ the opt-in .obsidian config-sync scope
+      this.renderConflicts(containerEl);           // ④ only when a manual choice is pending
+      this.renderAdvanced(containerEl, s);         // ⑤ collapsed by default
+      this.renderIgnoreTimestamps(containerEl, s); // ⑥ collapsed by default — identity-only timestamp masking
+    } // else unconfigured: only the Status hero + Set up / Redeem buttons
 
-    this.renderConnection(containerEl, s);       // ② server / account / vault facts + manage actions
-    this.renderWhatSyncs(containerEl, s);        // ③ the opt-in .obsidian config-sync scope
-    this.renderConflicts(containerEl);           // ④ only when a manual choice is pending
-    this.renderAdvanced(containerEl, s);         // ⑤ collapsed by default
-    this.renderIgnoreTimestamps(containerEl, s); // ⑥ collapsed by default — identity-only timestamp masking
+    if (scroller && savedTop) scroller.scrollTop = savedTop; // stay where the user was, don't jump to the top
+  }
+
+  // The nearest SCROLLING ancestor of the settings content — the element whose scrollTop we preserve across a
+  // rebuild. Called while the OLD content is still mounted, so scroll metrics are valid; walks up from
+  // containerEl and falls back to it. (The scroller is an ancestor that survives containerEl.empty().)
+  private scrollEl(): HTMLElement | null {
+    for (let el: HTMLElement | null = this.containerEl; el; el = el.parentElement) {
+      if (el.scrollHeight > el.clientHeight + 1) {
+        const oy = getComputedStyle(el).overflowY;
+        if (oy === "auto" || oy === "scroll") return el;
+      }
+    }
+    return this.containerEl;
   }
 
   hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
