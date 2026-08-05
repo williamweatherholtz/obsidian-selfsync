@@ -676,9 +676,13 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         st.addExtraButton((b) => { pushB = b; b.setIcon("upload").setTooltip("Push this device's copy to the server").onClick(() => void act("push")); });
         st.addExtraButton((b) => { pullB = b; b.setIcon("download").setTooltip("Pull the server's copy to this device").onClick(() => void act("pull")); });
         const applyClean = (clean: boolean) => {
-          // DISABLE when there's no real action (owner-directed): setDisabled for the visual/disabled state,
-          // and the act() guard blocks the click. A live button therefore always means a real overwrite.
+          // DISABLE when there's no real action (owner-directed). setDisabled only GREYS an extra-button (it's
+          // a div/anchor, not a native <button>) — it does NOT block the click — so also set pointer-events:none
+          // to make it genuinely UNCLICKABLE (no click, no hover, not-allowed cursor), not just a guarded no-op.
+          // The act() guard stays as defense-in-depth.
           pushB.setDisabled(clean); pullB.setDisabled(clean);
+          pushB.extraSettingsEl.style.pointerEvents = clean ? "none" : "";
+          pullB.extraSettingsEl.style.pointerEvents = clean ? "none" : "";
           pushB.setTooltip(clean ? "Already in sync — nothing to push" : "Push this device's copy to the server");
           pullB.setTooltip(clean ? "Already in sync — nothing to pull" : "Pull the server's copy to this device");
         };

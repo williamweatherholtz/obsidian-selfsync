@@ -193,8 +193,9 @@ describe("settings tab renders and wires its controls", () => {
     const push = containerEl.querySelector('[aria-label*="Push this device"]') as HTMLElement;
     await flush(); // async convergence check resolves → disables the buttons
     expect(p.pluginSyncClean).toHaveBeenCalledWith("dataview");
-    // Clicking a converged button is a guarded no-op: no preview, no overwrite (a live button always means a
-    // real action). The convergence state refreshes within ~a second, so a concurrent edit is a brief wait.
+    // Genuinely UNCLICKABLE (owner: not just greyed): pointer-events:none makes it inert in the browser...
+    expect(push.style.pointerEvents).toBe("none");
+    // ...and the act() guard is defense-in-depth — a click is a no-op: no preview, no overwrite.
     push.click(); await flush();
     expect(p.pluginPushPullPreview).not.toHaveBeenCalled();
     expect(p.pushPlugin).not.toHaveBeenCalled();
