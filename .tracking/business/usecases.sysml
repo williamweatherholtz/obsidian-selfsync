@@ -200,6 +200,13 @@ package ProjectUseCases {
         :>> mainSuccess = "Every security event (sign-in success/failure, lockout, account/registration/invite/share/vault/admin change, authorization denial) is emitted as one structured JSON line with who/what/when/outcome/source-IP, which the operator collects and reviews.";
         :>> extensions = "Log fields are injection-hardened (control chars stripped, bounded length). | The posture maps to CMMC L2 / NIST 800-171 AU controls; CUI-specific controls are formally N/A for a no-CUI deployment (D0027).";
     }
+    use case ucNotifyForeignConfigChange : UseCase {
+        :>> id = "c0f1a5cc-b20d-4a10-9b20-a1b2c3d402ad"; :>> title = "Be told when someone ELSE changed my synced settings";
+        :>> createdAt = "2026-08-05"; :>> createdBy = "wweatherholtz";
+        :>> description = "A synced Obsidian setting, theme/CSS, or community plugin changes on this device via sync. The user wants to know about it ONLY when they didn't make the change themselves — so a co-editor's (or, by choice, their own other device's) change is surfaced for review, and their own edits never nag.";
+        :>> mainSuccess = "The server records each change's author (authenticated account) + originating device (stable UUID + name); the client compares the incoming change's source to itself and, per the notify preference, shows an actionable notice naming WHO changed WHAT ('alice changed <plugin>…') only when the source is someone else — staying silent for the user's own edits.";
+        :>> extensions = "Default preference notifies only on ANOTHER PERSON's change; an opt-in also notifies on the user's OWN account from a DIFFERENT device. | Renaming a device cannot forge or dodge a notification — identity is the account then the UUID, never the mutable name. | A pre-provenance change (older peer/server, reindex) has an unknown author and notifies conservatively. | The decision never depends on whether the vault is shared — only on the source. | The synced-plugin CODE auto-execution trust barrier is unchanged and orthogonal: a peer's code still requires a manual restart.";
+    }
     use case ucSyncSelfHeals : UseCase {
         :>> id = "c0f1a5cc-b20a-4a10-9b20-a1b2c3d402aa"; :>> title = "Sync recovers on its own after a drop";
         :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
@@ -285,4 +292,7 @@ package ProjectUseCases {
     #DependsOn dependency from ucMigrateFromLiveSync to goal2SimpleBackend;
     // Tie the existing general admin use case to the new administration Need too.
     #DependsOn dependency from ucAdministerServer to nAccountAdministration;
+    // Change-attribution notification (2026-08-05): a collaboration/multi-device trust use case.
+    #DependsOn dependency from ucNotifyForeignConfigChange to collaborator;
+    #DependsOn dependency from ucNotifyForeignConfigChange to nChangeAttribution;
 }
