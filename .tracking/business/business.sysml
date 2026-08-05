@@ -289,6 +289,13 @@ package ProjectBusiness {
         :>> statement = "When a synced Obsidian setting or plugin changes, I want to be told WHO made it — and notified only when it was NOT me: a change from another person (or, by choice, from another of my own devices) is surfaced for review, while my own edits stay silent. The trigger is the SOURCE of the change, never whether the vault is shared. Attribution is by authenticated account plus a stable device identity, so it can't be dodged or forged by renaming a device.";
         :>> priority = Priority::should;
     }
+    requirement nPushPullPreview : Need {
+        :>> id = "c0f1a5cc-e208-4a10-9b20-a1b2c3d40208";
+        :>> title = "Push and Pull show WHAT will change and BETWEEN WHICH endpoints";
+        :>> source = NeedSource::customer;
+        :>> statement = "Before I authoritatively Push a plugin's settings to the server (and thereby my other devices) or Pull the server's copy over my own, I want to SEE what the overwrite will do — which files are overwritten, added, or removed (and, for text settings, the content differences) — and clearly FROM which endpoint TO which (this device <-> the server + other devices). An authoritative overwrite must be an INFORMED choice, not a blind one; a generic 'this overwrites the server's copy' warning that never says what or how much is not enough.";
+        :>> priority = Priority::should;
+    }
 
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
@@ -323,6 +330,9 @@ package ProjectBusiness {
     // Change attribution — knowing WHO changed a synced setting — is a collaboration/multi-device trust
     // capability, so it decomposes the sharing Need (2026-08-05).
     #DependsOn dependency from nChangeAttribution to nVaultSharing;
+    // Push/Pull transparency — showing what an authoritative overwrite will do + between which endpoints —
+    // is the honest-status (non-misleading-UX) principle applied to a destructive action (2026-08-05).
+    #DependsOn dependency from nPushPullPreview to nHonestStatus;
     // Also root the two pre-existing cross-cutting Needs that had no Brief lineage edge.
     #DependsOn dependency from nxMobile to selfsyncBrief;
     #DependsOn dependency from nxSecurity to selfsyncBrief;

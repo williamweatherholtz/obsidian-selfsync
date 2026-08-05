@@ -207,6 +207,13 @@ package ProjectUseCases {
         :>> mainSuccess = "The server records each change's author (authenticated account) + originating device (stable UUID + name); the client compares the incoming change's source to itself and, per the notify preference, shows an actionable notice naming WHO changed WHAT ('alice changed <plugin>…') only when the source is someone else — staying silent for the user's own edits.";
         :>> extensions = "Default preference notifies only on ANOTHER PERSON's change; an opt-in also notifies on the user's OWN account from a DIFFERENT device. | Renaming a device cannot forge or dodge a notification — identity is the account then the UUID, never the mutable name. | A pre-provenance change (older peer/server, reindex) has an unknown author and notifies conservatively. | The decision never depends on whether the vault is shared — only on the source. | The synced-plugin CODE auto-execution trust barrier is unchanged and orthogonal: a peer's code still requires a manual restart.";
     }
+    use case ucPreviewPushPull : UseCase {
+        :>> id = "c0f1a5cc-b20e-4a10-9b20-a1b2c3d402ae"; :>> title = "See what a plugin Push/Pull will change before confirming";
+        :>> createdAt = "2026-08-05"; :>> createdBy = "wweatherholtz";
+        :>> description = "Before authoritatively Pushing a plugin's settings to the server (and thereby other devices) or Pulling the server's copy over this device's, the user wants to see WHAT the overwrite will do and BETWEEN WHICH endpoints — not a generic 'this overwrites the server's copy' warning.";
+        :>> mainSuccess = "The Push/Pull confirm shows the direction (this device <-> the server + other devices), a per-file list of what will be overwritten / added / removed with counts, and an on-demand line diff for the changed text settings — so the user confirms an INFORMED overwrite; an already-in-sync folder shows 'nothing to change' and offers no destructive action.";
+        :>> extensions = "The preview is READ-ONLY (hashes + on-demand fetches, never mutates). | It uses the SAME file union + hash basis as the real push/pull, so it can't mislead about what will happen. | SelfSync's own credential folder is never previewable. | A binary or oversized file shows a marker instead of a diff.";
+    }
     use case ucSyncSelfHeals : UseCase {
         :>> id = "c0f1a5cc-b20a-4a10-9b20-a1b2c3d402aa"; :>> title = "Sync recovers on its own after a drop";
         :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
@@ -295,4 +302,7 @@ package ProjectUseCases {
     // Change-attribution notification (2026-08-05): a collaboration/multi-device trust use case.
     #DependsOn dependency from ucNotifyForeignConfigChange to collaborator;
     #DependsOn dependency from ucNotifyForeignConfigChange to nChangeAttribution;
+    // Push/Pull preview (2026-08-05): informed authoritative overwrites — a self-hoster transparency use case.
+    #DependsOn dependency from ucPreviewPushPull to selfHoster;
+    #DependsOn dependency from ucPreviewPushPull to nPushPullPreview;
 }
