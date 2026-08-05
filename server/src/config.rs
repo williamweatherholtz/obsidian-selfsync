@@ -25,6 +25,12 @@ pub struct Config {
     // opts in with REQUIRE_ADMIN_MFA=1 (like TLS/audit-retention, an operator-configured control). A
     // non-MFA admin can still reach the (AuthToken-gated, non-admin) MFA-enrollment routes to enroll.
     pub require_admin_mfa: bool,
+    // D0038: MFA (TOTP) is DEPRECATED and OFF by default. When false (default), the MFA feature is
+    // fully disabled — login never demands a TOTP second factor (so an already-enrolled account signs
+    // in with its password alone, no lockout), the REQUIRE_ADMIN_MFA gate has no effect, the /api/mfa/*
+    // routes are not mounted, and the admin console hides the Two-factor panel. The mfa.rs/totp.rs code
+    // is retained (dormant), so MFA_ENABLED=1 restores the feature with no re-implementation.
+    pub mfa_enabled: bool,
     // Per-file size ceiling in BYTES (env MAX_FILE_MB, default 512). The hard limit any single file
     // may reach on this server — enforced on commit. Raising it raises transient reassembly RAM
     // (≈ this × concurrent large commits), so it's an operator knob, not a client one.
@@ -75,6 +81,7 @@ impl Config {
             invite_code: env("INVITE_CODE", ""),
             login_banner: env("SYNC_LOGIN_BANNER", ""),
             require_admin_mfa: env("REQUIRE_ADMIN_MFA", "") == "1",
+            mfa_enabled: env("MFA_ENABLED", "") == "1", // D0038: MFA deprecated — off unless explicitly re-enabled
             // MAX_FILE_MB (default 512). Parse defensively: a junk/zero value falls back to 512.
             max_file_bytes: {
                 let mb = env("MAX_FILE_MB", "512").parse::<u64>().ok().filter(|&m| m > 0).unwrap_or(512);

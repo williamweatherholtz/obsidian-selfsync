@@ -32,7 +32,9 @@ fn require_admin(st: &AppState, user: &str, ip: &str) -> Result<(), AppError> {
     // account cannot act until it has enrolled TOTP — making MFA required for privileged accounts, not
     // merely available. Enrollment itself is on the (AuthToken-gated, non-admin) /api/mfa/* routes, so
     // a fresh admin can still enroll and is never locked out.
-    if st.cfg.require_admin_mfa && !lock(&st.users)?.totp_enabled(user) {
+    // D0038: the admin-MFA enrolment gate applies only when MFA is enabled (off by default). With MFA
+    // deprecated, REQUIRE_ADMIN_MFA has no effect unless MFA_ENABLED=1 also re-enables the feature.
+    if st.cfg.mfa_enabled && st.cfg.require_admin_mfa && !lock(&st.users)?.totp_enabled(user) {
         audit(action::AUTHZ_DENIED, user, "admin", outcome::DENIED, ip);
         return Err(AppError::Forbidden);
     }
@@ -43,10 +45,12 @@ fn require_admin(st: &AppState, user: &str, ip: &str) -> Result<(), AppError> {
 pub struct MeResp {
     username: String,
     is_server_admin: bool,
+    // D0038: tells the admin console whether to show the Two-factor panel (MFA is off by default).
+    mfa_enabled: bool,
 }
 pub async fn me(AuthToken(user): AuthToken, State(st): State<AppState>) -> Json<MeResp> {
     let is_server_admin = is_server_admin(&st, &user);
-    Json(MeResp { username: user, is_server_admin })
+    Json(MeResp { username: user, is_server_admin, mfa_enabled: st.cfg.mfa_enabled })
 }
 
 #[derive(Serialize, Clone)]

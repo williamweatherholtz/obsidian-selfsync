@@ -175,7 +175,8 @@ async function dashboard() {
   $("who").innerHTML = `signed in as <strong>${esc(me.username)}</strong>${me.is_server_admin ? '<span class="badge">server-admin</span>' : ''} · <a href="#" id="out">sign out</a>`;
   $("out").onclick = (e) => { e.preventDefault(); signOut(); };
 
-  let html = `<h2>Two-factor authentication</h2><div class="panel" id="mfa"><div class="empty">Loading…</div></div>`;
+  // D0038: MFA is deprecated + off by default — show the Two-factor panel only when the server reports it enabled.
+  let html = me.mfa_enabled ? `<h2>Two-factor authentication</h2><div class="panel" id="mfa"><div class="empty">Loading…</div></div>` : "";
   html += `<h2>My vaults</h2><div class="panel" id="vaults"><div class="empty">Loading…</div></div>`;
   html += `<h2>Sharing</h2><div class="panel" id="sharing"><div class="empty">Loading…</div></div>`;
   if (me.is_server_admin) {
@@ -184,7 +185,7 @@ async function dashboard() {
     html += `<h2>Invite tokens</h2><div class="panel" id="invites"><div class="empty">Loading…</div></div>`;
   }
   $("app").innerHTML = html;
-  await renderMfa();
+  if (me.mfa_enabled) await renderMfa(); // D0038: MFA deprecated — only when re-enabled
   await renderVaults();
   await renderSharing();
   if (me.is_server_admin) { await renderUsers(); await renderReg(); await renderInvites(); }

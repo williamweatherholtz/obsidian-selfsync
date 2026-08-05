@@ -86,13 +86,16 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         .route("/api/share-redeem", post(admin::share_link_redeem))
         // D0037 onboarding: PUBLIC (no login) — redeem a vault share link AS a new account. The valid
         // single-use link authorizes account creation even under Closed registration (link-as-invite).
-        .route("/api/share-redeem-register", post(admin::share_redeem_register))
-        // IA.3.5.3: self-service MFA (TOTP) — AuthToken-gated, safe on both surfaces (the admin page
-        // surfaces enroll/confirm/disable for privileged accounts; login verifies the second factor).
-        .route("/api/mfa/status", get(mfa::status))
-        .route("/api/mfa/enroll", post(mfa::enroll))
-        .route("/api/mfa/confirm", post(mfa::confirm))
-        .route("/api/mfa/disable", post(mfa::disable));
+        .route("/api/share-redeem-register", post(admin::share_redeem_register));
+    // D0038: MFA (TOTP) is DEPRECATED + off by default — mount the self-service /api/mfa/* routes ONLY
+    // when MFA_ENABLED=1 re-enables the feature. The mfa module stays compiled (dormant) for reversal.
+    if state.cfg.mfa_enabled {
+        r = r
+            .route("/api/mfa/status", get(mfa::status))
+            .route("/api/mfa/enroll", post(mfa::enroll))
+            .route("/api/mfa/confirm", post(mfa::confirm))
+            .route("/api/mfa/disable", post(mfa::disable));
+    }
     if include_public {
         r = r
             .route("/api/register", post(auth::register))

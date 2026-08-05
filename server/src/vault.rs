@@ -621,6 +621,22 @@ impl Vault {
         // error is a genuine no-op instead of version churn + a spurious "changed". (protocol-5)
         if let Some(m) = &existing {
             if m.hash == req.hash && m.chunks == req.chunks {
+                // mirrorWriteSelfHeal (STPA-hunt): the bind-mount mirror can be STALE if an earlier
+                // commit's best-effort write_mirror failed — harmless for sync (the chunk store is
+                // authoritative + serves get_chunk), but wrong for a user editing on the host FS. This
+                // idempotent re-commit is otherwise a pure no-op, so heal the mirror here when it's
+                // absent or its bytes differ, instead of leaving it stale until the next real change.
+                // Gate on cheap METADATA (existence + size), not a full-file read (avoids re-reading a
+                // large file on every idempotent re-commit — critique #2). write_mirror is atomic
+                // (temp+fsync+rename), so a mirror can only be the whole correct content or absent/old —
+                // never a torn same-size file — so a size match is a reliable "already healed" signal.
+                let abs = self.vault_dir.join(&rel);
+                let mirror_ok = std::fs::metadata(&abs).map(|meta| meta.len() == body.len() as u64).unwrap_or(false);
+                if !mirror_ok {
+                    if let Err(e) = write_mirror(&abs, &body) {
+                        log::warn!("[commit] mirror self-heal failed for '{}': {e} (content is durable in the chunk store)", req.path);
+                    }
+                }
                 return Ok(m.clone());
             }
         }
@@ -863,6 +879,25 @@ mod tests {
         for ok in [".gitignore", "my note.md", "a.b.c.md", "notes/deep file.md"] {
             assert!(safe_rel_path(ok).is_some(), "expected accept: {ok}");
         }
+    }
+
+    // mirrorWriteSelfHeal: an idempotent re-commit (identical content) repairs a bind-mount mirror a
+    // prior best-effort write left stale/missing — previously the short-circuit returned before it.
+    #[test]
+    fn idempotent_recommit_self_heals_a_missing_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"hello world";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        let mirror = dir.path().join("vault").join("n.md"); // vault_dir = root/vault
+        assert_eq!(std::fs::read(&mirror).unwrap(), body, "mirror written on first commit");
+        // Simulate a torn/failed mirror write: the index (authoritative) still has the file, mirror gone.
+        std::fs::remove_file(&mirror).unwrap();
+        // The idempotent re-commit — previously a pure no-op — now re-writes the mirror from the store.
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        assert_eq!(std::fs::read(&mirror).unwrap(), body, "idempotent re-commit self-healed the missing mirror");
     }
 
     #[test]

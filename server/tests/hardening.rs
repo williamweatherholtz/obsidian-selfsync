@@ -251,6 +251,7 @@ fn corrupt_json_stores_fail_loud_not_silent_reset() {
         invite_code: String::new(),
         login_banner: String::new(),
         require_admin_mfa: false,
+        mfa_enabled: false,
         max_file_bytes: 512 * 1024 * 1024,
     };
     for store in [".users.json", ".admins.json", ".shares.json"] {

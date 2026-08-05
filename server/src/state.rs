@@ -123,6 +123,12 @@ pub const COMMIT_LARGE_BYTES: u64 = 16 * 1024 * 1024;
 impl AppState {
     pub fn new(cfg: Config) -> std::io::Result<Self> {
         std::fs::create_dir_all(&cfg.data_root)?;
+        // D0038 migration guard (critique #1): warn loudly if a deployment still sets REQUIRE_ADMIN_MFA=1
+        // but MFA is now off — that flag silently no-ops, so admin MFA is NOT enforced. Surface it so an
+        // operator upgrading from a mandatory-admin-MFA setup isn't unknowingly downgraded.
+        if cfg.require_admin_mfa && !cfg.mfa_enabled {
+            log::warn!("REQUIRE_ADMIN_MFA=1 but MFA is disabled (deprecated, D0038) — admin two-factor is NOT enforced. Set MFA_ENABLED=1 to restore MFA, or unset REQUIRE_ADMIN_MFA.");
+        }
         let mut users = UserStore::open(&cfg.data_root.join(".users.json"))?;
         // Back-compat bootstrap: seed the configured account + its default vault
         // on a fresh store so existing single-user setups keep working.
@@ -379,10 +385,12 @@ impl AppState {
         if let Ok(mut d) = self.deleted_vaults.lock() { d.remove(&(owner.to_string(), vault.to_string())); }
     }
 
-    pub fn for_test(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false) }
-    // Like for_test, but with the admin-MFA enforcement flag (crit-round IA.3.5.3) settable.
-    pub fn for_test_admin_mfa(data_root: &Path) -> Self { Self::for_test_cfg(data_root, true) }
-    fn for_test_cfg(data_root: &Path, require_admin_mfa: bool) -> Self {
+    pub fn for_test(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false, false) }
+    // MFA is deprecated + OFF by default (D0038); the MFA tests opt it back ON via these helpers so the
+    // retained feature stays exercised. for_test_mfa: MFA on. for_test_admin_mfa: MFA on + admin-required.
+    pub fn for_test_mfa(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false, true) }
+    pub fn for_test_admin_mfa(data_root: &Path) -> Self { Self::for_test_cfg(data_root, true, true) }
+    fn for_test_cfg(data_root: &Path, require_admin_mfa: bool, mfa_enabled: bool) -> Self {
         let cfg = Config {
             data_root: data_root.to_path_buf(),
             bind_addr: "127.0.0.1:0".into(),
@@ -394,6 +402,7 @@ impl AppState {
             invite_code: String::new(),
             login_banner: String::new(),
             require_admin_mfa,
+            mfa_enabled,
             max_file_bytes: 512 * 1024 * 1024,
         };
         let st = AppState::new(cfg).unwrap();

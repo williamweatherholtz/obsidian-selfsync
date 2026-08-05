@@ -165,6 +165,11 @@ fn session_alive(st: &AppState, owner: &str, vault: &str, user: &str, token: &st
         Err(_) => false,
     };
     if !token_ok { return false; }
+    // wsSessionAliveMustCheck (WS-hunt, defense-in-depth): a must-change account must not keep a live
+    // subscription — mirror the connect-time gate here so this liveness check is SELF-CONTAINED, not
+    // merely transitive through the paired token revocation callers are expected to also do. Fail-closed
+    // on a poisoned users lock (tear the socket down).
+    if lock(&st.users).map(|g| g.must_change(user)).unwrap_or(true) { return false; }
     let acl_ok = match lock(&st.shares) {
         Ok(g) => g.authorized(owner, vault, user, crate::shares::Access::Read),
         Err(_) => false,
@@ -258,5 +263,17 @@ mod tests {
         assert!(session_alive(&st, "admin", "vault", "admin", &t2));
         lock(&st.tokens).unwrap().revoke_user("admin").unwrap();
         assert!(!session_alive(&st, "admin", "vault", "admin", &t2), "logout-all / password change tears every socket down");
+    }
+
+    // wsSessionAliveMustCheck: a must-change account's live socket tears down through the must_change
+    // dimension ITSELF (self-contained), not merely transitively via a paired token revocation.
+    #[test]
+    fn ws_session_dies_when_the_account_is_flagged_must_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = AppState::for_test(dir.path());
+        let t = lock(&st.tokens).unwrap().issue("admin").unwrap();
+        assert!(session_alive(&st, "admin", "vault", "admin", &t), "a normal account keeps the socket alive");
+        lock(&st.users).unwrap().set_must_change("admin", true).unwrap();
+        assert!(!session_alive(&st, "admin", "vault", "admin", &t), "a must-change account tears down even with a still-valid token");
     }
 }

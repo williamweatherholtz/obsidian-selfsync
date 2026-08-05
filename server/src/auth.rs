@@ -99,7 +99,9 @@ pub async fn login(
         // TOTP (or single-use recovery) second factor. A missing/invalid factor is a distinct 401 "mfa
         // required" so the client prompts; the login-throttle failure is NOT cleared until BOTH factors
         // pass, so MFA-enabled accounts get the same brute-force protection on the second factor.
-        if lock(&st.users)?.totp_enabled(&req.username) {
+        // D0038: MFA deprecated — enforce the TOTP second factor ONLY when MFA is enabled. When off
+        // (default), an account that had enrolled TOTP signs in with its password alone (no lockout).
+        if st.cfg.mfa_enabled && lock(&st.users)?.totp_enabled(&req.username) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let second_ok = match req.totp.as_deref() {
                 Some(code) if !code.trim().is_empty() =>

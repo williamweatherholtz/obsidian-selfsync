@@ -14,6 +14,19 @@ async fn spawn() -> String {
     format!("http://{addr}")
 }
 
+// D0038: MFA is deprecated + OFF by default, so the MFA lifecycle tests spawn with it explicitly
+// RE-ENABLED (for_test_mfa) to keep the retained TOTP code under test (and prove reversal works).
+async fn spawn_mfa() -> String {
+    let dir = tempdir().unwrap();
+    let root = Box::leak(Box::new(dir)).path().to_path_buf();
+    let state = AppState::for_test_mfa(&root);
+    state.users.lock().unwrap().register("bob", "pw").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
+    format!("http://{addr}")
+}
+
 // Same fixture, but bound to the PUBLIC-only router (the default-split public port).
 async fn spawn_public() -> String {
     let dir = tempdir().unwrap();
@@ -352,11 +365,23 @@ async fn password_change_rejects_reuse_of_a_recent_password(/* IA.3.5.8 */) {
     assert_eq!(send(&base, "POST", "/api/password", &t2, json!({"current":"First-Pass-1","new_password":"Second-Pass-2"})).await, 200);
 }
 
+// D0038: MFA is DEPRECATED + OFF by default — the /api/mfa/* routes are not mounted and the admin
+// console is told to hide the Two-factor panel. (The retained TOTP code is still verified above via
+// for_test_mfa, proving MFA_ENABLED=1 restores it.)
+#[tokio::test]
+async fn mfa_is_off_by_default() {
+    let base = spawn().await; // default: MFA off
+    let t = login(&base, "bob").await;
+    assert_eq!(reqwest::Client::new().post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap().status().as_u16(), 404, "MFA routes are unmounted when disabled");
+    let (_s, me) = get(&base, "/api/admin/me", &login(&base, "admin").await).await;
+    assert_eq!(me["mfa_enabled"], json!(false), "the admin console is told MFA is off");
+}
+
 #[tokio::test]
 async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let base = spawn().await;
+    let base = spawn_mfa().await; // D0038: MFA re-enabled for this retained-feature test
     let c = reqwest::Client::new();
     let t = login(&base, "bob").await; // bob's password is "pw"
     // Enroll -> secret; confirm with a live code -> recovery codes; MFA now enabled.
@@ -395,7 +420,7 @@ async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
 async fn totp_code_cannot_be_replayed_within_its_window() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let base = spawn().await;
+    let base = spawn_mfa().await; // D0038: MFA re-enabled for this retained-feature test
     let c = reqwest::Client::new();
     let t = login(&base, "bob").await;
     let secret = c.post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap()
