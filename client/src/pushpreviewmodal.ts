@@ -1,5 +1,5 @@
 import { App, Modal, Setting } from "obsidian";
-import { PluginPushPreview, FileChange, PushPullOp, DiffLine, countChanges, touchedCount } from "./pushpreview";
+import { PluginPushPreview, FileChangeView, PushPullOp, DiffLine, countChanges, touchedCount, serverProvenanceWho } from "./pushpreview";
 
 // The Push/Pull PREVIEW confirm (nPushPullPreview): instead of a generic "this overwrites the server's
 // copy" warning, show WHAT the authoritative overwrite will do (per-file overwrite/add/remove + counts),
@@ -61,8 +61,9 @@ export class PushPreviewModal extends Modal {
       });
   }
 
-  // One changed file: an op badge + its path (relative to the plugin folder) + an on-demand diff toggle.
-  private renderFileRow(list: HTMLElement, ch: FileChange) {
+  // One changed file: an op badge + its path (relative to the plugin folder) + the SERVER copy's provenance
+  // (who last wrote it + when) + an on-demand diff toggle.
+  private renderFileRow(list: HTMLElement, ch: FileChangeView) {
     const row = list.createEl("div");
     row.setAttribute("style", "border-top:1px solid var(--background-modifier-border);padding:6px 2px;");
     const head = row.createEl("div");
@@ -71,6 +72,10 @@ export class PushPreviewModal extends Modal {
     badge.setAttribute("style", `font-size:11px;font-weight:600;color:${OP_COLOR[ch.op]};min-width:64px;`);
     head.createEl("span", { text: this.shortPath(ch.path) })
       .setAttribute("style", "font-size:12px;font-family:var(--font-monospace);word-break:break-all;");
+    // Provenance of the SERVER copy (nChangeAttribution): whose settings you're overwriting (push) or adopting
+    // (pull), and when. Shown wherever a server copy is involved; a pre-provenance file shows just the time.
+    const prov = this.serverProvenance(ch);
+    if (prov) row.createEl("div", { text: prov }).setAttribute("style", "font-size:11px;color:var(--text-muted);margin:2px 0 0 72px;");
 
     const box = row.createEl("pre");
     box.setAttribute("style", "display:none;font-size:11px;max-height:30vh;overflow:auto;margin:6px 0 0;padding:6px;background:var(--background-secondary);border-radius:4px;");
@@ -102,6 +107,17 @@ export class PushPreviewModal extends Modal {
         : l.type === "del" ? "var(--color-red, var(--text-error))" : "var(--text-muted)";
       el.setAttribute("style", `color:${col};white-space:pre-wrap;margin:0;`);
     }
+  }
+
+  // "on server: will · Will's Desktop · Aug 5, 3:14 PM" — WHO last wrote the server copy + WHEN. Null when no
+  // server copy is involved (a local-only file), so no line renders. A pre-provenance file shows just the time.
+  private serverProvenance(ch: FileChangeView): string | null {
+    const who = serverProvenanceWho(ch.author, ch.deviceName);
+    const when = ch.mtime !== undefined
+      ? new Date(ch.mtime).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+      : "";
+    if (!who && !when) return null;
+    return `on server: ${[who, when].filter(Boolean).join(" · ")}`;
   }
 
   // Strip the `.obsidian/plugins/<id>/` prefix so the row shows just `data.json`, `styles.css`, etc.

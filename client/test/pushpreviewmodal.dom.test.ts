@@ -14,9 +14,9 @@ function preview(over: Partial<PluginPushPreview> = {}): PluginPushPreview {
     fromLabel: "this device (Laptop)",
     toLabel: "the server + your other devices",
     changes: [
-      { path: ".obsidian/plugins/dataview/data.json", op: "overwrite" },
-      { path: ".obsidian/plugins/dataview/newfile.json", op: "create" },
-      { path: ".obsidian/plugins/dataview/gone.css", op: "delete" },
+      { path: ".obsidian/plugins/dataview/data.json", op: "overwrite", author: "will", deviceName: "Will's Desktop", mtime: 1000000000000 },
+      { path: ".obsidian/plugins/dataview/newfile.json", op: "create" }, // local-only → no server provenance
+      { path: ".obsidian/plugins/dataview/gone.css", op: "delete", author: "alice", deviceName: "Alice-PC", mtime: 1000000000000 },
       { path: ".obsidian/plugins/dataview/styles.css", op: "unchanged" },
     ],
     loadDiff: vi.fn(async () => [{ type: "del" as const, text: '"k": 1' }, { type: "add" as const, text: '"k": 2' }]),
@@ -36,6 +36,15 @@ describe("PushPreviewModal", () => {
     expect(text).toMatch(/1 added/);
     expect(text).toMatch(/1 removed/);
     expect(text).toContain("1 unchanged");
+  });
+
+  it("shows the SERVER copy's provenance — who last wrote it (user + device) — on files that touch the server", () => {
+    const m = new PushPreviewModal(fakePlugin().app, preview(), () => {});
+    m.onOpen();
+    const t = m.contentEl.textContent ?? "";
+    expect(t).toContain("on server:");
+    expect(t).toContain("will · Will's Desktop"); // overwrite: whose server copy you're overwriting
+    expect(t).toContain("alice · Alice-PC");      // delete: whose server file you're removing
   });
 
   it("lists changed files by short path but hides the unchanged one", () => {

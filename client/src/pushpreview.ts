@@ -10,6 +10,19 @@ export type PushPullOp = "overwrite" | "create" | "delete" | "unchanged";
 export interface FileChange { path: string; op: PushPullOp }
 export type PushDirection = "push" | "pull";
 
+// A change row enriched with the SERVER copy's provenance (nChangeAttribution): WHO last committed the
+// server's version and WHEN. Shown so a Push tells you whose settings you're overwriting, and a Pull tells
+// you whose settings you're adopting. Present only where a server copy is involved (overwrite/create/delete
+// that touches the server side); absent for a local-only file. `author` is the server-authenticated user.
+export interface FileChangeView extends FileChange { author?: string; deviceName?: string; mtime?: number }
+
+// The human "who" for a server copy's provenance line: "user · Device" when both are known, else whichever
+// is known, else null (a pre-provenance file has no author — the caller then shows just the timestamp).
+export function serverProvenanceWho(author?: string, deviceName?: string): string | null {
+  if (author && deviceName) return `${author} · ${deviceName}`;
+  return author ?? deviceName ?? null;
+}
+
 // One side's state for a path: whether it's PRESENT there and (when known) its content HASH. `present` with
 // `hash === undefined` means "present but content not compared" — a large file we deliberately didn't read
 // to bound memory — which is treated as possibly-different (never provably unchanged). The two notions are
@@ -81,7 +94,7 @@ export interface PluginPushPreview {
   name: string;
   fromLabel: string;
   toLabel: string;
-  changes: FileChange[];
+  changes: FileChangeView[];
   loadDiff: (path: string) => Promise<DiffLine[] | "binary" | "too-large">;
 }
 // Above this combined line count the LCS DP (O(n·m)) is too heavy for a modal — return null ("too large

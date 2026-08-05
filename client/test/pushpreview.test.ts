@@ -1,5 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { classifyPushPull, countChanges, touchedCount, lineDiff, stampsConverged } from "../src/pushpreview";
+import { classifyPushPull, countChanges, touchedCount, lineDiff, stampsConverged, serverProvenanceWho } from "../src/pushpreview";
+
+describe("serverProvenanceWho — 'who last wrote the server copy' label", () => {
+  it("combines user + device when both known", () => {
+    expect(serverProvenanceWho("will", "Will's Desktop")).toBe("will · Will's Desktop");
+  });
+  it("falls back to whichever is known", () => {
+    expect(serverProvenanceWho("will", undefined)).toBe("will");
+    expect(serverProvenanceWho(undefined, "Will's Desktop")).toBe("Will's Desktop");
+  });
+  it("returns null when neither is known (a pre-provenance file → caller shows just the timestamp)", () => {
+    expect(serverProvenanceWho(undefined, undefined)).toBeNull();
+  });
+});
 
 // The instant, network-free grey-out signal: local (size,mtime) stamps vs the last-synced base. Converged
 // (both actions are no-ops) ⟺ same file set AND every stamp matches; conservative false on any doubt.

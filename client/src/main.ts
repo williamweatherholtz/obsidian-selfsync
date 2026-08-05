@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi, fetchFileBytes } from "./sync";
 import { sha256hex } from "./chunker";
-import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, SideState } from "./pushpreview";
+import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
@@ -717,7 +717,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       }
       files.push({ path: p, local: localSide, server });
     }
-    const changes = classifyPushPull(files, direction);
+    // Enrich each change with the SERVER copy's provenance (nChangeAttribution) — WHO last wrote it + WHEN —
+    // so a Push shows whose settings you're overwriting and a Pull shows whose you're adopting. Only where a
+    // server copy exists (m present); a local-only file carries none.
+    const changes: FileChangeView[] = classifyPushPull(files, direction).map((c) => {
+      const m = serverMetas.get(c.path);
+      return { ...c, author: m?.author, deviceName: m?.deviceName, mtime: m?.mtime };
+    });
     const dev = this.deviceLabel();
     const DIFF_CAP = 512 << 10; // 512 KiB — above this, "Show diff" won't fetch/decode the file
     // A changed TEXT file's diff, loaded ON DEMAND (only when its row is expanded): old = the TARGET being
