@@ -38,6 +38,8 @@ export function fakePlugin(over: any = {}) {
     setPluginSync: vi.fn(async (id: string, on: boolean) => { const set = new Set(settings.configSync.pluginAllow); if (on) set.add(id); else set.delete(id); settings.configSync.pluginAllow = [...set]; await p.applyConfigSyncChange(); }),
     pushPlugin: vi.fn(async () => 0),
     pullPlugin: vi.fn(async () => 0),
+    pluginSyncClean: vi.fn(async () => false), // default: NOT converged → Push/Pull buttons stay live
+
     pluginPushPullPreview: vi.fn(async (id: string, direction: "push" | "pull") => ({
       direction, name: id, fromLabel: "this device (Test)", toLabel: "the server",
       changes: [{ path: `.obsidian/plugins/${id}/data.json`, op: "overwrite" as const }],

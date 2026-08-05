@@ -1,5 +1,32 @@
 import { describe, it, expect } from "vitest";
-import { classifyPushPull, countChanges, touchedCount, lineDiff } from "../src/pushpreview";
+import { classifyPushPull, countChanges, touchedCount, lineDiff, stampsConverged } from "../src/pushpreview";
+
+// The instant, network-free grey-out signal: local (size,mtime) stamps vs the last-synced base. Converged
+// (both actions are no-ops) ⟺ same file set AND every stamp matches; conservative false on any doubt.
+describe("stampsConverged — the Push/Pull grey-out signal", () => {
+  const lm = (e: [string, { size: number; mtime: number }][]) => new Map(e);
+  it("same files + matching stamps → converged (grey out)", () => {
+    const base = [{ path: "a", size: 10, mtime: 100 }, { path: "b", size: 20, mtime: 200 }];
+    expect(stampsConverged(base, lm([["a", { size: 10, mtime: 100 }], ["b", { size: 20, mtime: 200 }]]))).toBe(true);
+  });
+  it("a changed stamp (size OR mtime) → NOT converged (keep live)", () => {
+    const base = [{ path: "a", size: 10, mtime: 100 }];
+    expect(stampsConverged(base, lm([["a", { size: 11, mtime: 100 }]]))).toBe(false); // size drift
+    expect(stampsConverged(base, lm([["a", { size: 10, mtime: 101 }]]))).toBe(false); // mtime drift
+  });
+  it("a local-only file or a base file gone locally → NOT converged", () => {
+    const base = [{ path: "a", size: 10, mtime: 100 }];
+    expect(stampsConverged(base, lm([["a", { size: 10, mtime: 100 }], ["extra", { size: 1, mtime: 1 }]]))).toBe(false); // local-only
+    expect(stampsConverged(base, lm([]))).toBe(false); // base file missing locally
+  });
+  it("a base entry with NO stamp → NOT converged (can't confirm cheaply, so stay live)", () => {
+    const base = [{ path: "a", size: undefined, mtime: undefined }];
+    expect(stampsConverged(base, lm([["a", { size: 10, mtime: 100 }]]))).toBe(false);
+  });
+  it("an empty folder on both sides → converged (vacuously in sync)", () => {
+    expect(stampsConverged([], lm([]))).toBe(true);
+  });
+});
 
 // classifyPushPull must mirror resolveConfigConflict EXACTLY (reconcile.ts): the SOURCE side wins and the
 // TARGET is overwritten. push => local is the source; pull => server is the source.

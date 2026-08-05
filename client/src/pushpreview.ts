@@ -51,6 +51,25 @@ export function touchedCount(changes: readonly FileChange[]): number {
   return changes.reduce((n, ch) => n + (ch.op === "unchanged" ? 0 : 1), 0);
 }
 
+// Instant, network-free convergence check behind the Push/Pull GREY-OUT (nPushPullPreview): is a plugin
+// folder already in sync (local == the last-synced base)? Compares the base's persisted (size, mtime) stamps
+// to a fresh scoped local walk — NO hashing, NO server fetch. Converged ⟺ the SAME set of syncable files AND
+// every base file's stamp matches local. Conservative: a missing stamp, a set mismatch, or a missing file →
+// NOT converged, so the buttons stay live rather than falsely greying an action that would do something.
+export function stampsConverged(
+  base: readonly { path: string; size?: number; mtime?: number }[],
+  local: ReadonlyMap<string, { size: number; mtime: number }>,
+): boolean {
+  if (base.length !== local.size) return false; // a local-only file (would push) or a base file gone locally (would delete)
+  for (const b of base) {
+    const l = local.get(b.path);
+    if (!l) return false;                                        // base file missing locally → diverged
+    if (b.size === undefined || b.mtime === undefined) return false; // no cheap stamp → can't confirm → assume actionable
+    if (l.size !== b.size || l.mtime !== b.mtime) return false;  // local (size,mtime) changed since base → diverged
+  }
+  return true; // same set + every stamp matches → converged → Push and Pull are both no-ops
+}
+
 export type DiffLine = { type: "add" | "del" | "ctx"; text: string };
 
 // The full preview the modal renders: the direction, plugin name, human endpoint labels (from -> to), the

@@ -166,6 +166,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
   private statusGroup?: SettingGroup;
   private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
+  // Per-plugin "already in sync" cache (id → converged?) for the Push/Pull grey-out: applied instantly on a
+  // re-render (no flicker) and refreshed async each render; an entry is dropped after a push/pull. Cleared on
+  // hide() so a re-open re-checks fresh state.
+  private pluginCleanCache = new Map<string, boolean>();
   private timestampExpanded?: boolean; // persists the (default-collapsed) Timestamp-changes section state
   private advancedExpanded?: boolean; // persists the (default-collapsed) Advanced section state
 
@@ -193,7 +197,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     this.renderIgnoreTimestamps(containerEl, s); // ⑥ collapsed by default — identity-only timestamp masking
   }
 
-  hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; } // stop live-refreshing once closed
+  hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
   private lastSyncedAgo(s: NewLiveSyncSettings): string {
@@ -627,22 +631,35 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         // INERT here (it only governed a no-base first contact), so it's replaced by the actions that
         // actually DO something now — Push this device's copy to the server, or Pull the server's copy here.
         // Each is a confirmed authoritative overwrite of THIS plugin's files (issuePluginDirectionInert),
-        // now fronted by a per-file PREVIEW (nPushPullPreview) instead of a generic warning.
-        st.addExtraButton((b) => b.setIcon("upload").setTooltip("Push this device's copy to the server")
-          .onClick(async () => {
-            // Preview WHAT the overwrite does (which files, to/from where) before confirming — nPushPullPreview.
-            const preview = await this.plugin.pluginPushPullPreview(id, "push");
-            if (!preview) return; // offline — the plugin already surfaced a notice
-            if (!(await pushPreviewModal(this.app, preview))) return;
-            await this.plugin.pushPlugin(id); this.display();
-          }));
-        st.addExtraButton((b) => b.setIcon("download").setTooltip("Pull the server's copy to this device")
-          .onClick(async () => {
-            const preview = await this.plugin.pluginPushPullPreview(id, "pull");
-            if (!preview) return;
-            if (!(await pushPreviewModal(this.app, preview))) return;
-            await this.plugin.pullPlugin(id); this.display();
-          }));
+        // fronted by a per-file PREVIEW (nPushPullPreview). The buttons GREY OUT when the folder is already in
+        // sync (both would be no-ops) — computed instantly + network-free from the last-synced base, with the
+        // fresh accurate preview run only on click. `act` runs the shared preview→confirm→apply flow.
+        let pushB: ExtraButtonComponent, pullB: ExtraButtonComponent;
+        const act = async (dir: "push" | "pull") => {
+          // NO hard guard on the converged cache (critique §1): a click ALWAYS runs the accurate preview, so
+          // the manual override can recover an out-of-band divergence the (size,mtime) stamp missed — e.g. a
+          // locally-corrupted file that Pull would restore. The grey-out is a HINT, never a lock.
+          const preview = await this.plugin.pluginPushPullPreview(id, dir);
+          if (!preview) return; // offline — the plugin already surfaced a notice
+          if (!(await pushPreviewModal(this.app, preview))) return; // (shows "nothing to change" for a true no-op)
+          this.pluginCleanCache.delete(id); // the overwrite changed convergence — re-check on the next render
+          await (dir === "push" ? this.plugin.pushPlugin(id) : this.plugin.pullPlugin(id));
+          this.display();
+        };
+        st.addExtraButton((b) => { pushB = b; b.setIcon("upload").setTooltip("Push this device's copy to the server").onClick(() => void act("push")); });
+        st.addExtraButton((b) => { pullB = b; b.setIcon("download").setTooltip("Pull the server's copy to this device").onClick(() => void act("pull")); });
+        const applyClean = (clean: boolean) => {
+          // DIM as a hint (not setDisabled — a disabled-looking-but-clickable control is confusing, and CSS
+          // pointer-events could actually block the click and re-introduce the §1 lock). Buttons stay fully
+          // clickable; the tooltip explains the hint + that a click still works.
+          pushB.extraSettingsEl.style.opacity = clean ? "0.4" : "";
+          pullB.extraSettingsEl.style.opacity = clean ? "0.4" : "";
+          pushB.setTooltip(clean ? "Already in sync — click to re-check or force a push" : "Push this device's copy to the server");
+          pullB.setTooltip(clean ? "Already in sync — click to re-check or force a pull" : "Pull the server's copy to this device");
+        };
+        const cachedClean = this.pluginCleanCache.get(id);
+        if (cachedClean !== undefined) applyClean(cachedClean); // instant (no flicker) on a re-render
+        void this.plugin.pluginSyncClean(id).then((clean) => { this.pluginCleanCache.set(id, clean); applyClean(clean); });
       }
       // NB: no per-plugin "Remove from server" button (issuePluginRemoveButtonClutter) — it took a whole
       // button per row for a RARE need. Removing a plugin's files from the server is an owner/admin task,

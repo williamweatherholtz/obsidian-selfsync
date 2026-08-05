@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFil
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi, fetchFileBytes } from "./sync";
 import { sha256hex } from "./chunker";
-import { classifyPushPull, lineDiff, PushDirection, DiffLine, PluginPushPreview, SideState } from "./pushpreview";
+import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
@@ -19,7 +19,7 @@ import { transportTransition, TransportState, TransportEvent } from "./transport
 import { CLIENT_API_VERSION, FileMeta } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
-import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
+import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, isJunkFile, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
 import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -686,7 +686,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!this.api) { new Notice("SelfSync: connect first to preview a push or pull"); return null; }
     if (isSelfPluginId(id, this.selfFolderId())) return null; // never inspect SelfSync's own credential folder
     const d = this.deps();
-    const local = await d.io.list();
+    // SCOPED local walk (perf, owner-reported ~2s on mobile): only this plugin's folder, not the whole vault
+    // + entire .obsidian tree. pluginFilePaths filters to the prefix anyway, so notes/other config are noise.
+    const adapter = this.app.vault.adapter as unknown as WalkAdapter;
+    const { entries: local } = await walkConfigTree(`.obsidian/plugins/${id}`, adapter, (p) => !isJunkFile(p), CONFIG_ENUM_CONCURRENCY, () => {});
     const serverMetas = new Map((await d.api.changes(0)).upserts.map((f) => [f.path, f] as const));
     const paths = pluginFilePaths([...local.keys()], [...serverMetas.keys()], id);
     // Memory bounds (crit finding 1): the real pull STREAMS big files to disk, so the preview must not slurp
@@ -737,6 +740,29 @@ export default class NewLiveSyncPlugin extends Plugin {
       changes,
       loadDiff,
     };
+  }
+
+  // Instant, NETWORK-FREE grey-out signal (nPushPullPreview, owner-directed): is this plugin's folder already
+  // CONVERGED (local == the last-synced base)? When true, both Push and Pull are no-ops (the server already
+  // holds our content and we already hold the server's), so the settings UI greys the buttons — WITHOUT the
+  // ~2s whole-vault-list + full-server-fetch the real preview needs. Compares the base's persisted (size,mtime)
+  // stamps to a SCOPED local walk of just this folder; no hashing, no server call. Eventually-consistent: it
+  // reflects the last sync (a not-yet-polled remote change auto-applies on the next poll anyway), and the
+  // fresh accurate preview still runs on click. Conservative on ANY doubt (recorded conflict, unlistable
+  // folder, missing stamp) → false, so a genuinely-actionable button is never wrongly greyed.
+  async pluginSyncClean(id: string): Promise<boolean> {
+    if (isSelfPluginId(id, this.selfFolderId())) return true; // SelfSync's own folder never pushes/pulls → always "grey"
+    const prefix = `.obsidian/plugins/${id}/`;
+    if (this.settings.configConflicts.some((p) => p.startsWith(prefix))) return false; // a recorded divergence → actionable
+    const base = this.base.paths().filter((p) => p.startsWith(prefix))
+      .map((p) => { const e = this.base.get(p); return { path: p, size: e?.size, mtime: e?.mtime }; });
+    const adapter = this.app.vault.adapter as unknown as WalkAdapter;
+    let local: Map<string, { mtime: number; size: number }>;
+    try {
+      const { entries } = await walkConfigTree(`.obsidian/plugins/${id}`, adapter, (p) => !isJunkFile(p), CONFIG_ENUM_CONCURRENCY, (_dir, e) => { throw e; });
+      local = entries;
+    } catch { return false; } // can't inspect the folder → keep the buttons live (safe)
+    return stampsConverged(base, local);
   }
 
   // Community-plugin ids the SERVER holds (from the last full reconcile) — lets the settings UI offer

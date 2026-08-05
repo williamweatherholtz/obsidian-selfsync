@@ -185,6 +185,21 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.pullPlugin).toHaveBeenCalledWith("dataview");
   });
 
+  it("DIMS Push/Pull as a hint when in sync (network-free check) but keeps them CLICKABLE — the override is never locked", async () => {
+    const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ["dataview"] } } });
+    p.app.plugins.manifests = { dataview: { id: "dataview", name: "Dataview" } };
+    p.pluginSyncClean = vi.fn(async () => true); // convergence heuristic says "in sync"
+    const { containerEl } = renderTab(p);
+    const push = containerEl.querySelector('[aria-label*="Push this device"]') as HTMLElement;
+    await flush(); // async convergence check resolves → dims the buttons
+    expect(p.pluginSyncClean).toHaveBeenCalledWith("dataview");
+    expect(push.style.opacity).toBe("0.4"); // dimmed as a HINT
+    // ...but still clickable → runs the ACCURATE preview (critique §1: the stamp heuristic must never lock the
+    // override; a real out-of-band divergence must remain recoverable, so the check falls through to the truth).
+    push.click(); await flush();
+    expect(p.pluginPushPullPreview).toHaveBeenCalledWith("dataview", "push");
+  });
+
   it("the community-plugins bulk toggle 'Sync all' path applies immediately when community is on", () => {
     plugin = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: [] } } });
     // With no installed community plugins the bulk row may not render; assert the section renders at least.
