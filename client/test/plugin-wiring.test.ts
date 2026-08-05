@@ -603,37 +603,38 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     (p.app as any).plugins = { plugins: { alreadyRunning: {} }, loadManifests: async () => {}, enablePlugin: async (id: string) => { enabled.push(id); } };
     anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }]; // own + unshared → the fresh re-check derives PRIVATE
     anyp.listShareLinks = async () => [];
-    await anyp.applyPluginCodeChange(new Set(["newplugin"]));
+    await anyp.applyPluginCodeChange(new Set(["newplugin"]), [".obsidian/plugins/newplugin/main.js"]);
     expect(enabled).toContain("newplugin");                          // private + newly-arrived → hot-loaded, no restart
     enabled.length = 0;
-    await anyp.applyPluginCodeChange(new Set(["alreadyRunning"]));
+    await anyp.applyPluginCodeChange(new Set(["alreadyRunning"]), [".obsidian/plugins/alreadyRunning/main.js"]);
     expect(enabled).not.toContain("alreadyRunning");                 // an update to a RUNNING plugin → restart, not hot-reload
     enabled.length = 0;
     anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }]; // now shared: a rw peer can push code
-    await anyp.applyPluginCodeChange(new Set(["fromapeer"]));
+    await anyp.applyPluginCodeChange(new Set(["fromapeer"]), [".obsidian/plugins/fromapeer/main.js"]);
     expect(enabled).not.toContain("fromapeer");                     // fresh re-check → NOT private → NEVER auto-execute (the RCE barrier)
     p.onunload();
   });
 
-  // cssTrustGate (2026-08-02, STPA-hunt finding): synced theme/snippet CSS from a SHARED vault gets a TRUST
-  // WARNING like plugin code (Obsidian hot-reloads it live); from a PRIVATE vault, a plain notice.
-  it("synced CSS from a SHARED vault warns to review it; from a PRIVATE vault it's a plain notice", async () => {
+  // SOURCE-DRIVEN CSS notice (D-provenance): synced theme/snippet CSS gets a review warning ONLY when
+  // ANOTHER PERSON changed it — decided by the change's author, NOT by whether the vault is shared. Your OWN
+  // CSS change is silent, no matter the vault's sharing state.
+  it("synced CSS from ANOTHER PERSON warns to review it; your OWN change is silent (source-driven, not vault-privacy)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;
-    anyp.listShareLinks = async () => [];
-    // SHARED (a readWrite grantee) → not private → trust warning.
-    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }];
+    p.settings.username = "will";
+    // A PEER (alice) changed the CSS → warn to review, regardless of vault sharing state.
     __notices.length = 0;
     anyp.pendingReload = new Set([".obsidian/snippets/evil.css"]);
+    anyp.configProvenance = new Map([[".obsidian/snippets/evil.css", { author: "alice", deviceId: "dev-Z", deviceName: "Alice-PC" }]]);
     await p.flushConfigReload();
-    expect(__notices.some((m) => /don't trust|review it/i.test(m))).toBe(true);   // untrusted CSS → warned
-    // PRIVATE (own + no grants) → plain notice, no trust warning.
-    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }];
+    expect(__notices.some((m) => /don't trust|review it/i.test(m))).toBe(true);   // peer CSS → warned
+    expect(__notices.some((m) => /alice/i.test(m))).toBe(true);                    // names WHO
+    // YOUR OWN change (same account, this device) → completely silent (the whole point).
     __notices.length = 0;
     anyp.pendingReload = new Set([".obsidian/snippets/mine.css"]);
+    anyp.configProvenance = new Map([[".obsidian/snippets/mine.css", { author: "will", deviceId: anyp.deviceId() }]]);
     await p.flushConfigReload();
-    expect(__notices.some((m) => /don't trust|review it/i.test(m))).toBe(false);  // own CSS → no scare
-    expect(__notices.some((m) => /CSS changed/i.test(m))).toBe(true);
+    expect(__notices.length).toBe(0);                                             // own CSS → no notice at all
     p.onunload();
   });
 
@@ -649,7 +650,7 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     anyp.vaultIsPrivate = true;                                      // STALE: left over from a previous private vault
     anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [{ grantee: "bob", perm: "readWrite" }] }]; // vault is NOW shared
     anyp.listShareLinks = async () => [];
-    await anyp.applyPluginCodeChange(new Set(["peerplugin"]));
+    await anyp.applyPluginCodeChange(new Set(["peerplugin"]), [".obsidian/plugins/peerplugin/main.js"]);
     expect(enabled).not.toContain("peerplugin");                    // fresh re-derive vetoes the stale true → restart barrier holds
     expect(anyp.vaultIsPrivate).toBe(false);                        // and the cached field is corrected
     p.onunload();

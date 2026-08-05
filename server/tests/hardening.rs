@@ -151,7 +151,7 @@ async fn corrupt_vault_503_on_sync_but_status_reports_error() {
         let body = b"payload";
         let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        v.commit(CommitRequest { path: "lost.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "lost.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // Lose the only file from BOTH sides so no rebuild source remains → reindex aborts → ERROR.
         std::fs::remove_file(vroot.join("vault").join("lost.md")).unwrap();
         std::fs::remove_file(vroot.join(".chunks").join(&h[0..2]).join(&h)).unwrap();

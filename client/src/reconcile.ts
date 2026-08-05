@@ -273,6 +273,12 @@ export interface ReconcileDeps {
   // A config path that reconciled CLEANLY (added/edited/removed/in-sync, not a divergence) —
   // so any stale "config difference" recorded for it can be pruned. Keeps the pending set current.
   onConfigResolved?: (path: string) => void;
+  // A remote `.obsidian/` change being APPLIED to this device, with its server-recorded provenance
+  // (meta.author/deviceId/deviceName). Recorded so the post-apply reload notice can attribute the change
+  // to its SOURCE — the trigger for whether to notify (another person / another device), never the
+  // vault's shared/private status. Config-only (gated to CONFIG_PREFIX in applyPull) so note pulls don't
+  // pay for it; fires before the write, so a subsequent race-abort just leaves an unread entry.
+  onRemoteConfig?: (path: string, meta: FileMeta) => void;
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
@@ -533,6 +539,9 @@ class StreamRaceAbort extends Error { constructor() { super("stream race: config
 // is true for reconcile-driven pulls (a racing local edit/create must be preserved) and false for
 // explicit overwrites (a switch or user adjudication, where adopting remote IS the intent).
 async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expectLocalHash: string | null = null, guardRace = false): Promise<void> {
+  // Record the incoming change's provenance (config only) BEFORE any write, so the post-reload notice can
+  // attribute it to its source. Cheap map-set; the plugin filters + consumes it on flush.
+  if (path.startsWith(CONFIG_PREFIX)) d.onRemoteConfig?.(path, rmeta);
   if (rmeta.size >= STREAM_MIN_BYTES && d.io.appendWrite) {
     // Streamed large file. The racing-edit check runs in the temp-write→rename SEAM (beforeRename), NOT
     // before streaming: streamFileToDisk writes to a temp and only renames over `path` in close(), so `path`
@@ -850,7 +859,11 @@ async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta:
   const liveLocal = await readOrNull(d.io, path);
   const localStr = liveLocal ? new TextDecoder().decode(liveLocal) : "";
   const merged = mergeEnabledPluginsJson(localStr, remoteStr);
-  if (merged === null) return false; // not a valid string[] → fall through to normal opaque-config handling
+  if (merged === null) return false; // not a valid string[] → fall through to normal opaque-config handling (applyPull records provenance there)
+  // Provenance for the source-driven reload notice: community-plugins.json is handled HERE, not in applyPull,
+  // so record the incoming change's author/device ourselves — else every plugin enable/disable (the most
+  // common config event) would read as "unknown source" and notify even for your OWN change (crit finding 1).
+  d.onRemoteConfig?.(path, rmeta);
   const localIds = JSON.parse(localStr.trim() || "[]") as string[];
   const remoteIds = JSON.parse(remoteStr.trim() || "[]") as string[];
   const localHasExtra = localIds.some((id) => !remoteIds.includes(id));

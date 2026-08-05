@@ -1,5 +1,52 @@
 import { describe, it, expect } from "vitest";
-import { shouldSync, isJunkFile, pluginIdOf, pluginFilePaths, isSelfPluginId, DEFAULT_CONFIG_SYNC, ConfigSyncSelection, isEnabledListConfig, mergeEnabledPluginsJson } from "../src/configsync";
+import { shouldSync, isJunkFile, pluginIdOf, pluginFilePaths, isSelfPluginId, DEFAULT_CONFIG_SYNC, ConfigSyncSelection, isEnabledListConfig, mergeEnabledPluginsJson, shouldNotifyConfigChange, changeSourceLabel } from "../src/configsync";
+
+// Source-of-change notification rule (D-provenance): notify only when SOMEONE ELSE made the change —
+// NEVER based on whether the vault is shared. "user" mode = another PERSON; "userDevice" = another device too.
+describe("shouldNotifyConfigChange — the source-driven notify rule", () => {
+  const self = { user: "will", deviceId: "dev-A" };
+  it("stays silent for YOUR OWN change (same user) in user mode — the whole point", () => {
+    expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-A" }, self, "user")).toBe(false);
+    expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-B" }, self, "user")).toBe(false); // your other device is still "you"
+  });
+  it("notifies when ANOTHER PERSON changed it, in either mode", () => {
+    expect(shouldNotifyConfigChange({ author: "alice", deviceId: "dev-Z" }, self, "user")).toBe(true);
+    expect(shouldNotifyConfigChange({ author: "alice", deviceId: "dev-A" }, self, "userDevice")).toBe(true); // even if the device id happens to collide
+  });
+  it("in userDevice mode, also notifies for YOUR OWN account from a DIFFERENT device", () => {
+    expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-B" }, self, "userDevice")).toBe(true);
+    expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-A" }, self, "userDevice")).toBe(false); // this very device → silent
+  });
+  it("treats an UNKNOWN author (pre-provenance change) as notify — conservative", () => {
+    expect(shouldNotifyConfigChange({}, self, "user")).toBe(true);
+    expect(shouldNotifyConfigChange({ deviceId: "dev-B" }, self, "user")).toBe(true); // device but no author → still unknown who
+  });
+  it("in userDevice mode, YOUR change from an UNKNOWN device notifies (can't confirm it's this one)", () => {
+    expect(shouldNotifyConfigChange({ author: "will" }, self, "userDevice")).toBe(true);
+  });
+  it("SPOOF-RESISTANCE: a peer renaming their device can't dodge notification — identity is the account, then the UUID, never the name", () => {
+    // A peer (alice) whose device is *named* like yours still notifies: author differs.
+    expect(shouldNotifyConfigChange({ author: "alice", deviceName: "Will's Desktop", deviceId: "dev-Z" }, self, "user")).toBe(true);
+    // In userDevice mode, a same-account change from a device with a spoofed NAME but different UUID still notifies.
+    expect(shouldNotifyConfigChange({ author: "will", deviceName: "dev-A pretender", deviceId: "dev-B" }, self, "userDevice")).toBe(true);
+  });
+});
+
+describe("changeSourceLabel — human 'who' for the notice, never a raw UUID", () => {
+  const self = { user: "will", deviceId: "dev-A" };
+  it("prefers the friendly device name", () => {
+    expect(changeSourceLabel({ author: "will", deviceName: "Laptop", deviceId: "dev-B" }, self)).toBe("Laptop");
+  });
+  it("names the other PERSON, with their device in parens when present", () => {
+    expect(changeSourceLabel({ author: "alice", deviceName: "Alice-PC" }, self)).toBe("alice (Alice-PC)");
+    expect(changeSourceLabel({ author: "alice" }, self)).toBe("alice");
+  });
+  it("falls back to a generic label (never exposes the UUID) when nothing is known", () => {
+    const label = changeSourceLabel({ deviceId: "6f1e-secret-uuid" }, self);
+    expect(label).toBe("another device");
+    expect(label).not.toContain("uuid");
+  });
+});
 
 describe("isSelfPluginId — the self-folder exclusion Push/Pull must honor (case-insensitive + legacy)", () => {
   it("matches the current self id case-INSENSITIVELY (a case-variant folder is the same on a CI filesystem)", () => {

@@ -24,6 +24,12 @@ fn io<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
+// Provenance columns store '' for "unknown" (NOT NULL DEFAULT '', like `fold`); the wire type uses
+// Option, so an empty column reads back as None — one place so the read paths can't drift.
+fn empty_to_none(s: String) -> Option<String> {
+    if s.is_empty() { None } else { Some(s) }
+}
+
 pub struct SqliteIndex {
     conn: Mutex<Connection>,
 }
@@ -41,7 +47,15 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS files (
         path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL,
-        mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL);
+        mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL,
+        -- Provenance (schema v2): last-writer attribution. author_user is the server-authenticated
+        -- username; author_device_id/_name are the client-asserted stable UUID + friendly label.
+        -- '' = unknown (a reindex-from-disk row, or a commit by a pre-provenance client) — mapped
+        -- back to None on read. NOT NULL DEFAULT '' mirrors the `fold` column so the ALTER-ADD
+        -- migration and fresh-create agree on shape.
+        author_user TEXT NOT NULL DEFAULT '',
+        author_device_id TEXT NOT NULL DEFAULT '',
+        author_device_name TEXT NOT NULL DEFAULT '');
     CREATE INDEX IF NOT EXISTS idx_files_version ON files(version);
     -- NOTE: the idx_files_fold index is created in migrate(), NOT here — applying this batch to a
     -- pre-`fold` DB would otherwise fail creating an index on a column that doesn't exist yet (R12-CC1).
@@ -56,7 +70,8 @@ const SCHEMA: &str = "
 impl SqliteIndex {
     // The on-disk table-shape version this binary understands. Bump + add a migrate() step for any
     // change to the `files`/`file_chunks`/`deletions` columns.
-    const CURRENT_SCHEMA: u64 = 1;
+    //   v2: add author_user / author_device_id / author_device_name to `files` (change provenance).
+    const CURRENT_SCHEMA: u64 = 2;
 
     // Open (creating if absent) the per-vault index DB, apply the schema (idempotent), seed the
     // version + history_floor. WAL makes concurrent readers + a single writer crash-safe.
@@ -113,6 +128,17 @@ impl SqliteIndex {
         // Create the fold index here (moved out of SCHEMA) — now that the column is guaranteed to
         // exist on both a fresh and a just-healed DB. Idempotent on an already-indexed DB.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_fold ON files(fold)", []).map_err(io)?;
+        // v2 (change provenance): add the last-writer columns to a pre-v2 `files` table. No backfill —
+        // existing rows keep '' (unknown author), which is the honest state for a file whose committing
+        // device predates provenance. Probing one column is enough (all three are added together).
+        let has_author: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='author_user'", [], |r| r.get(0))
+            .map_err(io)?;
+        if has_author == 0 {
+            conn.execute("ALTER TABLE files ADD COLUMN author_user TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+            conn.execute("ALTER TABLE files ADD COLUMN author_device_id TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+            conn.execute("ALTER TABLE files ADD COLUMN author_device_name TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+        }
         if v != Self::CURRENT_SCHEMA {
             conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
         }
@@ -159,9 +185,17 @@ impl SqliteIndex {
     // INSERT is parsed once, not per row. (replace_files wiped the tables first, so the ON CONFLICT
     // upsert form and the DELETE-then-insert are harmless no-ops there.)
     fn insert_file(tx: &Transaction, meta: &FileMeta) -> std::io::Result<()> {
-        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,?2,?3,?4,?5,?6)
-                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6",
-                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase()]).map_err(io)?;
+        // Provenance columns (schema v2): None → '' (unknown). Identity is the UUID; the name is display.
+        let (au, ad, an) = (
+            meta.author.clone().unwrap_or_default(),
+            meta.device_id.clone().unwrap_or_default(),
+            meta.device_name.clone().unwrap_or_default(),
+        );
+        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold, author_user, author_device_id, author_device_name)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                    ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6,
+                    author_user=?7, author_device_id=?8, author_device_name=?9",
+                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase(), au, ad, an]).map_err(io)?;
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
         let mut ins = tx.prepare_cached("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)").map_err(io)?;
         for (i, c) in meta.chunks.iter().enumerate() {
@@ -185,18 +219,29 @@ impl SqliteIndex {
         Ok(out)
     }
 
-    fn row_to_meta(conn: &Connection, path: String, hash: String, size: i64, mtime: i64, version: i64) -> std::io::Result<FileMeta> {
+    #[allow(clippy::too_many_arguments)] // a flat row tuple (cols + provenance) — grouping into a struct would only obscure it
+    fn row_to_meta(conn: &Connection, path: String, hash: String, size: i64, mtime: i64, version: i64,
+                   author_user: String, author_device_id: String, author_device_name: String) -> std::io::Result<FileMeta> {
         let chunks = Self::chunks_of(conn, &path)?;
-        Ok(FileMeta { path, hash, size: size as u64, mtime, version: version as u64, chunks })
+        Ok(FileMeta {
+            path, hash, size: size as u64, mtime, version: version as u64, chunks,
+            author: empty_to_none(author_user),
+            device_id: empty_to_none(author_device_id),
+            device_name: empty_to_none(author_device_name),
+        })
     }
 
     pub fn file_meta(&self, path: &str) -> std::io::Result<Option<FileMeta>> {
         let conn = self.conn.lock().map_err(io)?;
-        let row = conn.query_row("SELECT hash, size, mtime, version FROM files WHERE path=?1", params![path],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
+        let row = conn.query_row(
+            "SELECT hash, size, mtime, version, author_user, author_device_id, author_device_name FROM files WHERE path=?1",
+            params![path],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?)))
             .optional().map_err(io)?;
         match row {
-            Some((hash, size, mtime, version)) => Ok(Some(Self::row_to_meta(&conn, path.to_string(), hash, size, mtime, version)?)),
+            Some((hash, size, mtime, version, au, ad, an)) =>
+                Ok(Some(Self::row_to_meta(&conn, path.to_string(), hash, size, mtime, version, au, ad, an)?)),
             None => Ok(None),
         }
     }
@@ -223,12 +268,13 @@ impl SqliteIndex {
         }
         let mut upserts = Vec::new();
         {
-            let mut stmt = conn.prepare_cached("SELECT path, hash, size, mtime, version FROM files WHERE version > ?1").map_err(io)?;
-            let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).map_err(io)?;
+            let mut stmt = conn.prepare_cached("SELECT path, hash, size, mtime, version, author_user, author_device_id, author_device_name FROM files WHERE version > ?1").map_err(io)?;
+            let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?))).map_err(io)?;
             for row in rows {
-                let (p, h, s, m, v) = row.map_err(io)?;
+                let (p, h, s, m, v, au, ad, an) = row.map_err(io)?;
                 let chunks = chunks_by_path.remove(&p).unwrap_or_default();
-                upserts.push(FileMeta { path: p, hash: h, size: s as u64, mtime: m, version: v as u64, chunks });
+                upserts.push(FileMeta { path: p, hash: h, size: s as u64, mtime: m, version: v as u64, chunks,
+                    author: empty_to_none(au), device_id: empty_to_none(ad), device_name: empty_to_none(an) });
             }
         }
         let mut deletes = Vec::new();
@@ -352,7 +398,7 @@ mod tests {
     use super::*;
 
     fn meta(path: &str, hash: &str, ver: u64, chunks: &[&str]) -> FileMeta {
-        FileMeta { path: path.into(), hash: hash.into(), size: 4, mtime: 1, version: ver, chunks: chunks.iter().map(|s| s.to_string()).collect() }
+        FileMeta { path: path.into(), hash: hash.into(), size: 4, mtime: 1, version: ver, chunks: chunks.iter().map(|s| s.to_string()).collect(), ..Default::default() }
     }
 
     #[test]
@@ -396,6 +442,34 @@ mod tests {
         let conn = s.conn.lock().unwrap();
         let v: i64 = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
         assert_eq!(v, SqliteIndex::CURRENT_SCHEMA as i64, "migrate must stamp a below-current schema_version up to CURRENT");
+    }
+
+    // v2 (change provenance): opening a pre-v2 `files` table (fold present, but no author_* columns) must
+    // ADD the three provenance columns (NOT NULL DEFAULT ''), leave the existing row's author UNKNOWN
+    // (None on read — never a bogus ""), keep the write path intact, and record provenance on a fresh put.
+    #[test]
+    fn migrate_adds_provenance_columns_to_a_pre_v2_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL);\n\
+                 INSERT INTO files VALUES ('old.md','h',1,0,1,'old.md');\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',1),('version',1),('history_floor',1);",
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap(); // must ALTER-ADD the three author_* columns
+        // Pre-existing row: unknown provenance -> None (not "").
+        let old = s.file_meta("old.md").unwrap().expect("pre-v2 row survives migration");
+        assert_eq!((old.author, old.device_id, old.device_name), (None, None, None));
+        assert_eq!(SqliteIndex::meta_get(&s.conn.lock().unwrap(), "schema_version").unwrap(), SqliteIndex::CURRENT_SCHEMA);
+        // Write path works on the migrated table and records provenance.
+        s.put(&FileMeta { path: "new.md".into(), hash: "h2".into(), size: 1, mtime: 1, version: 2, chunks: vec![],
+            author: Some("will".into()), device_id: Some("dev-uuid".into()), device_name: Some("Desktop".into()) }).unwrap();
+        let n = s.file_meta("new.md").unwrap().unwrap();
+        assert_eq!((n.author.as_deref(), n.device_id.as_deref(), n.device_name.as_deref()), (Some("will"), Some("dev-uuid"), Some("Desktop")));
     }
 
     // CRITIQUE R+1 (issueFoldBackfillAsciiOnly): healing a pre-fold DB must backfill fold with the SAME

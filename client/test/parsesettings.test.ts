@@ -78,4 +78,17 @@ describe("parseSettings — harden + freshen the persisted settings object", () 
     input.excludedFolders.push("Y");
     expect(out.excludedFolders).toEqual(["X"]);
   });
+
+  it("hardens the provenance fields: notify mode defaults to 'user', deviceId kept only if a real string", () => {
+    // Notify mode: default, honored value, and anything unexpected → the safe "user" default.
+    expect(parseSettings({}).configChangeNotify).toBe("user");
+    expect(parseSettings({ configChangeNotify: "userDevice" }).configChangeNotify).toBe("userDevice");
+    expect(parseSettings({ configChangeNotify: "everything" }).configChangeNotify).toBe("user"); // unknown → default
+    expect(parseSettings({ configChangeNotify: 7 as unknown as string }).configChangeNotify).toBe("user"); // wrong type → default
+    // deviceId: a real string survives; empty/non-string → undefined (re-minted lazily), never a bogus "".
+    expect(parseSettings({ deviceId: "abc-123" }).deviceId).toBe("abc-123");
+    expect(parseSettings({ deviceId: "" }).deviceId).toBeUndefined();
+    expect(parseSettings({ deviceId: 5 as unknown as string }).deviceId).toBeUndefined();
+    expect(parseSettings({}).deviceId).toBeUndefined();
+  });
 });

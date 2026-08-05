@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 // breaking change to the sync wire format or the on-disk index schema.
 pub const API_VERSION: u32 = 1;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct FileMeta {
     pub path: String,
     pub hash: String,
@@ -15,6 +15,20 @@ pub struct FileMeta {
     pub mtime: i64,
     pub version: u64,
     pub chunks: Vec<String>,
+    // Provenance (source-of-change attribution) — recorded at commit, returned on every upsert so a
+    // client can attribute an incoming config/plugin change to WHO made it. `author` is the SERVER-
+    // AUTHENTICATED username (trustworthy, never client-set); `device_id` is the client-asserted STABLE
+    // device UUID and `device_name` its friendly label. Identity for any "another device" decision is the
+    // UUID — a renamed device can't impersonate another — and the name is display-only. All optional +
+    // `#[serde(default)]`: a pre-provenance record (reindex-from-disk, or an older server) carries none,
+    // which the client reads as an UNKNOWN author and handles conservatively (notify). `skip_serializing_if`
+    // keeps the wire compact for the common None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -67,7 +81,7 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct CommitRequest {
     pub path: String,
     pub hash: String,
@@ -82,6 +96,15 @@ pub struct CommitRequest {
     // clients omit it, so the field is optional + defaulted.
     #[serde(default)]
     pub expected_version: Option<u64>,
+    // Source attribution (provenance): the committing device's STABLE UUID + friendly name, asserted by
+    // the client. The server pairs these with the AUTHENTICATED user (never a client-sent username) and
+    // records them as the file's last writer. Identity is the UUID, so renaming a device to match another
+    // can't dodge a peer-change notification; the name is display-only. Optional — an older client omits
+    // them and the change is recorded with an unknown device.
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

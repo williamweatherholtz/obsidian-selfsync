@@ -482,7 +482,9 @@ impl Vault {
                 Some(old) if old.hash == hash => old.version,
                 _ => { max_version += 1; max_version }
             };
-            new_files.push(FileMeta { path: rel, hash, size: body.len() as u64, mtime, version, chunks: chunk_hashes });
+            // Reindex-from-disk: the committing device/user is unrecoverable from the mirror file, so
+            // provenance is left None (unknown) — honest, and read by clients as "notify conservatively".
+            new_files.push(FileMeta { path: rel, hash, size: body.len() as u64, mtime, version, chunks: chunk_hashes, ..Default::default() });
         }
         // Publish the rebuilt manifest FIRST (the new index becomes authoritative), THEN GC chunks it
         // no longer references — so a GC'd blob is never still cited by the live index.
@@ -579,7 +581,11 @@ impl Vault {
     }
     pub fn version(&self) -> u64 { self.version }
 
-    pub fn commit(&mut self, req: CommitRequest) -> std::io::Result<FileMeta> {
+    /// `author` is the SERVER-AUTHENTICATED username of the committer (from the request's bearer token,
+    /// NOT any client-sent field) — recorded as the file's last writer alongside the client-asserted
+    /// device UUID/name in `req`, so a puller can attribute this change to its source. Pass "" for a
+    /// non-attributed write (tests / internal); it records as unknown.
+    pub fn commit(&mut self, req: CommitRequest, author: &str) -> std::io::Result<FileMeta> {
         let rel = safe_rel_path(&req.path)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad path"))?;
         // Reject a case-only / Unicode-fold collision: two index keys folding to ONE file on a
@@ -664,6 +670,11 @@ impl Vault {
         let meta = FileMeta {
             path: req.path.clone(), hash: req.hash, size: req.size, mtime: req.mtime,
             version: new_version, chunks: req.chunks,
+            // Provenance: the AUTHENTICATED user (never client-sent) + the client-asserted device UUID/name.
+            // Empty → None so a non-attributed/older client records as unknown, not a bogus "" author.
+            author: (!author.is_empty()).then(|| author.to_string()),
+            device_id: req.device_id.filter(|s| !s.is_empty()),
+            device_name: req.device_name.filter(|s| !s.is_empty()),
         };
         let dereferenced = self.index.put(&meta)?;
         self.version = new_version;
@@ -890,14 +901,45 @@ mod tests {
         let body = b"hello world";
         let h = crate::hash::sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         let mirror = dir.path().join("vault").join("n.md"); // vault_dir = root/vault
         assert_eq!(std::fs::read(&mirror).unwrap(), body, "mirror written on first commit");
         // Simulate a torn/failed mirror write: the index (authoritative) still has the file, mirror gone.
         std::fs::remove_file(&mirror).unwrap();
         // The idempotent re-commit — previously a pure no-op — now re-writes the mirror from the store.
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert_eq!(std::fs::read(&mirror).unwrap(), body, "idempotent re-commit self-healed the missing mirror");
+    }
+
+    // Change provenance (D-provenance): commit records the AUTHENTICATED user (its own argument, never a
+    // client field) + the client-asserted device UUID/name, and changes() returns them on the upsert so a
+    // puller can attribute the change to its source.
+    #[test]
+    fn commit_records_provenance_and_changes_returns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"hello";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: Some("dev-123".into()), device_name: Some("Will's Desktop".into()) }, "will").unwrap();
+        let m = v.changes(0).upserts.into_iter().find(|m| m.path == "n.md").unwrap();
+        assert_eq!(m.author.as_deref(), Some("will"), "records the authenticated committer");
+        assert_eq!(m.device_id.as_deref(), Some("dev-123"), "records the client-asserted device UUID");
+        assert_eq!(m.device_name.as_deref(), Some("Will's Desktop"));
+    }
+
+    // Empty author + no device (an internal/older-client commit) records as UNKNOWN (None), never a bogus
+    // "" that a client could mistake for a real author — the honest state a reindex-from-disk row also has.
+    #[test]
+    fn commit_with_empty_author_records_unknown_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"x";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
+        let m = v.changes(0).upserts.into_iter().find(|m| m.path == "n.md").unwrap();
+        assert_eq!((m.author, m.device_id, m.device_name), (None, None, None));
     }
 
     #[test]
@@ -908,14 +950,14 @@ mod tests {
         let body = b"x";
         let h = crate::hash::sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        v.commit(CommitRequest { path: "CAFÉ.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "CAFÉ.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // DI-R5#1: committing the Unicode-case variant 'café.md' (lowercase é) is rejected.
         // (InvalidInput → 400: a permanent bad request, distinct from the CAS AlreadyExists → 409.)
-        let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted). Insert it
         // straight into the index (commit would reject the name) to simulate a legacy key.
-        v.index.put(&FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.version() + 1, chunks: vec![h.clone()] }).unwrap();
+        v.index.put(&FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.version() + 1, chunks: vec![h.clone()], ..Default::default() }).unwrap();
         assert!(safe_rel_path("legacy.md.").is_none());
         let d = v.delete("legacy.md.").unwrap();
         assert!(d.is_some(), "legacy invalid-name key must be deletable");
@@ -932,23 +974,23 @@ mod tests {
         let b1 = b"one"; let h1 = sha256_hex(b1);
         v.put_chunk(&h1, b1).unwrap();
         // Create the file with expected_version = 0 (absent) — succeeds.
-        let m1 = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: Some(0) }).unwrap();
+        let m1 = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: Some(0), device_id: None, device_name: None }, "").unwrap();
         // A second writer based on the SAME old base (0) tries to overwrite with different content:
         // the server is now at m1.version, so the CAS mismatch rejects it (409-mapped).
         let b2 = b"two"; let h2 = sha256_hex(b2);
         v.put_chunk(&h2, b2).unwrap();
-        let err = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 2, chunks: vec![h2.clone()], expected_version: Some(0) }).unwrap_err();
+        let err = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 2, chunks: vec![h2.clone()], expected_version: Some(0), device_id: None, device_name: None }, "").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "stale expected_version must conflict");
         // Basing on the CURRENT version succeeds.
-        v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 3, chunks: vec![h2.clone()], expected_version: Some(m1.version) }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 3, chunks: vec![h2.clone()], expected_version: Some(m1.version), device_id: None, device_name: None }, "").unwrap();
         // An idempotent re-commit (same content) with a stale expected_version is still a no-op,
         // not a conflict — the short-circuit runs before the CAS check.
-        let again = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 9, chunks: vec![h2.clone()], expected_version: Some(0) }).unwrap();
+        let again = v.commit(CommitRequest { path: "n.md".into(), hash: h2.clone(), size: 3, mtime: 9, chunks: vec![h2.clone()], expected_version: Some(0), device_id: None, device_name: None }, "").unwrap();
         assert_eq!(again.hash, h2);
         // expected_version: None bypasses CAS entirely (authoritative overwrite).
         let b3 = b"three"; let h3 = sha256_hex(b3);
         v.put_chunk(&h3, b3).unwrap();
-        v.commit(CommitRequest { path: "n.md".into(), hash: h3.clone(), size: 5, mtime: 4, chunks: vec![h3.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h3.clone(), size: 5, mtime: 4, chunks: vec![h3.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
     }
 
     #[test]
@@ -1000,7 +1042,7 @@ mod tests {
             let mut v = Vault::open(dir.path()).unwrap();
             let b = b"x"; let h = sha256_hex(b);
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "lost.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "lost.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             // Lose it from BOTH sides so no rebuild source remains.
             std::fs::remove_file(dir.path().join("vault").join("lost.md")).unwrap();
             std::fs::remove_file(dir.path().join(".chunks").join(&h[0..2]).join(&h)).unwrap();
@@ -1022,8 +1064,8 @@ mod tests {
         v.put_chunk(&hash, body).unwrap();
         let meta = v.commit(CommitRequest {
             path: "keep.md".into(), hash: hash.clone(), size: body.len() as u64,
-            mtime: 1, chunks: vec![hash.clone()], expected_version: None,
-        }).unwrap();
+            mtime: 1, chunks: vec![hash.clone()], expected_version: None, device_id: None, device_name: None,
+        }, "").unwrap();
         let original_version = meta.version;
 
         v.reindex(false).unwrap(); // same bytes on disk -> version must not bump
@@ -1045,7 +1087,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"stable content"; let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        let m = v.commit(CommitRequest { path: "keep.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        let m = v.commit(CommitRequest { path: "keep.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         let original_version = m.version;
         // Blob vanishes from the store, but the mirror file stays on disk and the index row is intact, so
         // the vault is still HEALTHY (verify_and_gc not re-run) → reindex enters the prefer-store branch,
@@ -1066,7 +1108,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body1 = b"one"; let h1 = sha256_hex(body1);
         v.put_chunk(&h1, body1).unwrap();
-        let m = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
+        let m = v.commit(CommitRequest { path: "n.md".into(), hash: h1.clone(), size: 3, mtime: 1, chunks: vec![h1.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         let original_version = m.version;
         // Change the mirror on disk AND drop the old chunk → reindex cannot prefer-store the stale entry
         // and must rebuild from the new bytes; the new hash must mint a new version.
@@ -1086,7 +1128,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"x"; let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert_eq!(v.changes(0).history_floor, 1, "precondition: genesis floor");
         v.reindex(false).unwrap(); // healthy + zero tombstones → the floor must not move
         assert_eq!(v.changes(0).history_floor, 1, "426: a healthy, tombstone-free reindex must not raise the floor");
@@ -1103,7 +1145,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let put = |v: &mut Vault, body: &[u8]| {
             let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
-            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None }).unwrap()
+            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None }, "").unwrap()
         };
         let base = put(&mut v, b"one").version;        // the version a lagging device last saw
         let newer = put(&mut v, b"two").version;       // a concurrent edit the lagging device hasn't pulled
@@ -1128,7 +1170,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut v = Vault::open(dir.path()).unwrap();
         let h = sha256_hex(b"x"); v.put_chunk(&h, b"x").unwrap();
-        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert!(v.delete("a.md").unwrap().is_some(), "authoritative delete deletes");
         assert!(v.file_meta("a.md").is_none(), "authoritative delete always wins");
         // Now absent: a CAS delete with any expected_version is a no-op (404), not a conflict.
@@ -1145,7 +1187,7 @@ mod tests {
         let root = dir.path();
         let put = |v: &mut Vault, name: &str, body: &[u8]| {
             let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
-            v.commit(CommitRequest { path: name.into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: name.into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         };
         let hwm;
         {
@@ -1206,12 +1248,12 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let b1 = b"version one"; let h1 = sha256_hex(b1);
         v.put_chunk(&h1, b1).unwrap();
-        v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h1.clone(), size: b1.len() as u64, mtime: 1, chunks: vec![h1.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         let good_version = v.version();
 
         // A commit referencing a chunk that was never uploaded must fail (NotFound) and change nothing.
         let b2 = b"version two"; let h2 = sha256_hex(b2);
-        let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()], expected_version: None });
+        let res = v.commit(CommitRequest { path: "f.md".into(), hash: h2.clone(), size: b2.len() as u64, mtime: 2, chunks: vec![h2.clone()], expected_version: None, device_id: None, device_name: None }, "");
         assert!(res.is_err(), "commit with a missing chunk must fail");
 
         assert_eq!(v.version(), good_version, "failed commit must not bump version");
@@ -1228,7 +1270,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         }
         let v = Vault::open(dir.path()).unwrap();
         assert!(!v.is_corrupt());
@@ -1242,7 +1284,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.delete("d.md").unwrap();
         }
         let v = Vault::open(dir.path()).unwrap();
@@ -1257,8 +1299,8 @@ mod tests {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, b).unwrap();
             // two files reference the same chunk
-            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
-            v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 2, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
+            v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: b.len() as u64, mtime: 2, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         }
         // reopen → startup GC: the shared chunk is referenced by 2 files, so it must NOT be reclaimed.
         let v = Vault::open(dir.path()).unwrap();
@@ -1290,7 +1332,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&h, body).unwrap();
-            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "d.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         }
         // Lose only the CHUNK blob; the mirror file vault/d.md remains as the rebuild source.
         std::fs::remove_file(dir.path().join(".chunks").join(&h[0..2]).join(&h)).unwrap();
@@ -1328,7 +1370,7 @@ mod tests {
         // tombstone must survive (re-put the chunk each round since deletes GC it when refcount hits 0).
         for i in 0..50 {
             v.put_chunk(&h, b).unwrap();
-            v.commit(CommitRequest { path: format!("f{i}.md"), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: format!("f{i}.md"), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         }
         for i in 0..50 { v.delete(&format!("f{i}.md")).unwrap(); }
         assert_eq!(v.changes(0).deletes.len(), 50, "all tombstones retained, none dropped by a cap");
@@ -1342,7 +1384,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let good = b"authoritative"; let h = sha256_hex(good);
         v.put_chunk(&h, good).unwrap();
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: good.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: good.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // Simulate a stale mirror: a failed mirror-write left OLD bytes on disk while the store holds the new ones.
         std::fs::write(dir.path().join("vault").join("n.md"), b"STALE").unwrap();
         assert!(!v.is_corrupt());
@@ -1360,8 +1402,8 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let a = b"aaaa"; let ha = sha256_hex(a);
         let b = b"bbbb"; let hb = sha256_hex(b);
-        v.put_chunk(&ha, a).unwrap(); v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
-        v.put_chunk(&hb, b).unwrap(); v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+        v.put_chunk(&ha, a).unwrap(); v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
+        v.put_chunk(&hb, b).unwrap(); v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // Failed mirror write for a.md: gone from disk, but its chunk is still in the store.
         std::fs::remove_file(dir.path().join("vault").join("a.md")).unwrap();
         v.reindex(false).unwrap(); // must RECOVER a.md from the store, not abort
@@ -1403,7 +1445,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let b = b"x"; let h = sha256_hex(b);
         v.put_chunk(&h, b).unwrap();
-        v.commit(CommitRequest { path: "f.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "f.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         v.delete("f.md").unwrap(); // real tombstone
         assert_eq!(v.changes(0).history_floor, 1, "genesis floor");
         v.reindex(false).unwrap(); // healthy
@@ -1428,7 +1470,7 @@ mod tests {
         assert!(v.has_chunk(&hb));
         // And it commits fine afterward (the sweep didn't disturb the in-flight chunk).
         let mut v = v;
-        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert!(v.has_chunk(&ha));
     }
 
@@ -1440,11 +1482,11 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let b = b"x"; let h = sha256_hex(b);
         v.put_chunk(&h, b).unwrap();
-        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         v.delete("a.md").unwrap();
         let after_first = v.version(); // a.md's tombstone is at this version
         v.put_chunk(&h, b).unwrap();
-        v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "b.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         v.delete("b.md").unwrap();
         assert_eq!(v.changes(0).deletes.len(), 2);
         // Prune below (after_first + 1): drops a.md's tombstone, keeps b.md's; floor raised.
@@ -1464,9 +1506,9 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&ha, a).unwrap();
-            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.put_chunk(&hb, b).unwrap();
-            v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.delete("a.md").unwrap(); // a real tombstone; a.md's chunk is GC'd (unshared)
         }
         // Break b.md's chunk (dangling ref) but leave its mirror file on disk as the rebuild source.
@@ -1485,7 +1527,7 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&ha, a).unwrap();
-            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.delete("a.md").unwrap(); // a tombstone a destructive rebuild-from-disk would erase
         }
         // Simulate an index written by a NEWER server binary (higher schema_version).
@@ -1506,9 +1548,9 @@ mod tests {
         let b = b"bbbb"; let hb = sha256_hex(b);
         let mut v = Vault::open(dir.path()).unwrap();
         v.put_chunk(&ha, a).unwrap();
-        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "a.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         v.put_chunk(&hb, b).unwrap();
-        v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "b.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // a.md: remove its mirror (→ reindex must recover from the store) and BIT-ROT its chunk in place
         // (same filename, so it's still "present", but reassembles to the wrong hash).
         std::fs::remove_file(dir.path().join("vault").join("a.md")).unwrap();
@@ -1530,10 +1572,10 @@ mod tests {
         let b = b"bbbb"; let hb = sha256_hex(b);
         let mut v = Vault::open(dir.path()).unwrap();
         v.put_chunk(&ha, a).unwrap();
-        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).ok(); // keep the vault non-empty
+        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").ok(); // keep the vault non-empty
         v.put_chunk(&hb, b).unwrap();
-        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
-        v.commit(CommitRequest { path: "gone.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "keep.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
+        v.commit(CommitRequest { path: "gone.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         v.delete("gone.md").unwrap(); // tombstone; mirror removed
         // Simulate a FAILED mirror removal: the deleted file's mirror is left on disk (a ghost).
         std::fs::write(dir.path().join("vault").join("gone.md"), a).unwrap();
@@ -1554,9 +1596,9 @@ mod tests {
         {
             let mut v = Vault::open(dir.path()).unwrap();
             v.put_chunk(&ha, a).unwrap();
-            v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.put_chunk(&hb, b).unwrap();
-            v.commit(CommitRequest { path: "gone.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None }).unwrap();
+            v.commit(CommitRequest { path: "gone.md".into(), hash: hb.clone(), size: 4, mtime: 1, chunks: vec![hb.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
             v.delete("gone.md").unwrap(); // tombstone; mirror removed
             std::fs::write(dir.path().join("vault").join("gone.md"), b).unwrap(); // ghost: failed mirror removal
         }
@@ -1590,7 +1632,7 @@ mod tests {
         let a = b"aaaa"; let ha = sha256_hex(a);
         let mut v = Vault::open(dir.path()).unwrap();
         v.put_chunk(&ha, a).unwrap();
-        v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "keep.md".into(), hash: ha.clone(), size: 4, mtime: 1, chunks: vec![ha.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // Simulate a crash between write_mirror's fsync and its rename: a complete-content temp is left.
         std::fs::write(dir.path().join("vault").join(".keep.md.selfsync-tmp"), b"leftover").unwrap();
         // R21: and a crash mid client-download leaves a VISIBLE .selfsync-part partial.
@@ -1625,7 +1667,7 @@ mod tests {
         let body = b"0123456789"; let h = sha256_hex(body); // 10 bytes
         v.put_chunk(&h, body).unwrap();
         // declare size 10 but reference the chunk 5× (would reassemble to 50)
-        let res = v.commit(CommitRequest { path: "x.md".into(), hash: h.clone(), size: 10, mtime: 1, chunks: vec![h; 5], expected_version: None });
+        let res = v.commit(CommitRequest { path: "x.md".into(), hash: h.clone(), size: 10, mtime: 1, chunks: vec![h; 5], expected_version: None, device_id: None, device_name: None }, "");
         assert!(res.is_err(), "reassembly beyond declared size must abort");
     }
 
@@ -1636,7 +1678,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"x"; let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap();
-        let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h], expected_version: None });
+        let res = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: u64::MAX, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None }, "");
         assert!(res.is_err(), "absurd declared size must be rejected before allocation");
     }
 
@@ -1664,9 +1706,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"x"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
-        let over = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES + 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        let over = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES + 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap_err();
         assert!(over.to_string().contains("exceeds size limit"), "over-limit must be the size-limit error (got: {over})");
-        let at = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        let at = v.commit(CommitRequest { path: "big.md".into(), hash: h.clone(), size: MAX_FILE_BYTES, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap_err();
         assert!(!at.to_string().contains("exceeds size limit"), "size == limit passes the gate, failing later as a mismatch (got: {at})");
     }
 
@@ -1678,7 +1720,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"abc"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
         let wrong = sha256_hex(b"different");
-        let e = v.commit(CommitRequest { path: "n.md".into(), hash: wrong, size: 3, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap_err();
+        let e = v.commit(CommitRequest { path: "n.md".into(), hash: wrong, size: 3, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap_err();
         assert!(e.to_string().contains("hash/size mismatch"), "a right-size wrong-hash body must be rejected (got: {e})");
     }
 
@@ -1691,12 +1733,12 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"helloworld"; let h = sha256_hex(body);
         v.put_chunk(&h, body).unwrap(); // decomposition A: one whole-body chunk
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         // decomposition B: same body/hash, two chunks
         let (p1, p2) = (b"hello".as_slice(), b"world".as_slice());
         let (c1, c2) = (sha256_hex(p1), sha256_hex(p2));
         v.put_chunk(&c1, p1).unwrap(); v.put_chunk(&c2, p2).unwrap();
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![c1.clone(), c2.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 10, mtime: 0, chunks: vec![c1.clone(), c2.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert_eq!(v.file_meta("n.md").unwrap().chunks, vec![c1, c2], "a same-hash re-chunk must be recorded, not treated as idempotent");
     }
 
@@ -1708,7 +1750,7 @@ mod tests {
         let mut v = Vault::open(dir.path()).unwrap();
         let body = b"v"; let h = sha256_hex(body); v.put_chunk(&h, body).unwrap();
         let before = v.version();
-        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None }).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         assert_eq!(v.version(), before + 1, "commit must bump the version");
         let after_commit = v.version();
         v.delete("n.md").unwrap();

@@ -35,6 +35,11 @@ export interface NewLiveSyncSettings {
   deviceName: string; // shown in conflict-copy filenames; blank = auto
   vaultId: string;    // which server-side vault this Obsidian vault syncs to
   configSync: ConfigSyncSelection; // which .obsidian/ config surfaces to sync (see configsync.ts)
+  // When to notify that a SYNCED config/plugin change arrived, by its SOURCE (never by vault shared/private
+  // status): "user" (default) notifies only when ANOTHER PERSON (a different account) made the change —
+  // your own devices stay silent; "userDevice" also notifies when it was YOU but from a DIFFERENT device.
+  // The decision keys on the server-authenticated author + the stable device UUID (see configChangeSource).
+  configChangeNotify: "user" | "userDevice";
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
@@ -68,6 +73,11 @@ export interface NewLiveSyncSettings {
   // force a safe merge-switch (clears the base). Stamped after each successful connect. Per-device (settings
   // never sync); omitted from DEFAULT_SETTINGS.
   baseVaultKey?: string;
+  // This device's STABLE provenance UUID (change attribution). Minted once (crypto.randomUUID) and stamped
+  // on every commit so peers can tell WHO wrote a change; identity is this UUID, not the mutable deviceName,
+  // so a rename can't impersonate another device. Per-device (settings never sync); omitted from
+  // DEFAULT_SETTINGS and lazily created by plugin.deviceId() on first use.
+  deviceId?: string;
   // Timestamp-ignore (the redesigned feature — SelfSync NEVER writes note timestamps). When on, a diff that
   // is only a TIMESTAMP-VALUED frontmatter key is excluded from sync change-detection, so it never causes a
   // conflict. Identity-only; it never edits a note. ON by default (safe: never writes; value-shape gated).
@@ -87,6 +97,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   deviceName: "",
   vaultId: "default",
   configSync: { ...DEFAULT_CONFIG_SYNC },
+  configChangeNotify: "user", // notify only on ANOTHER PERSON's synced config change (your own devices stay silent)
   authToken: undefined,
   lastSyncedAt: undefined,
   editorStatus: false,
@@ -127,6 +138,10 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   out.configConflicts = Array.isArray(s.configConflicts) ? [...s.configConflicts] : [];
   // Fresh array (mutated in place by add/remove); a non-array persisted value → empty.
   out.excludedFolders = Array.isArray(s.excludedFolders) ? [...s.excludedFolders] : [];
+  // Provenance fields: a stable per-device UUID (kept only if it's a non-empty string; else re-minted
+  // lazily) and the notify mode (only the two known values; anything else → the safe "user" default).
+  out.deviceId = typeof s.deviceId === "string" && s.deviceId ? s.deviceId : undefined;
+  out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
   // Migrate the retired 1.7-1.8 "embed timestamps" (which WROTE notes) to the identity-only "ignore
   // timestamp changes". Default ON for everyone — it never edits files and is value-shape gated, so even a
   // vault that never touched the old feature gets conflict suppression + the always-on EOL/BOM fix. Honor an
@@ -343,6 +358,17 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     cat("Appearance & themes", "appearance.json, themes/", "appearance");
     cat("CSS snippets", "snippets/", "snippets");
     cat("Community plugins", "Each community plugin's code and settings.", "community");
+
+    // Source-driven change notifications: a synced settings/plugin change is worth knowing about only when
+    // SOMEONE ELSE made it. Your own edits never notify. Choose whether "someone else" means another person
+    // (default) or also another of your own devices. (Notes are never part of this — only .obsidian config.)
+    g.addSetting((st) => st.setName("Tell me when settings change")
+      .setDesc("Only changes you didn't make here notify you — never your own edits. Choose whose count.")
+      .addDropdown((dd) => dd
+        .addOption("user", "Another person changes them")
+        .addOption("userDevice", "Another of my devices changes them, too")
+        .setValue(s.configChangeNotify)
+        .onChange(async (v) => { s.configChangeNotify = v === "userDevice" ? "userDevice" : "user"; await this.plugin.saveSettings(); })));
 
     if (cs.community) this.renderPluginChecklist(c, cs);
   }

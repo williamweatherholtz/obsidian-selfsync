@@ -75,6 +75,21 @@ describe("commit() status→error mapping", () => {
     await t().commit({ path: "a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] });
     expect(JSON.parse(req.mock.calls[0][0].body)).not.toHaveProperty("expected_version");
   });
+  it("stamps the transport's device provenance (snake_case) on every commit; omits it when unconfigured", async () => {
+    req.mockResolvedValue(res(200, { json: validMeta }));
+    // A transport carrying this device's identity stamps device_id/device_name on the commit body.
+    const withDev = new HttpTransport(HTTPS, "tok", "vault", "", "dev-uuid-1", "Will's Desktop");
+    await withDev.commit({ path: "a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] });
+    const body = JSON.parse(req.mock.calls[0][0].body);
+    expect(body.device_id).toBe("dev-uuid-1");
+    expect(body.device_name).toBe("Will's Desktop");
+    // The default transport (no identity) omits both — the server records the change as unknown-device.
+    req.mockClear();
+    await t().commit({ path: "a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] });
+    const bare = JSON.parse(req.mock.calls[0][0].body);
+    expect(bare).not.toHaveProperty("device_id");
+    expect(bare).not.toHaveProperty("device_name");
+  });
 });
 
 describe("fileMeta() / status() / missing() mapping", () => {

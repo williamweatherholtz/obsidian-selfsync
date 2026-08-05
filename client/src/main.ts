@@ -14,10 +14,10 @@ import { encodeSetupLink } from "./connstr";
 import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant } from "./sharelink";
 import { Phase, light, isWsStale, effectivePhase } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
-import { CLIENT_API_VERSION } from "./protocol";
+import { CLIENT_API_VERSION, FileMeta } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
-import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, ConfigSurface, ConfigDirection } from "./configsync";
+import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
 import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -41,6 +41,24 @@ const CONFIG_SCAN_INTERVAL_MS = 30_000; // config-only re-hash cadence — the B
 // The primary detector is event-driven: the `raw` FS event (desktop) + css-change/layout-change proxies
 // (mobile) trigger the scan on demand; this timer just catches the rare change nothing signalled.
 const CONFIG_EVENT_MIN_GAP_MS = 5_000; // rate-limit UI-event-triggered scans (layout-change fires on plain navigation too)
+
+// A v4 UUID that NEVER throws — used for the per-device provenance id, minted on the connect path where a
+// throw would break sync entirely (crit finding 3). Prefers crypto.randomUUID (Electron/modern WebView),
+// falls back to crypto.getRandomValues (Android System WebView < 92 lacks randomUUID but has this), and
+// finally to a non-crypto id (identity/display only — not a security token) so it can never take down connect.
+function randomUuid(): string {
+  const c: Crypto | undefined = (globalThis as { crypto?: Crypto }).crypto;
+  try {
+    if (c?.randomUUID) return c.randomUUID();
+    if (c?.getRandomValues) {
+      const b = c.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80; // v4 + RFC-4122 variant
+      const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    }
+  } catch { /* fall through to the non-crypto id */ }
+  return `dev-${Date.now().toString(36)}-${Math.floor(Math.random() * 0x100000000).toString(36)}`;
+}
 // The per-file sync cap is now the user-configurable setting `maxSyncMB` (default 200), resolved by
 // maxSyncBytes(). NOTE the platform trade-off it exposes: mobile has no streamed I/O
 // (ObsidianVaultIo.appendWrite is desktop-only), so a synced file is buffered whole in the WebView
@@ -364,7 +382,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // effect→reconcile wiring runs without Obsidian or a server.
   protected buildIo(): VaultIo { return new ObsidianVaultIo(this); }
   protected buildApi(token: string): ApiClient {
-    return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "");
+    return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "", this.deviceId(), this.deviceLabel());
   }
   protected async loginRemote(): Promise<string> {
     // Re-login for an ALREADY-set-up account (its password was set at setup, so must-change is cleared);
@@ -374,6 +392,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+    await this.ensureDeviceId(); // durably mint the provenance UUID before any commit can stamp it (crit finding 4)
     this.io = this.buildIo();
     void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
     // The one operational state machine. Effects are the (previously inline) connect/reconcile/
@@ -1056,6 +1075,28 @@ export default class NewLiveSyncPlugin extends Plugin {
   private pendingReload = new Set<string>();
   onConfigWritten(path: string) { this.pendingReload.add(path); this.markConfigSelfWrite(path); } // mark: ignore the raw echo
 
+  // Provenance (author/device) of each pending config change, recorded by reconcile as the remote change
+  // is applied (deps.onRemoteConfig) and consumed by flushConfigReload to decide — purely by SOURCE — whether
+  // a reload notice fires. Keyed by the same paths as pendingReload; cleared alongside it.
+  private configProvenance = new Map<string, ChangeProvenance>();
+  recordIncomingConfig(path: string, meta: FileMeta) {
+    this.configProvenance.set(path, { author: meta.author, deviceId: meta.deviceId, deviceName: meta.deviceName });
+  }
+  // This device's identity for the source-of-change decision (account + stable UUID).
+  private selfIdentity(): SelfIdentity { return { user: this.settings.username, deviceId: this.deviceId() }; }
+  // The provenance of the first change among `paths` whose SOURCE should notify (per the notify mode), or
+  // null if every change was your own (→ stay silent / log). Drives the actionable "<who> changed …" notice.
+  // A path with no recorded provenance is treated as unknown-author → notify (conservative).
+  private notifiableConfigSource(paths: string[]): ChangeProvenance | null {
+    const self = this.selfIdentity();
+    const mode = this.settings.configChangeNotify;
+    for (const p of paths) {
+      const prov = this.configProvenance.get(p) ?? {};
+      if (shouldNotifyConfigChange(prov, self, mode)) return prov;
+    }
+    return null;
+  }
+
   async flushConfigReload(): Promise<void> {
     if (this.pendingReload.size === 0) return;
     const paths = [...this.pendingReload];
@@ -1072,40 +1113,48 @@ export default class NewLiveSyncPlugin extends Plugin {
     // does an update to an already-running plugin; CSS is handled separately below (Obsidian DOES hot-reload
     // an enabled snippet/theme, so it gets a trust warning on a shared vault, not the restart barrier). Non-code, non-CSS
     // config (e.g. a plugin's data.json) is already on disk and read on next load.
-    const touchedCss = paths.some((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"));
-    const pluginIds = new Set<string>();
-    for (const p of paths) { const id = pluginIdOf(p); if (id && id !== this.selfFolderId()) pluginIds.add(id); }
-    const touchedCore = paths.some((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p));
+    // Partition the batch by surface so each notice's SOURCE is looked up over ONLY its own paths — a mixed
+    // flush (your plugin edit + a peer's CSS) must never attribute one surface's change to the other's author
+    // (crit finding 2). pluginPaths drive the code notice; cssPaths the CSS notice; corePaths the core notice.
+    const cssPaths = paths.filter((p) => /(^|\/)appearance\.json$/.test(p) || p.includes("/themes/") || p.includes("/snippets/"));
+    const pluginPaths = paths.filter((p) => { const id = pluginIdOf(p); return !!id && id !== this.selfFolderId(); });
+    const corePaths = paths.filter((p) => /(app|core-plugins|community-plugins|hotkeys)\.json$/.test(p));
+    const pluginIds = new Set<string>(pluginPaths.map((p) => pluginIdOf(p)).filter((id): id is string => !!id));
 
+    // SOURCE-DRIVEN notices (D-provenance): a reload notice fires ONLY when the change came from a source
+    // that should notify (another person, or — in userDevice mode — another of your devices), NEVER based on
+    // whether the vault is shared. A change you made yourself is silent (logged). The wording names WHO.
     if (pluginIds.size > 0) {
-      await this.applyPluginCodeChange(pluginIds);
-    } else if (touchedCss) {
-      // CSS TRUST GATE (issueUntrustedCssApplied / cssTrustGate): synced theme/snippet CSS is EXECUTABLE-
-      // adjacent — Obsidian hot-reloads an ENABLED snippet/theme on file change (it does NOT wait for a
-      // restart), and CSS in the un-CSP'd renderer can hide/spoof content or exfil via `background:url(...)`.
-      // So on a SHARED / shareable vault a peer authored it → give it a TRUST WARNING like plugin CODE (the
-      // prior bland "will apply after restart" was BOTH missing the warning AND wrong: it applies live). On a
-      // provably-PRIVATE vault it's the user's own CSS → a plain notice. Fresh privacy re-check (like the
-      // hot-load gate) so a vault that became shared out-of-band still warns.
-      await this.refreshVaultPrivacy();
-      new Notice(this.vaultIsPrivate
-        ? "SelfSync: your synced theme/snippet CSS changed."
-        : "SelfSync: theme/snippet CSS arrived via SYNC from a shared vault and Obsidian may apply it LIVE. CSS can alter your interface, hide or spoof content, or leak activity — REVIEW it (Settings → Appearance) and remove anything from a source you don't trust.",
-        this.vaultIsPrivate ? 6000 : 15000);
-    } else if (touchedCore) {
-      new Notice("SelfSync: some synced core settings will apply after you fully close and reopen Obsidian.");
+      await this.applyPluginCodeChange(pluginIds, pluginPaths);
+    } else if (cssPaths.length) {
+      // Synced theme/snippet CSS is executable-adjacent — Obsidian hot-reloads an ENABLED snippet/theme LIVE,
+      // and CSS in the un-CSP'd renderer can hide/spoof content or exfil via `background:url(...)`. So when a
+      // DIFFERENT source changed it, warn to review; your own CSS change is silent.
+      const src = this.notifiableConfigSource(cssPaths);
+      if (src) new Notice(`SelfSync: ${changeSourceLabel(src, this.selfIdentity())} changed your synced theme/snippet CSS — Obsidian may apply it LIVE. Review it (Settings → Appearance) and remove anything from a source you don't trust.`, 15000);
+      else this.log(`applied your synced theme/snippet CSS (${cssPaths.length} file(s))`);
+    } else if (corePaths.length) {
+      const src = this.notifiableConfigSource(corePaths);
+      if (src) new Notice(`SelfSync: ${changeSourceLabel(src, this.selfIdentity())} changed synced core settings — fully close and reopen Obsidian to apply them.`);
+      else this.log(`applied synced core settings (${corePaths.length} file(s))`);
     } else {
       this.log(`applied synced config (${paths.length} file(s))`);
     }
+    // Consume ALL provenance recorded this pass — not just the flushed paths — so a race-aborted pull's
+    // recorded-but-unwritten entry can't leak or later misattribute a same-path write (crit finding 5).
+    this.configProvenance.clear();
   }
 
-  // A synced change to community-plugin CODE. On a PROVABLY-PRIVATE vault (own + unshared — refreshVaultPrivacy)
-  // it is our OWN code, so a NEWLY-ARRIVED plugin (not yet loaded this session) is hot-loaded LIVE
-  // (loadManifests + enablePlugin) — no restart. Everything the gate does NOT cover falls back to the explicit
-  // restart notice + trust warning (the R14 sec#1 barrier): a SHARED vault (untrusted code), an UPDATE to an
-  // already-RUNNING plugin (Obsidian re-executes plugin code only on a reload), a hot-load FAILURE, or the
-  // internal API being absent. Best-effort + fail-safe — a plugin that refuses to hot-load never breaks sync.
-  private async applyPluginCodeChange(ids: Set<string>): Promise<void> {
+  // A synced change to community-plugin CODE. TWO ORTHOGONAL concerns:
+  //  1. SECURITY (auto-execution): on a PROVABLY-PRIVATE vault (own + unshared — refreshVaultPrivacy) a
+  //     NEWLY-ARRIVED plugin is our OWN code, hot-loaded LIVE (loadManifests + enablePlugin, no restart).
+  //     Any shared/shareable vault, an UPDATE to a RUNNING plugin, a hot-load failure, or a missing API keeps
+  //     the R14 restart trust-barrier. This gate is UNCHANGED — it governs whether we auto-run code, not
+  //     whether we notify.
+  //  2. NOTIFICATION (source-driven, D-provenance): the notice fires ONLY when the change's SOURCE should
+  //     notify (another person, or another of your devices in userDevice mode) — never based on vault privacy.
+  //     Your own change is silent (logged). `paths` carries the changed files so we can attribute the source.
+  private async applyPluginCodeChange(ids: Set<string>, paths: string[]): Promise<void> {
     const pm = (this.app as unknown as { plugins?: { plugins?: Record<string, unknown>; loadManifests?: () => Promise<void>; enablePlugin?: (id: string) => Promise<unknown> } }).plugins;
     const isLoaded = (id: string) => !!pm?.plugins?.[id];
     const hotLoaded: string[] = [];
@@ -1130,10 +1179,18 @@ export default class NewLiveSyncPlugin extends Plugin {
     } else {
       needRestart.push(...newlyArrived); // gated (shared/untrusted vault) or no API → the restart trust-barrier stays
     }
-    if (hotLoaded.length) { new Notice(`SelfSync: activated ${hotLoaded.length} synced plugin(s) — no restart needed.`); this.settingsRefresh?.(); }
+    const src = this.notifiableConfigSource(paths); // null ⇒ your own change ⇒ stay silent (log only)
+    const who = src ? changeSourceLabel(src, this.selfIdentity()) : "";
+    if (hotLoaded.length) {
+      this.settingsRefresh?.();
+      if (src) new Notice(`SelfSync: ${who} added ${hotLoaded.length} synced plugin(s) — now active here, no restart needed.`);
+      else this.log(`activated ${hotLoaded.length} synced plugin(s) — no restart needed`);
+    }
     if (needRestart.length) {
       const names = [...new Set(needRestart)].sort().join(", ");
-      new Notice(`SelfSync: community-plugin CODE changed via sync — ${names}. This is executable code; it is NOT active until you fully close and reopen Obsidian, and you should do so ONLY if you trust the source of these changes.`, 15000);
+      // Actionable + source-named when it wasn't you; a plain log line when it was your own change.
+      if (src) new Notice(`SelfSync: ${who} changed community-plugin CODE — ${names}. It is executable code, NOT active until you fully close and reopen Obsidian; do so only if you trust the source.`, 15000);
+      else this.log(`synced plugin code updated (${names}) — fully close and reopen Obsidian to load it`);
     }
   }
 
@@ -1301,6 +1358,25 @@ export default class NewLiveSyncPlugin extends Plugin {
   private deviceLabel(): string {
     return this.settings.deviceName || this.autoDeviceName();
   }
+  // A STABLE per-device UUID — the unforgeable identity for change provenance ("did ANOTHER device write
+  // this?"). Persisted per-device (settings never sync) and INDEPENDENT of deviceLabel: renaming a device
+  // can't change its id, so a rename can never impersonate another device to dodge a peer-change notification
+  // (the property the owner asked for). Minted at load (ensureDeviceId, awaited-persisted) so it's durable
+  // before any commit stamps it; this getter is a safe fallback that also persists a first-use mint.
+  deviceId(): string {
+    if (!this.settings.deviceId) {
+      this.settings.deviceId = randomUuid();
+      void this.saveSettings();
+    }
+    return this.settings.deviceId;
+  }
+  // Mint + DURABLY persist the device UUID if absent — called on load BEFORE the first commit, so a crash
+  // right after minting can't leave a device that re-mints a NEW id each session (which, in userDevice mode,
+  // would make its own edits look like a different device forever — crit finding 4). Awaited, unlike the
+  // lazy getter's fire-and-forget.
+  private async ensureDeviceId(): Promise<void> {
+    if (!this.settings.deviceId) { this.settings.deviceId = randomUuid(); await this.saveSettings(); }
+  }
   // Per-device per-file sync cap in bytes, from settings.maxSyncMB (default 200). Clamped to a sane
   // floor so a bad/zero value can't silently skip everything.
   private maxSyncBytes(): number {
@@ -1355,6 +1431,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.settingsRefresh?.(); this.statusListener?.(); },
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
+      onRemoteConfig: (p, meta) => this.recordIncomingConfig(p, meta), // record who/which-device for the source-driven reload notice
+
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onDeclined: (paths) => this.noteDeclined(paths),
       onRemotePlugins: (ids) => this.setServerPluginIds(ids),

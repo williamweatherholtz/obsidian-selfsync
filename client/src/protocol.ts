@@ -5,7 +5,16 @@
 // of the server. Bump in lockstep with the server's API_VERSION on any breaking wire/schema change.
 export const CLIENT_API_VERSION = 1;
 
-export interface FileMeta { path: string; hash: string; size: number; mtime: number; version: number; chunks: string[]; }
+export interface FileMeta {
+  path: string; hash: string; size: number; mtime: number; version: number; chunks: string[];
+  // Provenance (source-of-change attribution) — WHO last wrote this file. `author` is the server-
+  // authenticated username (trustworthy); `deviceId` is the committing device's stable UUID and
+  // `deviceName` its friendly label (self-asserted — identity is the UUID, not the spoofable name).
+  // All optional: a pre-provenance change (older server, reindex-from-disk) omits them, and the client
+  // treats an absent author as UNKNOWN → notify conservatively. Mapped from the wire's snake_case
+  // (author / device_id / device_name) in validateFileMeta.
+  author?: string; deviceId?: string; deviceName?: string;
+}
 export interface Deletion { path: string; version: number; }
 // history_floor (D0019): the version at/above which the server's DELETION history is complete
 // (genesis = 1). A rebuild-from-disk reindex raises it, declaring the deletion history reset. When
@@ -18,7 +27,13 @@ export interface ChangesResponse { version: number; upserts: FileMeta[]; deletes
 // reconcile-driven overwrites so the server can reject (409) a commit that would clobber an
 // intervening change (optimistic concurrency). Omitted for authoritative overwrites (vault
 // switch / user adjudication). Serialized as snake_case `expected_version` by the transport.
-export interface CommitRequest { path: string; hash: string; size: number; mtime: number; chunks: string[]; expectedVersion?: number; }
+export interface CommitRequest {
+  path: string; hash: string; size: number; mtime: number; chunks: string[]; expectedVersion?: number;
+  // Source attribution sent with every write: this device's stable UUID + friendly name. The server
+  // pairs them with the authenticated user (it never trusts a client-sent username) and records them as
+  // the file's last writer. Serialized as snake_case device_id / device_name by the transport.
+  deviceId?: string; deviceName?: string;
+}
 export interface StatusResponse { status: string; detail: string; version: number; apiVersion?: number; }
 
 // Thrown by the transport when a commit is rejected for a version conflict (HTTP 409). The
@@ -46,6 +61,12 @@ function asNum(v: unknown, f: string): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Error(`malformed response: ${f} not a non-negative integer`);
   return v;
 }
+// An OPTIONAL wire string: absent/null → undefined (a pre-provenance record), else a validated string.
+// Used for the provenance fields (author/device_*), which an older server or a reindexed file omits.
+function asOptStr(v: unknown, f: string): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  return asStr(v, f);
+}
 export function validateFileMeta(o: unknown): FileMeta {
   const m = o as Record<string, unknown>;
   if (!m || typeof m !== "object") throw new Error("malformed response: FileMeta not an object");
@@ -64,6 +85,11 @@ export function validateFileMeta(o: unknown): FileMeta {
     mtime: asNum(m.mtime, "mtime"),
     version: asNum(m.version, "version"),
     chunks: m.chunks as string[],
+    // Provenance: validate-if-present, mapping the wire's snake_case to camelCase. A hostile server can't
+    // smuggle a non-string author through (asOptStr throws), and an older server simply omits them.
+    author: asOptStr(m.author, "author"),
+    deviceId: asOptStr(m.device_id, "device_id"),
+    deviceName: asOptStr(m.device_name, "device_name"),
   };
 }
 // R12-PB5: status() was the one consumed response NOT shape-validated — a garbage `{}` made

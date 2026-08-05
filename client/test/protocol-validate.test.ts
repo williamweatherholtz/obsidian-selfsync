@@ -55,4 +55,24 @@ describe("response-shape validation (PROTO-3)", () => {
     expect(validateChanges({ version: 1, upserts: [], deletes: [], history_floor: 3 })).toBeTruthy();     // number OK
     expect(() => validateChanges({ version: 1, upserts: [], deletes: [], history_floor: "999" })).toThrow(/history_floor/);
   });
+
+  // Provenance (change attribution): validateFileMeta maps the wire's snake_case author fields to camelCase,
+  // leaves them undefined when a pre-provenance server omits them, and rejects a hostile non-string.
+  const goodMetaForProv = { path: "a.md", hash: "h", size: 3, mtime: 1, version: 5, chunks: ["c1"] };
+  it("maps device_id/device_name → deviceId/deviceName and keeps author", () => {
+    const m = validateFileMeta({ ...goodMetaForProv, author: "alice", device_id: "dev-Z", device_name: "Alice-PC" });
+    expect(m.author).toBe("alice");
+    expect(m.deviceId).toBe("dev-Z");
+    expect(m.deviceName).toBe("Alice-PC");
+  });
+  it("leaves provenance undefined when the server omits it (older server / reindexed file)", () => {
+    const m = validateFileMeta(goodMetaForProv);
+    expect(m.author).toBeUndefined();
+    expect(m.deviceId).toBeUndefined();
+    expect(m.deviceName).toBeUndefined();
+  });
+  it("rejects a hostile non-string author/device (can't smuggle an object through as the author)", () => {
+    expect(() => validateFileMeta({ ...goodMetaForProv, author: { evil: 1 } })).toThrow(/author/);
+    expect(() => validateFileMeta({ ...goodMetaForProv, device_id: 42 })).toThrow(/device_id/);
+  });
 });

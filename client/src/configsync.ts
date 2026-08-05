@@ -246,3 +246,31 @@ export function shouldSync(path: string, sel: ConfigSyncSelection, selfPluginId:
   // (3) unrecognized .obsidian/ file → device-local, never synced
   return false;
 }
+
+// --- change-provenance: should an incoming synced config/plugin change NOTIFY? -------------------
+// Pure + total (no Obsidian API) so the source-of-change rule is exhaustively unit-testable.
+export interface ChangeProvenance { author?: string; deviceId?: string; deviceName?: string }
+export type NotifyMode = "user" | "userDevice";
+export interface SelfIdentity { user: string; deviceId: string }
+
+// The SOURCE rule the owner specified: notify only when someone OTHER than "me" made the change — NEVER
+// keyed on whether the vault is shared. "user" mode (default): another PERSON (a different account); your
+// own devices stay silent. "userDevice" mode: also notify when it was you but from a DIFFERENT device.
+// An UNKNOWN author (a pre-provenance change: older server / peer on an older plugin / reindex-from-disk)
+// can't be proven to be you, so it notifies — conservative, and self-resolving once every device is upgraded.
+export function shouldNotifyConfigChange(p: ChangeProvenance, self: SelfIdentity, mode: NotifyMode): boolean {
+  if (!p.author) return true;              // unknown source → can't prove it was us → notify
+  if (p.author !== self.user) return true; // another PERSON → always notify
+  if (mode === "user") return false;       // your own change, user mode → silent (your devices are "you")
+  // userDevice mode: it's you, but was it THIS device? Unknown device id → can't confirm → notify.
+  if (!p.deviceId) return true;
+  return p.deviceId !== self.deviceId;
+}
+
+// The human label for who made a change: the friendly device name if present, else the account, else a
+// generic fallback — for the actionable "<who> changed …" notice. Never surfaces a raw UUID.
+export function changeSourceLabel(p: ChangeProvenance, self: SelfIdentity): string {
+  const other = p.author && p.author !== self.user ? p.author : undefined;
+  if (p.deviceName) return other ? `${other} (${p.deviceName})` : p.deviceName;
+  return other ?? "another device";
+}

@@ -102,8 +102,10 @@ async function apiVoid(params: RequestUrlParam, label: string, tag: { endpoint: 
 // Sync ops are vault-scoped: your own vault → /api/v/{vault}/…; a vault shared by
 // someone else → /api/u/{owner}/{vault}/… (owner given). Account ops are static.
 export class HttpTransport implements SyncApi {
-  // `owner` empty ⇒ your own vault (legacy /api/v route); set ⇒ a shared vault.
-  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "") {
+  // `owner` empty ⇒ your own vault (legacy /api/v route); set ⇒ a shared vault. `deviceId`/`deviceName`
+  // are this device's change-provenance identity, stamped onto every commit (the server pairs them with
+  // the authenticated user). Default "" ⇒ unattributed (older/injected transport in tests).
+  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "", private deviceId = "", private deviceName = "") {
     // SEC-CMMC (SC.3.13.8, defense-in-depth): refuse the WHOLE data channel over cleartext http:// to a
     // remote host, not just login/register. Login already blocks establishing such a session, so this
     // only fires if a cleartext-remote baseUrl were somehow persisted — then every sync op refuses too,
@@ -299,6 +301,13 @@ export class HttpTransport implements SyncApi {
       path: req.path, hash: req.hash, size: req.size, mtime: req.mtime, chunks: req.chunks,
     };
     if (req.expectedVersion !== undefined) body.expected_version = req.expectedVersion;
+    // Provenance (snake_case on the wire): this device's stable UUID + friendly name. The transport's own
+    // identity is the source of truth; a caller MAY override via the request (tests). Only sent when
+    // present — an unconfigured device omits them and the server records the change as unknown-device.
+    const did = req.deviceId ?? this.deviceId;
+    const dname = req.deviceName ?? this.deviceName;
+    if (did) body.device_id = did;
+    if (dname) body.device_name = dname;
     const r = await httpReq({
       url: this.v("/commit"), method: "POST", contentType: "application/json",
       headers: this.auth(), body: JSON.stringify(body), throw: false,

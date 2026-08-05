@@ -234,7 +234,7 @@ pub async fn commit(
     let meta = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.commit(req).map_err(|e| match e.kind() {
+        v.commit(req, &u).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => AppError::NotFound, // a 404 the client handles; not logged
             // CAS mismatch (optimistic concurrency): a NORMAL multi-device edit race — the client
             // based this write on a stale version, gets 409, and re-reconciles + merges. Log at debug
