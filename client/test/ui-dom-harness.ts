@@ -39,6 +39,8 @@ export function fakePlugin(over: any = {}) {
     pushPlugin: vi.fn(async () => 0),
     pullPlugin: vi.fn(async () => 0),
     pluginSyncClean: vi.fn(async () => false), // default: NOT converged → Push/Pull buttons stay live
+    runPluginAutopilot: vi.fn(async () => {}),
+    getPendingPeerPlugins: vi.fn(() => [] as { id: string; author: string }[]),
 
     pluginPushPullPreview: vi.fn(async (id: string, direction: "push" | "pull") => ({
       direction, name: id, fromLabel: "this device (Test)", toLabel: "the server",

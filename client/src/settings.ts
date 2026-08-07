@@ -41,6 +41,12 @@ export interface NewLiveSyncSettings {
   // your own devices stay silent; "userDevice" also notifies when it was YOU but from a DIFFERENT device.
   // The decision keys on the server-authenticated author + the stable device UUID (see configChangeSource).
   configChangeNotify: "user" | "userDevice";
+  // Set-and-forget plugin sync (nPluginSyncAutopilot). When true: a plugin you install HERE, and a plugin
+  // from another of YOUR OWN devices (same authenticated account), is auto-added to the synced allowlist —
+  // no tab visit. A plugin added by ANOTHER PERSON never auto-adopts; it waits for your explicit approval
+  // (a toast + the "Awaiting your approval" list). Default false — auto-propagating plugin CODE is
+  // security-sensitive, so it's opt-in.
+  autoSyncNewPlugins: boolean;
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
@@ -79,6 +85,10 @@ export interface NewLiveSyncSettings {
   // so a rename can't impersonate another device. Per-device (settings never sync); omitted from
   // DEFAULT_SETTINGS and lazily created by plugin.deviceId() on first use.
   deviceId?: string;
+  // Plugin ids the auto-sync autopilot has already OBSERVED (per-device; omitted from DEFAULT_SETTINGS,
+  // lazily []). The autopilot auto-adds a plugin only the FIRST time it sees it (not in this set), so once
+  // you've un-ticked an auto-added plugin it stays un-synced — the policy never fights a manual choice.
+  autopilotSeen?: string[];
   // Timestamp-ignore (the redesigned feature — SelfSync NEVER writes note timestamps). When on, a diff that
   // is only a TIMESTAMP-VALUED frontmatter key is excluded from sync change-detection, so it never causes a
   // conflict. Identity-only; it never edits a note. ON by default (safe: never writes; value-shape gated).
@@ -99,6 +109,7 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   vaultId: "default",
   configSync: { ...DEFAULT_CONFIG_SYNC },
   configChangeNotify: "user", // notify only on ANOTHER PERSON's synced config change (your own devices stay silent)
+  autoSyncNewPlugins: false,  // opt-in: auto-sync your own new plugins everywhere; a peer's still needs approval
   authToken: undefined,
   lastSyncedAt: undefined,
   editorStatus: false,
@@ -143,6 +154,8 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   // lazily) and the notify mode (only the two known values; anything else → the safe "user" default).
   out.deviceId = typeof s.deviceId === "string" && s.deviceId ? s.deviceId : undefined;
   out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
+  out.autoSyncNewPlugins = s.autoSyncNewPlugins === true; // opt-in; any non-true persisted value → off
+  out.autopilotSeen = Array.isArray(s.autopilotSeen) ? [...new Set(s.autopilotSeen.filter((x): x is string => typeof x === "string"))] : undefined;
   // Migrate the retired 1.7-1.8 "embed timestamps" (which WROTE notes) to the identity-only "ignore
   // timestamp changes". Default ON for everyone — it never edits files and is value-shape gated, so even a
   // vault that never touched the old feature gets conflict suppression + the always-on EOL/BOM fix. Honor an
@@ -594,6 +607,18 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const shared = syncedIds.filter((id) => cs.pluginAllow.includes(id)).length;
     const g = new SettingGroup(c).setHeading("Synced community plugins");
 
+    // Set-and-forget policy (nPluginSyncAutopilot): when on, your own new plugins auto-sync everywhere; a
+    // plugin added by another person still waits for your approval below. Kick a pass on render (idempotent +
+    // guarded) so opening the tab catches up without waiting for the next reconcile.
+    g.addSetting((st) => st.setName("Auto-sync new plugins")
+      .setDesc("New plugins you install here — and ones from your other devices — sync automatically. A plugin added by someone else still waits for your approval below.")
+      .addToggle((tg) => tg.setValue(this.plugin.settings.autoSyncNewPlugins).onChange(async (v) => {
+        this.plugin.settings.autoSyncNewPlugins = v; await this.plugin.saveSettings();
+        if (v) void this.plugin.runPluginAutopilot();
+        this.display();
+      })));
+    if (this.plugin.settings.autoSyncNewPlugins) void this.plugin.runPluginAutopilot();
+
     // Standing RESTART reminder: a plugin adopted from the sync but not yet installed locally is on
     // disk (or downloading), but Obsidian only loads plugins at STARTUP — it stays dormant until a full
     // restart. The transient sync toast is easy to miss on mobile, so surface it as a persistent banner
@@ -612,38 +637,51 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       return;
     }
 
-    // Bulk actions. "Install all from the sync" is the fresh-vault bootstrap — adopt every plugin the
-    // server holds (download-only for the ones not installed here); shown only when there are such
-    // plugins. setPluginSync records each added plugin's first-contact direction.
+    // Summary + the fresh-vault bootstrap ("Install all from the sync" adopts every server plugin, download-
+    // only for the ones not installed here). "Sync none" removed (owner) — the auto-sync policy + per-plugin
+    // ticks replace it.
     g.addSetting((st) => {
       st.setName("All plugins").setDesc(`${shared} of ${syncedIds.length} synced${availableIds.length ? ` · ${availableIds.length} available from the sync (not adopted here)` : ""}.`);
-      if (syncedIds.length) st.addButton((b) => b.setButtonText("Sync none").onClick(async () => { for (const id of syncedIds) await this.plugin.setPluginSync(id, false); this.display(); }));
       if (availableIds.length) st.addButton((b) => b.setButtonText("Install all from the sync").setCta().onClick(async () => { await this.plugin.installAllServerPlugins(); this.display(); }));
     });
+
+    // Explain the disabled Push/Pull state (owner-requested) — shown when there are installed synced plugins
+    // (the ones that carry the buttons) on a writable vault.
+    if (!ro && syncedIds.some((id) => installed.has(id))) {
+      g.addSetting((st) => st.setDesc("Greyed Push/Pull = already in sync."));
+    }
 
     // The plugins THIS device actually syncs.
     this.renderPluginRows(c, syncedIds, cs, manifests, installed, onServer, ro, `${syncedIds.length} synced`);
 
-    // A SEPARATE, subordinate group for the AVAILABLE-to-adopt set (the parity fix): plugins on the server
-    // from other devices that aren't installed/adopted here — offered to pick up, but clearly NOT "synced".
+    // A SEPARATE, subordinate group for the AVAILABLE-to-adopt set: plugins on the server not installed/
+    // adopted here. When the autopilot is on, the ones ANOTHER PERSON added are gated here for your approval
+    // (own plugins were auto-adopted), so this doubles as the persistent "awaiting your approval" surface the
+    // toast points to — labeled with WHO added each.
     if (availableIds.length) {
-      const ag = new SettingGroup(c).setHeading("Available from the sync (not adopted)");
-      ag.addSetting((st) => st.setDesc("On the server from your other devices, but not installed or synced here. Tick one to adopt it on this device."));
-      this.renderPluginRows(c, availableIds, cs, manifests, installed, onServer, ro, `${availableIds.length} available`);
+      const pendingAuthors = new Map(this.plugin.getPendingPeerPlugins().map((p) => [p.id, p.author]));
+      const anyPending = availableIds.some((id) => pendingAuthors.has(id));
+      const ag = new SettingGroup(c).setHeading(anyPending ? "Awaiting your approval" : "Available from the sync (not adopted)");
+      ag.addSetting((st) => st.setDesc(anyPending
+        ? "Someone else added these on the shared vault. They never auto-install — tick one to approve + adopt it here."
+        : "On the server from your other devices, but not installed or synced here. Tick one to adopt it on this device."));
+      this.renderPluginRows(c, availableIds, cs, manifests, installed, onServer, ro, `${availableIds.length} available`, pendingAuthors);
     }
   }
 
   // Render a collapsible list of plugin rows (toggle + first-contact direction). Shared by the "Synced"
   // and "Available from the sync" groups so the row logic lives in one place.
-  private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string): void {
+  private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string, pendingAuthors?: Map<string, string>): void {
     if (!ids.length) return;
     const body = this.collapsible(c, summaryLabel, this.pluginsExpanded ?? ids.length <= 8, (v) => { this.pluginsExpanded = v; });
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
       const here = installed.has(id);
       const st = new Setting(body).setName(manifests[id]?.name || this.plugin.getPluginDisplayName(id) || id);
-      if (!here && onServer.has(id)) st.setDesc("from the sync — will be installed here");
-      else if (here && !onServer.has(id)) st.setDesc("on this device only — will be uploaded");
+      const addedBy = pendingAuthors?.get(id);
+      if (addedBy) st.setDesc(`added by ${addedBy} — approve to install + sync it here`); // a peer's plugin awaiting approval
+      else if (!here && onServer.has(id)) st.setDesc("from the sync — installs here on next sync");
+      else if (here && !onServer.has(id)) st.setDesc("here only — uploads to the server on next sync");
       st.addToggle((tg) => tg.setValue(on).onChange(async (v) => { await this.plugin.setPluginSync(id, v); this.display(); }));
       // First-contact direction appears only when synced AND a divergence is possible — installed here on a
       // read-write vault. A not-installed plugin can only download (pull+install); a read-only vault too.

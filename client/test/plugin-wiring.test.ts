@@ -194,6 +194,46 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("plugin autopilot: auto-syncs YOUR OWN new plugins (local + own-server), GATES a peer's for approval", async () => {
+    const { p, api } = await bootPlugin(true, { settings: { autoSyncNewPlugins: true, configSync: { enabled: true, community: true, pluginAllow: [] } } });
+    const anyp = p as any;
+    // A plugin installed HERE, and two on the server: one YOU added (author "u" = this account), one a PEER added.
+    (p.app as any).plugins = { manifests: { localplug: { id: "localplug" } }, plugins: {} };
+    anyp.serverPluginIds = new Set(["mineplug", "peerplug"]);
+    anyp.serverPluginAuthors = new Map([["mineplug", "u"], ["peerplug", "alice"]]); // main.js committer per plugin (from the manifest)
+    anyp.vaultIsPrivate = false; // shared vault → the author decides own-vs-peer
+    await anyp.runPluginAutopilot();
+    const allow = p.settings.configSync.pluginAllow;
+    expect(allow).toContain("localplug"); // installed here → auto-uploaded
+    expect(allow).toContain("mineplug");  // your own server plugin → auto-adopted
+    expect(allow).not.toContain("peerplug"); // a peer's → NOT adopted; awaits approval
+    expect(anyp.getPendingPeerPlugins()).toEqual([{ id: "peerplug", author: "alice" }]);
+    p.onunload();
+  });
+
+  it("plugin autopilot is a NO-OP when the setting is off (nothing auto-synced)", async () => {
+    const { p } = await bootPlugin(true, { settings: { autoSyncNewPlugins: false, configSync: { enabled: true, community: true, pluginAllow: [] } } });
+    const anyp = p as any;
+    (p.app as any).plugins = { manifests: { localplug: { id: "localplug" } }, plugins: {} };
+    anyp.serverPluginIds = new Set(["mineplug"]);
+    await anyp.runPluginAutopilot();
+    expect(p.settings.configSync.pluginAllow).toEqual([]); // opt-in: off → untouched
+    p.onunload();
+  });
+
+  it("plugin autopilot respects an un-tick — a manually-removed plugin is NOT re-added on the next pass", async () => {
+    const { p } = await bootPlugin(true, { settings: { autoSyncNewPlugins: true, configSync: { enabled: true, community: true, pluginAllow: [] } } });
+    const anyp = p as any;
+    (p.app as any).plugins = { manifests: { localplug: { id: "localplug" } }, plugins: {} };
+    anyp.serverPluginIds = new Set();
+    await anyp.runPluginAutopilot();
+    expect(p.settings.configSync.pluginAllow).toContain("localplug"); // NEW → auto-added
+    p.settings.configSync.pluginAllow = []; // user un-ticks it
+    await anyp.runPluginAutopilot();
+    expect(p.settings.configSync.pluginAllow).not.toContain("localplug"); // seen → NOT re-added (manual choice wins)
+    p.onunload();
+  });
+
   it("statusDisplay gives actionable status — a PURE projection of Phase (no setting/flag can latch a label)", async () => {
     const { p } = await bootPlugin();
     (p as any).syncPending = 3;

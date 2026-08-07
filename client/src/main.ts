@@ -774,11 +774,15 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Community-plugin ids the SERVER holds (from the last full reconcile) — lets the settings UI offer
   // plugins this device hasn't installed yet, so a fresh vault can adopt an existing vault's plugin set.
   private serverPluginIds = new Set<string>();
+  private serverPluginAuthors = new Map<string, string | undefined>(); // id -> main.js committer (who wrote the code)
   getServerPluginIds(): string[] { return [...this.serverPluginIds]; }
-  private setServerPluginIds(ids: string[]): void {
+  private setServerPlugins(plugins: { id: string; author?: string }[]): void {
     const self = this.selfFolderId();
-    const next = new Set(ids.filter((id) => id && id !== self));
-    if (next.size === this.serverPluginIds.size && [...next].every((id) => this.serverPluginIds.has(id))) return; // unchanged
+    const next = new Set<string>();
+    const authors = new Map<string, string | undefined>();
+    for (const { id, author } of plugins) { if (id && id !== self) { next.add(id); authors.set(id, author); } }
+    this.serverPluginAuthors = authors; // always refresh (author can change even when the id set doesn't)
+    if (next.size === this.serverPluginIds.size && [...next].every((id) => this.serverPluginIds.has(id))) return; // id set unchanged
     this.serverPluginIds = next;
     this.settingsRefresh?.(); // a newly-discovered server plugin should appear in the list
   }
@@ -805,6 +809,76 @@ export default class NewLiveSyncPlugin extends Plugin {
   // ones not installed here (they pull + install). Community surface must be on for these to sync.
   async installAllServerPlugins(): Promise<void> {
     for (const id of this.serverPluginIds) await this.setPluginSync(id, true, "download");
+  }
+
+  // --- plugin-sync AUTOPILOT (nPluginSyncAutopilot) --------------------------------------------------
+  // Peer-added server plugins NOT auto-adopted — they await your explicit approval. id -> the account that
+  // added them. Rebuilt each autopilot pass; surfaced persistently in settings + a one-time toast each.
+  private pendingPeerPlugins = new Map<string, string>();
+  private peerPluginToasted = new Set<string>();
+  private autopilotBusy = false;
+  getPendingPeerPlugins(): { id: string; author: string }[] { return [...this.pendingPeerPlugins].map(([id, author]) => ({ id, author })); }
+
+  // Set-and-forget: auto-sync YOUR OWN new plugins everywhere; a plugin added by ANOTHER PERSON never
+  // auto-adopts (it waits for approval). No-op unless the setting is on + the community surface is on.
+  // Idempotent (only adds plugins not already synced) + re-entrancy-guarded; applyConfigSyncChange just
+  // persists + enqueues a reconcile, so the next pass finds nothing new and stops. Runs on each full
+  // reconcile (onRemotePlugins) + when the settings tab renders.
+  async runPluginAutopilot(): Promise<void> {
+    if (!this.settings.autoSyncNewPlugins || !this.api || this.autopilotBusy) return;
+    const cs = this.settings.configSync;
+    if (!cs.community) return; // the community surface must be on for any plugin to sync
+    this.autopilotBusy = true;
+    try {
+      const self = this.selfFolderId();
+      const allow = new Set(cs.pluginAllow);
+      const before = allow.size;
+      const seen = new Set(this.settings.autopilotSeen ?? []); // ids already observed → NOT re-added (respects un-ticks)
+      const pm = (this.app as unknown as { plugins?: { manifests?: Record<string, unknown> } }).plugins;
+      const installedIds = Object.keys(pm?.manifests ?? {}).filter((id) => !isSelfPluginId(id, self));
+      const serverIds = [...this.serverPluginIds].filter((id) => !isSelfPluginId(id, self));
+      // (a) LOCAL: a plugin installed HERE, not synced, and NEW (never observed) → auto-add (it's yours).
+      for (const id of installedIds) {
+        if (!allow.has(id) && !seen.has(id)) { allow.add(id); (cs.pluginDir ??= {})[id] = this.settings.vaultReadOnly ? "download" : "upload"; }
+      }
+      // (b) SERVER: classify every not-yet-adopted plugin. YOURS (manifest author == you, or unknown on your
+      // own PRIVATE vault) → auto-adopt IF new. ANOTHER PERSON's → never auto-adopt; it's added to the
+      // persistent approval list (rebuilt EVERY pass, seen or not, so an unapproved peer plugin never
+      // disappears) + a one-time toast. Author is server-authenticated, so a device rename can't fake it.
+      // Re-derive vault privacy FRESH (like the hot-load gate) before the unknown-author→own decision, so a
+      // vault that became shared out-of-band can't misclassify a peer's plugin as yours. Only when it matters:
+      // an un-adopted server plugin whose code has NO recorded author (the only case vaultIsPrivate decides).
+      if (serverIds.some((id) => !allow.has(id) && !this.serverPluginAuthors.get(id))) await this.refreshVaultPrivacy();
+      const pending = new Map<string, string>();
+      for (const id of serverIds) {
+        if (allow.has(id)) continue;
+        const author = this.serverPluginAuthors.get(id); // the main.js committer (who wrote the code), from the manifest — no fetch
+        const mine = author === this.settings.username || (!author && this.vaultIsPrivate);
+        if (mine) {
+          if (!seen.has(id)) { allow.add(id); (cs.pluginDir ??= {})[id] = "download"; }
+          seen.add(id); // observed as mine → won't re-adopt after an un-tick
+        } else {
+          pending.set(id, author ?? "someone else");
+          // NOT marked seen (F4): if its code later becomes yours, it should auto-adopt then. Toast once.
+          if (!this.peerPluginToasted.has(id)) {
+            this.peerPluginToasted.add(id);
+            new Notice(`SelfSync: ${author ?? "someone else"} added the plugin '${this.getPluginDisplayName(id) || id}' — approve it in Settings to use it here.`, 10000);
+          }
+        }
+      }
+      this.pendingPeerPlugins = pending;
+      // Mark every LOCAL plugin observed this pass as seen so an un-tick sticks (peer-pending ids are left
+      // un-seen above so a later ownership flip can still auto-adopt).
+      for (const id of installedIds) seen.add(id);
+      this.settings.autopilotSeen = [...seen];
+      if (allow.size !== before) {
+        cs.pluginAllow = [...allow];
+        await this.applyConfigSyncChange(); // persist + enqueue a reconcile to sync the newly-allowed plugins
+      } else {
+        await this.saveSettings(); // persist the observed set even when nothing was added
+      }
+      this.settingsRefresh?.();
+    } finally { this.autopilotBusy = false; }
   }
   // Explicit PURGE (issuePluginSyncStaleServerState): a DELIBERATE, user-initiated removal of ONE plugin's
   // files from the server, so a plugin you stopped using no longer lingers in the sync. This is NOT the
@@ -1532,7 +1606,7 @@ export default class NewLiveSyncPlugin extends Plugin {
 
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onDeclined: (paths) => this.noteDeclined(paths),
-      onRemotePlugins: (ids) => this.setServerPluginIds(ids),
+      onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
       deleteGuard: this.deleteGuard, // SEC-DATA: cross-pass cumulative delete-rate guard (anti-drain)

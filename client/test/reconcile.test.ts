@@ -398,9 +398,9 @@ describe("reconcileAll", () => {
     await serverPut(api, ".obsidian/plugins/templater/main.js", "y");
     await serverPut(api, "note.md", "hi"); // a note is not a plugin
     const io = fakeIo({});
-    const seen: string[][] = [];
-    await reconcileAll(deps(api, io, { onRemotePlugins: (ids: string[]) => seen.push(ids) }));
-    expect(seen.flat().sort()).toEqual(["dataview", "templater"]); // distinct plugin ids, notes excluded
+    const seen: { id: string; author?: string }[][] = [];
+    await reconcileAll(deps(api, io, { onRemotePlugins: (plugins: { id: string; author?: string }[]) => seen.push(plugins) }));
+    expect(seen.flat().map((p) => p.id).sort()).toEqual(["dataview", "templater"]); // distinct plugin ids, notes excluded
   });
 
   it("does NOT count a remote file this device DECLINES as pending — reports it as declined instead", async () => {

@@ -91,4 +91,11 @@ describe("parseSettings — harden + freshen the persisted settings object", () 
     expect(parseSettings({ deviceId: 5 as unknown as string }).deviceId).toBeUndefined();
     expect(parseSettings({}).deviceId).toBeUndefined();
   });
+
+  it("autoSyncNewPlugins is opt-in — default off, and only a literal true persists", () => {
+    expect(parseSettings({}).autoSyncNewPlugins).toBe(false);
+    expect(parseSettings({ autoSyncNewPlugins: true }).autoSyncNewPlugins).toBe(true);
+    expect(parseSettings({ autoSyncNewPlugins: "yes" as unknown as boolean }).autoSyncNewPlugins).toBe(false); // wrong type → off
+    expect(parseSettings({ autoSyncNewPlugins: 1 as unknown as boolean }).autoSyncNewPlugins).toBe(false);
+  });
 });

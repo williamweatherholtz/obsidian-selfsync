@@ -289,7 +289,11 @@ export interface ReconcileDeps {
   // The community-plugin ids present ON THE SERVER (from the full manifest). Reported so a device that
   // doesn't have those plugins installed — e.g. a brand-new vault adopting an existing one — can still
   // SEE and adopt them (ticking one pulls its files, which installs it). Fires on the full-scan path.
-  onRemotePlugins?: (ids: string[]) => void;
+  // Community-plugin ids the server holds + the AUTHENTICATED committer of each plugin's main.js (the
+  // EXECUTABLE — not manifest.json, which a peer could leave alone while overwriting the code). Sourced from
+  // the manifest this reconcile already fetched, so the autopilot classifies own-vs-peer without extra
+  // network + always against the current code. author undefined = unknown (pre-provenance / no main.js).
+  onRemotePlugins?: (plugins: { id: string; author?: string }[]) => void;
   // O(1) local size for one path (RS-3 incremental reconcile), so the size gate works without a
   // whole-vault io.list(). Absent ⇒ 0 (reconcileOne reads the file to hash it anyway).
   localSizeOf?: (path: string) => number;
@@ -667,9 +671,15 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // Report the community-plugin ids the server holds, so the settings UI can offer plugins this device
   // doesn't have installed yet (a fresh vault adopting an existing one). Derived from the full manifest.
   if (d.onRemotePlugins) {
-    const rp = new Set<string>();
-    for (const p of remote.keys()) { const m = /^\.obsidian\/plugins\/([^/]+)\//.exec(p); if (m) rp.add(m[1]); }
-    d.onRemotePlugins([...rp]);
+    const byId = new Map<string, string | undefined>();
+    for (const [p, meta] of remote) {
+      const m = /^\.obsidian\/plugins\/([^/]+)\//.exec(p);
+      if (!m) continue;
+      const id = m[1];
+      if (!byId.has(id)) byId.set(id, undefined);
+      if (p === `.obsidian/plugins/${id}/main.js`) byId.set(id, meta.author); // the executable's committer = who wrote the code
+    }
+    d.onRemotePlugins([...byId].map(([id, author]) => ({ id, author })));
   }
   d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
   const local = await d.io.list();
