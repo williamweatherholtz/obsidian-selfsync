@@ -296,6 +296,13 @@ package ProjectBusiness {
         :>> statement = "Before I authoritatively Push a plugin's settings to the server (and thereby my other devices) or Pull the server's copy over my own, I want to SEE what the overwrite will do — which files are overwritten, added, or removed (and, for text settings, the content differences) — and clearly FROM which endpoint TO which (this device <-> the server + other devices). An authoritative overwrite must be an INFORMED choice, not a blind one; a generic 'this overwrites the server's copy' warning that never says what or how much is not enough.";
         :>> priority = Priority::should;
     }
+    requirement nPluginSyncAutopilot : Need {
+        :>> id = "c0f1a5cc-e20b-4a10-9b20-a1b2c3d4020b";
+        :>> title = "Set-and-forget plugin sync — new plugins sync automatically; only another PERSON's needs approval";
+        :>> source = NeedSource::customer;
+        :>> statement = "I want to define correct plugin-sync behavior ONCE and never open the SelfSync tab again: with 'auto-sync new plugins' on, a plugin I install on any of MY devices is automatically synced everywhere (uploaded here; auto-adopted + hot-loaded on my other devices). A plugin added by ANOTHER PERSON on a shared vault must never auto-adopt — it waits for my explicit approval, made clear by BOTH a toast AND a persistent 'awaiting approval' place in settings (popups vanish too fast). Default off (opt-in), since auto-propagating executable plugin code is security-sensitive. Gating is keyed on the authenticated committing account (not a spoofable device name).";
+        :>> priority = Priority::should;
+    }
     // ---- SPIKES (pinned 2026-08-07, owner) — big features that need their own brainstorm before any build. ----
     requirement nPerUserConfigScope : Need {
         :>> id = "c0f1a5cc-e209-4a10-9b20-a1b2c3d40209";
@@ -348,6 +355,8 @@ package ProjectBusiness {
     // Push/Pull transparency — showing what an authoritative overwrite will do + between which endpoints —
     // is the honest-status (non-misleading-UX) principle applied to a destructive action (2026-08-05).
     #DependsOn dependency from nPushPullPreview to nHonestStatus;
+    // Set-and-forget plugin sync + peer-approval gating decomposes the config-sync Need (2026-08-07).
+    #DependsOn dependency from nPluginSyncAutopilot to nConfigSync;
     // Spikes (2026-08-07): per-user config scope decomposes the sharing Need; composed vaults is a novel
     // capability off the Brief. Both pinned for a later brainstorm.
     #DependsOn dependency from nPerUserConfigScope to nVaultSharing;

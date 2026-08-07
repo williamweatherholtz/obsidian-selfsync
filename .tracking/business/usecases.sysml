@@ -214,6 +214,13 @@ package ProjectUseCases {
         :>> mainSuccess = "The Push/Pull confirm shows the direction (this device <-> the server + other devices), a per-file list of what will be overwritten / added / removed with counts, and an on-demand line diff for the changed text settings — so the user confirms an INFORMED overwrite; an already-in-sync folder shows 'nothing to change' and offers no destructive action.";
         :>> extensions = "The preview is READ-ONLY (hashes + on-demand fetches, never mutates). | It uses the SAME file union + hash basis as the real push/pull, so it can't mislead about what will happen. | SelfSync's own credential folder is never previewable. | A binary or oversized file shows a marker instead of a diff.";
     }
+    use case ucSetAndForgetPluginSync : UseCase {
+        :>> id = "c0f1a5cc-b20f-4a10-9b20-a1b2c3d402af"; :>> title = "Define plugin-sync once and never open the tab — auto-sync mine, approve a peer's";
+        :>> createdAt = "2026-08-07"; :>> createdBy = "wweatherholtz";
+        :>> description = "The user wants to set correct plugin-sync behavior ONCE and never revisit the SelfSync tab: their own new plugins should propagate across their devices automatically, and only another person's plugin should ever ask for a decision.";
+        :>> mainSuccess = "With 'Auto-sync new plugins' on, a plugin they install on any of their devices auto-syncs everywhere (uploaded here, auto-adopted on their other devices); a plugin added by another person never auto-adopts — it waits in an 'Awaiting your approval' list (+ a one-time toast) keyed on the authenticated committer. Un-ticking a plugin is respected forever (never re-added).";
+        :>> extensions = "Default OFF (opt-in) — auto-propagating plugin CODE is security-sensitive. | Ownership is the authenticated main.js committer (the executable), so a device rename can't fake it. | The autopilot only whitelists/downloads; the separate hot-load gate still governs whether code RUNS (private-vault only; a peer's needs a restart + trust). | On a shared vault, auto-synced plugins currently land in the shared store visible to peers — personal-vs-shared scope is the pinned nPerUserConfigScope spike.";
+    }
     use case ucSyncSelfHeals : UseCase {
         :>> id = "c0f1a5cc-b20a-4a10-9b20-a1b2c3d402aa"; :>> title = "Sync recovers on its own after a drop";
         :>> createdAt = "2026-08-03"; :>> createdBy = "wweatherholtz";
@@ -305,4 +312,7 @@ package ProjectUseCases {
     // Push/Pull preview (2026-08-05): informed authoritative overwrites — a self-hoster transparency use case.
     #DependsOn dependency from ucPreviewPushPull to selfHoster;
     #DependsOn dependency from ucPreviewPushPull to nPushPullPreview;
+    // Set-and-forget plugin sync (2026-08-07).
+    #DependsOn dependency from ucSetAndForgetPluginSync to selfHoster;
+    #DependsOn dependency from ucSetAndForgetPluginSync to nPluginSyncAutopilot;
 }
