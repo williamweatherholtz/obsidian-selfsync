@@ -12,6 +12,10 @@ describe("normFolder", () => {
     expect(normFolder("")).toBe("");
     expect(normFolder("/")).toBe("");
   });
+  it("ROUND-TRIPS a filename with legitimate leading/trailing whitespace (never trims a segment interior)", () => {
+    expect(normFolder("Work/ note .md")).toBe("Work/ note .md"); // the leaf's spaces are real filename bytes — must survive
+    expect(normFolder("/ leading/trailing /x")).toBe(" leading/trailing /x");
+  });
 });
 
 describe("boundary — claimsLocal / primaryExcludes (the load-bearing invariant)", () => {

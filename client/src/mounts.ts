@@ -9,9 +9,13 @@ export interface MountSource { owner: string; vaultId: string; sourcePath: strin
 export interface Mount { source: MountSource; mountPoint: string; direction: MountDirection }
 
 // Normalize a folder path to bare segments joined by "/": no leading/trailing/duplicate slashes, no "."/""
-// segments. The single source of truth for how a mount/source path is compared + built.
+// segments. The single source of truth for how a mount/source path is compared + built. It must ROUND-TRIP
+// real file paths EXACTLY, so it never trims a segment's interior/whitespace — a filename with a legitimate
+// leading/trailing space (" note .md") must survive local↔source translation intact (trimming it would read/
+// write the WRONG on-disk path). Sanitizing accidental whitespace in a USER-typed mount point is a UI-input
+// concern (Phase 4), not this primitive's job.
 export function normFolder(p: string): string {
-  return p.split("/").map((s) => s.trim()).filter((s) => s && s !== ".").join("/");
+  return p.split("/").filter((s) => s !== "" && s !== ".").join("/");
 }
 // The prefix form "<folder>/" for boundary tests. Empty folder → "" so "everything is under it" (whole-vault).
 function prefix(folder: string): string { return folder === "" ? "" : folder + "/"; }
