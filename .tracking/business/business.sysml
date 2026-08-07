@@ -296,6 +296,21 @@ package ProjectBusiness {
         :>> statement = "Before I authoritatively Push a plugin's settings to the server (and thereby my other devices) or Pull the server's copy over my own, I want to SEE what the overwrite will do — which files are overwritten, added, or removed (and, for text settings, the content differences) — and clearly FROM which endpoint TO which (this device <-> the server + other devices). An authoritative overwrite must be an INFORMED choice, not a blind one; a generic 'this overwrites the server's copy' warning that never says what or how much is not enough.";
         :>> priority = Priority::should;
     }
+    // ---- SPIKES (pinned 2026-08-07, owner) — big features that need their own brainstorm before any build. ----
+    requirement nPerUserConfigScope : Need {
+        :>> id = "c0f1a5cc-e209-4a10-9b20-a1b2c3d40209";
+        :>> title = "Per-user (personal) config scope on a shared vault — 'for me' vs 'for everyone'";
+        :>> source = NeedSource::customer;
+        :>> statement = "On a vault shared with OTHER people, I want to choose per config/plugin whether it is SHARED (everyone who uses the vault gets it — e.g. dataview, which the notes rely on) or PERSONAL (synced across MY devices only, never imposed on peers — e.g. my theme/appearance). Today a shared vault is ONE store everyone reads, so 'synced' necessarily means 'everyone'; a personal scope requires the server to store config per (vault, user) as a personal overlay on the shared vault. SPIKE: a real server feature — needs its own brainstorm/design before any build (owner confirmed they do share vaults, so this is genuinely in scope).";
+        :>> priority = Priority::could;
+    }
+    requirement nComposedVaults : Need {
+        :>> id = "c0f1a5cc-e20a-4a10-9b20-a1b2c3d4020a";
+        :>> title = "Compose a shared DATA-ONLY part of one vault into another (directional nested vaults)";
+        :>> source = NeedSource::customer;
+        :>> statement = "I want a shared PART of a vault to appear inside another vault — DIRECTIONALLY (my personal vault pulls in my ASI notes, but my ASI vault does NOT pull in personal) and COMPOSED so the data lives side by side. DATA ONLY (notes/attachments), never config/plugins — because when two vaults compose, which vault owns a plugin's settings is indeterminate, so config is deliberately out of scope (owner's key insight that makes it tractable). No known Obsidian plugin does this today; SelfSync is well-positioned since it already maps a vault to a server vault, so a shared subfolder mapping to a shared server-vault is a natural extension. SPIKE: needs its own brainstorm/design before any build.";
+        :>> priority = Priority::could;
+    }
 
     // ---- lineage: top goals derive from the Brief; sub-needs from their goal ----
     #DependsOn dependency from nVaultSharing to selfsyncBrief;
@@ -333,6 +348,10 @@ package ProjectBusiness {
     // Push/Pull transparency — showing what an authoritative overwrite will do + between which endpoints —
     // is the honest-status (non-misleading-UX) principle applied to a destructive action (2026-08-05).
     #DependsOn dependency from nPushPullPreview to nHonestStatus;
+    // Spikes (2026-08-07): per-user config scope decomposes the sharing Need; composed vaults is a novel
+    // capability off the Brief. Both pinned for a later brainstorm.
+    #DependsOn dependency from nPerUserConfigScope to nVaultSharing;
+    #DependsOn dependency from nComposedVaults to selfsyncBrief;
     // Also root the two pre-existing cross-cutting Needs that had no Brief lineage edge.
     #DependsOn dependency from nxMobile to selfsyncBrief;
     #DependsOn dependency from nxSecurity to selfsyncBrief;
