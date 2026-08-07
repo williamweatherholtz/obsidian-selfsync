@@ -24,6 +24,10 @@ import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } 
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
+import { Mount, primaryExcludes, validateMounts } from "./mounts";
+import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
+import { MountScope, reconcileMountScopes } from "./mountsync";
+import { aggregateStatus, Health } from "./mountfsm";
 
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -101,13 +105,20 @@ async function fsyncHandle(open: () => Promise<{ sync(): Promise<void>; close():
   finally { try { await fh?.close(); } catch { /* already closed / never opened */ } }
 }
 
+// A path in the Obsidian config/plugin tree.
+function isConfigPath(p: string): boolean { return p === ".obsidian" || p.startsWith(".obsidian/"); }
+
 class ObsidianVaultIo implements VaultIo {
   // Desktop-only streamed writer (Electron Node fs); left undefined on mobile so the
   // reconciler falls back to buffered writes there (Obsidian's adapter has no incremental
   // binary write). Assigned only when Node's require is actually available.
   appendWrite?: (path: string) => Promise<AppendHandle>;
   private lastCfgCount = -1; // last-logged config-scope size; log only on change (list() runs every reconcile)
-  constructor(private plugin: NewLiveSyncPlugin) {
+  // `forMount` = this adapter backs a composed-vault MOUNT scope (wrapped by MountedIo), not the primary.
+  // A mount io is DATA-ONLY and must NOT apply the primary's mount-point exclusion (that boundary is
+  // primary-only — applying it here would drop the mount's OWN files, silently no-op'ing every mount write and
+  // then delete-remote'ing the source, the A1 defect). Scoping to the mount subtree is MountedIo's job.
+  constructor(private plugin: NewLiveSyncPlugin, private forMount = false) {
     if (Platform.isDesktop && (window as unknown as { require?: unknown }).require) {
       this.appendWrite = (path: string) => this.openAppend(path);
     }
@@ -159,8 +170,14 @@ class ObsidianVaultIo implements VaultIo {
 
   // The single selective-sync gate: notes always pass; `.obsidian/` paths pass only
   // per the config selection, and SelfSync's own folder never passes (see configsync).
+  // BOUNDARY (D0039): a path under any composed-vault MOUNT POINT is EXCLUDED from the PRIMARY scope — it is
+  // synced by that mount's own scope instead, so a mounted file never double-syncs to the primary vault. A
+  // MOUNT io is data-only and does the OPPOSITE — it must accept its own mount-subtree files (MountedIo scopes
+  // them) and never applies the mount-exclusion, else it would drop its own writes (A1).
   private passes(path: string): boolean {
-    return shouldSync(path, this.plugin.settings.configSync, this.plugin.selfFolderId());
+    if (this.forMount) return !isConfigPath(path); // data-only; subtree scoping is MountedIo's job
+    return !primaryExcludes(this.plugin.activeMounts(), path) // exclude only mounts actually in effect (N1)
+      && shouldSync(path, this.plugin.settings.configSync, this.plugin.selfFolderId());
   }
 
   async list() {
@@ -170,7 +187,7 @@ class ObsidianVaultIo implements VaultIo {
     for (const f of this.plugin.app.vault.getFiles()) {
       if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size, ctime: f.stat.ctime });
     }
-    if (this.plugin.settings.configSync.enabled) {
+    if (!this.forMount && this.plugin.settings.configSync.enabled) {
       // Enumerate the hidden .obsidian/ tree via a BOUNDED-PARALLEL walk (issueConfigWalkSlow): the old
       // recursion awaited every adapter.list/stat one at a time, so a plugin-heavy tree cost seconds on a
       // latency-bound (mobile) adapter — this runs the calls concurrently under a global cap. A dir that
@@ -317,6 +334,18 @@ export default class NewLiveSyncPlugin extends Plugin {
   private state: SyncState = { version: 0 };
   private base = new BaseStore();
   private cache: ChunkCache = new Map();
+  // --- composed vaults (D0039) ---
+  // Live mount scopes (one per settings.mounts entry): each an ISOLATED MountRuntime (own base/state/guard) +
+  // its FSM state. Empty ⇒ the whole subsystem is dormant (zero behaviour change). Rebuilt on connect.
+  private mountScopes: MountScope[] = [];
+  private mountIo?: VaultIo; // the shared data-only io mounts wrap (built lazily via buildMountIo)
+  private mountReconciling = false; // re-entrancy guard: only one mount pass in flight at a time (B1 detach)
+  // Persisted per-mount own-base + cursor, keyed by mountKey — the per-mount analogue of the single `base`
+  // key. Loaded in loadSettings, snapshotted into saveData, updated as each mount reconciles.
+  private mountStateStore: Record<string, MountPersist> = {};
+  // The session token, stashed when the primary transport is built, so a mount transport (same server+token,
+  // the SOURCE vault) can be constructed without re-login.
+  private sessionToken = "";
 
   // --- observability + connection lifecycle ---
   // The OPERATIONAL state now lives in one authoritative machine (syncengine.ts): a serial event
@@ -383,6 +412,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   // two static auth calls. A test subclass returns in-memory fakes so the whole producer→engine→
   // effect→reconcile wiring runs without Obsidian or a server.
   protected buildIo(): VaultIo { return new ObsidianVaultIo(this); }
+  // The data-only io a composed-vault MOUNT scope wraps (MountedIo over this) — NOT subject to the primary's
+  // mount-exclusion, so the mount can read/write its own subtree (D0039; the A1 fix).
+  protected buildMountIo(): VaultIo { return new ObsidianVaultIo(this, true); }
   protected buildApi(token: string): ApiClient {
     return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "", this.deviceId(), this.deviceLabel());
   }
@@ -1588,7 +1620,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       maxSyncBytes: this.maxSyncBytes(), // per-device cap (settings.maxSyncMB); mobile buffers in RAM, so raise with care
       // Same selective-sync gate the io uses: a filtered `.obsidian/` path is skipped in
       // reconcile too, so a device that opted out never records a base for it (no phantom delete).
-      accepts: (p) => shouldSync(p, this.settings.configSync, this.selfFolderId()),
+      // Plus the D0039 mount BOUNDARY: a mount-point path is excluded from the primary scope (synced by its
+      // own mount scope) — the load-bearing invariant that a mounted file never double-syncs to the primary.
+      // Uses activeMounts() (the validated in-effect set) so exclusion and scope-building agree (N1).
+      accepts: (p) => !primaryExcludes(this.activeMounts(), p) && shouldSync(p, this.settings.configSync, this.selfFolderId()),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onProgress: (pending) => {
@@ -1718,6 +1753,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws?.close(); this.ws = undefined;
     let activeToken = await this.acquireToken();
     this.api = this.buildApi(activeToken);
+    this.sessionToken = activeToken; // stash so a mount transport (same server+token, source vault) can be built without re-login
     this.setConnectStage("checking the server"); // status() is the first authed round-trip (30s timeout) — a common stall point
     // Never reconcile against a degraded server: a corrupt index 503s all sync ops, and acting on the
     // resulting empty manifest could delete local files. Surface the operator action. status() is the first
@@ -1731,6 +1767,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.settings.authToken = undefined;
       activeToken = await this.freshLogin();
       this.api = this.buildApi(activeToken);
+      this.sessionToken = activeToken;
       health = await this.api.status();
     }
     // Version handshake: refuse to sync against a server on a different protocol/schema version (a self-hoster
@@ -1822,6 +1859,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.wsLivenessTimer !== undefined) { window.clearInterval(this.wsLivenessTimer); this.wsLivenessTimer = undefined; }
     this.ws?.close(); this.ws = undefined;
     this.transport = "offline"; // torn down → no realtime channel (realtimeConnected getter reads false)
+    this.mountScopes = []; // composed vaults (D0039): drop live mount scopes so a reconnect rebuilds them (their persisted base/cursor survive in mountStateStore)
   }
 
   // Open the change-notification WebSocket and route its lifecycle through the ONE engine queue:
@@ -2020,6 +2058,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.settings.lastSyncedAt = Date.now(); void this.saveSettings(); // persist so "Last synced" survives a restart (the onBaseChanged snapshot ran earlier in this pass)
+    void this.reconcileMounts(false); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
   }
 
   // Full reconcile with D0019 reset detection wired in — used by the CONNECT path (the initial
@@ -2033,6 +2072,94 @@ export default class NewLiveSyncPlugin extends Plugin {
     d.onStage = (s) => this.setConnectStage(s); // drive the connect sub-phase (no-op off the connect path — setConnectStage gates on `connecting`)
     const resp = await reconcileAll(d);
     this.noteHistory(resp.version, resp.history_floor, kept);
+    void this.reconcileMounts(true); // composed vaults (D0039): initial full pass per mount — DETACHED (B1) so a hung mount never stalls the primary engine queue; fail-isolated internally
+  }
+
+  // ---- composed vaults (D0039): the per-mount sync subsystem (dormant when settings.mounts is empty) ----
+  mounts(): Mount[] { return this.settings.mounts ?? []; } // public: the settings UI reads the raw configured set
+  // The mounts actually IN EFFECT — the raw set only if it's valid (no overlapping/nested/duplicate mount
+  // points), else empty. The SAME set MUST drive both the primary-scope exclusion (passes/accepts) AND
+  // scope-building, so a bad set can't leave a folder excluded-from-primary yet handled-by-no-mount (N1). A
+  // hand-edited invalid set → activeMounts() empty → the primary keeps syncing those folders (safe), nothing
+  // mounted, until the set is fixed.
+  activeMounts(): Mount[] { return validateMounts(this.mounts()).length === 0 ? this.mounts() : []; }
+  // A transport bound to a mount's SOURCE vault (same server + session token; a different owner/vault). The
+  // source is on the SAME server (cross-server mounts are out of scope, D0039), so the session token authorizes
+  // it. Returns null if there's no session yet (never mid-connect).
+  private buildMountApi(mount: Mount): SyncApi | null {
+    if (!this.sessionToken) return null;
+    return new HttpTransport(this.settings.serverUrl, this.sessionToken, mount.source.vaultId, mount.source.owner, this.deviceId(), this.deviceLabel());
+  }
+  // (Re)build the live mount scopes from settings.mounts, PRESERVING an existing scope's FSM state + runtime
+  // (so a poll-cycle rebuild doesn't reset a live mount) and dropping scopes whose mount was removed. A new
+  // mount restores its own persisted base + cursor from mountStateStore. A mount whose source transport can't
+  // be built yet is skipped this pass.
+  private rebuildMountScopes(): void {
+    // Runtime overlap/dedupe guard (A2/C3): settings.mounts can be hand-edited past the UI's validateMounts,
+    // so DROP any mount set with overlapping/nested/duplicate mount points here — two scopes over the same
+    // local folder would clobber each other's base + churn conflicts. Reject the whole set on overlap (safe:
+    // the subsystem stays dormant) rather than guess which to keep.
+    const want = this.activeMounts(); // the SAME validated in-effect set the primary exclusion uses (N1)
+    if (want.length === 0 && this.mounts().length > 0) this.log(`composed vaults: mount set has overlapping/invalid mount points — not mounting any until fixed`);
+    this.mountIo ??= this.buildMountIo();
+    const byKey = new Map(this.mountScopes.map((s) => [s.runtime.key, s]));
+    const seen = new Set<string>();
+    const next: MountScope[] = [];
+    for (const mount of want) {
+      const key = mountKey(mount);
+      if (seen.has(key)) continue; // dedupe identical entries (C3)
+      seen.add(key);
+      const existing = byKey.get(key);
+      if (existing) { next.push(existing); continue; } // keep live state + cursor across a rebuild
+      const sourceApi = this.buildMountApi(mount);
+      if (!sourceApi) continue; // no session yet — try again next connect
+      const runtime = new MountRuntime(mount, {
+        io: this.mountIo, sourceApi, cache: this.cache, device: this.deviceLabel(),
+        restore: this.mountStateStore[key],
+        maxSyncBytes: this.maxSyncBytes(),
+        callbacks: {
+          onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
+          onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}'`),
+        },
+      });
+      next.push({ runtime, state: "detached", fails: 0 });
+    }
+    this.mountScopes = next;
+  }
+  // Drive every mount one cycle after the primary pass, fully FAIL-ISOLATED: any error in the whole subsystem
+  // is caught here so a mount problem can NEVER break the primary sync. Persists each mount's own base+cursor
+  // as it changes and refreshes the status projection. No-op (near-zero cost) when no mounts are configured.
+  private async reconcileMounts(initial: boolean): Promise<void> {
+    // Re-entrancy guard (B1): never overlap mount passes / pile up on a hung mount. Residual (N3, accepted): a
+    // pathological source api that never settles leaves this true → the mount subsystem goes dormant. Not
+    // reachable via the real HttpTransport (REQUEST_TIMEOUT_MS bounds every request, so pollMount always
+    // settles); strictly better than the pre-fix behaviour, which hung the PRIMARY.
+    if (this.mountReconciling) return;
+    this.mountReconciling = true;
+    try {
+      if (this.mounts().length === 0) { if (this.mountScopes.length) { this.mountScopes = []; this.renderLight(); } return; }
+      if (initial || this.mountScopes.length === 0) this.rebuildMountScopes();
+      if (this.mountScopes.length === 0) return; // couldn't build (no session) — nothing to do
+      await reconcileMountScopes(this.mountScopes, {
+        onEvent: (scope) => {
+          this.mountStateStore[scope.runtime.key] = scope.runtime.toPersist();
+          void this.persist(); // durably keep each mount's own base+cursor (single-flight coalesced)
+          this.renderLight(); // fold the mount health into the indicator
+        },
+        onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
+      }, initial);
+    } catch (e: any) {
+      this.log(`mount subsystem error (${e?.message ?? e}) — primary sync unaffected`); // never rethrow: isolate from the primary
+    } finally {
+      this.mountReconciling = false;
+    }
+  }
+  // The worst mount HEALTH + a human reason, or null when no mount is unhealthy (so the primary light shows
+  // unchanged). The settings status card + the light fold read this.
+  mountStatusSummary(): { health: Health; reason: string } | null {
+    if (this.mountScopes.length === 0) return null;
+    const agg = aggregateStatus("idle", this.mountScopes.map((s) => ({ label: s.runtime.mount.mountPoint, state: s.state })));
+    return agg.health === "idle" || agg.health === "ok" ? null : agg;
   }
 
   // Per-vault key for the persisted history floor + last-version (D0019). Owner-qualified so a shared
@@ -2223,6 +2350,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings = parseSettings(s);
     // noteConflicts array retired (D-conflict-model): note conflicts are now derived from the vault.
     this.base = new BaseStore(data.base && typeof data.base === "object" ? data.base : {});
+    // Composed vaults (D0039): each mount's OWN persisted base + cursor, keyed by mountKey (the per-mount
+    // analogue of the single `base`). VALIDATED at the boundary (B2) — a malformed entry is dropped so hostile
+    // input (non-numeric cursor, garbage base) can never reach the reconcile engine; that mount starts fresh.
+    this.mountStateStore = parseMountState(data.mountState);
   }
   async saveSettings() { await this.persist(); }
   // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so
@@ -2240,7 +2371,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       do {
         this.persistPending = false;
         // Snapshot INSIDE the loop so a coalesced trailing write captures the latest base/settings.
-        try { await this.saveData({ schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON() }); }
+        try { await this.saveData({ schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON(), mountState: this.mountStateStore }); }
         catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
       } while (this.persistPending);
     } finally { this.persisting = false; }

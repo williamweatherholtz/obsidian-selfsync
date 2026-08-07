@@ -22,6 +22,32 @@ export function mountKey(m: Mount): string {
 // per-mount analogue of the primary's single data.json `base` + per-vault lastVersions map.
 export interface MountPersist { base: Record<string, BaseEntry>; version: number }
 
+// Parse-don't-validate at the persistence boundary (like parseSettings/parseMounts): harden an untrusted
+// persisted mountState blob into a well-formed map. A malformed entry is DROPPED (that mount just starts
+// fresh — a harmless first-contact), never trusted — so hostile input (a non-numeric version sent as a
+// cursor, a string where a base record belongs → fabricated base paths) can't reach the reconcile engine.
+export function parseMountState(raw: unknown): Record<string, MountPersist> {
+  const out: Record<string, MountPersist> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [key, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const e = v as Record<string, unknown>;
+    const version = e.version;
+    if (typeof version !== "number" || !Number.isFinite(version) || version < 0) continue;
+    if (!e.base || typeof e.base !== "object") continue;
+    const base: Record<string, BaseEntry> = {};
+    for (const [p, be] of Object.entries(e.base as Record<string, unknown>)) {
+      if (!be || typeof be !== "object") continue;
+      const r = be as Record<string, unknown>;
+      if (typeof r.hash !== "string") continue;
+      if (r.text !== undefined && typeof r.text !== "string") continue; // a non-string merge-ancestor must never reach three-way merge (N2)
+      base[p] = be as BaseEntry;
+    }
+    out[key] = { base, version };
+  }
+  return out;
+}
+
 // The ambient context a mount needs from the plugin — the SHARED real-vault io + a SOURCE-vault-bound SyncApi
 // + the content-addressed chunk cache (safe to share) + device label + optional tuning/callbacks. Everything
 // scope-PRIVATE (base/state/guard/retry) is created BY the runtime, never passed in — that is the isolation.

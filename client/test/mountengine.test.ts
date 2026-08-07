@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MountRuntime, mountKey, MountRuntimeCtx } from "../src/mountengine";
+import { MountRuntime, mountKey, MountRuntimeCtx, parseMountState } from "../src/mountengine";
 import { mountTransition, mountHealth, foldHealth, aggregateStatus, MountState } from "../src/mountfsm";
 import { Mount } from "../src/mounts";
 import { BaseStore } from "../src/base";
@@ -57,6 +57,26 @@ describe("MountRuntime — STRUCTURAL isolation (issueMountBaseIsolation)", () =
     expect(new MountRuntime(mk("Work/ASI", "", "pull"), ctx()).deps().readOnly).toBe(true);
     expect(new MountRuntime(mk("Work/ASI", "", "sync"), ctx()).deps().readOnly).toBe(false);
   });
+});
+
+describe("parseMountState — validated persistence boundary (B2, hostile-input hardening)", () => {
+  it("keeps well-formed entries, drops malformed ones (non-numeric version / non-object base / missing base / non-object)", () => {
+    const parsed = parseMountState({
+      k1: { base: { "notes/a.md": { hash: "H" } }, version: 3 },
+      k2: { base: {}, version: "abc" },
+      k3: { base: "garbage", version: 1 },
+      k4: { version: 2 },
+      k5: "nope",
+      k6: { base: {}, version: -1 }, // negative cursor → drop
+    });
+    expect(Object.keys(parsed)).toEqual(["k1"]);
+    expect(parsed.k1).toEqual({ base: { "notes/a.md": { hash: "H" } }, version: 3 });
+  });
+  it("filters garbage base entries within a kept mount — only valid {hash[,text]} records survive (no fabricated base paths / non-string merge ancestor)", () => {
+    const parsed = parseMountState({ k: { base: { a: { hash: "H" }, b: "x", c: { size: 1 }, d: { hash: "H", text: 123 }, e: { hash: "H", text: "ok" } }, version: 0 } });
+    expect(parsed.k.base).toEqual({ a: { hash: "H" }, e: { hash: "H", text: "ok" } }); // b/c/d dropped (no hash / bad hash / non-string text)
+  });
+  it("non-object → {}", () => { expect(parseMountState(undefined)).toEqual({}); expect(parseMountState("x")).toEqual({}); });
 });
 
 describe("mountTransition — pure lifecycle FSM", () => {
