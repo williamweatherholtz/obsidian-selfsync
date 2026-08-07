@@ -19,20 +19,22 @@ Let a shared **part** of one vault appear inside **another** vault, so data live
 
 ## 2. The model — **Mounts**
 
-A **Mount** binds a **source server-vault** `S` to a **local subfolder** (the *mount point*) of the primary
-vault, syncing **data only**, in a chosen **direction**:
+A **Mount** binds a **subfolder of a source server-vault** `S` to a **local subfolder** (the *mount point*) of
+the primary vault, syncing **data only**, in a chosen **direction**. Composition is **modular** — a vault
+carries several mounts, each mapping one source-subfolder to one local subfolder (owner-resolved 2026-08-07):
 
 ```
 Mount = {
-  source:     { owner, vaultId },   // the server-vault S to compose in (owned by you, or shared to you)
-  mountPoint: "Work/ASI",           // local subfolder of the primary vault
-  direction:  "pull" | "sync",      // pull = S→local only (read-only); sync = bidirectional
+  source:     { owner, vaultId, sourcePath },  // S + the subfolder WITHIN S to compose (sourcePath "" = whole vault)
+  mountPoint: "Work/ASI",                       // local subfolder of the primary vault
+  direction:  "pull" | "sync",                  // PER-MOUNT (owner choice): pull = S→local only; sync = bidirectional
 }
 ```
 
-A vault has ONE primary sync target (today's behaviour) **plus** zero or more mounts. Example: Personal vault
-syncs to `personal` normally, and mounts `will/asi` at `Work/ASI` in **pull** mode → ASI notes appear under
-`Work/ASI/…`, kept current, never pushed back.
+A vault has ONE primary sync target (today's behaviour) **plus** zero or more mounts. Example: Personal
+syncs to `personal` normally, mounts `will/asi:Projects/**` at `Work/ASI` in **sync** mode, and separately
+mounts `will/asi:Reference/**` at `Refs` in **pull** mode → modular, per-piece, per-direction composition.
+Each mount is a **two-sided prefix map**: `S:/<sourcePath>/**` ↔ local `<mountPoint>/**`.
 
 **Key reframing:** a mount is "sync a (shared or own) vault into a **subfolder**, instead of as the **whole**
 vault, and **data-only**." SelfSync already syncs a shared vault as a whole local vault; a mount reuses that
@@ -76,13 +78,17 @@ conflict). Each mount owns its subtree exclusively. Mount points may not overlap
 
 ### 3.3 Path translation — `MountedIo`
 
-The reconcile operates in **S-relative** paths; a thin adapter wraps `VaultIo` to add/strip the mount prefix:
+A mount is a **two-sided prefix map** — a source-side subfolder `<sourcePath>` within `S` ↔ a local-side
+`<mountPoint>` — so the adapter both strips the source prefix and adds the local prefix:
 
-- pull: server file `notes/a.md` (S-relative) → write local `Work/ASI/notes/a.md`.
-- push: local `Work/ASI/notes/a.md` changed → commit to S as `notes/a.md`.
+- pull: S file `<sourcePath>/notes/a.md` → present to the reconcile as `notes/a.md` → write local
+  `<mountPoint>/notes/a.md`.
+- push: local `<mountPoint>/notes/a.md` → reconcile path `notes/a.md` → commit to S as `<sourcePath>/notes/a.md`.
 
-So the engine is unchanged; only the IO endpoints are prefix-mapped. Local enumeration for the mount scope is
-a **scoped walk of `<mountPoint>/`** (cheap — reuse `walkConfigTree`'s bounded walk over any root).
+The reconcile itself operates on the mount-relative middle (`notes/a.md`) and is unchanged; only the two
+endpoints are prefix-mapped (the server manifest is filtered to `<sourcePath>/**` and re-based; the local IO is
+scoped to `<mountPoint>/**`). Local enumeration is a **scoped walk of `<mountPoint>/`** (reuse
+`walkConfigTree`'s bounded walk over any root). `sourcePath = ""` degenerates to whole-source composition.
 
 ### 3.4 Data-only enforcement
 
@@ -179,19 +185,23 @@ subtree, mirroring the primary base's `size/mtime` scan-skip.
 - **Unmount:** an explicit choice — **keep** the mounted files as ordinary local files (decompose in place),
   or **remove** them (they remain safe in `S`). Never a silent delete.
 
-## 7. Implementation plan (phased; each phase shippable + testable)
+## 7. Implementation plan (phased; **v1 ship includes bidirectional** — owner: table-stakes)
 
-0. **Spike validation (no ship):** prove multi-scope reconcile + `MountedIo` prefix translation with a
-   *read-only* mount against a throwaway `S` — the safest slice (no push-back, so `S` is never mutated).
-1. **Mount data model + boundary:** `settings.mounts`, the primary scope's mount-point exclusion, overlap/nest
-   guards, per-mount base store. Pure/unit-tested (path math, exclusion, overlap detection).
-2. **Pull-only mount engine + FSM:** scoped+prefixed+data-only reconcile in `pull` mode reusing the read-only
-   path; the per-mount FSM; the aggregate status fold. Ship read-only composition.
+Read-only is still built FIRST internally (the safest slice to validate the engine), but the first RELEASE
+carries both directions (Phases 1–3), since bidirectional is v1 table-stakes.
+
+0. **Spike validation (no ship):** prove multi-scope reconcile + the two-sided `MountedIo` prefix map with a
+   *read-only* mount against a throwaway `S` — no push-back, so `S` is never mutated while the engine is proven.
+1. **Mount data model + boundary:** `settings.mounts` ({source:{owner,vaultId,sourcePath}, mountPoint,
+   direction}), the primary scope's mount-point exclusion, overlap/nest guards, per-mount base store. Pure/
+   unit-tested (two-sided path math, exclusion, overlap detection).
+2. **Pull mount engine + FSM:** scoped + two-sided-prefixed + data-only reconcile in `pull` mode reusing the
+   read-only path; the per-mount FSM; the aggregate status fold.
 3. **Bidirectional (`sync`) mounts:** enable push + the scoped conflict machinery + delete propagation with the
-   rate guard.
-4. **UI:** add/remove a mount (pick the source vault from your accessible vaults + the mount point + direction),
-   per-mount status rows, unmount keep-or-remove prompt.
-5. **Edges:** offline/backoff per mount, access-revoked / S-deleted → Failed, unmount cleanup, migration of an
+   rate guard, source-prefixed. **→ v1 ships here (both directions, modular multi-mount).**
+4. **UI:** add/remove mounts (pick an accessible source vault + a source subfolder + a local mount point +
+   per-mount direction), per-mount status rows, the unmount keep-or-remove prompt.
+5. **Edges:** offline/backoff per mount, access-revoked / S-deleted → Failed, unmount cleanup, migrating an
    existing whole-vault share into a mount.
 
 Each phase carries its own independent security critique (composition touches data boundaries + deletion).
@@ -216,14 +226,16 @@ Each phase carries its own independent security critique (composition touches da
 - **Cross-server** composition (a mount whose `S` is on a different server/token).
 - **Per-user personal scope** on `S` — that's the separate `nPerUserConfigScope` spike.
 
-## 10. Open questions (resolve before accepting for build)
+## 10. Open questions
 
-1. **Direction default:** is your ASI-into-Personal case **pull-only** (read the ASI notes in Personal, edit
-   them in ASI) or **bidirectional** (edit ASI notes from within Personal and have it propagate)?
-2. **Granularity of `S`:** compose a **whole** source vault, or a **subfolder** of it (e.g. only
-   `ASI/Projects/**`)? Sub-vault granularity is more powerful but adds a second prefix on the `S` side.
-3. **Mount point collision:** if `Work/ASI/` already has local files when you mount, do we **merge** (treat as
-   a first-contact reconcile) or require an **empty** mount point?
-4. **Unmount default:** keep-as-local or remove?
-5. **Scope for the first ship:** is Phase 2 (read-only composition) a satisfying v1 on its own, or is
-   bidirectional table-stakes?
+**Resolved (owner, 2026-08-07):**
+1. **Direction** — ✅ **per-mount choice** (pull | sync), default pull; both code paths in v1.
+2. **Granularity** — ✅ **modular subfolder mapping**: a mount maps a *subfolder of the source* → a local
+   subfolder; compose several (`sourcePath` on the source side).
+5. **First ship** — ✅ **bidirectional is table-stakes**: v1 ships through Phase 3 (both directions).
+
+**Still open (my proposed defaults — say if not):**
+3. **Mount-point collision:** if the local mount point already has files, **merge** (treat it as a
+   first-contact reconcile — data-safe, reuses the engine) rather than requiring it empty. *Default: merge.*
+4. **Unmount:** *Default: keep the mounted files as ordinary local files* (decompose in place), with an explicit
+   "remove them (they stay safe in `S`)" option — never a silent delete.
