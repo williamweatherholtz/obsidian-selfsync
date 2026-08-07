@@ -15,6 +15,7 @@ import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmat
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
 import { pushPreviewModal } from "./pushpreviewmodal";
+import { Mount, parseMounts } from "./mounts";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -89,6 +90,10 @@ export interface NewLiveSyncSettings {
   // lazily []). The autopilot auto-adds a plugin only the FIRST time it sees it (not in this set), so once
   // you've un-ticked an auto-added plugin it stays un-synced — the policy never fights a manual choice.
   autopilotSeen?: string[];
+  // Composed-vault MOUNTS (D0039, nComposedVaults) — a source-vault subfolder composed into a local subfolder,
+  // data-only + directional. Per-device (composition is a local choice, like the primary target; never synced).
+  // Omitted from DEFAULT_SETTINGS (lazily []); parsed + validated in parseSettings (invalid entries dropped).
+  mounts?: Mount[];
   // Timestamp-ignore (the redesigned feature — SelfSync NEVER writes note timestamps). When on, a diff that
   // is only a TIMESTAMP-VALUED frontmatter key is excluded from sync change-detection, so it never causes a
   // conflict. Identity-only; it never edits a note. ON by default (safe: never writes; value-shape gated).
@@ -156,6 +161,7 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
   out.autoSyncNewPlugins = s.autoSyncNewPlugins === true; // opt-in; any non-true persisted value → off
   out.autopilotSeen = Array.isArray(s.autopilotSeen) ? [...new Set(s.autopilotSeen.filter((x): x is string => typeof x === "string"))] : undefined;
+  { const m = parseMounts(s.mounts); out.mounts = m.length ? m : undefined; } // composed-vault mounts (D0039), normalized + malformed-dropped
   // Migrate the retired 1.7-1.8 "embed timestamps" (which WROTE notes) to the identity-only "ignore
   // timestamp changes". Default ON for everyone — it never edits files and is value-shape gated, so even a
   // vault that never touched the old feature gets conflict suppression + the always-on EOL/BOM fix. Honor an
