@@ -65,7 +65,10 @@ export interface MountRuntimeCtx {
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
     "onProgress" | "onConflict" | "onFileError" | "onGuard" | "onBaseChanged" |
-    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent">>;
+    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent" | "onPullExhausted">>;
+  // Optional source-vault readiness probe (the raw transport's status()) — the mount holds OFFLINE on a not-
+  // ready source (mid-reindex/degraded), the same guard the primary connect applies (R4-F4).
+  sourceReady?: () => Promise<boolean>;
 }
 
 export class MountRuntime {
@@ -103,6 +106,8 @@ export class MountRuntime {
       ...this.ctx.callbacks,
     };
   }
+  // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
+  ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).
   toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version }; }
 }

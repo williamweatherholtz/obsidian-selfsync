@@ -53,7 +53,7 @@ describe("pollMount / reconcileMountScopes — PULL (end-to-end via the real rec
     const io = memIo();
     const rt = new MountRuntime(mk("Work/ASI", "Projects", "pull"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
-    await reconcileMountScopes([scope], {}, true); // initial connect pass
+    await reconcileMountScopes([scope], {}); // initial connect pass
     expect(scope.state).toBe("live");
     expect(dec(io.files.get("Work/ASI/notes/a.md"))).toBe("hello"); // Projects/notes/a.md → Work/ASI/notes/a.md
     expect(rt.state.version).toBe(1); // the mount's OWN cursor advanced
@@ -65,7 +65,7 @@ describe("pollMount / reconcileMountScopes — PULL (end-to-end via the real rec
     const io = memIo({ "Work/ASI/plan.md": "LOCAL WORK" }); // the user already had notes here before mounting
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
-    await reconcileMountScopes([scope], {}, true);
+    await reconcileMountScopes([scope], {});
     expect(scope.state).toBe("live");
     expect(dec(io.files.get("Work/ASI/plan.md"))).toBe("SOURCE VER"); // source adopted at the canonical path
     const copy = [...io.files.keys()].find((p) => p.startsWith("Work/ASI/plan (conflict"));
@@ -105,6 +105,21 @@ describe("fail-isolation + FSM driving", () => {
     await reconcileMountScope(scope);
     expect(scope.state).toBe("failed");
   });
+  it("R4-F4: a NOT-READY source holds the mount OFFLINE (never reconciles a degraded/partial manifest)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = sourceApi([await serveFile(chunks, "a.md", "x", 1)], chunks, 1);
+    const io = memIo();
+    const notReady = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src, { sourceReady: async () => false }));
+    const s1: MountScope = { runtime: notReady, state: "detached", fails: 0 };
+    await reconcileMountScopes([s1], {});
+    expect(s1.state).toBe("offline"); // held — not synced against a not-ready source
+    expect(io.files.size).toBe(0);    // nothing pulled
+    const ready = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src, { sourceReady: async () => true }));
+    const s2: MountScope = { runtime: ready, state: "detached", fails: 0 };
+    await reconcileMountScopes([s2], {});
+    expect(s2.state).toBe("live");
+    expect(io.files.has("Work/ASI/a.md")).toBe(true); // once ready, it pulls
+  });
   it("recovers offline→live when the source comes back", async () => {
     const chunks = new Map<string, Uint8Array>();
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(memIo(), sourceApi([], chunks, 0)));
@@ -119,7 +134,7 @@ describe("fail-isolation + FSM driving", () => {
     const bad = new MountRuntime(mk("Bad", "", "pull"), ctx(memIo(), throwingApi()));
     const goodScope: MountScope = { runtime: good, state: "detached", fails: 0 };
     const badScope: MountScope = { runtime: bad, state: "detached", fails: 0 };
-    await reconcileMountScopes([badScope, goodScope], {}, true); // bad first — must not stop good
+    await reconcileMountScopes([badScope, goodScope], {}); // bad first — must not stop good
     expect(badScope.state).toBe("offline");
     expect(goodScope.state).toBe("live");
     expect((good as any).base.get("a.md")).toBeDefined();
@@ -130,7 +145,7 @@ describe("fail-isolation + FSM driving", () => {
     const io = memIo();
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
-    await reconcileMountScopes([scope], {}, true, () => false); // not live → skipped
+    await reconcileMountScopes([scope], {}, () => false); // not live → skipped
     expect(scope.state).toBe("detached"); // never even transitioned to mounting
     expect(io.files.size).toBe(0);         // nothing written to disk
   });

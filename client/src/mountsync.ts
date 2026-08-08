@@ -13,9 +13,10 @@ import { reconcileAll, reconcileDelta, decideReconcileMode } from "./reconcile";
 // failure / access revoked / source deleted). Below it, a failure is a transient `offline` that retries.
 export const MAX_MOUNT_FAILS = 3;
 
-// A live mount = its isolated runtime + its FSM state + a consecutive-failure counter. The caller (main.ts)
-// owns the array and reads `.state` for the aggregate status fold after each pass.
-export interface MountScope { runtime: MountRuntime; state: MountState; fails: number }
+// A live mount = its isolated runtime + its FSM state + a consecutive-failure counter. `failedAt` (ms) is
+// stamped by the caller when the scope reaches `failed`, so it can be retried after a backoff (R4-F2). The
+// caller (main.ts) owns the array and reads `.state` for the aggregate status fold after each pass.
+export interface MountScope { runtime: MountRuntime; state: MountState; fails: number; failedAt?: number }
 
 export interface MountSyncHooks {
   onEvent?: (scope: MountScope) => void;   // fired on every state change (drives the status light + persistence)
@@ -48,6 +49,10 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
   const wasOffline = scope.state === "offline";
   if (scope.state === "live") { scope.state = mountTransition(scope.state, "syncStart"); hooks.onEvent?.(scope); }
   try {
+    // R4-F4: on a first-contact / reconnect pass, refuse to reconcile a NOT-READY source (mid-reindex/
+    // degraded) — the same guard the primary connect applies — so a partial/degraded manifest can't drive a
+    // spurious delete-local. Throwing routes to offline (retries), never failing destructively.
+    if ((wasMounting || wasOffline) && !(await scope.runtime.ready())) throw new Error("source vault not ready (reindexing?)");
     await pollMount(scope.runtime, { forceFull: wasMounting || wasOffline });
     scope.fails = 0;
     scope.state = mountTransition(scope.state, wasMounting ? "mounted" : wasOffline ? "reconnect" : "syncSettled");
@@ -61,14 +66,15 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
 }
 
 // Drive EVERY active mount scope one cycle, each fail-isolated from the others. Sequential (mounts are few and
-// share the chunk cache + one connection); a slow/broken mount delays but never breaks the rest. `initial`
-// forces a full first pass on every scope (used on connect). `isLive` (optional) is re-checked BEFORE driving
-// each scope — the caller passes a predicate that returns false for a scope that was removed or is being torn
-// down mid-pass, so we never mutate the disk for a mount that's no longer live (R1-F3/F4).
-export async function reconcileMountScopes(scopes: readonly MountScope[], hooks: MountSyncHooks = {}, initial = false, isLive?: (scope: MountScope) => boolean): Promise<void> {
+// share the chunk cache + one connection); a slow/broken mount delays but never breaks the rest. A detached
+// scope (freshly configured, or a failed scope reset by the backoff retry) is STARTED here on any pass; each
+// mount's own FSM/forceFull logic then handles the full-vs-delta first pass. `isLive` (optional) is re-checked
+// BEFORE driving each scope — the caller passes a predicate that returns false for a scope that was removed or
+// is being torn down mid-pass, so we never mutate the disk for a mount that's no longer live (R1-F3/F4).
+export async function reconcileMountScopes(scopes: readonly MountScope[], hooks: MountSyncHooks = {}, isLive?: (scope: MountScope) => boolean): Promise<void> {
   for (const scope of scopes) {
     if (isLive && !isLive(scope)) continue; // removed / unloading — skip before any reconcile touches disk
-    if (initial && scope.state === "detached") scope.state = mountTransition(scope.state, "mount"); // start a freshly-configured mount
+    if (scope.state === "detached") scope.state = mountTransition(scope.state, "mount"); // start any not-yet-started mount (incl. a failed scope reset to detached by the backoff retry, R4-F2)
     await reconcileMountScope(scope, hooks);
   }
 }

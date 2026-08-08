@@ -81,6 +81,7 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 // WS-less client still converges quickly.
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
+const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
 // (or has no pending transfer) faster than this never shows — the light holds its steady state, so a
 // sub-second poll/check can't flit the light. Only a sustained, genuine transfer paints "Syncing…".
@@ -1443,7 +1444,17 @@ export default class NewLiveSyncPlugin extends Plugin {
   // transfer (syncPending > 0) is a real syncing phase; the debounce below then also suppresses a sub-second
   // one. Together these kill the "Fully synced" ⇄ "Syncing… checking for changes" flitter (issueStatusLightFlicker).
   private effectiveLightPhase(): Phase {
-    return effectivePhase(this.engine.phase(), this.syncPending);
+    const primary = effectivePhase(this.engine.phase(), this.syncPending);
+    // R4-F1: fold composed-vault mount health into the ONE status light. Only ESCALATE a RESTING primary
+    // (idle/off) so a silently offline/failed mount isn't hidden behind green "Fully synced"; a real primary
+    // problem (syncing/connecting/retrying/blocked) already shows + dominates, and the mount note still rides
+    // the tooltip via paintLight. A mount problem maps to the same attention visual the primary uses.
+    if (primary === "idle" || primary === "off") {
+      const ms = this.mountStatusSummary();
+      if (ms?.health === "error") return "blocked";
+      if (ms) return "retrying"; // offline / diverged → attention
+    }
+    return primary;
   }
   // The render ENTRY POINT (all callers route here): feed the effective phase into the debounced display
   // FSM. `_p` is accepted for the legacy callers that pass engine.phase() but is ignored — the FSM +
@@ -1462,7 +1473,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   private paintLight(phase: Phase) {
     const spec = light(phase, "", this.realtimeConnected); // COLOUR source
     const disp = this.statusDisplay(phase);
-    const tip = disp.detail ? `${disp.label} ${disp.detail}` : disp.label;
+    const base = disp.detail ? `${disp.label} ${disp.detail}` : disp.label;
+    // R4-F1: surface a composed-vault mount PROBLEM in the tooltip (always), so a failed/offline mount is
+    // discoverable even when the light's short label reflects the primary.
+    const ms = this.mountStatusSummary();
+    const tip = ms ? `${base} · ${ms.health === "error" ? "a mount failed" : ms.health === "offline" ? "a mount is offline" : "a mount needs review"} (${ms.reason})` : base;
     // Vary the GLYPH with state too, so it isn't conveyed by color alone (colorblind users). idle is a
     // RESTING state → a STEADY glyph (a lock for read-only, else a check), NEVER the spinner — a healthy
     // polling device must not sit at a permanent spinner (that state-vs-motion collision trains alarm
@@ -2066,7 +2081,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.settings.lastSyncedAt = Date.now(); void this.saveSettings(); // persist so "Last synced" survives a restart (the onBaseChanged snapshot ran earlier in this pass)
-    void this.reconcileMounts(false); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
+    void this.reconcileMounts(); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
   }
 
   // Full reconcile with D0019 reset detection wired in — used by the CONNECT path (the initial
@@ -2080,7 +2095,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     d.onStage = (s) => this.setConnectStage(s); // drive the connect sub-phase (no-op off the connect path — setConnectStage gates on `connecting`)
     const resp = await reconcileAll(d);
     this.noteHistory(resp.version, resp.history_floor, kept);
-    void this.reconcileMounts(true); // composed vaults (D0039): initial full pass per mount — DETACHED (B1) so a hung mount never stalls the primary engine queue; fail-isolated internally
+    void this.reconcileMounts(); // composed vaults (D0039): initial full pass per mount — DETACHED (B1) so a hung mount never stalls the primary engine queue; fail-isolated internally
   }
 
   // ---- composed vaults (D0039): the per-mount sync subsystem (dormant when settings.mounts is empty) ----
@@ -2094,7 +2109,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // A transport bound to a mount's SOURCE vault (same server + session token; a different owner/vault). The
   // source is on the SAME server (cross-server mounts are out of scope, D0039), so the session token authorizes
   // it. Returns null if there's no session yet (never mid-connect).
-  private buildMountApi(mount: Mount): SyncApi | null {
+  private buildMountApi(mount: Mount): ApiClient | null {
     if (!this.sessionToken) return null;
     return new HttpTransport(this.settings.serverUrl, this.sessionToken, mount.source.vaultId, mount.source.owner, this.deviceId(), this.deviceLabel());
   }
@@ -2129,9 +2144,14 @@ export default class NewLiveSyncPlugin extends Plugin {
         io: this.mountIo, sourceApi, cache: this.cache, device: this.deviceLabel(),
         restore: this.mountStateStore[key],
         maxSyncBytes: this.maxSyncBytes(),
+        sourceReady: async () => (await sourceApi.status()).status === "ready", // R4-F4: hold offline on a not-ready source
         callbacks: {
           onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
           onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}' — your version is kept alongside the source's`),
+          // R4-F3: a permanently-corrupt source copy (fails its integrity check every pull) and a too-large
+          // file were silently missing from the composed folder — surface both, as the primary does.
+          onPullExhausted: (p) => this.log(`mount ${mount.mountPoint}: can't download '${p}' from the source (repeated failures — likely a corrupt server copy); it's missing from this folder`, true),
+          onSkip: (p, bytes) => this.log(`mount ${mount.mountPoint}: skipped '${p}' (${Math.round(bytes / 1048576)} MB — over this device's size limit); it's missing from this folder`),
           // R2-F2: surface a refused bulk delete (e.g. the source subtree looks empty) so a stalled mount is
           // visible, not silent — we never auto-delete on an empty/suspicious manifest.
           onGuard: (p) => this.log(`mount ${mount.mountPoint}: refused a suspicious bulk delete near '${p}' — not deleting local copies; remove + re-add the mount if the source folder was intentionally emptied`, true),
@@ -2148,7 +2168,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Drive every mount one cycle after the primary pass, fully FAIL-ISOLATED: any error in the whole subsystem
   // is caught here so a mount problem can NEVER break the primary sync. Persists each mount's own base+cursor
   // as it changes and refreshes the status projection. No-op (near-zero cost) when no mounts are configured.
-  private async reconcileMounts(initial: boolean): Promise<void> {
+  private async reconcileMounts(): Promise<void> {
     // Re-entrancy guard (B1): never overlap mount passes / pile up on a hung mount. Residual (N3, accepted): a
     // pathological source api that never settles leaves this true → the mount subsystem goes dormant. Not
     // reachable via the real HttpTransport (REQUEST_TIMEOUT_MS bounds every request, so pollMount always
@@ -2163,9 +2183,13 @@ export default class NewLiveSyncPlugin extends Plugin {
       // adds/drops to match the configured set, so a mount added or removed in steady state is picked up here.
       this.rebuildMountScopes();
       if (this.mountScopes.length === 0) return; // couldn't build (no session) — nothing to do
+      // R4-F2: a FAILED mount auto-recovers — after a backoff since it failed, reset it to detached so this
+      // pass re-mounts it (a source that was reindexing/offline comes back without a manual reconnect).
+      for (const s of this.mountScopes) if (s.state === "failed" && s.failedAt && Date.now() - s.failedAt >= MOUNT_FAILED_RETRY_MS) { s.state = "detached"; s.fails = 0; s.failedAt = undefined; }
       await reconcileMountScopes(this.mountScopes, {
         onEvent: (scope) => {
           if (!this.mountScopes.includes(scope)) return; // removed mid-pass (C1): don't resurrect the state we just deleted
+          if (scope.state === "failed") { if (!scope.failedAt) scope.failedAt = Date.now(); } else scope.failedAt = undefined; // stamp/clear the backoff clock (R4-F2)
           this.mountStateStore[scope.runtime.key] = scope.runtime.toPersist();
           void this.persist(); // durably keep each mount's own base+cursor (single-flight coalesced)
           this.renderLight(); // fold the mount health into the indicator
@@ -2173,12 +2197,12 @@ export default class NewLiveSyncPlugin extends Plugin {
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
       // it, so a just-removed mount's disk isn't mutated and no write happens during teardown.
-      }, initial, (scope) => !this.unloading && this.mountScopes.includes(scope));
+      }, (scope) => !this.unloading && this.mountScopes.includes(scope));
     } catch (e: any) {
       this.log(`mount subsystem error (${e?.message ?? e}) — primary sync unaffected`); // never rethrow: isolate from the primary
     } finally {
       this.mountReconciling = false;
-      if (this.mountReconcilePending && !this.unloading) { this.mountReconcilePending = false; void this.reconcileMounts(false); } // run the deferred request (R1-F1/F5)
+      if (this.mountReconcilePending && !this.unloading) { this.mountReconcilePending = false; void this.reconcileMounts(); } // run the deferred request (R1-F1/F5)
     }
   }
   // The worst mount HEALTH + a human reason, or null when no mount is unhealthy (so the primary light shows
@@ -2186,7 +2210,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   mountStatusSummary(): { health: Health; reason: string } | null {
     if (this.mountScopes.length === 0) return null;
     const agg = aggregateStatus("idle", this.mountScopes.map((s) => ({ label: s.runtime.mount.mountPoint, state: s.state })));
-    return agg.health === "idle" || agg.health === "ok" ? null : agg;
+    // Only a PROBLEM (failed/offline/diverged) is worth surfacing on the light + card — a busy/ok/idle mount
+    // isn't an alert (R4-F1).
+    return (agg.health === "error" || agg.health === "offline" || agg.health === "diverged") ? agg : null;
   }
   // The live FSM state per configured mount, keyed by mountKey (a configured-but-not-yet-built mount reads
   // "detached"). The settings section renders this as each mount's status.
@@ -2201,7 +2227,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   async addMount(m: Mount): Promise<void> {
     this.settings.mounts = [...this.mounts(), m];
     await this.saveSettings();
-    void this.reconcileMounts(true);
+    void this.reconcileMounts();
     this.log(`composed vaults: added mount ${m.mountPoint} ← ${m.source.owner ? m.source.owner + "/" : ""}${m.source.vaultId}${m.source.sourcePath ? "/" + m.source.sourcePath : ""} (${m.direction})`);
   }
   // Remove a mount (settings UI). NON-DESTRUCTIVE (D0039 default): the local files under the mount point are
