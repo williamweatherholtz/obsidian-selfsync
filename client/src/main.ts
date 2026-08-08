@@ -340,6 +340,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   private mountScopes: MountScope[] = [];
   private mountIo?: VaultIo; // the shared data-only io mounts wrap (built lazily via buildMountIo)
   private mountReconciling = false; // re-entrancy guard: only one mount pass in flight at a time (B1 detach)
+  private mountReconcilePending = false; // a reconcile was requested while one was in flight → re-run on release (R1-F1/F5)
+  private mountScopesToken = "";     // the session token the current mount transports were built with (R1-F2 staleness)
   // Persisted per-mount own-base + cursor, keyed by mountKey — the per-mount analogue of the single `base`
   // key. Loaded in loadSettings, snapshotted into saveData, updated as each mount reconciles.
   private mountStateStore: Record<string, MountPersist> = {};
@@ -2102,6 +2104,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     const want = this.activeMounts(); // the SAME validated in-effect set the primary exclusion uses (N1)
     if (want.length === 0 && this.mounts().length > 0) this.log(`composed vaults: mount set has overlapping/invalid mount points — not mounting any until fixed`);
     this.mountIo ??= this.buildMountIo();
+    // R1-F2: mount source transports capture the session token by value. If the token rotated (a reactive-401
+    // relogin), every preserved scope would 401 forever. Drop all existing scopes so they rebuild with the
+    // fresh token; their own base+cursor survive in mountStateStore, so a rebuild resumes, not restarts.
+    if (this.mountScopesToken !== this.sessionToken) { this.mountScopes = []; this.mountScopesToken = this.sessionToken; }
     const byKey = new Map(this.mountScopes.map((s) => [s.runtime.key, s]));
     const seen = new Set<string>();
     const next: MountScope[] = [];
@@ -2134,11 +2140,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     // pathological source api that never settles leaves this true → the mount subsystem goes dormant. Not
     // reachable via the real HttpTransport (REQUEST_TIMEOUT_MS bounds every request, so pollMount always
     // settles); strictly better than the pre-fix behaviour, which hung the PRIMARY.
-    if (this.mountReconciling) return;
+    // R1-F1/F5: a request that arrives while a pass is running isn't dropped — it's DEFERRED and re-run on
+    // release, so an add/reconnect during an in-flight pass is never silently lost.
+    if (this.mountReconciling) { this.mountReconcilePending = true; return; }
     this.mountReconciling = true;
     try {
       if (this.mounts().length === 0) { if (this.mountScopes.length) { this.mountScopes = []; this.renderLight(); } return; }
-      if (initial || this.mountScopes.length === 0) this.rebuildMountScopes();
+      // R1-F1: rebuild EVERY pass (not just initial/empty) — rebuildMountScopes preserves live scopes by key and
+      // adds/drops to match the configured set, so a mount added or removed in steady state is picked up here.
+      this.rebuildMountScopes();
       if (this.mountScopes.length === 0) return; // couldn't build (no session) — nothing to do
       await reconcileMountScopes(this.mountScopes, {
         onEvent: (scope) => {
@@ -2148,11 +2158,14 @@ export default class NewLiveSyncPlugin extends Plugin {
           this.renderLight(); // fold the mount health into the indicator
         },
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
-      }, initial);
+      // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
+      // it, so a just-removed mount's disk isn't mutated and no write happens during teardown.
+      }, initial, (scope) => !this.unloading && this.mountScopes.includes(scope));
     } catch (e: any) {
       this.log(`mount subsystem error (${e?.message ?? e}) — primary sync unaffected`); // never rethrow: isolate from the primary
     } finally {
       this.mountReconciling = false;
+      if (this.mountReconcilePending && !this.unloading) { this.mountReconcilePending = false; void this.reconcileMounts(false); } // run the deferred request (R1-F1/F5)
     }
   }
   // The worst mount HEALTH + a human reason, or null when no mount is unhealthy (so the primary light shows
@@ -2183,6 +2196,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // and syncs them to the primary vault. Its own base/cursor are dropped; nothing on disk is deleted.
   async removeMount(m: Mount): Promise<void> {
     const key = mountKey(m);
+    // R1-F3: mark the scope unmounting FIRST — an in-flight detached pass re-checks state per scope and will
+    // skip it (no disk mutation for a mount being removed) even though it still holds the pre-filter array.
+    const live = this.mountScopes.find((s) => s.runtime.key === key);
+    if (live) live.state = "unmounting";
     this.settings.mounts = this.mounts().filter((x) => mountKey(x) !== key);
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
     delete this.mountStateStore[key];

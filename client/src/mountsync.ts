@@ -62,9 +62,12 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
 
 // Drive EVERY active mount scope one cycle, each fail-isolated from the others. Sequential (mounts are few and
 // share the chunk cache + one connection); a slow/broken mount delays but never breaks the rest. `initial`
-// forces a full first pass on every scope (used on connect).
-export async function reconcileMountScopes(scopes: readonly MountScope[], hooks: MountSyncHooks = {}, initial = false): Promise<void> {
+// forces a full first pass on every scope (used on connect). `isLive` (optional) is re-checked BEFORE driving
+// each scope — the caller passes a predicate that returns false for a scope that was removed or is being torn
+// down mid-pass, so we never mutate the disk for a mount that's no longer live (R1-F3/F4).
+export async function reconcileMountScopes(scopes: readonly MountScope[], hooks: MountSyncHooks = {}, initial = false, isLive?: (scope: MountScope) => boolean): Promise<void> {
   for (const scope of scopes) {
+    if (isLive && !isLive(scope)) continue; // removed / unloading — skip before any reconcile touches disk
     if (initial && scope.state === "detached") scope.state = mountTransition(scope.state, "mount"); // start a freshly-configured mount
     await reconcileMountScope(scope, hooks);
   }

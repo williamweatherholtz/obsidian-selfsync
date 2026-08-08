@@ -110,6 +110,16 @@ describe("fail-isolation + FSM driving", () => {
     expect(goodScope.state).toBe("live");
     expect((good as any).base.get("a.md")).toBeDefined();
   });
+  it("isLive predicate skips a removed / unloading scope BEFORE any reconcile touches disk (R1-F3/F4)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = sourceApi([await serveFile(chunks, "a.md", "x", 1)], chunks, 1);
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {}, true, () => false); // not live → skipped
+    expect(scope.state).toBe("detached"); // never even transitioned to mounting
+    expect(io.files.size).toBe(0);         // nothing written to disk
+  });
   it("skips detached / failed scopes (no work, no throw)", async () => {
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(memIo(), throwingApi()));
     for (const state of ["detached", "failed"] as const) {
