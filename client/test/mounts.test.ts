@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Mount, normFolder, claimsLocal, primaryExcludes, mountRelFromLocal, mountRelFromSource, localFromMountRel, sourceFromMountRel, validateMounts, parseMounts } from "../src/mounts";
+import { Mount, normFolder, normMountFolder, claimsLocal, primaryExcludes, mountRelFromLocal, mountRelFromSource, localFromMountRel, sourceFromMountRel, validateMounts, parseMounts } from "../src/mounts";
 
 const mk = (mountPoint: string, sourcePath = "", direction: "pull" | "sync" = "pull"): Mount =>
   ({ source: { owner: "will", vaultId: "asi", sourcePath }, mountPoint, direction });
@@ -15,6 +15,35 @@ describe("normFolder", () => {
   it("ROUND-TRIPS a filename with legitimate leading/trailing whitespace (never trims a segment interior)", () => {
     expect(normFolder("Work/ note .md")).toBe("Work/ note .md"); // the leaf's spaces are real filename bytes — must survive
     expect(normFolder("/ leading/trailing /x")).toBe(" leading/trailing /x");
+  });
+});
+
+describe("R3 boundary adversarial — case / unicode / dots / .obsidian / dedupe", () => {
+  it("normFolder drops '..' segments (defense-in-depth against a source path escape)", () => {
+    expect(normFolder("a/../b")).toBe("a/b");          // '..' dropped (not resolved) — no escape reaches the sink
+    expect(normFolder("../.obsidian/x")).toBe(".obsidian/x");
+  });
+  it("normMountFolder sanitizes user config — trims spaces, strips trailing dots, splits backslashes, drops ..", () => {
+    expect(normMountFolder("Work\\ASI ")).toBe("Work/ASI");
+    expect(normMountFolder(" Work / ASI. ")).toBe("Work/ASI");
+    expect(normMountFolder("a/../b")).toBe("a/b");
+    expect(normMountFolder("/")).toBe("");
+  });
+  it("H1: boundary is case-insensitive so a case-drifted folder can't split-brain between mount and primary", () => {
+    const m = mk("Work/ASI");
+    expect(claimsLocal(m, "work/asi/note.md")).toBe(true);       // same physical folder, different case → still claimed
+    expect(mountRelFromLocal(m, "work/asi/note.md")).toBe("note.md"); // rel keeps the REAL case of the remainder
+  });
+  it("M4: boundary is Unicode-normalized (NFC vs NFD café)", () => {
+    const nfc = "Café", nfd = "Café"; // é as one vs two code points
+    expect(claimsLocal(mk(nfc), `${nfd}/x.md`)).toBe(true);
+  });
+  it("M5: validateMounts rejects two mounts over the same physical folder differing only by case", () => {
+    expect(validateMounts([mk("Work/ASI"), mk("work/asi", "B")])[0]).toMatch(/share the mount point/);
+  });
+  it("H2: validateMounts rejects a mount point OR source inside .obsidian (data-only keystone)", () => {
+    expect(validateMounts([mk(".obsidian/plugins/x")])[0]).toMatch(/\.obsidian/);
+    expect(validateMounts([{ source: { owner: "", vaultId: "asi", sourcePath: ".obsidian/plugins/y" }, mountPoint: "Work", direction: "pull" }])[0]).toMatch(/\.obsidian/);
   });
 });
 

@@ -13,9 +13,11 @@ import { BaseStore, BaseEntry } from "./base";
 import { ReconcileDeps, DeleteRateGuard } from "./reconcile";
 
 // A stable per-mount identity for persisting (and looking up) its own base + cursor, independent of array
-// order. A mount is uniquely identified by its source (owner/vault + subfolder) and its local mount point.
+// order. Uniquely identified by source (owner/vault + subfolder) + local mount point. JSON-encoded (not a
+// delimiter-joined string) so a component that legitimately contains `#`/`=`/`>`/`/` — e.g. a folder named
+// "C#" — can never collide two DISTINCT mounts onto one key (which would cross-contaminate their base+cursor).
 export function mountKey(m: Mount): string {
-  return `${m.source.owner}/${m.source.vaultId}#${m.source.sourcePath}=>${m.mountPoint}`;
+  return JSON.stringify([m.source.owner, m.source.vaultId, m.source.sourcePath, m.mountPoint]);
 }
 
 // The persisted per-mount state (own base snapshot + own cursor). Stored in settings under mountKey(m), the

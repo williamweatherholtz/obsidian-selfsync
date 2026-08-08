@@ -219,11 +219,17 @@ class ObsidianVaultIo implements VaultIo {
     // `..` escapes the vault via the adapter; that read then feeds decide()→push, EXFILTRATING the
     // out-of-vault file to a malicious/compromised server. Fail loud (per-file isolated) so the read
     // never happens and decide() sees the file as absent.
+    // R3-H2: a MOUNT io is data-only — refuse to READ a config path (a mount anchored under .obsidian must
+    // never exfiltrate SelfSync's credential data.json or any config to the source). The write/remove/list
+    // sinks + the config-segment rejection in validateMounts already block this; guarding read closes the
+    // last (read→push) exfil vector as defense-in-depth. (No effect on the primary io — forMount is false.)
+    if (this.forMount && !this.passes(path)) throw new Error(`mount io: refusing to read a non-data (config) path: '${path}'`);
     const safe = asSafeVaultPath(path);
     if (!safe) throw new Error(`refusing to read an unsafe/traversing path: '${path}'`);
     return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(normalizePath(safe)));
   }
   async exists(path: string): Promise<boolean> {
+    if (this.forMount && !this.passes(path)) return false; // R3-H2: a mount io never probes config (data-only)
     // A traversing path is treated as "not present" — never probe outside the vault (R24 SEC).
     const safe = asSafeVaultPath(path);
     if (!safe) return false;

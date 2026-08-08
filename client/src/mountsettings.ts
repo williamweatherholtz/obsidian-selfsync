@@ -4,7 +4,7 @@
 // glue. Human-factors driven: default PULL (safe), SYNC gated on write permission + an explicit warning, the
 // primary vault excluded as a source, live validation feedback, data-only stated up front.
 import { App, Modal, Setting } from "obsidian";
-import { Mount, MountDirection, validateMounts, normFolder } from "./mounts";
+import { Mount, MountDirection, validateMounts, normMountFolder } from "./mounts";
 import { MountState } from "./mountfsm";
 import { SharedVaultRef } from "./transport";
 
@@ -47,7 +47,7 @@ export function mountStateLabel(s: MountState): string {
 // here — this is the structural validity: a source is picked, the local folder is real, no overlap.)
 export function validateMountDraft(draft: Mount, others: readonly Mount[]): string | null {
   if (!draft.source.vaultId) return "Pick a source vault.";
-  if (!normFolder(draft.mountPoint)) return "Enter a local folder (it can't be blank or the vault root).";
+  if (!normMountFolder(draft.mountPoint)) return "Enter a local folder (it can't be blank or the vault root).";
   const errs = validateMounts([...others, draft]);
   return errs.length ? errs[0] : null;
 }
@@ -95,7 +95,9 @@ export class MountEditModal extends Modal {
     let mountPoint = "";
     let direction: MountDirection = "pull";
 
-    const draft = (): Mount => ({ source: { owner: source.owner, vaultId: source.vaultId, sourcePath: normFolder(sourcePath) }, mountPoint, direction });
+    // Sanitize the user-typed folders (trim stray spaces / trailing dots / backslashes) so what's SAVED matches
+    // the real FS and can't silently mis-mount or leak to the primary (R3-M3/L2).
+    const draft = (): Mount => ({ source: { owner: source.owner, vaultId: source.vaultId, sourcePath: normMountFolder(sourcePath) }, mountPoint: normMountFolder(mountPoint), direction });
 
     new Setting(c).setName("Source vault").setDesc("The vault to bring a folder from.")
       .addDropdown((dd) => {

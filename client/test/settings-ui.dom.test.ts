@@ -33,7 +33,7 @@ describe("settings tab renders and wires its controls", () => {
   it("composed vaults: lists each mount with its direction + live state and an Add button", () => {
     const p = fakePlugin({
       settings: { mounts: [{ source: { owner: "", vaultId: "asi", sourcePath: "Projects" }, mountPoint: "Work/ASI", direction: "pull" }] },
-      mountStates: () => ({ "/asi#Projects=>Work/ASI": "live" }),
+      mountStates: () => ({ '["","asi","Projects","Work/ASI"]': "live" }),
     });
     const { containerEl } = renderTab(p);
     const text = containerEl.textContent ?? "";

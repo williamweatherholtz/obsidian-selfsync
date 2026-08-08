@@ -16,11 +16,16 @@ const stubApi: SyncApi = {
 };
 const ctx = (over: Partial<MountRuntimeCtx> = {}): MountRuntimeCtx => ({ io: stubIo, sourceApi: stubApi, cache: new Map() as ChunkCache, device: "dev", ...over });
 
-describe("mountKey — stable per-mount identity (order-independent)", () => {
-  it("encodes source vault + subfolder + local mount point", () => {
-    expect(mountKey(mk("Work/ASI", "Projects"))).toBe("will/asi#Projects=>Work/ASI");
+describe("mountKey — stable, collision-free per-mount identity", () => {
+  it("encodes source vault + subfolder + local mount point (JSON, order-independent + stable)", () => {
+    expect(mountKey(mk("Work/ASI", "Projects"))).toBe('["will","asi","Projects","Work/ASI"]');
     expect(mountKey(mk("Work/ASI", "Projects"))).toBe(mountKey(mk("Work/ASI", "Projects"))); // stable
     expect(mountKey(mk("Work/ASI", "Other"))).not.toBe(mountKey(mk("Work/ASI", "Projects")));
+  });
+  it("does NOT collide two DISTINCT mounts whose delimiter-joined form would tie (R3-M1)", () => {
+    // Old `${sp}=>${mp}` scheme: {sp:"a", mp:"b=>c"} and {sp:"a=>b", mp:"c"} both → "…#a=>b=>c". JSON can't tie.
+    expect(mountKey(mk("b=>c", "a"))).not.toBe(mountKey(mk("c", "a=>b")));
+    expect(mountKey(mk("C#", ""))).not.toBe(mountKey(mk("", "C#"))); // '#' in a folder name (C#) doesn't collide
   });
 });
 
