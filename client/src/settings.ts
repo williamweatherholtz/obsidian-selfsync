@@ -15,7 +15,9 @@ import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmat
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
 import { pushPreviewModal } from "./pushpreviewmodal";
-import { Mount, parseMounts } from "./mounts";
+import { Mount, parseMounts, validateMounts } from "./mounts";
+import { mountKey } from "./mountengine";
+import { MountEditModal, mountRowLabel, mountStateLabel } from "./mountsettings";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -191,6 +193,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private pluginCleanCache = new Map<string, boolean>();
   private timestampExpanded?: boolean; // persists the (default-collapsed) Timestamp-changes section state
   private advancedExpanded?: boolean; // persists the (default-collapsed) Advanced section state
+  private mountsExpanded?: boolean;   // persists the (default-collapsed) Composed vaults section state
 
   // Section order answers "is my sync working?" FIRST (the live Status hero), then "what/how do I
   // sync" (Connection facts + What syncs), then the rarely-touched controls (collapsed). Each section
@@ -219,8 +222,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       this.renderConnection(containerEl, s);       // ② server / account / vault facts + manage actions
       this.renderWhatSyncs(containerEl, s);        // ③ the opt-in .obsidian config-sync scope
       this.renderConflicts(containerEl);           // ④ only when a manual choice is pending
-      this.renderAdvanced(containerEl, s);         // ⑤ collapsed by default
-      this.renderIgnoreTimestamps(containerEl, s); // ⑥ collapsed by default — identity-only timestamp masking
+      this.renderComposedVaults(containerEl, s);   // ⑤ compose folders from other vaults (collapsed by default)
+      this.renderAdvanced(containerEl, s);         // ⑥ collapsed by default
+      this.renderIgnoreTimestamps(containerEl, s); // ⑦ collapsed by default — identity-only timestamp masking
     } // else unconfigured: only the Status hero + Set up / Redeem buttons
 
     if (scroller && savedTop) scroller.scrollTop = savedTop; // stay where the user was, don't jump to the top
@@ -438,6 +442,45 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         .setDesc("Choose which version to keep.")
         .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
     }
+  }
+
+  // Composed vaults (D0039) — bring folders from other vaults into this one, data-only. Collapsed by default
+  // (advanced). Lists current mounts with their live state + a remove action, and an "Add a mount" button that
+  // opens the guided modal. An invalid set (overlapping mount points, hand-edited) is surfaced + none are active.
+  private renderComposedVaults(c: HTMLElement, s: NewLiveSyncSettings): void {
+    const mounts = s.mounts ?? [];
+    // Keep the section discoverable but out of the way: default-collapsed, and auto-open only if mounts exist.
+    const body = this.collapsible(c, "Composed vaults", this.mountsExpanded ?? mounts.length > 0, (v) => { this.mountsExpanded = v; });
+    body.createEl("p", { text: "Bring a folder from another vault into this one so their notes live side by side. Only notes and attachments sync — never plugin or app settings.", attr: { style: "font-size:12px;opacity:.75;margin:4px 0 10px;" } });
+
+    const errs = validateMounts(mounts);
+    if (errs.length) body.createEl("p", { text: `⚠ ${errs[0]} — no mounts are active until this is fixed.`, attr: { style: "font-size:12px;color:var(--text-error);margin:0 0 8px;" } });
+
+    const states = this.plugin.mountStates();
+    for (const m of mounts) {
+      const state = states[mountKey(m)] ?? "detached";
+      const dir = m.direction === "pull" ? "Pull · read-only" : "Sync · two-way";
+      new Setting(body).setName(mountRowLabel(m))
+        .setDesc(`${dir} — ${mountStateLabel(state)}`)
+        .addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
+    }
+    if (!mounts.length) body.createEl("p", { text: "No mounts yet.", attr: { style: "font-size:12px;opacity:.6;margin:0 0 8px;" } });
+
+    new Setting(body).addButton((b) => this.iconBtn(b, "plus", "Add a mount").setCta()
+      .onClick(() => new MountEditModal(this.app, this.plugin, () => this.display()).open()));
+  }
+
+  // Remove-mount flow: a NON-DESTRUCTIVE unmount (D0039 default) — confirm, then the local files stay as
+  // normal notes in this vault (they become part of the primary sync). No file is deleted.
+  private async removeMountFlow(m: Mount): Promise<void> {
+    const ok = await confirmModal(this.app, {
+      title: "Remove this mount?",
+      body: `“${mountRowLabel(m)}” will stop syncing with its source. Nothing is deleted — the files already in ${m.mountPoint} stay in this vault. But note: they will then UPLOAD to your primary vault and appear on your other devices, as normal notes.`,
+      confirmText: "Remove mount",
+    });
+    if (!ok) return;
+    await this.plugin.removeMount(m);
+    this.display();
   }
 
   // Advanced — collapsed by default (rarely touched, so it stays out of the common view; one tap opens it).

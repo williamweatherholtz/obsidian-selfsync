@@ -27,7 +27,7 @@ import { androidModelFromUA, platformDisplayName, usableModel } from "./devicena
 import { Mount, primaryExcludes, validateMounts } from "./mounts";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
-import { aggregateStatus, Health } from "./mountfsm";
+import { aggregateStatus, Health, MountState } from "./mountfsm";
 
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -2142,6 +2142,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (this.mountScopes.length === 0) return; // couldn't build (no session) — nothing to do
       await reconcileMountScopes(this.mountScopes, {
         onEvent: (scope) => {
+          if (!this.mountScopes.includes(scope)) return; // removed mid-pass (C1): don't resurrect the state we just deleted
           this.mountStateStore[scope.runtime.key] = scope.runtime.toPersist();
           void this.persist(); // durably keep each mount's own base+cursor (single-flight coalesced)
           this.renderLight(); // fold the mount health into the indicator
@@ -2160,6 +2161,33 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.mountScopes.length === 0) return null;
     const agg = aggregateStatus("idle", this.mountScopes.map((s) => ({ label: s.runtime.mount.mountPoint, state: s.state })));
     return agg.health === "idle" || agg.health === "ok" ? null : agg;
+  }
+  // The live FSM state per configured mount, keyed by mountKey (a configured-but-not-yet-built mount reads
+  // "detached"). The settings section renders this as each mount's status.
+  mountStates(): Record<string, MountState> {
+    const out: Record<string, MountState> = {};
+    for (const m of this.mounts()) out[mountKey(m)] = "detached";
+    for (const s of this.mountScopes) out[s.runtime.key] = s.state;
+    return out;
+  }
+  // Add a mount (settings UI): persist it, then build + start it now if connected (else it builds on the next
+  // connect). activeMounts() re-validates the whole set, so an add that would overlap simply doesn't take.
+  async addMount(m: Mount): Promise<void> {
+    this.settings.mounts = [...this.mounts(), m];
+    await this.saveSettings();
+    void this.reconcileMounts(true);
+    this.log(`composed vaults: added mount ${m.mountPoint} ← ${m.source.owner ? m.source.owner + "/" : ""}${m.source.vaultId}${m.source.sourcePath ? "/" + m.source.sourcePath : ""} (${m.direction})`);
+  }
+  // Remove a mount (settings UI). NON-DESTRUCTIVE (D0039 default): the local files under the mount point are
+  // KEPT as normal notes — activeMounts() no longer excludes that folder, so the PRIMARY scope now owns them
+  // and syncs them to the primary vault. Its own base/cursor are dropped; nothing on disk is deleted.
+  async removeMount(m: Mount): Promise<void> {
+    const key = mountKey(m);
+    this.settings.mounts = this.mounts().filter((x) => mountKey(x) !== key);
+    this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
+    delete this.mountStateStore[key];
+    await this.saveSettings();
+    this.log(`composed vaults: removed mount ${m.mountPoint} — its files are kept as normal notes in this vault`);
   }
 
   // Per-vault key for the persisted history floor + last-version (D0019). Owner-qualified so a shared

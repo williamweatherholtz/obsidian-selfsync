@@ -30,6 +30,26 @@ describe("settings tab renders and wires its controls", () => {
     }
   });
 
+  it("composed vaults: lists each mount with its direction + live state and an Add button", () => {
+    const p = fakePlugin({
+      settings: { mounts: [{ source: { owner: "", vaultId: "asi", sourcePath: "Projects" }, mountPoint: "Work/ASI", direction: "pull" }] },
+      mountStates: () => ({ "/asi#Projects=>Work/ASI": "live" }),
+    });
+    const { containerEl } = renderTab(p);
+    const text = containerEl.textContent ?? "";
+    expect(text).toContain("asi/Projects  →  Work/ASI"); // the row label
+    expect(text).toContain("Pull · read-only");           // direction
+    expect(text).toContain("In sync");                     // live state label
+    expect(buttonByText(containerEl, "Add a mount")).toBeTruthy();
+    expect(text).not.toContain("No mounts yet");
+  });
+
+  it("composed vaults: with no mounts, shows the empty state + Add button (dormant, opt-in)", () => {
+    const { containerEl } = renderTab(fakePlugin({ settings: { mounts: [] } }));
+    expect((containerEl.textContent ?? "")).toContain("No mounts yet");
+    expect(buttonByText(containerEl, "Add a mount")).toBeTruthy();
+  });
+
   it("P2: toggling the config-sync master calls applyConfigSyncChange (immediate apply) + flips the setting", () => {
     const { containerEl } = renderTab(plugin);
     const master = toggleByName(containerEl, "Sync settings, themes, or plugins");
