@@ -87,5 +87,10 @@ export class MountedApi implements SyncApi {
   }
   missing(hashes: string[]): Promise<string[]> { return this.base.missing(hashes); }
   getChunk(hash: string): Promise<Uint8Array> { return this.base.getChunk(hash); }
-  putChunk(hash: string, bytes: Uint8Array): Promise<void> { return this.base.putChunk(hash, bytes); }
+  // putChunk WRITES to the source's chunk store — refuse on a pull (read-only) mount, so the "no write on a
+  // pull mount" guarantee holds at the ADAPTER (not only via reconcile's read-only path never calling it). R5-LOW-1.
+  putChunk(hash: string, bytes: Uint8Array): Promise<void> {
+    if (this.mount.direction === "pull") return Promise.reject(new Error("MountedApi: refusing to putChunk on a pull (read-only) mount source"));
+    return this.base.putChunk(hash, bytes);
+  }
 }

@@ -24,7 +24,7 @@ import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } 
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { Mount, primaryExcludes, validateMounts } from "./mounts";
+import { Mount, primaryExcludes, validMounts } from "./mounts";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
 import { aggregateStatus, Health, MountState } from "./mountfsm";
@@ -2105,7 +2105,14 @@ export default class NewLiveSyncPlugin extends Plugin {
   // scope-building, so a bad set can't leave a folder excluded-from-primary yet handled-by-no-mount (N1). A
   // hand-edited invalid set → activeMounts() empty → the primary keeps syncing those folders (safe), nothing
   // mounted, until the set is fixed.
-  activeMounts(): Mount[] { return validateMounts(this.mounts()).length === 0 ? this.mounts() : []; }
+  activeMounts(): Mount[] {
+    // The valid, non-overlapping SUBSET (R5-MED-3: one bad hand-edited mount drops only itself, not all — a
+    // full-set deactivation would re-absorb the good mounts' folders into the primary and upload their
+    // source-derived content there). Also EXCLUDE a mount of the CURRENT primary vault (R5-LOW-3: after a
+    // switchToVault onto a mount's source, that mount is self-referential → auto-dormant).
+    const po = this.settings.vaultOwner ?? "", pv = this.settings.vaultId ?? "";
+    return validMounts(this.mounts()).filter((m) => !(m.source.owner === po && m.source.vaultId === pv));
+  }
   // A transport bound to a mount's SOURCE vault (same server + session token; a different owner/vault). The
   // source is on the SAME server (cross-server mounts are out of scope, D0039), so the session token authorizes
   // it. Returns null if there's no session yet (never mid-connect).
@@ -2123,7 +2130,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // local folder would clobber each other's base + churn conflicts. Reject the whole set on overlap (safe:
     // the subsystem stays dormant) rather than guess which to keep.
     const want = this.activeMounts(); // the SAME validated in-effect set the primary exclusion uses (N1)
-    if (want.length === 0 && this.mounts().length > 0) this.log(`composed vaults: mount set has overlapping/invalid mount points — not mounting any until fixed`);
+    if (want.length < this.mounts().length) this.log(`composed vaults: ${this.mounts().length - want.length} mount(s) ignored (invalid, overlapping, .obsidian-anchored, or the current primary vault) — the rest are active`);
     this.mountIo ??= this.buildMountIo();
     // R1-F2: mount source transports capture the session token by value. If the token rotated (a reactive-401
     // relogin), every preserved scope would 401 forever. Drop all existing scopes so they rebuild with the
@@ -2144,6 +2151,7 @@ export default class NewLiveSyncPlugin extends Plugin {
         io: this.mountIo, sourceApi, cache: this.cache, device: this.deviceLabel(),
         restore: this.mountStateStore[key],
         maxSyncBytes: this.maxSyncBytes(),
+        ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
         sourceReady: async () => (await sourceApi.status()).status === "ready", // R4-F4: hold offline on a not-ready source
         callbacks: {
           onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),

@@ -55,7 +55,10 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
     if ((wasMounting || wasOffline) && !(await scope.runtime.ready())) throw new Error("source vault not ready (reindexing?)");
     await pollMount(scope.runtime, { forceFull: wasMounting || wasOffline });
     scope.fails = 0;
-    scope.state = mountTransition(scope.state, wasMounting ? "mounted" : wasOffline ? "reconnect" : "syncSettled");
+    // Success lands `live` — UNLESS this pass produced a conflict copy, which surfaces as `diverged` ("Needs
+    // review") so a mounted-folder conflict isn't hidden behind a green light (R5-MED-1). A clean pass clears
+    // a prior diverged back to live.
+    scope.state = scope.runtime.tookConflict() ? "diverged" : "live";
     hooks.onEvent?.(scope);
   } catch (err) {
     scope.fails++;

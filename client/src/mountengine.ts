@@ -78,6 +78,7 @@ export class MountRuntime {
   readonly retryBudget: Map<string, { version: number; count: number }>; // OWN
   private readonly io: MountedIo;
   private readonly api: MountedApi;
+  private sawConflict = false; // set when reconcile makes a conflict copy this pass → drives the FSM to `diverged` (R5-MED-1)
   constructor(readonly mount: Mount, private readonly ctx: MountRuntimeCtx) {
     this.base = new BaseStore(ctx.restore?.base ?? {});
     this.state = { version: ctx.restore?.version ?? 0 };
@@ -104,8 +105,14 @@ export class MountRuntime {
       ignorePatterns: this.ctx.ignorePatterns,
       maxSyncBytes: this.ctx.maxSyncBytes,
       ...this.ctx.callbacks,
+      // Intercept onConflict (AFTER the spread, so it wraps the caller's) to record that this pass produced a
+      // conflict copy — the driver reads tookConflict() to move the FSM to `diverged` (R5-MED-1). The caller's
+      // own onConflict (logging) still runs.
+      onConflict: (p: string, copy: string) => { this.sawConflict = true; this.ctx.callbacks?.onConflict?.(p, copy); },
     };
   }
+  // Read + reset whether this poll made a conflict copy (drives the scope to `diverged`).
+  tookConflict(): boolean { const c = this.sawConflict; this.sawConflict = false; return c; }
   // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
   ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).

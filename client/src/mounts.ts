@@ -132,3 +132,21 @@ export function validateMounts(mounts: readonly Mount[]): string[] {
   }
   return errs;
 }
+
+// The maximal VALID, non-overlapping subset of a mount set (order-preserving, greedy). Unlike validateMounts
+// (which reports errors over the WHOLE set for the UI), this DROPS only the offending entries — so one bad
+// hand-edited mount can't deactivate the good ones (which would silently re-absorb their folders into the
+// primary scope and upload source-derived content there, R5-MED-3). A mount is dropped if its mount point is
+// empty/root, its mount point or source sits inside .obsidian, or its mount point overlaps an accepted one.
+export function validMounts(mounts: readonly Mount[]): Mount[] {
+  const ok: Mount[] = [];
+  for (const m of mounts) {
+    const mp = segsOf(m.mountPoint);
+    if (mp.length === 0) continue;
+    if (mp.some((s) => canonSeg(s) === ".obsidian")) continue;
+    if (segsOf(m.source.sourcePath).some((s) => canonSeg(s) === ".obsidian")) continue;
+    if (ok.some((o) => { const op = segsOf(o.mountPoint); return underOrEqual(mp, op) || underOrEqual(op, mp); })) continue;
+    ok.push(m);
+  }
+  return ok;
+}

@@ -66,12 +66,15 @@ describe("pollMount / reconcileMountScopes — PULL (end-to-end via the real rec
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
     await reconcileMountScopes([scope], {});
-    expect(scope.state).toBe("live");
+    expect(scope.state).toBe("diverged");                  // R5-MED-1: a conflict copy surfaces as "Needs review", not a silent green
     expect(dec(io.files.get("Work/ASI/plan.md"))).toBe("SOURCE VER"); // source adopted at the canonical path
     const copy = [...io.files.keys()].find((p) => p.startsWith("Work/ASI/plan (conflict"));
     expect(copy).toBeTruthy();                              // the user's version preserved as a LOCAL conflict copy
     expect(dec(io.files.get(copy!))).toBe("LOCAL WORK");
     expect(src.committed).toEqual([]);                      // pull mount never wrote the source
+    // a subsequent clean poll (no new conflict) clears diverged back to live
+    await reconcileMountScope(scope);
+    expect(scope.state).toBe("live");
   });
   it("a steady poll with no source change stays live and writes nothing", async () => {
     const io = memIo();
