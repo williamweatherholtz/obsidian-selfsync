@@ -108,9 +108,13 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
 // / conflict-copy is a pure function of a few booleans. The shell computes them (running merge3 only when a
 // clean merge is even possible — it needs the fetched bytes) and executes the returned plan's writes.
 export type MergePlan = "adoptRemote" | "readOnlyKeepCopy" | "pushMerged" | "conflictCopy";
-export function planMerge(f: { cosmetic: boolean; readOnly: boolean; action: Action; canMerge: boolean; mergeClean: boolean }): MergePlan {
+export function planMerge(f: { cosmetic: boolean; readOnly: boolean; action: Action; canMerge: boolean; mergeClean: boolean; firstContactKeepCopy?: boolean }): MergePlan {
   if (f.cosmetic) return "adoptRemote";                             // EOL/trailing-newline-only diff → not a real conflict
-  if (f.readOnly) return f.action === "merge" ? "readOnlyKeepCopy" : "adoptRemote"; // owner canonical; copy only on a known-base divergence
+  // Read-only: the source is canonical and we push nothing, so a divergence keeps the LOCAL version as a copy
+  // on a KNOWN-base divergence (action==="merge") — and, for a scope composed over existing local data
+  // (firstContactKeepCopy, a mount), ALSO on a NO-base first contact, so we never silently adopt-over-local
+  // (R2-F1). A fresh read-only SHARE leaves the flag off and still adopts the owner's copy on first contact.
+  if (f.readOnly) return (f.action === "merge" || f.firstContactKeepCopy) ? "readOnlyKeepCopy" : "adoptRemote";
   if (f.canMerge && f.mergeClean) return "pushMerged";              // both changed, non-overlapping → clean 3-way merge
   return "conflictCopy";                                            // overlapping / non-mergeable → remote wins, local kept as a copy
 }
@@ -244,6 +248,12 @@ export interface ReconcileDeps {
   statOf?: (path: string) => { size: number; mtime: number } | undefined;
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
+  // A read-only scope COMPOSED OVER EXISTING LOCAL DATA (a composed-vault mount) — unlike a fresh whole-vault
+  // read-only SHARE, its mount point may already hold the user's own notes, so a no-base first-contact
+  // divergence must PRESERVE the local version as a copy (readOnlyKeepCopy), never silently adopt-over-it
+  // (adoptRemote). Default false: a fresh read-only share still adopts the owner's canonical copy on first
+  // contact without spamming copies. (R2-F1: pull-mount-over-existing-file silent data loss.)
+  preserveLocalFirstContact?: boolean;
   // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
   // (no pull, no base, no delete): a replica that doesn't ACCEPT a path must never record a
   // base for it, or a dropped/filtered write turns into a phantom deletion of the device that
@@ -948,7 +958,7 @@ async function reconcileMergeOrConflict(
   const mergeResult = rawMerge
     ? { merged: restoreTimestamps(rawMerge.merged, localTextForMerge, mergePatterns), clean: rawMerge.clean }
     : null;
-  switch (planMerge({ cosmetic, readOnly: !!d.readOnly, action, canMerge, mergeClean: !!mergeResult?.clean })) {
+  switch (planMerge({ cosmetic, readOnly: !!d.readOnly, action, canMerge, mergeClean: !!mergeResult?.clean, firstContactKeepCopy: !!d.preserveLocalFirstContact })) {
     case "adoptRemote":
       // cosmetic-only, OR a read-only NO-base first-contact — adopt the remote, record base, spawn NO copy.
       await d.io.write(path, remoteBytes);

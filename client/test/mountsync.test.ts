@@ -59,6 +59,20 @@ describe("pollMount / reconcileMountScopes — PULL (end-to-end via the real rec
     expect(rt.state.version).toBe(1); // the mount's OWN cursor advanced
     expect(src.committed).toEqual([]); // a pull mount NEVER writes the source
   });
+  it("R2-F1: a PULL mount over a pre-existing DIFFERENT local file KEEPS the local as a conflict copy (no silent data loss)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = sourceApi([await serveFile(chunks, "plan.md", "SOURCE VER", 1)], chunks, 1);
+    const io = memIo({ "Work/ASI/plan.md": "LOCAL WORK" }); // the user already had notes here before mounting
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {}, true);
+    expect(scope.state).toBe("live");
+    expect(dec(io.files.get("Work/ASI/plan.md"))).toBe("SOURCE VER"); // source adopted at the canonical path
+    const copy = [...io.files.keys()].find((p) => p.startsWith("Work/ASI/plan (conflict"));
+    expect(copy).toBeTruthy();                              // the user's version preserved as a LOCAL conflict copy
+    expect(dec(io.files.get(copy!))).toBe("LOCAL WORK");
+    expect(src.committed).toEqual([]);                      // pull mount never wrote the source
+  });
   it("a steady poll with no source change stays live and writes nothing", async () => {
     const io = memIo();
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, sourceApi([], new Map(), 0)));

@@ -125,6 +125,15 @@ describe("planMerge — pure merge/conflict decision table", () => {
     expect(plan({ readOnly: true, action: "conflict-copy" })).toBe("adoptRemote");
   });
 
+  it("R2-F1: firstContactKeepCopy (a mount over existing local data) keeps a local copy on a NO-base first contact instead of adopting-over-local", () => {
+    // Default (a fresh read-only SHARE): a no-base first-contact divergence adopts the owner's copy.
+    expect(plan({ readOnly: true, action: "conflict-copy" })).toBe("adoptRemote");
+    // A mount composed over existing local data preserves the local version as a copy — no silent data loss.
+    expect(planMerge({ ...base, readOnly: true, action: "conflict-copy", firstContactKeepCopy: true })).toBe("readOnlyKeepCopy");
+    // The flag never forces a copy where remote should simply win (cosmetic-only) or on a writable scope.
+    expect(planMerge({ ...base, readOnly: true, action: "conflict-copy", cosmetic: true, firstContactKeepCopy: true })).toBe("adoptRemote");
+  });
+
   it("writable: a clean 3-way merge pushes; a dirty/impossible merge conflict-copies", () => {
     expect(plan({ canMerge: true, mergeClean: true })).toBe("pushMerged");
     expect(plan({ canMerge: true, mergeClean: false })).toBe("conflictCopy"); // overlapping edits

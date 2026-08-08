@@ -63,7 +63,7 @@ export interface MountRuntimeCtx {
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
     "onProgress" | "onConflict" | "onFileError" | "onGuard" | "onBaseChanged" |
-    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onConflict">>;
+    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent">>;
 }
 
 export class MountRuntime {
@@ -93,6 +93,7 @@ export class MountRuntime {
       device: this.ctx.device,
       accepts: isDataPath,                              // data-only, in mount-relative space
       readOnly: this.mount.direction === "pull",        // pull = never mutate the source
+      preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)
       deleteGuard: this.deleteGuard,
       retryBudget: this.retryBudget,
       ignorePatterns: this.ctx.ignorePatterns,

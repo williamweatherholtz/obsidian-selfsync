@@ -2125,7 +2125,14 @@ export default class NewLiveSyncPlugin extends Plugin {
         maxSyncBytes: this.maxSyncBytes(),
         callbacks: {
           onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
-          onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}'`),
+          onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}' — your version is kept alongside the source's`),
+          // R2-F2: surface a refused bulk delete (e.g. the source subtree looks empty) so a stalled mount is
+          // visible, not silent — we never auto-delete on an empty/suspicious manifest.
+          onGuard: (p) => this.log(`mount ${mount.mountPoint}: refused a suspicious bulk delete near '${p}' — not deleting local copies; remove + re-add the mount if the source folder was intentionally emptied`, true),
+          // R2-F3: surface a file kept/restored because it was absent from the source with no deletion record
+          // (a sync mount could otherwise re-upload a peer's deletion silently). Full D0019 reset-detection for
+          // mounts is a tracked follow-up (issueMountResetDetection).
+          onKeptAbsent: (p) => this.log(`mount ${mount.mountPoint}: kept '${p}' — absent from the source with no deletion record (not treating it as deleted)`, true),
         },
       });
       next.push({ runtime, state: "detached", fails: 0 });
