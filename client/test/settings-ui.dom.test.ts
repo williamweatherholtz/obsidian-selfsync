@@ -50,6 +50,22 @@ describe("settings tab renders and wires its controls", () => {
     expect(buttonByText(containerEl, "Add a mount")).toBeTruthy();
   });
 
+  it("composed vaults R10-F3: a partially-invalid set reports only the inactive COUNT (the rest keep syncing), not 'none active'", () => {
+    const m = { source: { owner: "", vaultId: "asi", sourcePath: "Projects" }, mountPoint: "Work/ASI", direction: "pull" };
+    const p = fakePlugin({ settings: { mounts: [m] }, activeMounts: () => [] }); // configured but NOT in effect (e.g. overlaps/invalid)
+    const { containerEl } = renderTab(p);
+    const text = containerEl.textContent ?? "";
+    expect(text).toContain("1 of 1 mount inactive"); // accurate count, not "no mounts are active"
+    expect(text).toContain("inactive — invalid or overlaps another mount"); // per-row reason (R10-F7 sibling)
+    expect(text).not.toContain("no mounts are active");
+  });
+
+  it("status hero R10-F1: folds a mount problem into the hero sub-line (the place you check is honest about mounts)", () => {
+    const p = fakePlugin({ mountStatusSummary: () => ({ health: "offline", reason: "mount Work/ASI" }) });
+    const { containerEl } = renderTab(p);
+    expect(containerEl.textContent ?? "").toContain("a mount is offline (mount Work/ASI)");
+  });
+
   it("P2: toggling the config-sync master calls applyConfigSyncChange (immediate apply) + flips the setting", () => {
     const { containerEl } = renderTab(plugin);
     const master = toggleByName(containerEl, "Sync settings, themes, or plugins");

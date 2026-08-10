@@ -1457,6 +1457,16 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     return primary;
   }
+  // The folded phase the LIGHT shows (primary + mount health) — exposed so the settings Status hero paints the
+  // SAME phase as the ribbon, instead of a primary-only phase that hides a down mount (R10-F1).
+  lightPhase(): Phase { return this.effectiveLightPhase(); }
+  // Coalesced settings re-render for MOUNT state changes (R10-F2): a mount pass fires onEvent several times;
+  // debounce so the per-mount rows refresh live without a re-render per event (scroll is preserved by display).
+  private mountUiTimer?: number;
+  private bumpMountUi(): void {
+    if (this.mountUiTimer !== undefined || !this.settingsRefresh) return;
+    this.mountUiTimer = window.setTimeout(() => { this.mountUiTimer = undefined; this.settingsRefresh?.(); }, 400);
+  }
   // The render ENTRY POINT (all callers route here): feed the effective phase into the debounced display
   // FSM. `_p` is accepted for the legacy callers that pass engine.phase() but is ignored — the FSM +
   // effectiveLightPhase are the single source of what's shown.
@@ -2127,11 +2137,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // mount restores its own persisted base + cursor from mountStateStore. A mount whose source transport can't
   // be built yet is skipped this pass.
   private rebuildMountScopes(): void {
-    // Runtime overlap/dedupe guard (A2/C3): settings.mounts can be hand-edited past the UI's validateMounts,
-    // so DROP any mount set with overlapping/nested/duplicate mount points here — two scopes over the same
-    // local folder would clobber each other's base + churn conflicts. Reject the whole set on overlap (safe:
-    // the subsystem stays dormant) rather than guess which to keep.
-    const want = this.activeMounts(); // the SAME validated in-effect set the primary exclusion uses (N1)
+    // Runtime overlap/dedupe guard (A2/C3): settings.mounts can be hand-edited past the UI's validation, so
+    // activeMounts() = the valid, non-overlapping, non-self SUBSET (R5-MED-3: a single bad entry drops only
+    // itself, not the good mounts — dropping all would re-absorb their folders into the primary). The primary
+    // exclusion (passes/accepts) uses the SAME activeMounts() set, so the two scopes stay provably disjoint (N1).
+    const want = this.activeMounts();
     if (want.length < this.mounts().length) this.log(`composed vaults: ${this.mounts().length - want.length} mount(s) ignored (invalid, overlapping, .obsidian-anchored, or the current primary vault) — the rest are active`);
     this.mountIo ??= this.buildMountIo();
     // R1-F2: mount source transports capture the session token by value. If the token rotated (a reactive-401
@@ -2209,7 +2219,8 @@ export default class NewLiveSyncPlugin extends Plugin {
           if (scope.state === "failed") { if (!scope.failedAt) scope.failedAt = Date.now(); } else scope.failedAt = undefined; // stamp/clear the backoff clock (R4-F2)
           this.mountStateStore[scope.runtime.key] = scope.runtime.toPersist();
           void this.persist(); // durably keep each mount's own base+cursor (single-flight coalesced)
-          this.renderLight(); // fold the mount health into the indicator
+          this.renderLight(); // fold the mount health into the indicator (+ the live Status hero via statusListener)
+          this.bumpMountUi(); // refresh the per-mount rows live too (R10-F2, debounced)
         },
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving

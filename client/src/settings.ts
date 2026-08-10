@@ -15,7 +15,7 @@ import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmat
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal } from "./confirm";
 import { pushPreviewModal } from "./pushpreviewmodal";
-import { Mount, parseMounts, validateMounts } from "./mounts";
+import { Mount, parseMounts } from "./mounts";
 import { mountKey } from "./mountengine";
 import { MountEditModal, mountRowLabel, mountStateLabel } from "./mountsettings";
 import { light } from "./syncstate";
@@ -299,15 +299,21 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       return;
     }
 
-    const phase = this.plugin.statusText(); // FSM Phase
+    const phase = this.plugin.statusText(); // PRIMARY FSM Phase (drives the label + the Reconnect affordance)
     const disp = this.plugin.statusDisplay(phase); // label + detail (pure projection: Fully synced / Syncing… N pending / …)
     const issue = this.plugin.getLastIssue();
+    // R10-F1: paint the dot from the FOLDED phase (primary + composed-vault mount health) — the SAME phase the
+    // ribbon light uses — so a down/failed mount escalates the hero dot instead of showing green here (this is
+    // the place the user opens to check "is my sync working?"). The label stays primary-honest; the mount
+    // problem is named in the sub-line.
+    const mount = this.plugin.mountStatusSummary();
+    const mountNote = mount ? (mount.health === "error" ? `a mount failed (${mount.reason})` : mount.health === "offline" ? `a mount is offline (${mount.reason})` : `a mount needs review (${mount.reason})`) : "";
     g.addSetting((st) => {
       st.settingEl.addClass("selfsync-status-hero");
-      // realtime-aware dot colour, same source as the ribbon (no green-dot-over-polling divergence).
-      st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(phase, "", this.plugin.realtimeConnected).color}`);
+      // realtime-aware dot colour, same source as the ribbon (no green-dot-over-polling divergence, no green-over-a-down-mount).
+      st.nameEl.createSpan({ cls: "selfsync-dot", text: "●" }).setAttribute("style", `color:${light(this.plugin.lightPhase(), "", this.plugin.realtimeConnected).color}`);
       st.nameEl.createSpan({ cls: "selfsync-status-label", text: disp.label + (disp.detail ? ` ${disp.detail}` : "") });
-      st.setDesc(`Last synced ${this.lastSyncedAgo(s)}` + (phase !== "idle" && issue ? ` · ${issue}` : ""));
+      st.setDesc(`Last synced ${this.lastSyncedAgo(s)}` + (phase !== "idle" && issue ? ` · ${issue}` : "") + (mountNote ? ` · ${mountNote}` : ""));
       // A down link (any reason) — offer the fix inline.
       if (phase === "retrying" || phase === "blocked" || phase === "lockedOut") {
         st.addButton((b) => this.iconBtn(b, "refresh-cw", "Reconnect").onClick(() => this.plugin.reconnect()));
@@ -445,23 +451,38 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   }
 
   // Composed vaults (D0039) — bring folders from other vaults into this one, data-only. Collapsed by default
-  // (advanced). Lists current mounts with their live state + a remove action, and an "Add a mount" button that
-  // opens the guided modal. An invalid set (overlapping mount points, hand-edited) is surfaced + none are active.
+  // (advanced). Lists current mounts with their live state + a remove action, and an "Add a mount" button.
+  // Only INVALID/overlapping/self-referential mounts are inactive; the rest keep syncing (R10-F3).
   private renderComposedVaults(c: HTMLElement, s: NewLiveSyncSettings): void {
     const mounts = s.mounts ?? [];
     // Keep the section discoverable but out of the way: default-collapsed, and auto-open only if mounts exist.
     const body = this.collapsible(c, "Composed vaults", this.mountsExpanded ?? mounts.length > 0, (v) => { this.mountsExpanded = v; });
     body.createEl("p", { text: "Bring a folder from another vault into this one so their notes live side by side. Only notes and attachments sync — never plugin or app settings.", attr: { style: "font-size:12px;opacity:.75;margin:4px 0 10px;" } });
 
-    const errs = validateMounts(mounts);
-    if (errs.length) body.createEl("p", { text: `⚠ ${errs[0]} — no mounts are active until this is fixed.`, attr: { style: "font-size:12px;color:var(--text-error);margin:0 0 8px;" } });
+    // Source of truth for what's ACTUALLY in effect (matches the engine): the valid, non-overlapping, non-self
+    // subset. R10-F3: a single bad hand-edited entry does NOT stop the good ones — report only the inactive count.
+    const active = new Set(this.plugin.activeMounts().map(mountKey));
+    const inactive = mounts.length - active.size;
+    if (inactive > 0) body.createEl("p", { text: `⚠ ${inactive} of ${mounts.length} mount${mounts.length > 1 ? "s" : ""} inactive (invalid, overlapping, inside .obsidian, or the source is your current primary vault) — the rest are still syncing.`, attr: { style: "font-size:12px;color:var(--text-error);margin:0 0 8px;" } });
 
     const states = this.plugin.mountStates();
+    const po = s.vaultOwner ?? "", pv = s.vaultId ?? "";
     for (const m of mounts) {
-      const state = states[mountKey(m)] ?? "detached";
+      const key = mountKey(m);
       const dir = m.direction === "pull" ? "Pull · read-only" : "Sync · two-way";
+      let statusText: string;
+      if (!active.has(key)) {
+        // Inactive: name WHY inline (R10-F7) instead of leaving it looking like a silent "Not started".
+        statusText = (m.source.owner === po && m.source.vaultId === pv)
+          ? "inactive — its source is your current primary vault"
+          : "inactive — invalid or overlaps another mount";
+      } else {
+        const state = states[key] ?? "detached";
+        // R10-F6: a mount added while offline sits detached until a session exists — say so, don't imply it's just idle.
+        statusText = (state === "detached" && !this.plugin.realtimeConnected) ? "waiting to connect" : mountStateLabel(state);
+      }
       new Setting(body).setName(mountRowLabel(m))
-        .setDesc(`${dir} — ${mountStateLabel(state)}`)
+        .setDesc(`${dir} — ${statusText}`)
         .addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
     }
     if (!mounts.length) body.createEl("p", { text: "No mounts yet.", attr: { style: "font-size:12px;opacity:.6;margin:0 0 8px;" } });

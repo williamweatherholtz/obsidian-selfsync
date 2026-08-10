@@ -131,11 +131,13 @@ export class MountEditModal extends Modal {
     new Setting(c)
       .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((b) => { addBtn = b; b.setButtonText("Add mount").setCta().onClick(async () => {
+        if (this.saved) return; // R10-F4: in-flight guard — a fast double-click must not add the mount twice
         if (!source.canWrite) direction = "pull"; // U1 defense-in-depth: never persist a sync mount on a read-only source (belt-and-suspenders over the dropdown gating)
         const m = draft();
         if (validateMountDraft(m, others)) return; // guarded — button is disabled while invalid, this is belt-and-suspenders
-        await this.host.addMount(m);
-        this.saved = true; // C4: only after the persist actually resolves (a throw leaves the modal open to retry, no spurious onDone)
+        this.saved = true; addBtn.setDisabled(true); // claim the submit BEFORE the await so a second click no-ops
+        try { await this.host.addMount(m); }
+        catch (e) { this.saved = false; addBtn.setDisabled(false); throw e; } // persist failed → let the user retry (no spurious onDone: still not closed)
         this.close();
       }); });
 
