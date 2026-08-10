@@ -2157,7 +2157,11 @@ export default class NewLiveSyncPlugin extends Plugin {
         // skipped + noticed (onSkip), never buffered. Desktop keeps the user's setting.
         maxSyncBytes: Platform.isMobile ? Math.min(this.maxSyncBytes(), MOUNT_MOBILE_MAX_BYTES) : this.maxSyncBytes(),
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
-        sourceReady: async () => (await sourceApi.status()).status === "ready", // R4-F4: hold offline on a not-ready source
+        // R4-F4 + R7-F1: hold the mount OFFLINE unless the SOURCE is both READY and on a COMPATIBLE protocol
+        // version — the same guard the primary connect applies. sessionToken is set even after a version-
+        // mismatched primary connect, so without this a mount could poll a protocol-incompatible source (shape
+        // validation catches structural wire changes but not a semantic one — a hash/chunk-encoding change).
+        sourceReady: async () => { const h = await sourceApi.status(); return h.status === "ready" && versionVerdict(h.apiVersion, CLIENT_API_VERSION).ok; },
         callbacks: {
           onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
           onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}' — your version is kept alongside the source's`),

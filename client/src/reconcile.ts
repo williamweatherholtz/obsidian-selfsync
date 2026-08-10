@@ -668,6 +668,12 @@ async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Arr
   if (got !== meta.hash) {
     throw new Error(`integrity check failed for '${meta.path}': got ${got.slice(0, 12)}, expected ${meta.hash.slice(0, 12)} — not applying (corrupt download?)`);
   }
+  // Also enforce the SIZE contract on the buffered path (the streamed path already does, sync.ts) — a
+  // FileMeta whose size disagrees from the assembled bytes is a self-inconsistent server response; reject it
+  // per-file rather than write it (R7-F2). Mobile mounts always take this buffered path.
+  if (bytes.length !== meta.size) {
+    throw new Error(`integrity check failed for '${meta.path}': size ${bytes.length} != declared ${meta.size} — not applying (inconsistent server metadata?)`);
+  }
   return bytes;
 }
 
