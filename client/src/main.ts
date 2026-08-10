@@ -82,6 +82,7 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
 const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
+const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers whole files (no streamed writer) — cap to avoid a WebView OOM (R6-Med2); files over this are skipped + noticed, never buffered
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
 // (or has no pending transfer) faster than this never shows — the light holds its steady state, so a
 // sub-second poll/check can't flit the light. Only a sustained, genuine transfer paints "Syncing…".
@@ -2047,6 +2048,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     const mode = decideReconcileMode({ forceConfigScan, forceFullScan, reset, noChange }); // pure scan-mode decision
     if (mode === "noop") {
       this.noteHistory(delta.version, delta.history_floor, []);
+      void this.reconcileMounts(); // R6-Med1: mounts are POLL-driven — run them even when the PRIMARY is idle, so a source change pulls on the ~60s poll cadence (D0040) instead of waiting for a primary change / the 15-min full scan / a reconnect
       return;
     }
     const before = this.state.version;
@@ -2150,7 +2152,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       const runtime = new MountRuntime(mount, {
         io: this.mountIo, sourceApi, cache: this.cache, device: this.deviceLabel(),
         restore: this.mountStateStore[key],
-        maxSyncBytes: this.maxSyncBytes(),
+        // R6-Med2: on mobile the mount has no streamed writer, so a large file buffers whole (×concurrency) →
+        // OOM. Cap the MOUNT's size gate below the (desktop-default) user setting on mobile; a bigger file is
+        // skipped + noticed (onSkip), never buffered. Desktop keeps the user's setting.
+        maxSyncBytes: Platform.isMobile ? Math.min(this.maxSyncBytes(), MOUNT_MOBILE_MAX_BYTES) : this.maxSyncBytes(),
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
         sourceReady: async () => (await sourceApi.status()).status === "ready", // R4-F4: hold offline on a not-ready source
         callbacks: {
