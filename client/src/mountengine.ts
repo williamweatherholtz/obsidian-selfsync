@@ -16,6 +16,10 @@ import { ReconcileDeps, DeleteRateGuard } from "./reconcile";
 // order. Uniquely identified by source (owner/vault + subfolder) + local mount point. JSON-encoded (not a
 // delimiter-joined string) so a component that legitimately contains `#`/`=`/`>`/`/` — e.g. a folder named
 // "C#" — can never collide two DISTINCT mounts onto one key (which would cross-contaminate their base+cursor).
+// PERSISTENCE CONTRACT (R8-F2): this string is the on-disk key for mountStateStore in data.json. Changing its
+// SHAPE orphans every persisted mount base → each mount re-first-contacts (non-destructive but a conflict-copy
+// churn). Safe to change ONLY while composed vaults is unreleased; once shipped, a shape change MUST bump
+// dataSchemaVersion + add a migratePersisted step that rewrites old-form keys.
 export function mountKey(m: Mount): string {
   return JSON.stringify([m.source.owner, m.source.vaultId, m.source.sourcePath, m.mountPoint]);
 }
@@ -41,9 +45,16 @@ export function parseMountState(raw: unknown): Record<string, MountPersist> {
     for (const [p, be] of Object.entries(e.base as Record<string, unknown>)) {
       if (!be || typeof be !== "object") continue;
       const r = be as Record<string, unknown>;
-      if (typeof r.hash !== "string") continue;
-      if (r.text !== undefined && typeof r.text !== "string") continue; // a non-string merge-ancestor must never reach three-way merge (N2)
-      base[p] = be as BaseEntry;
+      if (typeof r.hash !== "string") continue; // hash is the required identity; no hash → drop the entry
+      // Rebuild a CLEAN entry, dropping any type-wrong OPTIONAL field rather than casting the blob through
+      // (R8-F3). `text`/`normHash` are load-bearing for three-way merge + content-identity (a wrong-typed
+      // normHash could otherwise flip a keep-local into a delete-local); size/mtime are scan-skip hints.
+      const entry: BaseEntry = { hash: r.hash };
+      if (typeof r.text === "string") entry.text = r.text;
+      if (typeof r.normHash === "string") entry.normHash = r.normHash;
+      if (typeof r.size === "number" && Number.isFinite(r.size) && r.size >= 0) entry.size = r.size;
+      if (typeof r.mtime === "number" && Number.isFinite(r.mtime) && r.mtime >= 0) entry.mtime = r.mtime;
+      base[p] = entry;
     }
     out[key] = { base, version };
   }

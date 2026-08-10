@@ -2455,6 +2455,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     // analogue of the single `base`). VALIDATED at the boundary (B2) — a malformed entry is dropped so hostile
     // input (non-numeric cursor, garbage base) can never reach the reconcile engine; that mount starts fresh.
     this.mountStateStore = parseMountState(data.mountState);
+    // R8-F1: GARBAGE-COLLECT orphaned per-mount state. Only removeMount prunes a key in-session, so a mount
+    // whose identity changed OUTSIDE the UI (a hand-edited sourcePath/mountPoint → new mountKey, a future
+    // edit-in-place flow, or an old-format key after a mountKey-shape change) would strand a full base snapshot
+    // (hash + note text) in data.json forever → monotonic bloat, worst on mobile. Keep only keys that match a
+    // CURRENTLY-CONFIGURED mount (this.mounts(), not activeMounts — a temporarily invalid/overlapping entry
+    // keeps its base until fixed). A dropped key just re-first-contacts (non-destructive: preserveLocalFirstContact).
+    const liveKeys = new Set(this.mounts().map(mountKey));
+    for (const k of Object.keys(this.mountStateStore)) if (!liveKeys.has(k)) delete this.mountStateStore[k];
   }
   async saveSettings() { await this.persist(); }
   // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so

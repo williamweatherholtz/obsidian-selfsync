@@ -77,9 +77,21 @@ describe("parseMountState — validated persistence boundary (B2, hostile-input 
     expect(Object.keys(parsed)).toEqual(["k1"]);
     expect(parsed.k1).toEqual({ base: { "notes/a.md": { hash: "H" } }, version: 3 });
   });
-  it("filters garbage base entries within a kept mount — only valid {hash[,text]} records survive (no fabricated base paths / non-string merge ancestor)", () => {
-    const parsed = parseMountState({ k: { base: { a: { hash: "H" }, b: "x", c: { size: 1 }, d: { hash: "H", text: 123 }, e: { hash: "H", text: "ok" } }, version: 0 } });
-    expect(parsed.k.base).toEqual({ a: { hash: "H" }, e: { hash: "H", text: "ok" } }); // b/c/d dropped (no hash / bad hash / non-string text)
+  it("drops a base entry with no hash, and STRIPS a type-wrong optional field (text/normHash/size/mtime) while keeping the hash (R8-F3)", () => {
+    const parsed = parseMountState({ k: { base: {
+      a: { hash: "H" },
+      b: "x",                                                          // not an object → dropped
+      c: { size: 1 },                                                  // no hash → dropped
+      d: { hash: "H", text: 123 },                                     // bad text → stripped, entry kept as {hash}
+      e: { hash: "H", text: "ok", normHash: "N", size: 5, mtime: 9 },  // all valid → kept whole
+      f: { hash: "H", normHash: 42, size: "big", mtime: -1 },          // all optionals type-wrong → stripped to {hash}
+    }, version: 0 } });
+    expect(parsed.k.base).toEqual({
+      a: { hash: "H" },
+      d: { hash: "H" },
+      e: { hash: "H", text: "ok", normHash: "N", size: 5, mtime: 9 },
+      f: { hash: "H" },
+    });
   });
   it("non-object → {}", () => { expect(parseMountState(undefined)).toEqual({}); expect(parseMountState("x")).toEqual({}); });
 });
