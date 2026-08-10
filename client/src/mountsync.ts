@@ -31,7 +31,12 @@ export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } 
   const before = rt.state.version;
   const delta = await d.api.changes(before);
   const noChange = delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === before;
-  const mode = decideReconcileMode({ forceConfigScan: false, forceFullScan: !!opts.forceFull, reset: false, noChange });
+  // R9-C: a source-global version that went BACKWARDS since our cursor means the SOURCE vault was reindexed/
+  // restored (its history was rewritten). Route that through the engine's `reset` path (→ a full reconcile) so
+  // the mount re-pulls the whole subtree instead of trusting an incremental delta against a now-meaningless
+  // cursor. (Full D0019 history_floor/keptAbsent reset-detection for mounts remains a tracked follow-up.)
+  const rewound = delta.version < before;
+  const mode = decideReconcileMode({ forceConfigScan: false, forceFullScan: !!opts.forceFull, reset: rewound, noChange });
   if (mode === "noop") return;
   if (mode === "full") await reconcileAll(d);
   else await reconcileDelta(d, delta);

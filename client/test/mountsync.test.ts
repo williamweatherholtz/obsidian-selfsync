@@ -76,6 +76,14 @@ describe("pollMount / reconcileMountScopes — PULL (end-to-end via the real rec
     await reconcileMountScope(scope);
     expect(scope.state).toBe("live");
   });
+  it("R9-C: a source version REWIND (reindex) forces a full re-pull instead of trusting the stale cursor", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = sourceApi([await serveFile(chunks, "a.md", "x", 2)], chunks, 2); // source now reports version 2
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src, { restore: { base: {}, version: 5 } })); // our cursor is AHEAD (stale)
+    await pollMount(rt); // changes(5) → {version:2, upserts:[]} (nothing "since" 5) — but version<cursor ⇒ reset ⇒ full reconcile
+    expect(io.files.has("Work/ASI/a.md")).toBe(true); // re-pulled despite the empty incremental delta
+  });
   it("a steady poll with no source change stays live and writes nothing", async () => {
     const io = memIo();
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, sourceApi([], new Map(), 0)));

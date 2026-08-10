@@ -113,6 +113,10 @@ export class MountRuntime {
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)
       deleteGuard: this.deleteGuard,
       retryBudget: this.retryBudget,
+      // R9-B (by design): the timestamp-ignore PATTERNS apply inside a mount, but the primary's
+      // `excludedFolders` per-folder OPT-OUT is deliberately NOT passed — those are primary-VAULT-relative
+      // paths with no meaningful translation to a different source vault's subtree, so a mount masks all `.md`
+      // uniformly per the patterns. (Timestamp-only masking affects churn/cosmetic diffs, never data loss.)
       ignorePatterns: this.ctx.ignorePatterns,
       maxSyncBytes: this.ctx.maxSyncBytes,
       ...this.ctx.callbacks,
