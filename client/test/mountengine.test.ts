@@ -39,7 +39,7 @@ describe("MountRuntime — STRUCTURAL isolation (issueMountBaseIsolation)", () =
     const rt2 = new MountRuntime(mk("Refs", ""), ctx());
     expect(rt2.base).not.toBe(rt.base);
     expect(rt2.state).not.toBe(rt.state);
-    expect(rt2.deleteGuard).not.toBe(rt.deleteGuard);
+    expect(rt2.retryBudget).not.toBe(rt.retryBudget);
     rt.state.version = 42;
     expect(rt2.state.version).toBe(0); // mutating one never touches the other
   });
@@ -54,13 +54,22 @@ describe("MountRuntime — STRUCTURAL isolation (issueMountBaseIsolation)", () =
     const d = rt.deps();
     expect(d.base).toBe(rt.base);
     expect(d.state).toBe(rt.state);
-    expect(d.deleteGuard).toBe(rt.deleteGuard);
+    expect(d.retryBudget).toBe(rt.retryBudget);
     expect(d.accepts!("notes/a.md")).toBe(true);
     expect(d.accepts!(".obsidian/x")).toBe(false); // data-only
   });
   it("a PULL mount is readOnly (pull-only reconcile path); a SYNC mount is not", () => {
     expect(new MountRuntime(mk("Work/ASI", "", "pull"), ctx()).deps().readOnly).toBe(true);
     expect(new MountRuntime(mk("Work/ASI", "", "sync"), ctx()).deps().readOnly).toBe(false);
+  });
+  it("passes the global bulk-delete policy into deps + collects held paths via onGuard (D0041)", () => {
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx({ bulkDeleteStrategy: "count", bulkDeleteThreshold: 7 }));
+    const d = rt.deps();
+    expect(d.bulkDeleteStrategy).toBe("count");
+    expect(d.bulkDeleteThreshold).toBe(7);
+    d.onGuard!("notes/a.md"); d.onGuard!("notes/b.md"); // reconcile held these for confirmation
+    expect(rt.takeHeld()).toEqual(["notes/a.md", "notes/b.md"]);
+    expect(rt.takeHeld()).toEqual([]); // read+reset
   });
 });
 

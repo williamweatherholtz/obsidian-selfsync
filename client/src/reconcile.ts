@@ -59,8 +59,7 @@ export type ReconcileEffect =
 export interface FinalizeFacts {
   readOnly: boolean;          // this vault is a read-only share (owner's version canonical; we push nothing)
   hasTombstone: boolean;      // the server holds a REAL deletion tombstone for this path (delete-local needs it)
-  guardDelete: boolean;       // a suspicious MASS delete-LOCAL was detected this pass
-  guardRemoteDelete: boolean; // a suspicious MASS delete-REMOTE (local vault vanished) was detected this pass
+  guardDelete: boolean;       // this pass's incoming delete-LOCAL batch exceeded the user threshold → HOLD for confirmation (D0041)
   isConflictCopy: boolean;    // path is a conflict-copy file (a deliberately-local file on a read-only share)
   hasLocalBytes: boolean;     // local content is present (for the in-sync base-record)
   hasRmeta: boolean;          // the server has this path (for the in-sync base-record)
@@ -91,8 +90,10 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
       if (f.guardDelete) return { kind: "reportGuard" };
       return { kind: "removeLocal" };
     case "delete-remote":
+      // OUTGOING (your local delete → server): honored EXACTLY, no bulk gate (D0041 — genuine user input). The
+      // executor still per-file re-probes real absence before tombstoning (issueFalseAbsenceDelete) — that's
+      // correctness, not pushback: it only skips a file that actually still exists on disk.
       if (f.readOnly) return { kind: "reportReadOnly" };
-      if (f.guardRemoteDelete) return { kind: "reportGuard" };
       return { kind: "deleteRemote", version: f.remoteVersion }; // CAS base: the remote version this delete is based on (issueDeleteNoCasLostUpdate)
     case "edit-wins-keep-local":
       if (f.readOnly) return { kind: "reportReadOnly" };
@@ -156,36 +157,22 @@ export const DEFAULT_MAX_SYNC_BYTES = 200 * 1024 * 1024; // 200 MiB
 export const BULK_DELETE_MIN = 6;      // don't second-guess tiny vaults
 export const BULK_DELETE_RATIO = 0.5;  // >= half of base missing from a non-empty manifest = suspicious
 
-// SEC-DATA (audit): the per-pass ratio guard above is STATELESS, so a compromised/malicious server can
-// defeat it by pacing tombstones at just-under-RATIO of the CURRENT base each poll — the base shrinks
-// every pass (delete removes it), so a 1000-file vault drains to ~nothing in ~8 polls while no single
-// pass trips the ratio. DeleteRateGuard closes that by measuring CUMULATIVE deletes against a rolling
-// HIGH-WATER MARK of base size (a fixed denominator across passes), so a paced drain trips the guard
-// once cumulative deletions reach RATIO × peak within the window. In-memory + per-session (an attacker
-// pacing across restarts is far slower/noisier, and deletes now go to .trash so they're recoverable);
-// the plugin owns one instance and passes it in deps. Absent ⇒ only the per-pass guard applies.
-export class DeleteRateGuard {
-  private windowStart = 0;
-  private deletedInWindow = 0;
-  private peakBase = 0;
-  constructor(
-    private readonly windowMs = 60 * 60 * 1000, // 1h rolling window
-    private readonly ratio = BULK_DELETE_RATIO,
-    private readonly min = BULK_DELETE_MIN,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
-  // Call once per pass with the current accepted-base size. Rolls the window (a quiet hour resets the
-  // peak + count) and tracks the high-water mark within the window.
-  observe(baseSize: number): void {
-    const t = this.now();
-    if (t - this.windowStart > this.windowMs) { this.windowStart = t; this.deletedInWindow = 0; this.peakBase = baseSize; }
-    else this.peakBase = Math.max(this.peakBase, baseSize);
-  }
-  // True if deleting `n` more files now would push cumulative window deletions to >= ratio × peak.
-  wouldExceed(n: number): boolean {
-    return this.peakBase >= this.min && (this.deletedInWindow + n) / this.peakBase >= this.ratio;
-  }
-  record(n: number): void { this.deletedInWindow += Math.max(0, n); }
+// D0041: the user's INCOMING bulk-delete confirmation policy. Replaces the fixed ratio/empty-manifest
+// heuristic + the cumulative rate guard (dropped: the paced-malicious-server threat it defended is outside
+// the trusted-server model, D0007). The old `isSuspiciousBulkDelete` above is retained ONLY for the
+// vault-SWITCH + single-path routes (different operations, not steady-state incoming sync).
+export type BulkDeleteStrategy = "off" | "count" | "percent";
+// HOLD an incoming delete-local batch for user confirmation? Pure. `deleteCount` = accepted base paths this
+// pass would delete-local (a server/source tombstone batch); `baseCount` = accepted base size (the % base).
+// off ⇒ never hold (apply immediately). count ⇒ hold when deleteCount > threshold files. percent ⇒ hold when
+// deleteCount > threshold% of baseCount. A non-positive/invalid threshold or zero deletes ⇒ never hold.
+export function bulkDeleteHold(strategy: BulkDeleteStrategy | undefined, threshold: number | undefined, deleteCount: number, baseCount: number): boolean {
+  if (!strategy || strategy === "off" || deleteCount <= 0) return false;
+  // Fail CLOSED on an invalid threshold (an ACTIVE gate with a broken number HOLDS for confirmation rather
+  // than silently applying — the safe bias for a data gate; parseSettings normally prevents this). (R11-F4)
+  if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold <= 0) return true;
+  if (strategy === "count") return deleteCount > threshold;
+  return baseCount > 0 && (deleteCount / baseCount) * 100 > threshold; // percent
 }
 
 // At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
@@ -261,10 +248,13 @@ export interface ReconcileDeps {
   accepts?: (path: string) => boolean;
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
-  onGuard?: (path: string) => void; // fired when a suspicious bulk-delete is refused (C2)
-  // SEC-DATA: cross-pass cumulative delete-rate guard (defeats a paced-tombstone vault drain). Optional;
-  // when present it is OR'd with the per-pass ratio guard. The plugin owns one instance across passes.
-  deleteGuard?: DeleteRateGuard;
+  onGuard?: (path: string) => void; // fired per path HELD by the incoming bulk-delete confirmation (D0041) — the plugin collects these into the pending-review set
+  // D0041: user-configurable INCOMING bulk-delete confirmation. When a full/delta pass would delete-LOCAL more
+  // than the chosen threshold (off ⇒ never; count ⇒ > N files; percent ⇒ > N% of the accepted base), those
+  // deletions are HELD (reportGuard) for the user to confirm, instead of a fixed ratio heuristic. Undefined ⇒
+  // treated as "off" (apply immediately). OUTGOING (local→server) deletes are never gated here (exact).
+  bulkDeleteStrategy?: BulkDeleteStrategy;
+  bulkDeleteThreshold?: number;
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
   // Progress feedback: the number of files still PENDING transfer this pass (drives to 0). Fired at
@@ -339,27 +329,14 @@ function accepts(d: ReconcileDeps, path: string): boolean { return !d.accepts ||
 // sites (reconcileAll / reconcileDelta / reconcilePath) can't drift on how the denominator is computed.
 function acceptedBasePaths(d: ReconcileDeps): string[] { return d.base.paths().filter((p) => accepts(d, p)); }
 
-// The STATELESS per-pass bulk-delete ratio predicate (C2, widened): true when this pass would delete a
-// suspicious fraction of the accepted `universe` (base or local set) — a wholesale-empty manifest
-// (`emptyManifest`, a strong index-loss signal) or >= BULK_DELETE_RATIO of a non-tiny universe. Callers
-// OR this with the cumulative DeleteRateGuard where a paced drain is possible (runDeleteGuard).
+// The STATELESS per-pass bulk-delete ratio predicate — RETAINED only for the vault-SWITCH + single-path
+// routes (a switch is a one-shot repoint; a single-path event is one file). The steady-state INCOMING sync
+// paths (reconcileAll/reconcileDelta) now use the user-configurable bulkDeleteHold (D0041) instead. True when
+// this pass would delete a suspicious fraction of `universe` — a wholesale-empty manifest (index-loss signal)
+// or >= BULK_DELETE_RATIO of a non-tiny universe.
 function isSuspiciousBulkDelete(universe: number, deletes: number, emptyManifest: boolean): boolean {
   return universe > 0 && (emptyManifest
     || (universe >= BULK_DELETE_MIN && deletes / universe >= BULK_DELETE_RATIO));
-}
-
-// SEC-DATA: combine the stateless per-pass predicate with the cross-pass cumulative DeleteRateGuard on
-// the POLLING paths (reconcileAll/reconcileDelta) — feed the guard this pass's universe, OR its verdict
-// in (catches a paced drain the per-pass ratio alone misses), and RECORD the deletes only when we let
-// them through. Returns the final verdict (true ⇒ refuse the deletions this pass). The event/one-shot
-// paths (reconcilePath, switchTo) use isSuspiciousBulkDelete alone — a paced server drain doesn't route
-// through them, and a switch is a single operation with no next pass to accumulate across.
-function runDeleteGuard(d: ReconcileDeps, universe: number, deletes: number, emptyManifest: boolean): boolean {
-  d.deleteGuard?.observe(universe);
-  const suspicious = isSuspiciousBulkDelete(universe, deletes, emptyManifest)
-    || (d.deleteGuard?.wouldExceed(deletes) ?? false);
-  if (!suspicious && deletes > 0) d.deleteGuard?.record(deletes);
-  return suspicious;
 }
 
 // Set the poll cursor to the server's authoritative version, but NEVER advance past the earliest change
@@ -699,36 +676,20 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   }
   d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
   const local = await d.io.list();
-  // Bulk-delete guard (C2, widened): a server manifest that has LOST a suspicious fraction of our
-  // synced history — not only one that is exactly empty — is the signature of index loss (partial
-  // restore / reindex over an incomplete dir), not a genuine mass delete. Count the base paths this
-  // pass would actually delete (missing from the manifest, still local, and accepted by this device)
-  // and refuse the batch if that's the whole manifest (empty) or >= BULK_DELETE_RATIO of base.
-  // Ratio denominator counts only ACCEPTED base paths: a stale base entry for a path this device
-  // no longer accepts is never a deletion candidate, so including it would dilute the ratio and let
-  // a genuine mass delete slip under the guard. (DI-R2 note)
+  // INCOMING bulk-delete CONFIRMATION (D0041): count the base paths this pass would delete-LOCAL (missing
+  // from the server manifest, still local, accepted by this device) and HOLD the batch for the user to
+  // confirm if it exceeds their chosen threshold (off / > N files / > N% of the accepted base). The accepted
+  // base is the % denominator (a stale entry for a no-longer-accepted path is never a deletion candidate).
+  // OUTGOING deletes (your local removals → server) are NOT gated — they propagate exactly (finalize). The
+  // always-on integrity FLOOR (don't sync a not-ready/degraded source at all) is enforced at connect/mount.
   const basePaths = acceptedBasePaths(d);
-  const wouldDelete = basePaths.filter((p) => !remote.has(p) && local.has(p)).length;
-  // SEC-DATA: per-pass ratio OR'd with the cumulative cross-pass guard (a paced drain never trips the
-  // per-pass ratio); the guard records the deletes only when it lets them through (see runDeleteGuard).
-  const guardBulkDelete = runDeleteGuard(d, basePaths.length, wouldDelete, remote.size === 0);
-  // SEC-DATA (symmetric): the MIRROR direction — a mass delete-REMOTE. Count accepted base paths that
-  // decide() would delete-remote: gone from the local listing but still present+unchanged on the server
-  // (r.hash === base.hash). A suspicious FRACTION (>= BULK_DELETE_RATIO of a non-tiny base) vanishing at
-  // once is the local-loss signature (cloud de-hydration / partial restore / cleared storage), which the
-  // per-file presence probe can't distinguish from an intentional wipe. Ratio+min-size ONLY (no
-  // "empty local listing" override — unlike an empty server MANIFEST, an empty local vault can be a
-  // legitimate "user deleted their last file"; a tiny vault isn't second-guessed, mirroring the
-  // delete-local BULK_DELETE_MIN floor). Stateless per-pass gate: a mass local loss lands in ONE full
-  // reconcile, it doesn't drain across passes like a paced server drain.
-  const wouldDeleteRemote = basePaths.filter((p) => {
-    if (local.has(p)) return false;
-    const r = remote.get(p); const b = d.base.get(p);
-    return r != null && b != null && r.hash === b.hash;
-  }).length;
-  const guardRemoteDelete = isSuspiciousBulkDelete(basePaths.length, wouldDeleteRemote, false);
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
+  // Count ONLY the paths that would actually be HELD delete-locals — a tombstoned base path still present
+  // locally. (A base path merely ABSENT from the manifest without a tombstone is `restore`, not a delete, so
+  // it must not inflate the threshold count / diverge from the surfaced set — R11-F5.)
+  const wouldDelete = basePaths.filter((p) => tombstoned.has(p) && local.has(p)).length;
+  const guardBulkDelete = bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldDelete, basePaths.length);
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
   const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
   // Progress = files that actually need TRANSFER, not files examined (a 900-file vault with 3 changes
@@ -762,7 +723,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   let examined = 0;
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardRemoteDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => {
       if (pendingPaths.has(p)) d.onProgress?.(--pending);
@@ -790,9 +751,9 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const tombstoned = new Set(delta.deletes.map((x) => x.path));
   const baseSet = new Set(acceptedBasePaths(d));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
-  // SEC-DATA: same guard as reconcileAll — the delta path also delete-locals on tombstones, so a paced
-  // drain must be caught here too (emptyManifest=false: a delta never reports the whole manifest empty).
-  const guardBulkDelete = runDeleteGuard(d, baseSet.size, wouldDelete, false);
+  // Same INCOMING confirmation as reconcileAll (D0041): the delta path also delete-locals on tombstones, so
+  // an over-threshold tombstone batch is HELD for user confirmation here too.
+  const guardBulkDelete = bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldDelete, baseSet.size);
   const versionOf = (p: string) => remote.get(p)?.version ?? delta.deletes.find((x) => x.path === p)?.version;
   const failed: number[] = []; // change versions that failed to apply this pass (R14 sync#1)
   const changedAll = [...new Set<string>([...remote.keys(), ...tombstoned])];
@@ -819,6 +780,25 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
     () => d.onProgress?.(--pending),
   );
   advanceCursor(d, delta.version, failed); // authoritative delta version, held below the earliest failure
+}
+
+// D0041 — resolve a HELD incoming bulk-delete batch (the paths that reportGuard surfaced via onGuard). Both
+// actions converge so the confirmation clears and doesn't re-nag next pass:
+//   APPLY (delete them): perform the removals — remove local + drop the base — so they're gone everywhere,
+//   matching the server's tombstone. (io.remove routes to .trash where the adapter supports it.)
+export async function applyHeldDeletions(d: ReconcileDeps, paths: readonly string[]): Promise<void> {
+  for (const p of paths) {
+    try { await d.io.remove(p); d.base.delete(p); }
+    catch (e) { d.onFileError?.(p, e); } // per-file isolated — one failure never aborts the batch
+  }
+  if (paths.length) d.onBaseChanged?.();
+}
+//   KEEP (keep them): drop the base ancestor so the NEXT reconcile treats each as a fresh LOCAL file — a
+//   writable scope re-pushes it (resurrecting it on the server, overriding the tombstone), a read-only scope
+//   keeps it as a local-only file. Either way it stops being a delete-local candidate. Caller triggers a pass.
+export function keepHeldDeletions(d: ReconcileDeps, paths: readonly string[]): void {
+  for (const p of paths) d.base.delete(p);
+  if (paths.length) d.onBaseChanged?.();
 }
 
 // @audit r2 2026-07-18 — FIXED (correctness, bounded): the queued `localSize` hint can be stale in the
@@ -1006,8 +986,7 @@ async function reconcileMergeOrConflict(
 
 interface ReconcileOneOpts {
   rmeta?: FileMeta;                            // the server's meta for this path (undefined = server-absent)
-  guardDelete?: boolean;                       // a suspicious MASS delete-LOCAL was detected this pass → guard destructive local removals
-  guardRemoteDelete?: boolean;                 // a suspicious MASS delete-REMOTE (local vault vanished) → guard the server-side wipe
+  guardDelete?: boolean;                       // this pass's incoming delete-LOCAL batch exceeded the user threshold → HOLD for confirmation (D0041)
   localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
   hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
@@ -1023,7 +1002,7 @@ interface ReconcileOneOpts {
 // read boundary instead of a null + a separate presence flag + a runtime if).
 // @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
-  const { rmeta, guardDelete = false, guardRemoteDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
+  const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -1131,7 +1110,6 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     readOnly: !!d.readOnly,
     hasTombstone: hasTombstone(path),
     guardDelete,
-    guardRemoteDelete,
     isConflictCopy: isConflictCopy(path),
     hasLocalBytes: !!localBytes,
     hasRmeta: !!rmeta,
@@ -1188,8 +1166,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     case "deleteRemote":
       // EVIDENCED ABSENCE (issueFalseAbsenceDelete): the local LISTING under-reports (a dir that failed to
       // enumerate, an un-hydrated placeholder, an OS/AV lock), so re-probe real absence before tombstoning
-      // FLEET-WIDE. Still present/unknowable ⇒ KEEP; the next reconcile syncs it. (Bulk-loss already guarded
-      // by guardRemoteDelete in finalize; this is the per-file confirmation.)
+      // FLEET-WIDE. Still present/unknowable ⇒ KEEP; the next reconcile syncs it. This per-file confirmation
+      // is the OUTGOING-delete integrity check (D0041 removed the outgoing bulk guard — this is what remains,
+      // and it only ever skips a file that actually still exists, so a genuine local delete propagates exactly).
       if ((await probePresence(d.io, path)) !== "absent") return; // present OR indeterminate → keep; only definitive absence tombstones
       // CAS-guarded (issueDeleteNoCasLostUpdate): send the version this delete-remote was based on. If a
       // peer edited the file since (server advanced), the delete 409s (CommitConflictError) → this file

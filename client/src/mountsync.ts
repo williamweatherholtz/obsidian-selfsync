@@ -16,11 +16,12 @@ export const MAX_MOUNT_FAILS = 3;
 // A live mount = its isolated runtime + its FSM state + a consecutive-failure counter. `failedAt` (ms) is
 // stamped by the caller when the scope reaches `failed`, so it can be retried after a backoff (R4-F2). The
 // caller (main.ts) owns the array and reads `.state` for the aggregate status fold after each pass.
-export interface MountScope { runtime: MountRuntime; state: MountState; fails: number; failedAt?: number }
+export interface MountScope { runtime: MountRuntime; state: MountState; fails: number; failedAt?: number; forceFull?: boolean }
 
 export interface MountSyncHooks {
   onEvent?: (scope: MountScope) => void;   // fired on every state change (drives the status light + persistence)
   onError?: (scope: MountScope, err: unknown) => void; // a mount's poll threw (logged; never propagated)
+  onHeld?: (scope: MountScope, paths: string[], authoritative: boolean) => void; // D0041: paths this pass held for confirmation (authoritative = a full pass saw the whole scope → replace, not union)
 }
 
 // Run ONE poll cycle for one mount against its OWN cursor + source api, reusing the real reconcile engine.
@@ -52,13 +53,17 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
   if (scope.state === "detached" || scope.state === "unmounting" || scope.state === "failed") return;
   const wasMounting = scope.state === "mounting";
   const wasOffline = scope.state === "offline";
+  const full = wasMounting || wasOffline || !!scope.forceFull; // forceFull: a Keep asked us to re-push (R11-F2)
+  scope.forceFull = false;
   if (scope.state === "live") { scope.state = mountTransition(scope.state, "syncStart"); hooks.onEvent?.(scope); }
   try {
     // R4-F4: on a first-contact / reconnect pass, refuse to reconcile a NOT-READY source (mid-reindex/
     // degraded) — the same guard the primary connect applies — so a partial/degraded manifest can't drive a
     // spurious delete-local. Throwing routes to offline (retries), never failing destructively.
     if ((wasMounting || wasOffline) && !(await scope.runtime.ready())) throw new Error("source vault not ready (reindexing?)");
-    await pollMount(scope.runtime, { forceFull: wasMounting || wasOffline });
+    scope.runtime.resetHeld(); // D0041: collect this pass's held incoming deletions
+    await pollMount(scope.runtime, { forceFull: full });
+    hooks.onHeld?.(scope, scope.runtime.takeHeld(), full); // record held deletions (a full pass is authoritative → replace)
     scope.fails = 0;
     // Success lands `live` — UNLESS this pass produced a conflict copy, which surfaces as `diverged` ("Needs
     // review") so a mounted-folder conflict isn't hidden behind a green light (R5-MED-1). A clean pass clears

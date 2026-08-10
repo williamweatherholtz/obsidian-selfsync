@@ -480,13 +480,16 @@ describe.skipIf(!canRun)("headless two-client E2E (real server + real chunk engi
     clean(a, b);
   }, 30000);
 
-  it("C2 guard: deleting the LAST file leaves the peer's copy intact (no bulk-delete on empty remote)", async () => {
+  it("D0041: deleting the LAST file PROPAGATES to the peer (a genuine 1-file deletion, below any confirm threshold)", async () => {
     const [a, b] = await pair("c2edge");
     await a.io.write("only.md", enc("solo")); await push(a); await pullc(b);
     expect(dec(await b.io.read("only.md"))).toBe("solo");
-    await a.io.remove("only.md"); await push(a); await pullc(b); // server now empty
-    // B holds synced history but the manifest is empty → guard refuses the delete.
-    expect(await exists(path.join(b.root, "only.md"))).toBe(true);
+    await a.io.remove("only.md"); await push(a); await pullc(b); // A deletes its last file → server tombstones it
+    // D0041 replaced the empty-manifest "keep" heuristic with the source-readiness check + a user threshold.
+    // A single genuine deletion is below any threshold, so it propagates EXACTLY — B's copy is removed too.
+    // (An index-loss empty manifest is refused earlier, by the readiness check on connect, not by second-
+    // guessing a deletion here.)
+    expect(await exists(path.join(b.root, "only.md"))).toBe(false);
     clean(a, b);
   }, 30000);
 

@@ -10,7 +10,7 @@ import { Mount } from "./mounts";
 import { MountedIo, MountedApi, isDataPath } from "./mountio";
 import { VaultIo, SyncApi, SyncState, ChunkCache } from "./sync";
 import { BaseStore, BaseEntry } from "./base";
-import { ReconcileDeps, DeleteRateGuard } from "./reconcile";
+import { ReconcileDeps, BulkDeleteStrategy } from "./reconcile";
 
 // A stable per-mount identity for persisting (and looking up) its own base + cursor, independent of array
 // order. Uniquely identified by source (owner/vault + subfolder) + local mount point. JSON-encoded (not a
@@ -72,6 +72,8 @@ export interface MountRuntimeCtx {
   restore?: MountPersist;    // persisted own base + cursor to resume from (absent ⇒ fresh mount, cursor 0)
   ignorePatterns?: string[];
   maxSyncBytes?: number;
+  bulkDeleteStrategy?: BulkDeleteStrategy; // D0041: the GLOBAL incoming bulk-delete confirmation policy applies to mounts too
+  bulkDeleteThreshold?: number;
   // Per-mount reconcile callbacks the plugin wires (progress/conflict/error/status). Scope-private truth
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
@@ -85,15 +87,14 @@ export interface MountRuntimeCtx {
 export class MountRuntime {
   readonly base: BaseStore;                                    // OWN — never the primary's (isolation invariant)
   readonly state: SyncState;                                   // OWN cursor
-  readonly deleteGuard: DeleteRateGuard;                       // OWN — shared would cross-contaminate delete-rate accounting
   readonly retryBudget: Map<string, { version: number; count: number }>; // OWN
   private readonly io: MountedIo;
   private readonly api: MountedApi;
   private sawConflict = false; // set when reconcile makes a conflict copy this pass → drives the FSM to `diverged` (R5-MED-1)
+  private _held: string[] = []; // D0041: paths this pass held for incoming bulk-delete confirmation
   constructor(readonly mount: Mount, private readonly ctx: MountRuntimeCtx) {
     this.base = new BaseStore(ctx.restore?.base ?? {});
     this.state = { version: ctx.restore?.version ?? 0 };
-    this.deleteGuard = new DeleteRateGuard();
     this.retryBudget = new Map();
     this.io = new MountedIo(ctx.io, mount);
     this.api = new MountedApi(ctx.sourceApi, mount);
@@ -111,7 +112,8 @@ export class MountRuntime {
       accepts: isDataPath,                              // data-only, in mount-relative space
       readOnly: this.mount.direction === "pull",        // pull = never mutate the source
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)
-      deleteGuard: this.deleteGuard,
+      bulkDeleteStrategy: this.ctx.bulkDeleteStrategy,   // D0041: the global incoming bulk-delete confirmation applies to mounts too
+      bulkDeleteThreshold: this.ctx.bulkDeleteThreshold,
       retryBudget: this.retryBudget,
       // R9-B (by design): the timestamp-ignore PATTERNS apply inside a mount, but the primary's
       // `excludedFolders` per-folder OPT-OUT is deliberately NOT passed — those are primary-VAULT-relative
@@ -124,10 +126,16 @@ export class MountRuntime {
       // conflict copy — the driver reads tookConflict() to move the FSM to `diverged` (R5-MED-1). The caller's
       // own onConflict (logging) still runs.
       onConflict: (p: string, copy: string) => { this.sawConflict = true; this.ctx.callbacks?.onConflict?.(p, copy); },
+      // D0041: record paths held for incoming bulk-delete confirmation this pass (the caller reads takeHeld()).
+      onGuard: (p: string) => { this._held.push(p); this.ctx.callbacks?.onGuard?.(p); },
     };
   }
   // Read + reset whether this poll made a conflict copy (drives the scope to `diverged`).
   tookConflict(): boolean { const c = this.sawConflict; this.sawConflict = false; return c; }
+  // D0041 held-deletion collection: reset before a poll, take (read+reset) after, so the caller records this
+  // pass's held incoming deletions into the review set.
+  resetHeld(): void { this._held = []; }
+  takeHeld(): string[] { const h = this._held; this._held = []; return h; }
   // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
   ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).

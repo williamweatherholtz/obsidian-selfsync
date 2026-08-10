@@ -14,7 +14,7 @@ const ACTIONS: Action[] = [
 // A neutral fact set: not read-only, no tombstone, no guards tripped, both sides present with a base.
 function facts(over: Partial<FinalizeFacts> = {}): FinalizeFacts {
   return {
-    readOnly: false, hasTombstone: false, guardDelete: false, guardRemoteDelete: false,
+    readOnly: false, hasTombstone: false, guardDelete: false,
     isConflictCopy: false, hasLocalBytes: true, hasRmeta: true, hasBaseEntry: true, remoteVersion: 7,
     ...over,
   };
@@ -29,7 +29,7 @@ describe("finalize — pure reconcile decision table", () => {
     ]);
     for (const a of ACTIONS) {
       for (const ro of [false, true]) for (const tomb of [false, true]) for (const gd of [false, true]) {
-        const e = finalize(a, facts({ readOnly: ro, hasTombstone: tomb, guardDelete: gd, guardRemoteDelete: gd }));
+        const e = finalize(a, facts({ readOnly: ro, hasTombstone: tomb, guardDelete: gd }));
         expect(kinds.has(e.kind), `${a}/${e.kind}`).toBe(true);
       }
     }
@@ -72,14 +72,13 @@ describe("finalize — pure reconcile decision table", () => {
     expect(kind("delete-local", { hasTombstone: true, guardDelete: true })).toBe("reportGuard");
   });
 
-  it("delete-remote: deletes at the CAS version, unless read-only (report) or a mass-remote-delete guard tripped (report)", () => {
+  it("delete-remote (OUTGOING): deletes at the CAS version, unless read-only — D0041 removed the outgoing bulk guard (your deletes propagate exactly)", () => {
     expect(kind("delete-remote")).toBe("deleteRemote");
     // The effect carries the based-on remote version as the CAS precondition (issueDeleteNoCasLostUpdate).
     expect(finalize("delete-remote", facts())).toEqual({ kind: "deleteRemote", version: 7 });
     expect(kind("delete-remote", { readOnly: true })).toBe("reportReadOnly");
-    expect(kind("delete-remote", { guardRemoteDelete: true })).toBe("reportGuard");
-    // read-only takes precedence over the guard (both refuse, but no server call either way)
-    expect(kind("delete-remote", { readOnly: true, guardRemoteDelete: true })).toBe("reportReadOnly");
+    // guardDelete is INCOMING-only now — it must NOT gate an outgoing delete (the executor's per-file re-probe is the outgoing integrity check).
+    expect(kind("delete-remote", { guardDelete: true })).toBe("deleteRemote");
   });
 
   it("edit-wins-keep-local: re-pushes at the CAS version but does NOT stamp (allowStamp false); read-only reports", () => {
@@ -92,14 +91,11 @@ describe("finalize — pure reconcile decision table", () => {
     expect(kind("conflict-copy")).toBe("mergeOrConflict");
   });
 
-  it("a bulk-delete guard NEVER produces a destructive effect (the whole point of the guard)", () => {
-    const destructive = new Set(["removeLocal", "deleteRemote"]);
-    for (const a of ACTIONS) {
-      const e = finalize(a, facts({ guardDelete: true, guardRemoteDelete: true, hasTombstone: true }));
-      if (a === "delete-local" || a === "delete-remote") {
-        expect(destructive.has(e.kind), `${a} must be guarded, got ${e.kind}`).toBe(false);
-      }
-    }
+  it("the INCOMING bulk-delete hold (guardDelete) turns a delete-LOCAL into a non-destructive reportGuard; OUTGOING is unaffected (D0041)", () => {
+    // Incoming (server tombstone → wipe local) is HELD for confirmation, never destructive.
+    expect(finalize("delete-local", facts({ guardDelete: true, hasTombstone: true })).kind).toBe("reportGuard");
+    // Outgoing (your local delete → server) is NOT gated by guardDelete — it deletes exactly.
+    expect(finalize("delete-remote", facts({ guardDelete: true })).kind).toBe("deleteRemote");
   });
 });
 

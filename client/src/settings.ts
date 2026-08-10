@@ -57,6 +57,8 @@ export interface NewLiveSyncSettings {
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
   maxSyncMB: number; // per-file size cap for THIS device (MB). Files larger than this are skipped here; raise with care on mobile (files buffer in RAM). The server enforces its own ceiling (MAX_FILE_MB).
+  bulkDeleteStrategy: "off" | "count" | "percent"; // confirm a large INCOMING deletion batch before applying it locally? (D0041). Your own (outgoing) deletes are never gated.
+  bulkDeleteThreshold: number; // the threshold value — a file COUNT (count) or a PERCENT of the synced set (percent).
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
   // NOTE conflicts are NOT stored here — they are DERIVED from the vault's conflict-copy files
   // (deriveNoteConflicts, D-conflict-model), so the list/count/modal can never drift from reality.
@@ -127,6 +129,8 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
   // expires. A user can opt back into stored-password for silent re-login, accepting the at-rest exposure.
   storePassword: false,
   maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
+  bulkDeleteStrategy: "count", // D0041: by default, confirm before applying an incoming deletion of more than…
+  bulkDeleteThreshold: 10,     // …10 files (absolute; a % nags on small vaults)
   configConflicts: [],
   // Timestamp-ignore (identity-only, default ON — it never writes notes; see the field docs above).
   ignoreTimestampChanges: true,
@@ -161,6 +165,10 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   // lazily) and the notify mode (only the two known values; anything else → the safe "user" default).
   out.deviceId = typeof s.deviceId === "string" && s.deviceId ? s.deviceId : undefined;
   out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
+  // D0041 bulk-delete confirmation: strategy is one of the three known values (default "count"); the threshold
+  // is a whole number > 0 (default 10) — a bad/absent value falls back so the control can never be un-usable.
+  out.bulkDeleteStrategy = s.bulkDeleteStrategy === "off" || s.bulkDeleteStrategy === "percent" ? s.bulkDeleteStrategy : "count";
+  { const n = Math.floor(Number(s.bulkDeleteThreshold)); out.bulkDeleteThreshold = Number.isFinite(n) && n > 0 ? n : 10; }
   out.autoSyncNewPlugins = s.autoSyncNewPlugins === true; // opt-in; any non-true persisted value → off
   out.autopilotSeen = Array.isArray(s.autopilotSeen) ? [...new Set(s.autopilotSeen.filter((x): x is string => typeof x === "string"))] : undefined;
   { const m = parseMounts(s.mounts); out.mounts = m.length ? m : undefined; } // composed-vault mounts (D0039), normalized + malformed-dropped
@@ -436,7 +444,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderConflicts(c: HTMLElement): void {
     const configGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
     const noteConflicts = this.plugin.listNoteConflicts();
-    if (!configGroups.length && !noteConflicts.length) return;
+    const pendingDeletes = this.plugin.pendingBulkDeletions(); // D0041: incoming bulk deletions held for confirmation
+    if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length) return;
     const g = new SettingGroup(c).setHeading("Conflicts");
     if (noteConflicts.length) {
       g.addSetting((st) => st.setName(`${noteConflicts.length} file${noteConflicts.length > 1 ? "s" : ""} need review`).setClass("mod-warning")
@@ -447,6 +456,17 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       g.addSetting((st) => st.setName(`${configGroups.length} config differences`).setClass("mod-warning")
         .setDesc("Choose which version to keep.")
         .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
+    }
+    // D0041: a large INCOMING deletion batch held for your OK. Delete them (apply — gone everywhere) or Keep
+    // them (re-sync them back). One row per scope (this vault / a mount).
+    for (const pd of pendingDeletes) {
+      g.addSetting((st) => st.setName(`${pd.count} incoming deletion${pd.count > 1 ? "s" : ""} in ${pd.label}`).setClass("mod-warning")
+        .setDesc("Sync wants to delete these here. Delete them (remove everywhere) or keep them (re-sync them back).")
+        .addButton((b) => b.setButtonText("Keep them").setCta().onClick(async () => { await this.plugin.keepBulkDeletions(pd.scope); this.display(); }))
+        .addButton((b) => b.setButtonText("Delete them").setWarning().onClick(async () => {
+          const ok = await confirmModal(this.app, { title: `Delete ${pd.count} file${pd.count > 1 ? "s" : ""}?`, body: `These were deleted on the other side and will be removed from ${pd.label} (to your local trash where available). This can't be undone from here.`, confirmText: "Delete them", warn: true });
+          if (ok) { await this.plugin.acceptBulkDeletions(pd.scope); this.display(); }
+        })));
     }
   }
 
@@ -533,6 +553,30 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
           if (!Number.isFinite(n) || n <= 0) { new Notice("SelfSync: enter a whole number of MB greater than 0"); t.setValue(String(s.maxSyncMB)); }
         });
       });
+    // D0041: confirm a large INCOMING deletion batch before applying it here. Your OWN deletions always
+    // apply immediately + exactly — this only gates deletions arriving from sync (the server or a mount source).
+    new Setting(body).setName("Confirm large incoming deletions")
+      .setDesc("Hold a big batch of deletions coming from sync for your OK before removing them here. Your own deletions are never gated.")
+      .addDropdown((dd) => dd
+        .addOption("off", "Off — apply immediately")
+        .addOption("count", "More than N files")
+        .addOption("percent", "More than N% of synced files")
+        .setValue(s.bulkDeleteStrategy)
+        .onChange(async (v) => { s.bulkDeleteStrategy = v === "off" || v === "percent" ? v : "count"; await this.plugin.saveSettings(); this.display(); }));
+    if (s.bulkDeleteStrategy !== "off") {
+      new Setting(body).setName(s.bulkDeleteStrategy === "percent" ? "…more than this % of files" : "…more than this many files")
+        .addText((t) => {
+          t.inputEl.type = "number"; t.inputEl.min = "1"; t.inputEl.step = "1"; // numeric control — prevents bad input
+          t.setValue(String(s.bulkDeleteThreshold)).onChange(async (v) => {
+            const n = Math.floor(Number(v));
+            if (Number.isFinite(n) && n > 0) { s.bulkDeleteThreshold = n; await this.plugin.saveSettings(); }
+          });
+          t.inputEl.addEventListener("blur", () => {
+            const n = Math.floor(Number(t.inputEl.value));
+            if (!Number.isFinite(n) || n <= 0) { new Notice("SelfSync: enter a whole number greater than 0"); t.setValue(String(s.bulkDeleteThreshold)); }
+          });
+        });
+    }
     new Setting(body).setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(body).setName("Diagnostics")

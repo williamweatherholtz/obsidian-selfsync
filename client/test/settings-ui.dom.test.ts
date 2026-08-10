@@ -66,6 +66,26 @@ describe("settings tab renders and wires its controls", () => {
     expect(containerEl.textContent ?? "").toContain("a mount is offline (mount Work/ASI)");
   });
 
+  it("D0041: Advanced shows the incoming-delete confirmation control + a threshold field (hidden when Off)", () => {
+    const on = renderTab(fakePlugin({ settings: { bulkDeleteStrategy: "count", bulkDeleteThreshold: 10 } })).containerEl.textContent ?? "";
+    expect(on).toContain("Confirm large incoming deletions");
+    expect(on).toContain("more than this many files"); // threshold field shown for count
+    const off = renderTab(fakePlugin({ settings: { bulkDeleteStrategy: "off", bulkDeleteThreshold: 10 } })).containerEl.textContent ?? "";
+    expect(off).toContain("Confirm large incoming deletions");
+    expect(off).not.toContain("more than this many files"); // no threshold field when Off
+  });
+
+  it("D0041: the review surface lists a held incoming-deletion batch and wires Keep/Delete", () => {
+    const p = fakePlugin({ pendingBulkDeletions: () => [{ scope: "primary", label: "this vault", count: 12 }] });
+    const { containerEl } = renderTab(p);
+    const text = containerEl.textContent ?? "";
+    expect(text).toContain("12 incoming deletions in this vault");
+    expect(buttonByText(containerEl, "Keep them")).toBeTruthy();
+    expect(buttonByText(containerEl, "Delete them")).toBeTruthy();
+    buttonByText(containerEl, "Keep them").click(); // non-destructive → no confirm modal
+    expect(p.keepBulkDeletions).toHaveBeenCalledWith("primary");
+  });
+
   it("P2: toggling the config-sync master calls applyConfigSyncChange (immediate apply) + flips the setting", () => {
     const { containerEl } = renderTab(plugin);
     const master = toggleByName(containerEl, "Sync settings, themes, or plugins");

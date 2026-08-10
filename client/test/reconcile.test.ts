@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, DeleteRateGuard, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
+import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, resolveConfigConflict, ReconcileDeps, bulkDeleteHold, MAX_BASE_TEXT_BYTES, MAX_PULL_RETRIES, decideReconcileMode } from "../src/reconcile";
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
@@ -192,37 +192,27 @@ function guardedIo(seed: Record<string, string> = {}) {
   return io;
 }
 
-describe("SEC-DATA: DeleteRateGuard defeats a paced-tombstone vault drain", () => {
-  it("catches cumulative deletes against a high-water mark even when no single pass trips the ratio", () => {
-    let t = 1_000_000;
-    const g = new DeleteRateGuard(60 * 60 * 1000, 0.5, 6, () => t);
-    // Pass 1: 100-file vault, delete 40 (40% < 50% per-pass ratio → per-pass guard would NOT fire).
-    g.observe(100);
-    expect(g.wouldExceed(40)).toBe(false);   // 40/100 = 0.40 < 0.5
-    g.record(40);
-    // Pass 2: base shrank to 60 (the drain). Delete another 20 — 20/60 = 0.33, still under the STATELESS
-    // per-pass ratio, but cumulative 40+20=60 against the peak of 100 = 0.60 >= 0.5 → guard fires.
-    g.observe(60);
-    expect(g.wouldExceed(20)).toBe(true);
+describe("D0041: bulkDeleteHold — user-configurable INCOMING bulk-delete confirmation", () => {
+  it("off ⇒ never holds (incoming deletions apply immediately)", () => {
+    expect(bulkDeleteHold("off", 10, 999, 1000)).toBe(false);
+    expect(bulkDeleteHold(undefined, 10, 999, 1000)).toBe(false); // unset ⇒ off
   });
-
-  it("does not fire on a legitimate small delete, and resets after a quiet window", () => {
-    let t = 0;
-    const g = new DeleteRateGuard(1000, 0.5, 6, () => t);
-    g.observe(100);
-    expect(g.wouldExceed(10)).toBe(false);   // 10% — fine
-    g.record(10);
-    // A quiet window passes → peak + count reset, so a later legitimate batch isn't penalized by history.
-    t += 2000;
-    g.observe(100);
-    expect(g.wouldExceed(40)).toBe(false);   // fresh window: 40/100 < 0.5
+  it("count ⇒ holds only when the batch EXCEEDS the file threshold", () => {
+    expect(bulkDeleteHold("count", 10, 10, 1000)).toBe(false); // exactly 10 → not > 10
+    expect(bulkDeleteHold("count", 10, 11, 1000)).toBe(true);  // 11 > 10 → hold
+    expect(bulkDeleteHold("count", 10, 3, 5)).toBe(false);     // a small refactor (3 files) is never held at the default
   });
-
-  it("ignores tiny vaults (below BULK_DELETE_MIN) so a 3-file vault isn't second-guessed", () => {
-    let t = 0;
-    const g = new DeleteRateGuard(1000, 0.5, 6, () => t);
-    g.observe(3);
-    expect(g.wouldExceed(3)).toBe(false);    // peak 3 < min 6 → never guards
+  it("percent ⇒ holds when the batch exceeds N% of the accepted base", () => {
+    expect(bulkDeleteHold("percent", 50, 5, 10)).toBe(false);  // exactly 50% → not > 50
+    expect(bulkDeleteHold("percent", 50, 6, 10)).toBe(true);   // 60% > 50 → hold
+    expect(bulkDeleteHold("percent", 50, 5, 0)).toBe(false);   // no base → never
+  });
+  it("zero deletes never holds; but an invalid threshold on an ACTIVE gate fails CLOSED (holds) — R11-F4", () => {
+    expect(bulkDeleteHold("count", 10, 0, 1000)).toBe(false); // no deletions → nothing to hold
+    expect(bulkDeleteHold("off", 0, 5, 1000)).toBe(false);    // off always applies, even with a bad number
+    expect(bulkDeleteHold("count", 0, 5, 1000)).toBe(true);   // active gate + broken threshold → hold (safe bias)
+    expect(bulkDeleteHold("count", NaN, 5, 1000)).toBe(true);
+    expect(bulkDeleteHold("percent", -1, 5, 1000)).toBe(true);
   });
 });
 
@@ -246,26 +236,29 @@ describe("decideReconcileMode (crit R+1, D2): the scan-mode selection is a pure 
   });
 });
 
-describe("SEC-DATA (critique R+1): a vanished LOCAL vault does not wipe the server (mass delete-remote guard)", () => {
-  it("guards mass delete-remote when the whole local listing has vanished", async () => {
+describe("D0041: OUTGOING delete-remote is exact (no bulk guard) — the per-file re-probe is the only protection", () => {
+  it("propagates the deletions exactly when each path is DEFINITIVELY absent (the accepted outgoing-exact tradeoff)", async () => {
     const { api, files } = fakeServer();
     const seed: Record<string, string> = {};
     for (let i = 0; i < 10; i++) seed[`n${i}.md`] = `content ${i}`;
-    const io = fakeIo(seed);
-    const guarded: string[] = [];
-    const d = deps(api, io, { onGuard: (p) => guarded.push(p) });
-    // Pass 1: 10 brand-new local files → pushed to the server + base recorded (a synced steady state).
-    await reconcileAll(d);
-    expect(files.size).toBe(10);
-    // The ENTIRE local vault vanishes (cloud de-hydration / partial backup restore / cleared storage) —
-    // NOT a user deletion. Base + server still hold all 10; the local listing is now empty.
+    const io = fakeIo(seed); // no io.exists → probePresence reads; a genuine ENOENT reads as null → "absent"
+    const d = deps(api, io);
+    await reconcileAll(d); expect(files.size).toBe(10); // pushed + base recorded
+    // Every local file is definitively gone. D0041 removed the outgoing BULK guard — your deletes propagate
+    // EXACTLY (no interruption). (A backup/rollback for the de-hydration edge is out of scope by decision.)
     io.m.clear();
     await reconcileAll(d);
-    // Without the guard every file decides delete-remote and is wiped from the server (then tombstoned
-    // fleet-wide). The guard must refuse the batch and leave the server intact. (delete-LOCAL was guarded
-    // since DI-1; this is the mirror direction.)
-    expect(files.size).toBe(10);               // server untouched
-    expect(guarded.length).toBeGreaterThan(0); // the mass delete-remote was guarded
+    expect(files.size).toBe(0); // deletions propagated exactly
+  });
+  it("still KEEPS a file the per-file probe reports PRESENT even though it's missing from the listing (issueFalseAbsenceDelete, retained)", async () => {
+    const { api, files } = fakeServer();
+    const io = fakeIo({ "keep.md": "content" });
+    io.exists = async (p) => p === "keep.md"; // the probe says it's really there…
+    const d = deps(api, io);
+    await reconcileAll(d); expect(files.size).toBe(1);
+    io.m.delete("keep.md"); // …but it drops out of the LISTING (a placeholder / enumeration glitch)
+    await reconcileAll(d);
+    expect(files.size).toBe(1); // NOT deleted — the per-file re-probe confirmed presence
   });
 
   it("still lets a normal single-file delete-remote through (a genuine user deletion, below the ratio)", async () => {
@@ -1503,19 +1496,33 @@ describe("reconcileDelta (RS-3 incremental remote reconcile)", () => {
     expect((io as any).m.has("gone.md")).toBe(false);       // deleted locally on the tombstone
   });
 
-  it("guards a suspicious MASS tombstone delta (keeps the files)", async () => {
+  it("D0041: HOLDS an incoming tombstone delta that exceeds the user's threshold (keeps the files for confirmation)", async () => {
     const { api } = fakeServer();
     const seed: Record<string, string> = {}; for (let i = 0; i < 10; i++) seed[`f${i}.md`] = "x";
     const io = fakeIo(seed);
     const base = new BaseStore();
     const hx = await sha256hex(enc("x"));
     for (let i = 0; i < 10; i++) base.set(`f${i}.md`, { hash: hx });
-    // A delta that tombstones 8 of 10 base files at once (>= the ratio) — treated as a mass-delete.
+    // A delta that tombstones 8 of 10 base files at once. With the user policy "hold > 5 files", the batch is
+    // HELD for confirmation, not applied.
     const delta = { version: 100, upserts: [], deletes: Array.from({ length: 8 }, (_, i) => ({ path: `f${i}.md`, version: 90 + i })) };
     const guarded: string[] = [];
-    await reconcileDelta(deps(api, io, { base, onGuard: (p) => guarded.push(p) }), delta as any);
-    for (let i = 0; i < 8; i++) expect((io as any).m.has(`f${i}.md`)).toBe(true); // kept, not deleted
-    expect(guarded.length).toBe(8);
+    await reconcileDelta(deps(api, io, { base, bulkDeleteStrategy: "count", bulkDeleteThreshold: 5, onGuard: (p) => guarded.push(p) }), delta as any);
+    for (let i = 0; i < 8; i++) expect((io as any).m.has(`f${i}.md`)).toBe(true); // kept (held), not deleted
+    expect(guarded.length).toBe(8); // all 8 surfaced for review
+  });
+  it("D0041: APPLIES an incoming tombstone delta BELOW the threshold immediately (no confirmation)", async () => {
+    const { api } = fakeServer();
+    const seed: Record<string, string> = {}; for (let i = 0; i < 10; i++) seed[`f${i}.md`] = "x";
+    const io = fakeIo(seed);
+    const base = new BaseStore();
+    const hx = await sha256hex(enc("x"));
+    for (let i = 0; i < 10; i++) base.set(`f${i}.md`, { hash: hx });
+    const delta = { version: 100, upserts: [], deletes: Array.from({ length: 3 }, (_, i) => ({ path: `f${i}.md`, version: 90 + i })) };
+    const guarded: string[] = [];
+    await reconcileDelta(deps(api, io, { base, bulkDeleteStrategy: "count", bulkDeleteThreshold: 5, onGuard: (p) => guarded.push(p) }), delta as any);
+    for (let i = 0; i < 3; i++) expect((io as any).m.has(`f${i}.md`)).toBe(false); // 3 <= 5 → applied immediately
+    expect(guarded.length).toBe(0);
   });
 });
 

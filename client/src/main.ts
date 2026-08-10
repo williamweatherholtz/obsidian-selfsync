@@ -5,7 +5,7 @@ import { sha256hex } from "./chunker";
 import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, DeleteRateGuard, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, applyHeldDeletions, keepHeldDeletions } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -401,14 +401,13 @@ export default class NewLiveSyncPlugin extends Plugin {
   // R18 bounded-retry state (persists across reconcile passes): per-path consecutive pull-failure
   // budget, and the set of paths we've already surfaced as "server copy corrupt" (notice once).
   private pullRetries = new Map<string, { version: number; count: number }>();
-  // SEC-DATA: one cumulative delete-rate guard for the whole session (survives across reconcile passes)
-  // so a paced-tombstone vault drain from a compromised server is caught, not just per-pass ratio spikes.
-  private deleteGuard = new DeleteRateGuard();
+  // D0041: paths HELD this pass by the incoming bulk-delete confirmation, keyed by scope ("primary" or a
+  // mountKey). Derived each pass (not persisted) — self-converges once the user picks Delete/Keep. The
+  // settings review surface reads this; acceptBulkDeletions/keepBulkDeletions act on it.
+  private pendingBulkDeletes = new Map<string, string[]>();
   private pullExhaustedNotified = new Set<string>();
   private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
   private versionNoticeShown = false; // R12-PB6: toast a protocol-version mismatch once, not every retry
-  private guardBuffer = new Set<string>();  // C2-guarded paths pending a single coalesced notice
-  private guardTimer?: number;              // debounce so a bulk empty-manifest event is ONE toast, not N
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
   getLastIssue(): string | undefined {
     // A blocked/lockedOut link carries the SPECIFIC actionable reason (sign-in rejected / version mismatch
@@ -977,14 +976,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // delete). Log each path, but COALESCE the toast: a bulk empty-manifest read (e.g. a transient
   // during a vault switch) trips this for many files at once, and 13 alarming toasts read like a
   // failure when nothing is wrong. One calm summary per burst instead; detail stays in the log.
+  // The DEFAULT deps.onGuard — used by the single-path EVENT route (reconcilePath), whose retained
+  // empty-manifest C2 guard can hold one file. LOG-only: the reviewable D0041 flow (with the toast) is driven
+  // by the full/delta passes via setPendingBulk, so this must NOT claim a review that doesn't exist (R11-F3).
   private noteGuard(path: string): void {
-    this.guardBuffer.add(path);
-    this.log(`server manifest empty but '${path}' is in our history — NOT deleting it (possible server data loss)`); // log only
-    if (this.guardTimer !== undefined) window.clearTimeout(this.guardTimer);
-    this.guardTimer = window.setTimeout(() => {
-      const n = this.guardBuffer.size; this.guardBuffer.clear(); this.guardTimer = undefined;
-      if (n > 0) this.log(`kept ${n} local file${n === 1 ? "" : "s"} — the server's copy looked empty, so nothing was deleted (see log)`, true);
-    }, 900);
+    this.log(`held '${path}' — the server manifest looked empty, so it wasn't deleted (a full scan will re-evaluate it)`);
   }
 
   // Files present on the server that this device is set NOT to sync (a config surface is off, or a
@@ -1678,7 +1674,8 @@ export default class NewLiveSyncPlugin extends Plugin {
       onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
       onBaseChanged: () => { void this.persist(); },
       onGuard: (p) => this.noteGuard(p),
-      deleteGuard: this.deleteGuard, // SEC-DATA: cross-pass cumulative delete-rate guard (anti-drain)
+      bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: user-configurable incoming bulk-delete confirmation
+      bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
       retryBudget: this.pullRetries, // R18: bound re-download of a permanently-corrupt server file
       onPullExhausted: (p) => {
         if (this.pullExhaustedNotified.has(p)) return; // once per path per session
@@ -2063,8 +2060,10 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     const before = this.state.version;
     const kept: string[] = [];
+    const held: string[] = []; // D0041: incoming deletions held for confirmation this pass
     const d = this.deps();
     d.onKeptAbsent = (p) => kept.push(p); // always collect; noteHistory decides whether to notify
+    d.onGuard = (p) => held.push(p); // D0041: collect held deletions this pass (the toast fires from setPendingBulk on growth)
     // Show "Syncing…" only for genuine work, so "Fully synced" doesn't clip on every poll. A real
     // delta or a history reset IS work → escalate now (so a large transfer shows syncing throughout).
     // A FORCED config scan with an empty delta might be a no-op → escalate lazily: only when the scan
@@ -2092,6 +2091,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.flushConfigReload();
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
+    this.setPendingBulk("primary", held, mode === "full"); // D0041: a full pass is authoritative (replace); a delta only adds (union)
     this.settings.lastSyncedAt = Date.now(); void this.saveSettings(); // persist so "Last synced" survives a restart (the onBaseChanged snapshot ran earlier in this pass)
     void this.reconcileMounts(); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
   }
@@ -2102,12 +2102,85 @@ export default class NewLiveSyncPlugin extends Plugin {
   // on later polls (by the time a poll runs, the files are already re-pushed and nothing is "kept").
   private async reconcileFull(): Promise<void> {
     const kept: string[] = [];
+    const held: string[] = []; // D0041
     const d = this.deps();
     d.onKeptAbsent = (p) => kept.push(p);
+    d.onGuard = (p) => held.push(p);
     d.onStage = (s) => this.setConnectStage(s); // drive the connect sub-phase (no-op off the connect path — setConnectStage gates on `connecting`)
     const resp = await reconcileAll(d);
     this.noteHistory(resp.version, resp.history_floor, kept);
+    this.setPendingBulk("primary", held, true); // reconcileFull is always a full pass → authoritative
     void this.reconcileMounts(); // composed vaults (D0039): initial full pass per mount — DETACHED (B1) so a hung mount never stalls the primary engine queue; fail-isolated internally
+  }
+  // D0041: record a scope's held incoming deletions + refresh the review surface. R11-F1: a FULL pass saw the
+  // whole scope, so its held set is AUTHORITATIVE → replace (drops now-resolved paths). A DELTA pass only
+  // re-examined changed paths + advances the cursor PAST the held tombstones, so it can only ADD (union) —
+  // never clear a pending review it didn't re-examine (else an unrelated poll would silently wipe it). The
+  // review therefore PERSISTS until the user acts (Accept/Keep) or a full scan confirms it's resolved.
+  private setPendingBulk(scope: string, held: string[], authoritative: boolean): void {
+    const cur = this.pendingBulkDeletes.get(scope) ?? [];
+    const next = authoritative ? held : [...new Set([...cur, ...held])];
+    if (next.length) this.pendingBulkDeletes.set(scope, next); else this.pendingBulkDeletes.delete(scope);
+    if (next.length !== cur.length) { this.settingsRefresh?.(); this.statusListener?.(); this.renderLight(); }
+    if (next.length > cur.length) this.toastBulkHeld(); // toast ONLY when the set grew — no re-nag on a re-hold of the same paths
+  }
+  private toastBulkHeld(): void {
+    const n = [...this.pendingBulkDeletes.values()].reduce((s, a) => s + a.length, 0);
+    if (n > 0) this.log(`${n} incoming deletion${n === 1 ? "" : "s"} awaiting your confirmation (Settings → SelfSync → Conflicts)`, true);
+  }
+  // The ReconcileDeps for a scope key ("primary" or a mountKey) — used to apply/keep held deletions on the
+  // right base + io.
+  private depsForScope(scope: string): ReconcileDeps | undefined {
+    if (scope === "primary") return this.deps();
+    return this.mountScopes.find((x) => x.runtime.key === scope)?.runtime.deps();
+  }
+  // --- D0041 review surface (read by the settings Conflicts section) ---
+  // One group per scope with held incoming deletions: { scope key, human label, count }.
+  pendingBulkDeletions(): { scope: string; label: string; count: number }[] {
+    const out: { scope: string; label: string; count: number }[] = [];
+    for (const [scope, paths] of this.pendingBulkDeletes) {
+      if (!paths.length) continue;
+      const label = scope === "primary" ? "this vault" : (this.mounts().find((m) => mountKey(m) === scope)?.mountPoint ?? "a mount");
+      out.push({ scope, label, count: paths.length });
+    }
+    return out;
+  }
+  bulkDeletionPaths(scope: string): string[] { return [...(this.pendingBulkDeletes.get(scope) ?? [])]; }
+  // R11-F6: after mutating a MOUNT scope's base in place, snapshot it back into mountStateStore BEFORE
+  // persist(), so a crash right after Accept/Keep can't leave the persisted mount base disagreeing with disk.
+  private refreshMountPersist(scope: string): void {
+    if (scope === "primary") return;
+    const s = this.mountScopes.find((x) => x.runtime.key === scope);
+    if (s) this.mountStateStore[scope] = s.runtime.toPersist();
+  }
+  // Accept = perform the held deletions (remove local + drop base → gone everywhere, matching the tombstone).
+  async acceptBulkDeletions(scope: string): Promise<void> {
+    const paths = this.pendingBulkDeletes.get(scope);
+    if (!paths?.length) return;
+    const d = this.depsForScope(scope);
+    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; } // R11-F7: scope not live (e.g. mid-reconnect)
+    await applyHeldDeletions(d, paths);
+    this.pendingBulkDeletes.delete(scope);
+    this.refreshMountPersist(scope);
+    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    this.log(`applied ${paths.length} held deletion${paths.length === 1 ? "" : "s"} for ${scope === "primary" ? "this vault" : "a mount"}`);
+  }
+  // Keep = drop the base ancestor so the scope re-pushes (writable) / keeps-local (read-only). R11-F2: a
+  // plain poll wouldn't re-visit these (their tombstones are behind the cursor), so FORCE a full pass — reset
+  // the primary full-scan clock, or flag the mount scope — else the "re-syncing them" promise wouldn't happen
+  // until the next 15-min full scan.
+  async keepBulkDeletions(scope: string): Promise<void> {
+    const paths = this.pendingBulkDeletes.get(scope);
+    if (!paths?.length) return;
+    const d = this.depsForScope(scope);
+    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
+    keepHeldDeletions(d, paths);
+    this.pendingBulkDeletes.delete(scope);
+    this.refreshMountPersist(scope);
+    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    if (scope === "primary") { this.lastFullScanAt = 0; this.engine.enqueue({ kind: "remote" }); } // force a full pass → re-push the base-less files
+    else { const s = this.mountScopes.find((x) => x.runtime.key === scope); if (s) s.forceFull = true; void this.reconcileMounts(); }
+    this.log(`kept ${paths.length} file${paths.length === 1 ? "" : "s"} the ${scope === "primary" ? "server" : "source"} deleted — re-syncing them`);
   }
 
   // ---- composed vaults (D0039): the per-mount sync subsystem (dormant when settings.mounts is empty) ----
@@ -2167,6 +2240,8 @@ export default class NewLiveSyncPlugin extends Plugin {
         // skipped + noticed (onSkip), never buffered. Desktop keeps the user's setting.
         maxSyncBytes: Platform.isMobile ? Math.min(this.maxSyncBytes(), MOUNT_MOBILE_MAX_BYTES) : this.maxSyncBytes(),
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
+        bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: the global incoming bulk-delete confirmation applies to mounts too
+        bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
         // R4-F4 + R7-F1: hold the mount OFFLINE unless the SOURCE is both READY and on a COMPATIBLE protocol
         // version — the same guard the primary connect applies. sessionToken is set even after a version-
         // mismatched primary connect, so without this a mount could poll a protocol-incompatible source (shape
@@ -2223,6 +2298,8 @@ export default class NewLiveSyncPlugin extends Plugin {
           this.bumpMountUi(); // refresh the per-mount rows live too (R10-F2, debounced)
         },
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
+        onHeld: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setPendingBulk(scope.runtime.key, paths, authoritative); }, // D0041: record the mount's held incoming deletions for review
+
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
       // it, so a just-removed mount's disk isn't mutated and no write happens during teardown.
       }, (scope) => !this.unloading && this.mountScopes.includes(scope));
@@ -2270,6 +2347,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.settings.mounts = this.mounts().filter((x) => mountKey(x) !== key);
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
     delete this.mountStateStore[key];
+    this.pendingBulkDeletes.delete(key); // D0041: drop any held-deletion review for a removed mount
     await this.saveSettings();
     this.log(`composed vaults: removed mount ${m.mountPoint} — its files are kept as normal notes in this vault`);
   }
