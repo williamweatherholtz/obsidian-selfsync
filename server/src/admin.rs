@@ -400,6 +400,7 @@ pub async fn reindex(
     Ok(Json(crate::protocol::StatusResponse {
         status: "ready".to_string(), detail: String::new(), version,
         api_version: crate::protocol::API_VERSION,
+        schema_hash: crate::wire_signature::signature_hash().to_string(),
     }))
 }
 

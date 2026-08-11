@@ -17,6 +17,10 @@ tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "limit"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# schemars derives a serde-accurate JSON Schema from the wire types (D0042). It is the single source
+# of truth for the client<->server wire-contract SIGNATURE: the compat check + CI drift gate are
+# computed from the actual serialized shapes, never a hand-maintained doc.
+schemars = "0.8"
 blake3 = "1"
 sha2 = "0.10"
 argon2 = { version = "0.5", features = ["std"] }

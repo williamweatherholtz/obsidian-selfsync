@@ -308,7 +308,7 @@ pub async fn status(
         } else {
             ("ready".to_string(), String::new())
         };
-        Ok(Json(StatusResponse { status, detail, version: v.version(), api_version: crate::protocol::API_VERSION }))
+        Ok(Json(StatusResponse { status, detail, version: v.version(), api_version: crate::protocol::API_VERSION, schema_hash: crate::wire_signature::signature_hash().to_string() }))
     }).await
 }
 
@@ -328,7 +328,7 @@ pub async fn reindex(
     log::info!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
     audit(action::VAULT_REINDEX, &user, &format!("{owner}/{vault}"), outcome::SUCCESS, &ip);
     let _ = tx.send(version);
-    Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION }))
+    Ok(Json(StatusResponse { status: "ready".to_string(), detail: String::new(), version, api_version: crate::protocol::API_VERSION, schema_hash: crate::wire_signature::signature_hash().to_string() }))
 }
 
 #[derive(serde::Deserialize)]

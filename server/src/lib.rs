@@ -20,6 +20,7 @@ pub mod sharelinks;
 pub mod shares;
 pub mod state;
 pub mod throttle;
+pub mod wire_signature;
 pub mod totp;
 pub mod tokens;
 pub mod users;
@@ -53,8 +54,12 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         .route("/health", get(|axum::extract::State(st): axum::extract::State<AppState>| async move {
             // AC.3.1.9: expose the pre-auth system-use banner (empty ⇒ none) so the client/admin page can
             // show it before credentials are entered. Unauthenticated, like the rest of /health.
-            axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION, "banner": st.cfg.login_banner }))
+            axum::Json(serde_json::json!({ "status": "ok", "apiVersion": crate::protocol::API_VERSION, "schemaHash": crate::wire_signature::signature_hash(), "banner": st.cfg.login_banner }))
         }))
+        // D0042: the full canonical wire-contract signature — UNAUTHENTICATED + on every surface, so a
+        // client can diff it field-by-field when its embedded hash disagrees with the server's schemaHash.
+        // A server too old to expose this 404s, which the client reads as "no signature" -> fail closed.
+        .route("/schema", get(|| async { axum::Json(crate::wire_signature::canonical_signature()) }))
         .route("/api/login", post(auth::login))
         // SEC-AUTH: server-side single-session logout (revokes the presented token). Token-gated by
         // its own body, safe on both surfaces.

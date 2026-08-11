@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 // breaking change to the sync wire format or the on-disk index schema.
 pub const API_VERSION: u32 = 1;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default, schemars::JsonSchema)]
 pub struct FileMeta {
     pub path: String,
     pub hash: String,
@@ -31,13 +31,13 @@ pub struct FileMeta {
     pub device_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct Deletion {
     pub path: String,
     pub version: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct ChangesResponse {
     pub version: u64,
     pub upserts: Vec<FileMeta>,
@@ -52,7 +52,7 @@ pub struct ChangesResponse {
     pub history_floor: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -62,7 +62,7 @@ pub struct LoginRequest {
     pub totp: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct LoginResponse {
     pub token: String,
     // IA.3.5.9: true if the account was flagged for a forced password change (admin create/reset) and
@@ -75,13 +75,13 @@ pub struct LoginResponse {
 // Authenticated self-service password change. On success the server RE-ISSUES a fresh token
 // (returned as a LoginResponse) and REVOKES every other session for the user — so a leaked
 // credential/token can be self-remediated without an admin. (R14 sec#2)
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct ChangePasswordRequest {
     pub current: String,
     pub new_password: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default, schemars::JsonSchema)]
 pub struct CommitRequest {
     pub path: String,
     pub hash: String,
@@ -107,17 +107,17 @@ pub struct CommitRequest {
     pub device_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct MissingRequest {
     pub hashes: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct MissingResponse {
     pub missing: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct RegisterRequest {
     pub username: String,
     pub password: String,
@@ -125,12 +125,12 @@ pub struct RegisterRequest {
     pub invite: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct VaultListResponse {
     pub vaults: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct CreateVaultRequest {
     pub name: String,
 }
@@ -138,14 +138,20 @@ pub struct CreateVaultRequest {
 // Per-vault health, surfaced so a client never treats a degraded/empty manifest as
 // authoritative: status "ready" = normal; "error" = index corrupt, sync ops 503 until
 // an operator reindexes. `detail` is a human-readable reason (empty when ready).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct StatusResponse {
     pub status: String,
     pub detail: String,
     pub version: u64,
-    // The server's protocol/index-schema version (see API_VERSION). The client checks this on
-    // connect (the status call it already makes) and refuses to sync on a mismatch. Defaulted so
-    // an older client deserializing a newer response — or vice versa — doesn't hard-fail parsing.
+    // The server's protocol/index-schema version (see API_VERSION). Retained as a NON-AUTHORITATIVE
+    // display label (D0042) — the authority is now the wire-signature diff below. Defaulted so an older
+    // client deserializing a newer response — or vice versa — doesn't hard-fail parsing.
     #[serde(default)]
     pub api_version: u32,
+    // D0042: the hash of this server's canonical wire-contract SIGNATURE (see wire_signature.rs). The
+    // client compares it to its embedded signature hash on connect: a match ⇒ compatible (cheap, every
+    // poll); a mismatch ⇒ fetch GET /schema and diff field-by-field. Defaulted so an OLDER server (no
+    // field) decodes as "" — which the client reads as "no verifiable signature" and FAILS CLOSED.
+    #[serde(default)]
+    pub schema_hash: String,
 }
