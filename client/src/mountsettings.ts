@@ -128,6 +128,7 @@ export class MountEditModal extends Modal {
     const draft = (): Mount => ({ source: { owner: source.owner, vaultId: source.vaultId, sourcePath: normMountFolder(sourcePath) }, mountPoint: normMountFolder(mountPoint), direction });
 
     let folders: string[] = [];                     // the source vault's non-empty folders (completion + empty-note)
+    const folderCache = new Map<string, string[]>(); // memoize per source vault — a re-selected source never refetches its (whole-manifest) listing
     const dlId = "selfsync-mount-folders";
 
     new Setting(c).setName("Source vault").setDesc("The vault to bring a folder from.")
@@ -142,8 +143,13 @@ export class MountEditModal extends Modal {
     // Fetch the picked source vault's folders-with-content and refresh the completion list. Best-effort:
     // a fetch failure just leaves completion empty (free typing still works), never blocks the form.
     const loadFolders = async (): Promise<void> => {
-      folders = [];
-      try { folders = await this.host.sourceFolders({ owner: source.owner, vaultId: source.vaultId }); } catch { /* best-effort — free typing still works */ }
+      const key = `${source.owner} ${source.vaultId}`;
+      const cached = folderCache.get(key);
+      if (cached) { folders = cached; }
+      else {
+        folders = [];
+        try { folders = await this.host.sourceFolders({ owner: source.owner, vaultId: source.vaultId }); folderCache.set(key, folders); } catch { /* best-effort — free typing still works */ }
+      }
       dl.empty();
       for (const f of folders) dl.createEl("option", { value: f });
       revalidate();

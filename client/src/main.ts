@@ -25,7 +25,7 @@ import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_C
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { Mount, primaryExcludes, claimsLocal, validMounts } from "./mounts";
+import { Mount, primaryExcludes, claimsLocal, normMountFolder, validMounts } from "./mounts";
 import { foldersWithContent } from "./mountsettings";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
@@ -2374,10 +2374,19 @@ export default class NewLiveSyncPlugin extends Plugin {
   // mkdir still applies once content arrives.
   private async ensureMountFolder(mountPoint: string): Promise<void> {
     let path = "";
-    for (const seg of mountPoint.split("/").filter(Boolean)) {
+    for (const seg of normMountFolder(mountPoint).split("/").filter(Boolean)) { // F6: sanitize at the sink (drop ../ etc.)
       path = path ? `${path}/${seg}` : seg;
-      try { if (!(await this.app.vault.adapter.exists(path))) await this.app.vault.adapter.mkdir(path); }
-      catch (e: any) { this.log(`composed vaults: couldn't create local folder '${mountPoint}' (${e?.message ?? e})`); return; }
+      try {
+        const ex = await this.app.vault.adapter.exists(path);
+        if (ex) {
+          // F5: exists() is true for a FILE too — mkdir would be skipped and the "make it visible" guarantee
+          // would silently fail. Surface the collision so the user can rename the file instead.
+          const st = await this.app.vault.adapter.stat(path);
+          if (st?.type === "file") { this.log(`composed vaults: can't create the local folder '${mountPoint}' — '${path}' already exists as a FILE; rename it, then re-add the mount`, true); return; }
+          continue; // already a folder
+        }
+        await this.app.vault.adapter.mkdir(path);
+      } catch (e: any) { this.log(`composed vaults: couldn't create local folder '${mountPoint}' (${e?.message ?? e})`); return; }
     }
   }
   // The source vault's folders that actually hold notes (for the add-mount subfolder picker), derived from its
@@ -2572,6 +2581,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   private nudgeMountForLocalPath(path: string): void {
     const claimed = this.activeMounts().find((m) => claimsLocal(m, path));
     if (!claimed) return;
+    // F2: skip the echo of the mount's OWN pull-write (every io write marks recentSelfWrites within a 4s
+    // window). Only a genuine USER edit should force a local-scanning pass — otherwise every pulled file would
+    // upgrade the next poll to a full re-hash, de-optimizing the incremental delta path on an active source.
+    const wrote = this.recentSelfWrites.get(path);
+    if (wrote !== undefined && Date.now() - wrote < SELF_WRITE_WINDOW_MS) return;
     const scope = this.mountScopes.find((s) => s.runtime.key === mountKey(claimed));
     if (scope) scope.forceFull = true; // a live scope: scan local this pass and push the local change
     void this.reconcileMounts();       // a not-yet-built scope starts as a full pass anyway
