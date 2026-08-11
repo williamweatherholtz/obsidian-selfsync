@@ -21,6 +21,31 @@ export function sourceOptions(myVaults: readonly string[], shared: readonly Shar
   return out;
 }
 
+// The distinct folders (and their ancestors) that CONTAIN files in a source vault, derived from the file-path
+// list a changes(0) listing returns — so the mount editor can OFFER real, non-empty folders for the source
+// subfolder. An EMPTY folder has no files, so it never appears here: that is exactly the signal the owner
+// needed (a mount pointed at an empty subfolder silently did nothing). Excludes the .obsidian config tree
+// (never mountable across the data-only boundary) and root files (no folder). Sorted + deduped.
+export function foldersWithContent(paths: readonly string[]): string[] {
+  const set = new Set<string>();
+  for (const p of paths) {
+    const segs = p.split("/").filter(Boolean);
+    if (segs.length <= 1) continue;                        // a root-level file → no folder
+    if (segs[0].toLowerCase() === ".obsidian") continue;   // config tree is not mountable
+    for (let i = 1; i < segs.length; i++) set.add(segs.slice(0, i).join("/")); // every ancestor folder
+  }
+  return [...set].sort();
+}
+
+// Why a chosen source subfolder is worth WARNING about (not blocking — an empty folder is a valid sync target
+// you populate locally). null = fine. Compared case-foldedly against the folders that actually hold content.
+export function sourcePathNote(sourcePath: string, foldersWithContent: readonly string[]): string | null {
+  const norm = normMountFolder(sourcePath);
+  if (norm === "") return null; // whole vault — always valid
+  const has = foldersWithContent.some((f) => f.toLowerCase() === norm.toLowerCase());
+  return has ? null : `No notes under “${norm}” in the source yet — the mount will be empty until files are added there (locally, for a Sync mount).`;
+}
+
 // One-line human label for a configured mount: "source[/subfolder]  →  local folder".
 export function mountRowLabel(m: Mount): string {
   const src = m.source.owner ? `${m.source.owner}/${m.source.vaultId}` : m.source.vaultId;
@@ -58,6 +83,9 @@ export interface MountHost {
   settings: { vaultId?: string; vaultOwner?: string; mounts?: Mount[] };
   currentVaults(): Promise<string[]>;         // the vaults I own
   listSharedVaults(): Promise<SharedVaultRef[]>; // vaults shared TO me
+  // The folders that actually hold notes in a source vault (for the subfolder picker) — derived from the
+  // source's file listing, so an empty folder never appears. Best-effort: returns [] if it can't be fetched.
+  sourceFolders(source: { owner: string; vaultId: string }): Promise<string[]>;
   addMount(m: Mount): Promise<void>;
 }
 
@@ -99,13 +127,27 @@ export class MountEditModal extends Modal {
     // the real FS and can't silently mis-mount or leak to the primary (R3-M3/L2).
     const draft = (): Mount => ({ source: { owner: source.owner, vaultId: source.vaultId, sourcePath: normMountFolder(sourcePath) }, mountPoint: normMountFolder(mountPoint), direction });
 
+    let folders: string[] = [];                     // the source vault's non-empty folders (completion + empty-note)
+    const dlId = "selfsync-mount-folders";
+
     new Setting(c).setName("Source vault").setDesc("The vault to bring a folder from.")
       .addDropdown((dd) => {
         opts.forEach((o, i) => dd.addOption(String(i), o.canWrite ? o.label : `${o.label} (read-only)`));
-        dd.setValue("0").onChange((v) => { source = opts[Number(v)]; if (!source.canWrite) direction = "pull"; paintDirection(); revalidate(); });
+        dd.setValue("0").onChange((v) => { source = opts[Number(v)]; if (!source.canWrite) direction = "pull"; paintDirection(); void loadFolders(); revalidate(); });
       });
-    new Setting(c).setName("Source subfolder").setDesc("Which folder inside the source vault (blank = the whole vault).")
-      .addText((t) => t.setPlaceholder("Projects/Shared").onChange((v) => { sourcePath = v; revalidate(); }));
+    new Setting(c).setName("Source subfolder").setDesc("Which folder inside the source vault (blank = the whole vault). Start typing to pick from the source's folders.")
+      .addText((t) => { t.setPlaceholder("Projects/Shared").onChange((v) => { sourcePath = v; revalidate(); }); t.inputEl.setAttribute("list", dlId); });
+    const dl = c.createEl("datalist"); dl.id = dlId; // completion source for the subfolder input (populated per source vault)
+    const noteEl = c.createEl("p", { attr: { style: "font-size:12px;color:var(--text-muted);min-height:1em;margin:-6px 0 8px;" } });
+    // Fetch the picked source vault's folders-with-content and refresh the completion list. Best-effort:
+    // a fetch failure just leaves completion empty (free typing still works), never blocks the form.
+    const loadFolders = async (): Promise<void> => {
+      folders = [];
+      try { folders = await this.host.sourceFolders({ owner: source.owner, vaultId: source.vaultId }); } catch { /* best-effort — free typing still works */ }
+      dl.empty();
+      for (const f of folders) dl.createEl("option", { value: f });
+      revalidate();
+    };
     new Setting(c).setName("Local folder").setDesc("Where it appears in THIS vault. This folder stops syncing to your primary vault and is managed by the mount instead; any existing files here merge with the source (a file that differs on both sides is kept as a conflict copy, never overwritten).")
       .addText((t) => t.setPlaceholder("Work/ASI").onChange((v) => { mountPoint = v; revalidate(); }));
 
@@ -126,7 +168,14 @@ export class MountEditModal extends Modal {
 
     const errEl = c.createEl("p", { attr: { style: "font-size:12px;color:var(--text-error);min-height:1em;" } });
     let addBtn: import("obsidian").ButtonComponent;
-    const revalidate = () => { const err = validateMountDraft(draft(), others); errEl.setText(err ?? ""); addBtn?.setDisabled(!!err); };
+    const revalidate = () => {
+      const err = validateMountDraft(draft(), others);
+      errEl.setText(err ?? "");
+      // A non-blocking note when the subfolder has no notes yet (an empty folder is a valid Sync target you
+      // populate locally) — the silent-empty-mount trap the owner hit, now surfaced.
+      noteEl.setText(err ? "" : (sourcePathNote(sourcePath, folders) ?? ""));
+      addBtn?.setDisabled(!!err);
+    };
 
     new Setting(c)
       .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
@@ -143,6 +192,7 @@ export class MountEditModal extends Modal {
 
     paintDirection();
     revalidate();
+    void loadFolders(); // populate completion for the initial source vault
   }
   onClose(): void { this.contentEl.empty(); if (this.saved) this.onDone(); }
 }

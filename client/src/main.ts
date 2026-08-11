@@ -25,7 +25,8 @@ import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_C
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { Mount, primaryExcludes, validMounts } from "./mounts";
+import { Mount, primaryExcludes, claimsLocal, validMounts } from "./mounts";
+import { foldersWithContent } from "./mountsettings";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
 import { aggregateStatus, Health, MountState } from "./mountfsm";
@@ -2361,8 +2362,31 @@ export default class NewLiveSyncPlugin extends Plugin {
   async addMount(m: Mount): Promise<void> {
     this.settings.mounts = [...this.mounts(), m];
     await this.saveSettings();
+    // Create the dedicated local folder NOW so the mount is visible + usable even before anything syncs — a
+    // mount over an empty source folder otherwise never materializes on disk (the silent-empty-mount trap the
+    // owner hit), and a Sync mount needs the folder to exist so files can be added there to push to the source.
+    await this.ensureMountFolder(m.mountPoint);
     void this.reconcileMounts();
     this.log(`composed vaults: added mount ${m.mountPoint} ← ${m.source.owner ? m.source.owner + "/" : ""}${m.source.vaultId}${m.source.sourcePath ? "/" + m.source.sourcePath : ""} (${m.direction})`);
+  }
+  // Best-effort create the mount-point folder (each ancestor level), so a new/empty mount is a real, visible
+  // folder in the vault instead of nothing on disk. Never throws — a failure just logs and the lazy on-write
+  // mkdir still applies once content arrives.
+  private async ensureMountFolder(mountPoint: string): Promise<void> {
+    let path = "";
+    for (const seg of mountPoint.split("/").filter(Boolean)) {
+      path = path ? `${path}/${seg}` : seg;
+      try { if (!(await this.app.vault.adapter.exists(path))) await this.app.vault.adapter.mkdir(path); }
+      catch (e: any) { this.log(`composed vaults: couldn't create local folder '${mountPoint}' (${e?.message ?? e})`); return; }
+    }
+  }
+  // The source vault's folders that actually hold notes (for the add-mount subfolder picker), derived from its
+  // file listing so an EMPTY folder never appears. Best-effort — [] if there's no session or the fetch fails.
+  async sourceFolders(source: { owner: string; vaultId: string }): Promise<string[]> {
+    if (!this.sessionToken) return [];
+    const api = new HttpTransport(this.settings.serverUrl, this.sessionToken, source.vaultId, source.owner, this.deviceId(), this.deviceLabel());
+    const r = await api.changes(0);
+    return foldersWithContent(r.upserts.map((meta) => meta.path));
   }
   // Remove a mount (settings UI). NON-DESTRUCTIVE (D0039 default): the local files under the mount point are
   // KEPT as normal notes — activeMounts() no longer excludes that folder, so the PRIMARY scope now owns them
@@ -2528,15 +2552,29 @@ export default class NewLiveSyncPlugin extends Plugin {
   // coalesce, run, and recover. (The engine drops path events until connected — the next connect's
   // full reconcile catches anything edited while offline via base comparison.)
   private onLocalEvent(f: TAbstractFile) {
-    if (f instanceof TFile) this.engine.enqueue({ kind: "path", path: f.path, size: f.stat.size });
+    if (f instanceof TFile) { this.engine.enqueue({ kind: "path", path: f.path, size: f.stat.size }); this.nudgeMountForLocalPath(f.path); }
   }
   private onLocalDelete(path: string) {
     this.engine.enqueue({ kind: "path", path, size: 0 });
+    this.nudgeMountForLocalPath(path);
   }
   private onLocalRename(file: TAbstractFile, oldPath: string) {
     if (!(file instanceof TFile)) return;
     this.engine.enqueue({ kind: "path", path: oldPath, size: 0 });     // old path removed
     this.engine.enqueue({ kind: "path", path: file.path, size: file.stat.size }); // new path created
+    this.nudgeMountForLocalPath(oldPath); this.nudgeMountForLocalPath(file.path);
+  }
+  // issueMountRwPushBack: a local change under a mount point must trigger a FULL (local-scanning) reconcile of
+  // THAT mount, so a SYNC mount PUSHES the edit to its source. The steady-state mount poll is source-driven
+  // (it only reacts to the source's changes()), so without this a local-only edit — the source is unchanged —
+  // is a no-op and never propagates. The primary engine excludes mount folders, so it can't handle this. The
+  // re-entrancy guard in reconcileMounts coalesces a burst of edits; forceFull is idempotent.
+  private nudgeMountForLocalPath(path: string): void {
+    const claimed = this.activeMounts().find((m) => claimsLocal(m, path));
+    if (!claimed) return;
+    const scope = this.mountScopes.find((s) => s.runtime.key === mountKey(claimed));
+    if (scope) scope.forceFull = true; // a live scope: scan local this pass and push the local change
+    void this.reconcileMounts();       // a not-yet-built scope starts as a full pass anyway
   }
 
   // The persisted-data (data.json) schema version — bumped whenever the SHAPE of settings/base

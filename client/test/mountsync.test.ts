@@ -107,6 +107,28 @@ describe("reconcileMountScope — SYNC pushes a local-only file to the source (b
   });
 });
 
+describe("reconcileMountScope — SYNC pushes a LATER local edit only via a forceFull pass (issueMountRwPushBack)", () => {
+  it("a live mount with an UNCHANGED source ignores a new local file on a plain poll, but a forceFull pass pushes it", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = sourceApi([], chunks, 3);                 // source has no subtree files, at version 3
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "Projects", "sync"), ctx(io, src));
+    const scope: MountScope = { runtime: rt, state: "mounting", fails: 0 };
+    await reconcileMountScope(scope);                     // establish: full pass, nothing to do → live
+    expect(scope.state).toBe("live");
+    expect(src.committed).toEqual([]);
+    // The user now creates a file in the mount folder; the SOURCE has NOT changed.
+    io.files.set("Work/ASI/note.md", new TextEncoder().encode("made locally"));
+    // A plain live poll is SOURCE-driven → source unchanged → noop → the local file is NOT pushed (the bug).
+    await reconcileMountScope(scope);
+    expect(src.committed).toEqual([]);
+    // The local-event nudge (main.ts nudgeMountForLocalPath) sets forceFull; THAT pass scans local + pushes it.
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(src.committed.map((c) => c.path)).toEqual(["Projects/note.md"]);
+  });
+});
+
 describe("fail-isolation + FSM driving", () => {
   const throwingApi = (): SyncApi => ({ ...sourceApi([], new Map(), 0), changes: async () => { throw new Error("network down"); } } as any);
   it("a source error marks the mount offline, then FAILED after MAX consecutive failures — never throws", async () => {

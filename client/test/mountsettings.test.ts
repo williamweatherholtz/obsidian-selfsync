@@ -1,7 +1,34 @@
 import { describe, it, expect } from "vitest";
-import { sourceOptions, mountRowLabel, mountStateLabel, validateMountDraft } from "../src/mountsettings";
+import { sourceOptions, mountRowLabel, mountStateLabel, validateMountDraft, foldersWithContent, sourcePathNote } from "../src/mountsettings";
 import { Mount } from "../src/mounts";
 import { SharedVaultRef } from "../src/transport";
+
+describe("foldersWithContent — the source subfolder picker's real options (composedMountPathUx)", () => {
+  it("derives distinct ancestor folders from file paths, excluding .obsidian + root files", () => {
+    expect(foldersWithContent([
+      "A/note1.md", "A/note1 1.md", "A/sub/deep.md",
+      "Welcome.md", "note.md",                              // root files → no folder
+      ".obsidian/app.json", ".obsidian/plugins/x/main.js",  // config tree → not mountable
+      "Projects/Shared/y.md",
+    ])).toEqual(["A", "A/sub", "Projects", "Projects/Shared"]);
+  });
+  it("an EMPTY folder never appears — it has no files, so it is never offered (the signal the owner needed)", () => {
+    expect(foldersWithContent(["A/note.md", "Welcome.md"])).toEqual(["A"]); // B is empty → absent
+  });
+});
+
+describe("sourcePathNote — non-blocking warning for an empty/nonexistent subfolder", () => {
+  const folders = ["A", "Projects", "Projects/Shared"];
+  it("no note for the whole vault (blank) or a folder that has content (case-insensitive)", () => {
+    expect(sourcePathNote("", folders)).toBeNull();
+    expect(sourcePathNote("A", folders)).toBeNull();
+    expect(sourcePathNote("projects/shared", folders)).toBeNull();
+  });
+  it("warns for an empty/nonexistent folder (the silent-empty-mount trap the owner hit with B)", () => {
+    expect(sourcePathNote("B", folders)).toMatch(/No notes under .B./);
+    expect(sourcePathNote("B/", folders)).toMatch(/No notes under .B./); // normalized before the compare
+  });
+});
 
 const mk = (mountPoint: string, vaultId = "asi", sourcePath = "", owner = "", direction: "pull" | "sync" = "pull"): Mount =>
   ({ source: { owner, vaultId, sourcePath }, mountPoint, direction });
