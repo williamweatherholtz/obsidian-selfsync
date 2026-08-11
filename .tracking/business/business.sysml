@@ -303,6 +303,17 @@ package ProjectBusiness {
         :>> statement = "I want to define correct plugin-sync behavior ONCE and never open the SelfSync tab again: with 'auto-sync new plugins' on, a plugin I install on any of MY devices is automatically synced everywhere (uploaded here; auto-adopted + hot-loaded on my other devices). A plugin added by ANOTHER PERSON on a shared vault must never auto-adopt — it waits for my explicit approval, made clear by BOTH a toast AND a persistent 'awaiting approval' place in settings (popups vanish too fast). Default off (opt-in), since auto-propagating executable plugin code is security-sensitive. Gating is keyed on the authenticated committing account (not a spoofable device name).";
         :>> priority = Priority::should;
     }
+    // ---- Client<->server protocol compatibility (D0042, 2026-08-11) — roots the version-handshake
+    // capability that previously lived as an un-requiremented single integer + exact-match check. ----
+    requirement nProtocolCompat : Need {
+        :>> id = "1c698370-47a6-473c-b535-f6668b1bde59";
+        :>> title = "Client and server never silently operate on an incompatible wire contract";
+        :>> source = NeedSource::safety;
+        :>> statement = "When a client and server are on versions whose sync wire contract is incompatible, sync REFUSES rather than silently misbehaving or corrupting data, and tells me the SPECIFIC incompatibility (which field/endpoint one side expects that the other does not) with actionable guidance — while a change that does NOT alter the wire contract (a bugfix) keeps syncing across a version skew with no friction. Compatibility is judged from what the two ends actually exchange, not from a version number a human might set wrong.";
+        :>> marketJustification = "An opaque 'version mismatch' or, worse, a silent mis-write across incompatible versions erodes trust in a sync tool holding the user's notes; a precise, self-explaining compatibility gate that still tolerates bugfixes is both a safety property and an operability differentiator over a hand-bumped lockstep integer.";
+        :>> priority = Priority::must;
+    }
+
     // ---- SPIKES (pinned 2026-08-07, owner) — big features that need their own brainstorm before any build. ----
     requirement nPerUserConfigScope : Need {
         :>> id = "c0f1a5cc-e209-4a10-9b20-a1b2c3d40209";
@@ -364,4 +375,7 @@ package ProjectBusiness {
     // Also root the two pre-existing cross-cutting Needs that had no Brief lineage edge.
     #DependsOn dependency from nxMobile to selfsyncBrief;
     #DependsOn dependency from nxSecurity to selfsyncBrief;
+    // Protocol compatibility (D0042) is the honest-status principle applied to the version handshake:
+    // never silently proceed when the two ends can't safely speak the same wire contract; name the cause.
+    #DependsOn dependency from nProtocolCompat to nHonestStatus;
 }

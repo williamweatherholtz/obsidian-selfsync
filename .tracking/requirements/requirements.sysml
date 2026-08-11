@@ -362,6 +362,40 @@ package ProjectRequirements {
         :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
     }
 
+    // ---- Client<->server protocol compatibility (D0042, 2026-08-11) — signature-derived, not a hand-bumped integer ----
+    requirement srWireSignature : SystemRequirement {
+        :>> id = "78cb9d99-6e3e-4f2a-8433-2b7d01f6efa8";
+        :>> title = "Wire contract exposed as a canonical signature derived from the server types";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The server shall derive a canonical SIGNATURE of its sync wire contract from its own serialized request/response types (schemars-generated, serde-accurate) — per endpoint {method, path} the request and response field structure (name -> {type, required}), keys sorted and docs stripped, stable-serialized — shall expose its hash as `schemaHash` in the /status payload and the full signature at a /schema endpoint, and the client shall carry an embedded copy of that signature generated from the same committed artifact.";
+        :>> rationale = "Deriving the contract from the actual types (single source of truth) removes the documentation-centered fragility of a hand-bumped integer; hash-in-poll + full-on-demand keeps the steady-state check ~free while enabling a field-level diff when it matters.";
+        :>> kind = RequirementKind::interfaceReq; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srCompatVerdict : SystemRequirement {
+        :>> id = "9d78f288-2b88-445d-bb7a-6ced538cb8c1";
+        :>> title = "Compatibility verdict by directional field-by-field signature diff";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> statement = "On a `schemaHash` mismatch the client shall fetch the server signature, diff it field-by-field against its embedded signature, classify each delta directionally as BREAKING (a response field it reads removed/retyped/newly-required, a required endpoint absent, or — only under strict unknown-field rejection — a dropped request field) or ADDITIVE (a new optional field or endpoint), REFUSE sync on any breaking delta with a message naming the specific field/endpoint and direction, and PROCEED on an additive-only or identical contract; the integer apiVersion shall be retained only as a non-authoritative display label.";
+        :>> rationale = "Comparing structures (not a digest) both decides breaking-vs-additive and explains itself; directionality reflects that breaking-ness is asymmetric. Bugfixes (zero deltas) proceed for free; breaking changes are refused with actionable insight rather than an opaque version-mismatch.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srCompatFailClosed : SystemRequirement {
+        :>> id = "0a485e5b-c12d-411c-927b-853a62158f70";
+        :>> title = "Fail closed when the server signature is unavailable or unparseable";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> statement = "When the client cannot obtain or parse the server's wire signature — a server too old to expose `schemaHash`/`/schema`, or a fetch/parse failure — the client shall treat the peer as incompatible and refuse to sync, surfacing actionable guidance (e.g. update the server), and shall never silently proceed on an unknown contract.";
+        :>> rationale = "Preserves the current fail-closed safety posture for the data-bearing path: absence of a verifiable contract is treated as incompatible, not as permission to proceed.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srContractDriftGate : SystemRequirement {
+        :>> id = "34836cff-88c2-48d1-98f9-47a49a13c1e3";
+        :>> title = "CI fails on unreviewed wire-contract drift";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> statement = "The build shall regenerate the canonical wire signature from the server types and fail CI when it does not match the committed signature artifact, so every change to the wire contract is an intentional, reviewed diff rather than an accidental or silent one.";
+        :>> rationale = "Converts 'trust the human to notice a wire change' into 'the human cannot forget' — the automation that makes the derived-signature scheme honest and CI-worthy instead of documentation-centered.";
+        :>> kind = RequirementKind::nonFunctional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+
     // ---- satisfy edges: SR satisfies the Need it serves ----
     satisfy nVaultSharing by srVaultSharing;
     satisfy goal1ClearConfig by srClearConfig;
@@ -411,4 +445,9 @@ package ProjectRequirements {
     satisfy nNoMetadataConflicts by srTimestampConflictResolve;
     satisfy nTimestampFidelity by srDriveFsTimes;
     satisfy nTimestampFidelity by srExcludedFolders;
+    // client<->server protocol compatibility (D0042, 2026-08-11)
+    satisfy nProtocolCompat by srWireSignature;
+    satisfy nProtocolCompat by srCompatVerdict;
+    satisfy nProtocolCompat by srCompatFailClosed;
+    satisfy nProtocolCompat by srContractDriftGate;
 }

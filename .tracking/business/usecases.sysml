@@ -243,6 +243,22 @@ package ProjectUseCases {
         :>> extensions = "Their themes/snippets/plugins travel via opt-in config sync without one device wiping another. | Nothing is lost pointing a full vault at a fresh server (restore + never-clobber guards). | Each setting has one clear home, unlike LiveSync's toggle maze.";
     }
 
+    // ---- client<->server compatibility (D0042, 2026-08-11) ----
+    use case ucIncompatibleServerRefused : UseCase {
+        :>> id = "fd5073f7-66e7-4c02-851c-4b000e7e7f3f"; :>> title = "An incompatible server is refused — with the specific reason";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user's plugin connects to a server whose sync wire contract has changed in a BREAKING way (the two were upgraded independently — self-hosted server ahead of, or behind, the plugin). Instead of silently mis-operating or failing opaquely, sync refuses and explains exactly what is incompatible.";
+        :>> mainSuccess = "At connect the client compares the server's wire-contract signature hash (from /status) to its own embedded hash; on a mismatch it fetches the full server signature and diffs it field-by-field; finding a BREAKING delta it refuses to sync and shows the specific cause — e.g. 'the server no longer provides response.cursor that this plugin requires; update your server' — in the honest-status card, never falsely reading 'synced'.";
+        :>> extensions = "The delta is ADDITIVE only (the server added an optional field or a new endpoint the client doesn't use) -> sync PROCEEDS normally. | The server is too old to expose the signature (no schemaHash / no /schema) -> treated as incompatible, FAIL CLOSED with 'update your server' guidance. | The client cannot fetch or parse the server signature -> fail closed, no silent proceed. | The mismatch is on a REQUEST field the server dropped but the server ignores unknown fields -> not breaking, proceeds; only breaks under strict rejection. | The incompatibility is directional (client newer than server vs server newer than client) -> the message names which side expects the missing field/endpoint.";
+    }
+    use case ucBugfixStillSyncs : UseCase {
+        :>> id = "7a901807-2496-4abc-b828-5fdd8414470f"; :>> title = "A bugfix release still syncs across a version skew";
+        :>> createdAt = "2026-08-11"; :>> createdBy = "wweatherholtz";
+        :>> description = "One side (server or plugin) ships a bugfix/patch that changes NO wire contract, while the other side stays on the previous version. The user expects sync to keep working — a fix should not force a lockstep upgrade.";
+        :>> mainSuccess = "Because the bugfix produced zero changes to the serialized wire types, its canonical signature is byte-identical, so the signature hash the client sees from /status matches its embedded hash; the client proceeds immediately with no friction, no prompt, and no refusal — the cosmetic apiVersion label may differ but does not gate the connection.";
+        :>> extensions = "Neither side needs to have bumped any version number for this to work — the identical contract IS the compatibility proof. | If a change SNEAKS a wire alteration into a 'bugfix', the CI drift gate catches it before release (it is no longer a no-op signature), so this case only ever covers genuinely contract-preserving fixes.";
+    }
+
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
     #DependsOn dependency from ucFirstRunSetup to selfHoster;
     #DependsOn dependency from ucFirstRunSetup to n1GuidedSetup;
@@ -315,4 +331,9 @@ package ProjectUseCases {
     // Set-and-forget plugin sync (2026-08-07).
     #DependsOn dependency from ucSetAndForgetPluginSync to selfHoster;
     #DependsOn dependency from ucSetAndForgetPluginSync to nPluginSyncAutopilot;
+    // Client<->server compatibility (D0042, 2026-08-11).
+    #DependsOn dependency from ucIncompatibleServerRefused to selfHoster;
+    #DependsOn dependency from ucIncompatibleServerRefused to nProtocolCompat;
+    #DependsOn dependency from ucBugfixStillSyncs to selfHoster;
+    #DependsOn dependency from ucBugfixStillSyncs to nProtocolCompat;
 }
