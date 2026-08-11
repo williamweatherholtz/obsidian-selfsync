@@ -16,11 +16,12 @@ import { encodeSetupLink } from "./connstr";
 import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant } from "./sharelink";
 import { Phase, light, isWsStale, effectivePhase } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
-import { CLIENT_API_VERSION, FileMeta } from "./protocol";
+import { FileMeta } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, isJunkFile, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
-import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
+import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
+import { EMBEDDED_SIGNATURE, Signature, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
@@ -331,7 +332,8 @@ class LogModal extends Modal {
 // inject a fake via buildApi() — the seam that makes the orchestration wiring testable.
 export type ApiClient = SyncApi & {
   connectWs(onChanged: () => void): WebSocket | null;
-  status(): Promise<{ status: string; detail: string; version: number; apiVersion?: number }>;
+  status(): Promise<{ status: string; detail: string; version: number; apiVersion?: number; schemaHash?: string }>;
+  schema(): Promise<Signature>; // D0042: the server's canonical wire-contract signature (GET /schema)
 };
 
 export default class NewLiveSyncPlugin extends Plugin {
@@ -408,11 +410,15 @@ export default class NewLiveSyncPlugin extends Plugin {
   private pullExhaustedNotified = new Set<string>();
   private setupOpen = false; // R11-#8: guard against stacking a new setup wizard every backoff tick
   private versionNoticeShown = false; // R12-PB6: toast a protocol-version mismatch once, not every retry
+  private verifiedWireHash?: string; // D0042: a server schemaHash we've diffed-and-accepted this session — the cheap re-check
   private lastIssue?: string;               // human reason for the current non-idle state (shown on the card)
   getLastIssue(): string | undefined {
     // A blocked/lockedOut link carries the SPECIFIC actionable reason (sign-in rejected / version mismatch
     // / vault gone / locked out) — prefer it over the transient "retrying" fallback text.
     const link = this.engine?.linkState();
+    // D0042: a wire-incompat block carries a SPECIFIC field/endpoint reason in lastIssue that the generic
+    // blockedTip can't — prefer it (the whole point is telling the user WHAT is incompatible).
+    if (link && link.kind === LinkKind.Blocked && link.reason === FailureKind.VersionMismatch && this.lastIssue) return this.lastIssue;
     if (link && (link.kind === LinkKind.Blocked || (link.kind === LinkKind.Retrying && link.recovery.kind === RecoveryKind.After))) return linkPhase(link).detail;
     return this.lastIssue;
   }
@@ -1801,19 +1807,20 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.sessionToken = activeToken;
       health = await this.api.status();
     }
-    // Version handshake: refuse to sync against a server on a different protocol/schema version (a self-hoster
-    // auto-updates the plugin independently of the server). A clear, actionable message beats an undiagnosable
-    // malformed-response retry loop — and the vault is untouched. R12-PB2: fail CLOSED — an absent apiVersion
-    // (pre-versioning server / a proxy that strips the field) means we CAN'T confirm compatibility → don't sync.
-    const vv = versionVerdict(health.apiVersion, CLIENT_API_VERSION); // pure decision (R12-PB2 fail-closed)
-    if (!vv.ok) {
-      this.lastIssue = `This plugin (sync protocol v${CLIENT_API_VERSION}) and your server (${vv.serverLabel}) don't match. Update whichever is older so they're on the same version — not syncing until they match (your notes are untouched).`;
+    // Wire-contract compatibility (D0042): refuse to sync unless the server's wire signature is compatible
+    // with the one THIS build was compiled against — replacing the old single-integer version handshake. A
+    // self-hoster auto-updates the plugin (BRAT) independently of the server, so a clear, SPECIFIC reason
+    // beats an undiagnosable malformed-response retry loop, and the vault is untouched. Fails CLOSED when the
+    // server advertises no signature (older server / a proxy that strips it) — never sync an unconfirmable contract.
+    const compat = await this.checkWireCompat(health.schemaHash);
+    if (!compat.ok) {
+      this.lastIssue = compat.message;
       // R12-PB6: toast ONCE per mismatch episode, not on every ~30s backoff retry (the card keeps showing it).
       this.log(this.lastIssue, !this.versionNoticeShown);
       this.versionNoticeShown = true;
-      throw new ConnError(`incompatible protocol: client v${CLIENT_API_VERSION} vs server ${vv.serverLabel}`, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
+      throw new ConnError(compat.detail, { synthetic: SyntheticKind.VersionMismatch, wasLogin: false, endpoint: Endpoint.Other });
     }
-    this.versionNoticeShown = false; // versions match → reset so a later mismatch toasts again
+    this.versionNoticeShown = false; // compatible → reset so a later mismatch toasts again
     if (health.status !== "ready") {
       this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
       this.log(this.lastIssue);
@@ -1823,6 +1830,24 @@ export default class NewLiveSyncPlugin extends Plugin {
     // vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
     this.setConnectStage("checking your access");
     await this.refreshShareGrant(activeToken);
+  }
+
+  // D0042 wire-contract compatibility decision (imperative shell over the pure hashCheck/diff cores). Cheap
+  // path: a schemaHash already verified this session → compatible (a string compare). Otherwise fetch the
+  // server's /schema and diff it directionally against EMBEDDED_SIGNATURE — a BREAKING delta refuses with the
+  // specific reason(s); additive-only proceeds (and caches the hash). Fails CLOSED on an absent/unfetchable
+  // signature. `serverHash` comes from status().schemaHash (or a mount source's).
+  private async checkWireCompat(serverHash: string | undefined): Promise<{ ok: true } | { ok: false; message: string; detail: string }> {
+    const hc = hashCheck(serverHash, this.verifiedWireHash);
+    if (hc.kind === "compatible") return { ok: true };
+    if (hc.kind === "failClosed") return { ok: false, message: FAIL_CLOSED_MESSAGE, detail: "server advertises no wire signature" };
+    // needsDiff — fetch the server's full signature and classify the differences.
+    let serverSig: Signature;
+    try { serverSig = await this.api!.schema(); }
+    catch { return { ok: false, message: FAIL_CLOSED_MESSAGE, detail: "wire signature unavailable or malformed" }; }
+    const verdict = signatureVerdict(EMBEDDED_SIGNATURE, serverSig);
+    if (verdict.ok) { this.verifiedWireHash = serverHash; return { ok: true }; }
+    return { ok: false, message: incompatibleMessage(verdict.reasons), detail: `incompatible wire contract: ${verdict.reasons.join("; ")}` };
   }
 
   // Phase 2: apply the vault-switch RESOLUTION for this connect (force a safe merge-switch on a FOREIGN base
@@ -2246,7 +2271,7 @@ export default class NewLiveSyncPlugin extends Plugin {
         // version — the same guard the primary connect applies. sessionToken is set even after a version-
         // mismatched primary connect, so without this a mount could poll a protocol-incompatible source (shape
         // validation catches structural wire changes but not a semantic one — a hash/chunk-encoding change).
-        sourceReady: async () => { const h = await sourceApi.status(); return h.status === "ready" && versionVerdict(h.apiVersion, CLIENT_API_VERSION).ok; },
+        sourceReady: async () => { const h = await sourceApi.status(); return h.status === "ready" && (await this.checkWireCompat(h.schemaHash)).ok; }, // D0042: same-server source shares the primary's verified signature (cheap)
         callbacks: {
           onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
           onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}' — your version is kept alongside the source's`),

@@ -194,7 +194,7 @@ export function blockedTip(reason: BlockReason): string {
     case FailureKind.MfaRequired: return "Enter your authenticator code to sign in (Reconfigure)";
     case FailureKind.Forbidden: return "Access to this vault was removed";
     case FailureKind.MustChangePassword: return "You must change your password before syncing";
-    case FailureKind.VersionMismatch: return "Update needed — the plugin and server versions don't match";
+    case FailureKind.VersionMismatch: return "Update needed — the plugin and server aren't compatible"; // fallback; the specific wire-incompat reason comes from lastIssue (D0042)
     case FailureKind.VaultGone: return "This vault no longer exists on the server — re-create it or switch";
   }
 }

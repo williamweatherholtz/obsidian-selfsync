@@ -34,7 +34,10 @@ export interface CommitRequest {
   // the file's last writer. Serialized as snake_case device_id / device_name by the transport.
   deviceId?: string; deviceName?: string;
 }
-export interface StatusResponse { status: string; detail: string; version: number; apiVersion?: number; }
+// `apiVersion` is retained only as a cosmetic display/log label (D0042) — the authority is `schemaHash`,
+// the hash of the server's wire-contract signature (see wiresignature.ts). Both optional: an older server
+// omits schemaHash, which the client treats as "no verifiable signature" → fail closed.
+export interface StatusResponse { status: string; detail: string; version: number; apiVersion?: number; schemaHash?: string; }
 
 // Thrown by the transport when a commit is rejected for a version conflict (HTTP 409). The
 // reconcile layer lets it propagate to the per-file error handler and converges on the next
@@ -105,6 +108,9 @@ export function validateStatus(o: unknown): StatusResponse {
     detail: typeof s.detail === "string" ? s.detail : "",
     version: s.version as number,
     apiVersion: typeof s.api_version === "number" ? (s.api_version as number) : undefined,
+    // D0042: the server's wire-contract signature hash. A non-string/absent value → undefined, which the
+    // compat gate reads as "no verifiable signature" and fails closed. A hostile non-string can't leak through.
+    schemaHash: typeof s.schema_hash === "string" ? (s.schema_hash as string) : undefined,
   };
 }
 export function validateChanges(o: unknown): ChangesResponse {

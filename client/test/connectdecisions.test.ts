@@ -1,21 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { versionVerdict, vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "../src/connectdecisions";
+import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "../src/connectdecisions";
 
 // The pure connect-effect decisions extracted from doConnect (functional-decoupling D0036) — now testable
-// in isolation, instead of only through a full-connect integration test.
-
-describe("versionVerdict — protocol compatibility (R12-PB2 fail-closed)", () => {
-  it("matching versions → ok", () => {
-    expect(versionVerdict(5, 5)).toEqual({ ok: true });
-  });
-  it("an ABSENT server version fails CLOSED (unknown, never assume-ok)", () => {
-    expect(versionVerdict(undefined, 5)).toEqual({ ok: false, serverLabel: "an unknown version" });
-  });
-  it("a different server version → mismatch with a labeled version", () => {
-    expect(versionVerdict(3, 5)).toEqual({ ok: false, serverLabel: "v3" });
-    expect(versionVerdict(7, 5)).toEqual({ ok: false, serverLabel: "v7" });
-  });
-});
+// in isolation, instead of only through a full-connect integration test. (versionVerdict was replaced by the
+// wire-contract signature diff in D0042 — see wiresignature.test.ts.)
 
 describe("vaultKeyMismatch — D0047 guard (fix ③ server-qualified + grandfather)", () => {
   it("NEW server-qualified key: same server+vault → no mismatch; DIFFERENT server, same vault name → mismatch", () => {

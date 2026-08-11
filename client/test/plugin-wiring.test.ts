@@ -4,6 +4,7 @@ import NewLiveSyncPlugin, { ApiClient } from "../src/main";
 import { VaultIo, SyncApi } from "../src/sync";
 import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { ConnError, Endpoint } from "../src/connstate";
+import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
 import { TFile } from "obsidian";
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
@@ -36,6 +37,10 @@ function spyApi() {
   let failChangesAuthTimes = 0;                // number of leading changes() calls that 401 (a MID-SESSION token expiry on the poll path)
   let failStatus404 = false;                   // vault-gone: the status probe 404s (typed ConnError, endpoint=vaultStatus)
   let statusHealth = "ready";                  // server vault health reported by status() ("error" => degraded/reindex-needed)
+  // D0042: a real current server advertises schemaHash + serves /schema; the client fails CLOSED on an absent
+  // hash and refuses on a breaking signature diff. Default to a compatible pair (own embedded signature).
+  let statusSchemaHash: string | undefined = "sha256:test-compat";
+  let schemaSig: Signature = EMBEDDED_SIGNATURE;
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
@@ -44,6 +49,8 @@ function spyApi() {
     __failChangesAuth: (n: number) => void;
     __failStatus404: () => void;
     __setStatusHealth: (s: string) => void;
+    __setSchemaHash: (v: string | undefined) => void;
+    __setSchema: (s: Signature) => void;
     __wsSockets: any[];
   } = {
     __calls: calls,
@@ -56,12 +63,15 @@ function spyApi() {
     __failChangesAuth: (n: number) => { failChangesAuthTimes = n; },
     __failStatus404: () => { failStatus404 = true; },
     __setStatusHealth: (s: string) => { statusHealth = s; },
+    __setSchemaHash: (v) => { statusSchemaHash = v; },
+    __setSchema: (s) => { schemaSig = s; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
-      return { status: statusHealth, detail: "", version: 0, apiVersion: statusApiVersion };
+      return { status: statusHealth, detail: "", version: 0, apiVersion: statusApiVersion, schemaHash: statusSchemaHash };
     },
+    async schema() { rec("schema", []); return schemaSig; },
     async changes(since) { rec("changes", [since]); if (failChangesAuthTimes > 0) { failChangesAuthTimes--; throw new ConnError("unauthorized", { status: 401, endpoint: Endpoint.Other, wasLogin: false }); } if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
@@ -376,14 +386,27 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusText()).toBe("off");
   });
 
-  it("REFUSES to sync on a protocol-version mismatch (blocked, clear reason, never reconciles)", async () => {
-    // Server advertises a different apiVersion than the client speaks → doConnect must throw BEFORE
-    // reconciling (no changes() call); the FSM classifies it versionMismatch → a BLOCKED link (awaits an
-    // update, not a tight retry) with an actionable reason.
-    const { p, api } = await bootPlugin(true, { preOnload: (tp) => tp.api_.__setApiVersion(999) });
+  it("REFUSES to sync on a BREAKING wire-signature mismatch (blocked, specific reason, never reconciles)", async () => {
+    // D0042: the server's wire signature drops an endpoint the client requires → the directional diff finds a
+    // BREAKING delta → doConnect throws BEFORE reconciling (no changes() call); the FSM classifies it
+    // versionMismatch → a BLOCKED link (awaits an update, not a tight retry) with a SPECIFIC actionable reason.
+    const breaking: Signature = JSON.parse(JSON.stringify(EMBEDDED_SIGNATURE));
+    breaking.endpoints = breaking.endpoints.filter((e) => e !== "GET /api/v/:vault/status");
+    const { p, api } = await bootPlugin(true, {
+      preOnload: (tp) => { tp.api_.__setSchema(breaking); tp.api_.__setSchemaHash("sha256:breaking"); },
+    });
     expect(p.statusText()).toBe("blocked");
     expect(api.__calls.changes?.length ?? 0).toBe(0); // never touched the vault data
-    expect(p.getLastIssue()).toMatch(/version/i);
+    expect(p.getLastIssue()).toMatch(/incompatible|no longer exposes/i);
+    p.onunload();
+  });
+
+  it("REFUSES to sync (fail CLOSED) against a server that advertises NO wire signature (too old)", async () => {
+    // An older server sends no schemaHash → the client can't confirm compatibility → refuse, don't sync.
+    const { p, api } = await bootPlugin(true, { preOnload: (tp) => tp.api_.__setSchemaHash(undefined) });
+    expect(p.statusText()).toBe("blocked");
+    expect(api.__calls.changes?.length ?? 0).toBe(0);
+    expect(p.getLastIssue()).toMatch(/signature|update your server/i);
     p.onunload();
   });
 

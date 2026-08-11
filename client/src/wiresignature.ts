@@ -1,0 +1,168 @@
+// Client-side wire-contract compatibility (D0042). The server DERIVES a canonical signature of its wire
+// contract from its own serde types (schemars) and advertises the signature's hash as `schemaHash` on
+// /status, serving the full signature at GET /schema. This module compares the server's signature to the
+// one THIS build was compiled against (client/src/wire-signature.json, copied from the server artifact) to
+// decide compatibility — replacing the old single-integer versionVerdict.
+//
+// Cheap path: a schemaHash we've already verified this session is compatible again (a string compare, every
+// poll). First contact or a changed hash triggers a /schema fetch + a directional field-by-field diff.
+//
+// DIRECTIONAL classification: a hash tells you THAT the contract changed, never WHETHER it breaks — and
+// breaking-ness is asymmetric, so the client (which alone knows what it SENDS vs RECEIVES) classifies:
+//   - a RESPONSE type (the client reads it): breaking if a field it reads is REMOVED or RETYPED; a new
+//     field (any) is additive — the client ignores what it doesn't read.
+//   - a REQUEST type (the client sends it): breaking if the server now REQUIRES a field the client doesn't
+//     send, or a sent field is RETYPED; a dropped field is harmless (the server ignores unknown fields —
+//     no deny_unknown_fields anywhere), a new optional field is additive.
+// This makes a bugfix (zero structural deltas → identical hash → never even diffs) always compatible, while
+// a genuine breaking change is refused with the SPECIFIC field/endpoint and direction.
+
+import embeddedJson from "./wire-signature.json";
+
+export interface SigField {
+  name: string;
+  type: string;
+  required: boolean;
+}
+export interface Signature {
+  version: number;
+  endpoints: string[];
+  types: Record<string, SigField[]>;
+}
+
+// The signature this plugin build was compiled against.
+export const EMBEDDED_SIGNATURE: Signature = embeddedJson as Signature;
+
+// How this client uses each wire type — the direction the signature itself can't carry. Every type in the
+// embedded signature MUST appear here (a test enforces it), so adding a wire type forces a role decision.
+export type TypeRole = "request" | "response";
+export const TYPE_ROLES: Record<string, TypeRole> = {
+  // responses the client READS
+  FileMeta: "response",
+  Deletion: "response",
+  ChangesResponse: "response",
+  LoginResponse: "response",
+  MissingResponse: "response",
+  VaultListResponse: "response",
+  StatusResponse: "response",
+  // requests the client SENDS
+  LoginRequest: "request",
+  ChangePasswordRequest: "request",
+  CommitRequest: "request",
+  MissingRequest: "request",
+  RegisterRequest: "request",
+  CreateVaultRequest: "request",
+};
+
+export interface Delta {
+  breaking: boolean;
+  reason: string; // human, actionable — names the specific endpoint/field + direction
+}
+
+// A field lookup by name.
+function byName(fields: SigField[]): Map<string, SigField> {
+  return new Map(fields.map((f) => [f.name, f]));
+}
+
+// Directional field-by-field diff of the SERVER's signature against what this build EXPECTS (embedded).
+// Only BREAKING deltas are returned with breaking:true; additive observations are omitted (they never
+// block). Unknown-role types default to the conservative RESPONSE rule (removed/retyped = breaking).
+export function diffSignature(embedded: Signature, server: Signature): Delta[] {
+  const deltas: Delta[] = [];
+
+  // Endpoints the client relies on that the server no longer exposes → breaking.
+  const serverEndpoints = new Set(server.endpoints);
+  for (const e of embedded.endpoints) {
+    if (!serverEndpoints.has(e)) {
+      deltas.push({ breaking: true, reason: `the server no longer exposes "${e}", which this plugin needs` });
+    }
+  }
+
+  for (const [typeName, eFields] of Object.entries(embedded.types)) {
+    const sFields = server.types[typeName];
+    if (!sFields) {
+      deltas.push({ breaking: true, reason: `the server no longer defines "${typeName}", which this plugin expects` });
+      continue;
+    }
+    const role: TypeRole = TYPE_ROLES[typeName] ?? "response";
+    const eMap = byName(eFields);
+    const sMap = byName(sFields);
+
+    if (role === "response") {
+      // The client READS this. A field it reads that's gone or retyped breaks it; new fields are additive.
+      for (const [name, ef] of eMap) {
+        const sf = sMap.get(name);
+        if (!sf) {
+          deltas.push({ breaking: true, reason: `the server dropped "${typeName}.${name}", which this plugin reads` });
+        } else if (sf.type !== ef.type) {
+          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin reads` });
+        }
+      }
+    } else {
+      // The client SENDS this. A field the server now requires but the client doesn't send breaks it, as
+      // does a retype of a field the client sends; a dropped field is harmless (unknown fields are ignored).
+      for (const [name, sf] of sMap) {
+        const ef = eMap.get(name);
+        if (sf.required && (!ef || !ef.required)) {
+          deltas.push({ breaking: true, reason: `the server now requires "${typeName}.${name}", which this plugin does not send` });
+        } else if (ef && sf.type !== ef.type) {
+          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin sends` });
+        }
+      }
+    }
+  }
+  return deltas;
+}
+
+export type SignatureVerdict = { ok: true } | { ok: false; reasons: string[] };
+
+// Compatible iff the diff finds no BREAKING delta. Additive-only changes (and identical contracts) pass.
+export function signatureVerdict(embedded: Signature, server: Signature): SignatureVerdict {
+  const breaking = diffSignature(embedded, server).filter((d) => d.breaking).map((d) => d.reason);
+  return breaking.length === 0 ? { ok: true } : { ok: false, reasons: breaking };
+}
+
+// The cheap per-poll gate over the server's advertised schemaHash. `verifiedHash` is a hash we already
+// diffed-and-accepted this session (in-memory). Fail CLOSED on an absent hash — an older server that can't
+// advertise a signature is treated as incompatible, never silently trusted.
+export type HashCheck =
+  | { kind: "compatible" }
+  | { kind: "needsDiff" }
+  | { kind: "failClosed" };
+export function hashCheck(serverHash: string | undefined, verifiedHash: string | undefined): HashCheck {
+  if (!serverHash) return { kind: "failClosed" };
+  if (verifiedHash !== undefined && serverHash === verifiedHash) return { kind: "compatible" };
+  return { kind: "needsDiff" };
+}
+
+// PROTO-3: validate the SHAPE of the untrusted /schema response before diffing it (a hostile/garbled
+// signature must never drive a false "compatible"). Throws on any malformed field.
+export function validateSignature(o: unknown): Signature {
+  const s = o as Record<string, unknown>;
+  if (!s || typeof s !== "object") throw new Error("malformed signature: not an object");
+  if (typeof s.version !== "number") throw new Error("malformed signature: version not a number");
+  if (!Array.isArray(s.endpoints) || s.endpoints.some((e) => typeof e !== "string")) {
+    throw new Error("malformed signature: endpoints not string[]");
+  }
+  if (!s.types || typeof s.types !== "object") throw new Error("malformed signature: types not an object");
+  const types: Record<string, SigField[]> = {};
+  for (const [name, fields] of Object.entries(s.types as Record<string, unknown>)) {
+    if (!Array.isArray(fields)) throw new Error(`malformed signature: ${name} fields not an array`);
+    types[name] = fields.map((f) => {
+      const x = f as Record<string, unknown>;
+      if (typeof x?.name !== "string" || typeof x?.type !== "string" || typeof x?.required !== "boolean") {
+        throw new Error(`malformed signature: ${name} field entry invalid`);
+      }
+      return { name: x.name, type: x.type, required: x.required };
+    });
+  }
+  return { version: s.version, endpoints: s.endpoints as string[], types };
+}
+
+// User-facing messages (kept here so they're consistent + testable).
+export const FAIL_CLOSED_MESSAGE =
+  "Your server didn't report a sync-protocol signature, so this plugin can't confirm they're compatible — update your server. Not syncing until then (your notes are untouched).";
+export function incompatibleMessage(reasons: string[]): string {
+  const shown = reasons.slice(0, 3).join("; ") + (reasons.length > 3 ? `; +${reasons.length - 3} more` : "");
+  return `This plugin and your server have incompatible sync protocols — ${shown}. Update whichever is older. Not syncing until they match (your notes are untouched).`;
+}

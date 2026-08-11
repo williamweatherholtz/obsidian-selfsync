@@ -1,0 +1,280 @@
+{
+  "endpoints": [
+    "DELETE /api/admin/shares",
+    "DELETE /api/share-links/:id",
+    "DELETE /api/shared",
+    "DELETE /api/u/:owner/:vault/file",
+    "DELETE /api/v/:vault/file",
+    "DELETE /api/vault",
+    "GET /api/admin/me",
+    "GET /api/admin/vaults",
+    "GET /api/share-links",
+    "GET /api/shared",
+    "GET /api/u/:owner/:vault/changes",
+    "GET /api/u/:owner/:vault/chunk/:hash",
+    "GET /api/u/:owner/:vault/meta",
+    "GET /api/u/:owner/:vault/status",
+    "GET /api/v/:vault/changes",
+    "GET /api/v/:vault/chunk/:hash",
+    "GET /api/v/:vault/meta",
+    "GET /api/v/:vault/status",
+    "GET /api/vaults",
+    "GET /api/ws",
+    "GET /health",
+    "GET /schema",
+    "POST /api/login",
+    "POST /api/logout",
+    "POST /api/password",
+    "POST /api/register",
+    "POST /api/share-links",
+    "POST /api/share-redeem",
+    "POST /api/share-redeem-register",
+    "POST /api/u/:owner/:vault/chunks/missing",
+    "POST /api/u/:owner/:vault/commit",
+    "POST /api/v/:vault/chunks/missing",
+    "POST /api/v/:vault/commit",
+    "POST /api/v/:vault/reindex",
+    "POST /api/vaults",
+    "PUT /api/u/:owner/:vault/chunk/:hash",
+    "PUT /api/v/:vault/chunk/:hash"
+  ],
+  "types": {
+    "ChangePasswordRequest": [
+      {
+        "name": "current",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "new_password",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "ChangesResponse": [
+      {
+        "name": "deletes",
+        "required": true,
+        "type": "array<Deletion>"
+      },
+      {
+        "name": "history_floor",
+        "required": false,
+        "type": "integer"
+      },
+      {
+        "name": "upserts",
+        "required": true,
+        "type": "array<FileMeta>"
+      },
+      {
+        "name": "version",
+        "required": true,
+        "type": "integer"
+      }
+    ],
+    "CommitRequest": [
+      {
+        "name": "chunks",
+        "required": true,
+        "type": "array<string>"
+      },
+      {
+        "name": "device_id",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "device_name",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "expected_version",
+        "required": false,
+        "type": "integer"
+      },
+      {
+        "name": "hash",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "mtime",
+        "required": true,
+        "type": "integer"
+      },
+      {
+        "name": "path",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "size",
+        "required": true,
+        "type": "integer"
+      }
+    ],
+    "CreateVaultRequest": [
+      {
+        "name": "name",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "Deletion": [
+      {
+        "name": "path",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "version",
+        "required": true,
+        "type": "integer"
+      }
+    ],
+    "FileMeta": [
+      {
+        "name": "author",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "chunks",
+        "required": true,
+        "type": "array<string>"
+      },
+      {
+        "name": "device_id",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "device_name",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "hash",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "mtime",
+        "required": true,
+        "type": "integer"
+      },
+      {
+        "name": "path",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "size",
+        "required": true,
+        "type": "integer"
+      },
+      {
+        "name": "version",
+        "required": true,
+        "type": "integer"
+      }
+    ],
+    "LoginRequest": [
+      {
+        "name": "password",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "totp",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "username",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "LoginResponse": [
+      {
+        "name": "must_change_password",
+        "required": false,
+        "type": "boolean"
+      },
+      {
+        "name": "token",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "MissingRequest": [
+      {
+        "name": "hashes",
+        "required": true,
+        "type": "array<string>"
+      }
+    ],
+    "MissingResponse": [
+      {
+        "name": "missing",
+        "required": true,
+        "type": "array<string>"
+      }
+    ],
+    "RegisterRequest": [
+      {
+        "name": "invite",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "password",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "username",
+        "required": true,
+        "type": "string"
+      }
+    ],
+    "StatusResponse": [
+      {
+        "name": "api_version",
+        "required": false,
+        "type": "integer"
+      },
+      {
+        "name": "detail",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "schema_hash",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "status",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "name": "version",
+        "required": true,
+        "type": "integer"
+      }
+    ],
+    "VaultListResponse": [
+      {
+        "name": "vaults",
+        "required": true,
+        "type": "array<string>"
+      }
+    ]
+  },
+  "version": 1
+}

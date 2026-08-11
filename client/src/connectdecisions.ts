@@ -4,14 +4,9 @@
 // are the decision cores it was making inline, now testable in isolation instead of only through a
 // full-connect integration test. No `this`, no I/O — same inputs, same answer, every time.
 
-// Protocol version compatibility. R12-PB2: fail CLOSED — an unknown/absent server apiVersion means we can't
-// confirm compatibility, so it is a mismatch (never a silent "assume ok"). `serverLabel` is the human string
-// doConnect shows for the server's version.
-export type VersionVerdict = { ok: true } | { ok: false; serverLabel: string };
-export function versionVerdict(serverApiVersion: number | undefined, clientApiVersion: number): VersionVerdict {
-  if (serverApiVersion === clientApiVersion) return { ok: true };
-  return { ok: false, serverLabel: serverApiVersion === undefined ? "an unknown version" : `v${serverApiVersion}` };
-}
+// (Protocol-version compatibility moved to wiresignature.ts in D0042: the single-integer versionVerdict was
+// replaced by a wire-contract SIGNATURE diff — a bugfix no longer forces a lockstep upgrade, and a breaking
+// change is refused with the specific field/endpoint. The fail-closed posture is preserved there.)
 
 // D0047 vault-change guard (fix ③): does the persisted base key belong to a DIFFERENT vault than the one we
 // are about to sync? A NEW server-qualified key (`host|owner/vault`, contains `|`) is compared in full; an
