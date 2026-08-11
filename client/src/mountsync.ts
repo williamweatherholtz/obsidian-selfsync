@@ -50,7 +50,15 @@ export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } 
 // to `failed`. This is the fail-isolation boundary: a broken mount can never abort another mount or the
 // primary sync.
 export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHooks = {}): Promise<void> {
-  if (scope.state === "detached" || scope.state === "unmounting" || scope.state === "failed") return;
+  if (scope.state === "detached" || scope.state === "unmounting" || scope.state === "failed" || scope.state === "localGone") return;
+  // issueMountFolderDeletedWipesSource: the user deleted the WHOLE local mount-point folder. NEVER reconcile —
+  // a full pass would delete-remote the entire subtree from the (possibly shared) source. Flag `localGone` and
+  // hold for an explicit Reinstate/Remove (owner: intentional delete → intentional reinstate). Distinguished
+  // from a fresh never-materialized mount by baseNonEmpty() (this mount HELD content before the folder vanished).
+  if (scope.runtime.baseNonEmpty() && !(await scope.runtime.localRootExists())) {
+    scope.state = "localGone"; hooks.onEvent?.(scope); // flag; the early return above skips it on later passes
+    return;
+  }
   const wasMounting = scope.state === "mounting";
   const wasOffline = scope.state === "offline";
   const full = wasMounting || wasOffline || !!scope.forceFull; // forceFull: a Keep asked us to re-push (R11-F2)

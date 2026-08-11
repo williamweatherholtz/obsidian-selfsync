@@ -13,6 +13,7 @@ export type MountState =
   | "diverged"    // a conflict/divergence awaits resolution (never auto-destructive)
   | "offline"     // lost the connection; will resume (transient)
   | "unmounting"  // tearing down (by user request)
+  | "localGone"   // the local mount-point folder was DELETED by the user — held for an explicit Reinstate/Remove (never auto-propagated to the source)
   | "failed";     // a terminal error for this mount (access revoked, source deleted, repeated failure)
 
 export type MountEvent =
@@ -33,6 +34,7 @@ export function mountTransition(s: MountState, e: MountEvent): MountState {
     case "diverged":   return e === "resolved" ? "live" : e === "disconnect" ? "offline" : s;
     case "offline":    return e === "reconnect" ? "live" : s;
     case "unmounting": return e === "unmounted" ? "detached" : s;
+    case "localGone":  return e === "mount" ? "mounting" : s; // explicit Reinstate re-mounts (a fresh re-pull); Remove goes via unmount
     case "failed":     return e === "retry" ? "mounting" : s;
     default:           return s;
   }
@@ -47,6 +49,7 @@ const SEVERITY: Record<Health, number> = { error: 5, diverged: 4, offline: 3, bu
 export function mountHealth(s: MountState): Health {
   switch (s) {
     case "failed":     return "error";
+    case "localGone":  return "diverged"; // needs your attention (Reinstate/Remove) — surfaced like a divergence, never auto-acted
     case "diverged":   return "diverged";
     case "offline":    return "offline";
     case "mounting":

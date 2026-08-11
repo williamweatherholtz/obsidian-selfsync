@@ -2413,6 +2413,18 @@ export default class NewLiveSyncPlugin extends Plugin {
     await this.saveSettings();
     this.log(`composed vaults: removed mount ${m.mountPoint} — its files are kept as normal notes in this vault`);
   }
+  // Reinstate a mount whose local folder was DELETED (localGone, issueMountFolderDeletedWipesSource): an
+  // explicit user action (never automatic — the deletion was intentional, so is the reinstate). Drop its
+  // base/cursor + live scope so it rebuilds fresh and full-re-pulls from the source, and re-create the folder.
+  async reinstateMount(m: Mount): Promise<void> {
+    const key = mountKey(m);
+    delete this.mountStateStore[key];                                        // fresh first-contact → full re-pull from the source
+    this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key); // drop the localGone scope so it rebuilds
+    await this.ensureMountFolder(m.mountPoint);                              // re-create the dedicated folder now (visible immediately)
+    await this.saveSettings();
+    void this.reconcileMounts();
+    this.log(`composed vaults: reinstating mount ${m.mountPoint} — re-pulling from the source`, true);
+  }
 
   // Per-vault key for the persisted history floor + last-version (D0019). Owner-qualified so a shared
   // vault and an own vault of the same name never share state.

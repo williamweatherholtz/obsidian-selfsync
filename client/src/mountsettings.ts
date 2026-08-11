@@ -63,6 +63,7 @@ export function mountStateLabel(s: MountState): string {
     case "diverged":   return "Needs review";
     case "offline":    return "Offline — will retry";
     case "unmounting": return "Removing…";
+    case "localGone":  return "Local folder deleted — Reinstate or Remove";
     case "failed":     return "Failed — can't reach the source";
   }
 }

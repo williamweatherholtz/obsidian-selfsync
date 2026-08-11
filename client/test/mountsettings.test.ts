@@ -66,6 +66,7 @@ describe("mountStateLabel", () => {
     expect(mountStateLabel("live")).toBe("In sync");
     expect(mountStateLabel("offline")).toMatch(/Offline/);
     expect(mountStateLabel("failed")).toMatch(/Failed/);
+    expect(mountStateLabel("localGone")).toMatch(/deleted.*Reinstate|Reinstate/i);
     expect(mountStateLabel("detached")).toBe("Not started");
   });
 });

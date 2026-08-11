@@ -490,6 +490,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     for (const m of mounts) {
       const key = mountKey(m);
       const dir = m.direction === "pull" ? "Pull · read-only" : "Sync · two-way";
+      const state = active.has(key) ? (states[key] ?? "detached") : undefined;
       let statusText: string;
       if (!active.has(key)) {
         // Inactive: name WHY inline (R10-F7) instead of leaving it looking like a silent "Not started".
@@ -497,13 +498,14 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
           ? "inactive — its source is your current primary vault"
           : "inactive — invalid or overlaps another mount";
       } else {
-        const state = states[key] ?? "detached";
         // R10-F6: a mount added while offline sits detached until a session exists — say so, don't imply it's just idle.
-        statusText = (state === "detached" && !this.plugin.realtimeConnected) ? "waiting to connect" : mountStateLabel(state);
+        statusText = (state === "detached" && !this.plugin.realtimeConnected) ? "waiting to connect" : mountStateLabel(state!);
       }
-      new Setting(body).setName(mountRowLabel(m))
-        .setDesc(`${dir} — ${statusText}`)
-        .addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
+      const row = new Setting(body).setName(mountRowLabel(m)).setDesc(`${dir} — ${statusText}`);
+      // localGone: the user deleted the local folder — offer an explicit Reinstate (re-pull from source); the
+      // container deletion was NOT propagated to the source (issueMountFolderDeletedWipesSource).
+      if (state === "localGone") row.addButton((b) => b.setButtonText("Reinstate").setTooltip("Re-create the folder and re-pull it from the source").onClick(() => void this.reinstateMountFlow(m)));
+      row.addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
     }
     if (!mounts.length) body.createEl("p", { text: "No mounts yet.", attr: { style: "font-size:12px;opacity:.6;margin:0 0 8px;" } });
 
@@ -521,6 +523,19 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     });
     if (!ok) return;
     await this.plugin.removeMount(m);
+    this.display();
+  }
+
+  // Reinstate flow (localGone): the user deleted the local mount folder; the deletion was NOT propagated to
+  // the source. Reinstating re-creates the folder + re-pulls from the source (source untouched).
+  private async reinstateMountFlow(m: Mount): Promise<void> {
+    const ok = await confirmModal(this.app, {
+      title: "Reinstate this mount?",
+      body: `The local folder “${m.mountPoint}” was deleted, so this mount is paused (its files were NOT deleted from the source). Reinstating re-creates the folder and re-downloads its contents from the source — nothing on the source changes. If you meant to detach instead, use Remove mount.`,
+      confirmText: "Reinstate",
+    });
+    if (!ok) return;
+    await this.plugin.reinstateMount(m);
     this.display();
   }
 

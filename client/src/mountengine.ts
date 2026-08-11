@@ -138,6 +138,14 @@ export class MountRuntime {
   takeHeld(): string[] { const h = this._held; this._held = []; return h; }
   // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
   ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
+  // Container-deletion guard (issueMountFolderDeletedWipesSource): did this mount ever hold content, and does
+  // its local root still exist? If the user deleted the WHOLE mount-point folder while it held content, a
+  // reconcile would delete-remote the entire subtree from the (possibly shared) source. The driver checks
+  // these to flag `localGone` and SKIP the pass instead of propagating. `localRootExists` maps to the mount
+  // root: MountedIo.exists("") → base.exists(mountPoint). Best-effort — when the adapter has no exists()
+  // (can't detect), it returns true so the guard never false-fires on a platform that can't check.
+  baseNonEmpty(): boolean { return this.base.paths().length > 0; }
+  localRootExists(): Promise<boolean> { return this.io.exists ? this.io.exists("") : Promise.resolve(true); }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).
   toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version }; }
 }
