@@ -1,8 +1,7 @@
-// The wire-protocol / index-schema version this client speaks. It refuses to sync against a
-// server advertising a DIFFERENT apiVersion (see main.ts doConnect), surfacing a clear "upgrade
-// one of them" message rather than an undiagnosable malformed-response retry loop — the most
-// likely real-world breakage for a self-hoster who auto-updates the plugin (BRAT) independently
-// of the server. Bump in lockstep with the server's API_VERSION on any breaking wire/schema change.
+// Cosmetic protocol-version LABEL (D0042). The authoritative compatibility check is the wire-contract
+// SIGNATURE diff (see wiresignature.ts / main.ts checkWireCompat), NOT this integer — the old exact-match
+// versionVerdict gate was retired. Kept only for display/logging; the server's API_VERSION is now folded
+// into the signature as its semantic epoch, so a bump is caught there.
 export const CLIENT_API_VERSION = 1;
 
 export interface FileMeta {

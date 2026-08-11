@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
   Signature, EMBEDDED_SIGNATURE, TYPE_ROLES, hashCheck, diffSignature, signatureVerdict,
-  validateSignature, incompatibleMessage, FAIL_CLOSED_MESSAGE,
+  validateSignature, validateSchemaResponse, incompatibleMessage, FAIL_CLOSED_MESSAGE,
 } from "../src/wiresignature";
 import clientArtifact from "../src/wire-signature.json";
 
@@ -11,6 +11,7 @@ import clientArtifact from "../src/wire-signature.json";
 // REQUEST type (client sends) — the two directions the diff classifies differently.
 const base: Signature = {
   version: 1,
+  api_version: 1,
   endpoints: ["GET /a", "GET /b"],
   types: {
     StatusResponse: [{ name: "status", type: "string", required: true }, { name: "detail", type: "string", required: false }],
@@ -52,6 +53,19 @@ describe("signatureVerdict / diffSignature — directional classification", () =
     const s = clone(base); s.types.StatusResponse.push({ name: "schema_hash", type: "string", required: true });
     expect(signatureVerdict(base, s)).toEqual({ ok: true });
   });
+  it("RESPONSE: a field the client requires becoming OPTIONAL (server may omit it) → breaking (F2)", () => {
+    const s = clone(base); s.types.StatusResponse[0].required = false; // status: required → optional
+    const v = signatureVerdict(base, s);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reasons.join()).toMatch(/may now omit "StatusResponse\.status"/);
+  });
+
+  it("SEMANTIC EPOCH: a change in api_version → breaking (F3, a shape-identical semantic bump)", () => {
+    const s = clone(base); s.api_version = 2;
+    const v = signatureVerdict(base, s);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reasons.join()).toMatch(/protocol epoch changed/);
+  });
 
   it("REQUEST: server now REQUIRES a field the client doesn't send → breaking", () => {
     const s = clone(base); s.types.CommitRequest.push({ name: "token", type: "string", required: true });
@@ -92,9 +106,21 @@ describe("validateSignature — shape guard for the untrusted /schema response",
   });
   it("rejects malformed shapes", () => {
     expect(() => validateSignature(null)).toThrow(/signature/);
-    expect(() => validateSignature({ version: "1", endpoints: [], types: {} })).toThrow(/version/);
-    expect(() => validateSignature({ version: 1, endpoints: [1], types: {} })).toThrow(/endpoints/);
-    expect(() => validateSignature({ version: 1, endpoints: [], types: { T: [{ name: "x" }] } })).toThrow(/field entry/);
+    expect(() => validateSignature({ version: "1", api_version: 1, endpoints: [], types: {} })).toThrow(/version/);
+    expect(() => validateSignature({ version: 1, endpoints: [], types: {} })).toThrow(/api_version/);
+    expect(() => validateSignature({ version: 1, api_version: 1, endpoints: [1], types: {} })).toThrow(/endpoints/);
+    expect(() => validateSignature({ version: 1, api_version: 1, endpoints: [], types: { T: [{ name: "x" }] } })).toThrow(/field entry/);
+  });
+});
+
+describe("validateSchemaResponse — the /schema wrapper (F1)", () => {
+  it("accepts {hash, signature} and validates the inner signature", () => {
+    expect(validateSchemaResponse({ hash: "sha256:abc", signature: clone(base) })).toEqual({ hash: "sha256:abc", signature: base });
+  });
+  it("rejects a missing/empty hash or a malformed signature", () => {
+    expect(() => validateSchemaResponse({ signature: clone(base) })).toThrow(/hash/);
+    expect(() => validateSchemaResponse({ hash: "", signature: clone(base) })).toThrow(/hash/);
+    expect(() => validateSchemaResponse({ hash: "sha256:abc", signature: { version: 1 } })).toThrow(/signature/);
   });
 });
 

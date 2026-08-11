@@ -41,6 +41,7 @@ function spyApi() {
   // hash and refuses on a breaking signature diff. Default to a compatible pair (own embedded signature).
   let statusSchemaHash: string | undefined = "sha256:test-compat";
   let schemaSig: Signature = EMBEDDED_SIGNATURE;
+  let schemaBodyHash: string | undefined; // undefined => /schema self-declares statusSchemaHash (they match); set to simulate F1 skew
   const api: ApiClient & {
     __calls: typeof calls; __poke: () => void; __failChanges: (v: boolean) => void;
     __setApiVersion: (v: number | undefined) => void; __failStatusAuth: (n: number) => void;
@@ -51,6 +52,7 @@ function spyApi() {
     __setStatusHealth: (s: string) => void;
     __setSchemaHash: (v: string | undefined) => void;
     __setSchema: (s: Signature) => void;
+    __setSchemaBodyHash: (v: string | undefined) => void;
     __wsSockets: any[];
   } = {
     __calls: calls,
@@ -65,13 +67,14 @@ function spyApi() {
     __setStatusHealth: (s: string) => { statusHealth = s; },
     __setSchemaHash: (v) => { statusSchemaHash = v; },
     __setSchema: (s) => { schemaSig = s; },
+    __setSchemaBodyHash: (v) => { schemaBodyHash = v; },
     async status() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
       return { status: statusHealth, detail: "", version: 0, apiVersion: statusApiVersion, schemaHash: statusSchemaHash };
     },
-    async schema() { rec("schema", []); return schemaSig; },
+    async schema() { rec("schema", []); return { hash: schemaBodyHash ?? statusSchemaHash ?? "sha256:test-compat", signature: schemaSig }; },
     async changes(since) { rec("changes", [since]); if (failChangesAuthTimes > 0) { failChangesAuthTimes--; throw new ConnError("unauthorized", { status: 401, endpoint: Endpoint.Other, wasLogin: false }); } if (changesError) throw new Error(changesError); if (failChanges) throw new Error("server down"); return changesResp; },
     async fileMeta(p) { rec("fileMeta", [p]); return null; },
     async missing(h) { rec("missing", [h]); return h; },
@@ -407,6 +410,16 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusText()).toBe("blocked");
     expect(api.__calls.changes?.length ?? 0).toBe(0);
     expect(p.getLastIssue()).toMatch(/signature|update your server/i);
+    p.onunload();
+  });
+
+  it("REFUSES when /schema's self-declared hash doesn't match the /status hash (F1 stale-cache skew)", async () => {
+    // /status advertises the fresh hash; a cached/stale /schema declares a DIFFERENT hash → the client must
+    // not trust (and diff) a signature the server isn't really running → refuse, never a false-compatible.
+    const { p, api } = await bootPlugin(true, { preOnload: (tp) => tp.api_.__setSchemaBodyHash("sha256:stale-cached") });
+    expect(p.statusText()).toBe("blocked");
+    expect(api.__calls.changes?.length ?? 0).toBe(0);
+    expect(p.getLastIssue()).toMatch(/verify|mid-upgrade|cache/i);
     p.onunload();
   });
 

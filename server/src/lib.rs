@@ -59,7 +59,7 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
         // D0042: the full canonical wire-contract signature — UNAUTHENTICATED + on every surface, so a
         // client can diff it field-by-field when its embedded hash disagrees with the server's schemaHash.
         // A server too old to expose this 404s, which the client reads as "no signature" -> fail closed.
-        .route("/schema", get(|| async { axum::Json(crate::wire_signature::canonical_signature()) }))
+        .route("/schema", get(|| async { axum::Json(crate::wire_signature::schema_response()) }))
         .route("/api/login", post(auth::login))
         // SEC-AUTH: server-side single-session logout (revokes the presented token). Token-gated by
         // its own body, safe on both surfaces.

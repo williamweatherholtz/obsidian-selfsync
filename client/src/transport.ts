@@ -3,7 +3,7 @@ import { ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest
 import { SyncApi } from "./sync";
 import { isInsecureRemote } from "./connstr";
 import { ConnError, Endpoint } from "./connstate";
-import { Signature, validateSignature } from "./wiresignature";
+import { SchemaResponse, validateSchemaResponse } from "./wiresignature";
 
 // R11-HIGH: Obsidian's requestUrl has NO timeout, so a half-open/stalled connection (VPN drop,
 // captive portal, dead NAT entry) hangs forever — and since the sync engine is serial, one hung
@@ -273,8 +273,8 @@ export class HttpTransport implements SyncApi {
   // root, not under /api/v/:vault), so it uses baseUrl directly with no auth. Fetched lazily by the connect
   // compat gate only when the server's schemaHash differs from one already verified this session; validated
   // for shape before it's trusted. A 404 (server too old) throws → the gate fails closed.
-  async schema(): Promise<Signature> {
-    return validateSignature(await apiJson<unknown>({ url: `${this.baseUrl}/schema`, method: "GET" }, "schema", { endpoint: Endpoint.Other }));
+  async schema(): Promise<SchemaResponse> {
+    return validateSchemaResponse(await apiJson<unknown>({ url: `${this.baseUrl}/schema`, method: "GET" }, "schema", { endpoint: Endpoint.Other }));
   }
 
   async changes(since: number): Promise<ChangesResponse> {

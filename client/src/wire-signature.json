@@ -1,4 +1,5 @@
 {
+  "api_version": 1,
   "endpoints": [
     "DELETE /api/admin/shares",
     "DELETE /api/share-links/:id",

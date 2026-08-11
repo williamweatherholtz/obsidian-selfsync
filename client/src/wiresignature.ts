@@ -4,8 +4,11 @@
 // one THIS build was compiled against (client/src/wire-signature.json, copied from the server artifact) to
 // decide compatibility — replacing the old single-integer versionVerdict.
 //
-// Cheap path: a schemaHash we've already verified this session is compatible again (a string compare, every
-// poll). First contact or a changed hash triggers a /schema fetch + a directional field-by-field diff.
+// The gate runs at each connect/reconnect (not on every poll tick). Cheap path: a schemaHash already
+// verified this session is compatible again (a string compare). First contact — or a hash that changed
+// since (a server upgrade forces a reconnect, which re-runs this) — triggers a /schema fetch + a
+// directional field-by-field diff. A mid-session contract swap self-heals on the next reconnect, and the
+// response validators (validateStatus/validateChanges/validateFileMeta) backstop malformed data meanwhile.
 //
 // DIRECTIONAL classification: a hash tells you THAT the contract changed, never WHETHER it breaks — and
 // breaking-ness is asymmetric, so the client (which alone knows what it SENDS vs RECEIVES) classifies:
@@ -26,8 +29,17 @@ export interface SigField {
 }
 export interface Signature {
   version: number;
+  api_version: number; // the semantic epoch (F3): bumped for a shape-identical semantic break; a change is breaking
   endpoints: string[];
   types: Record<string, SigField[]>;
+}
+
+// The GET /schema body: the signature paired with the server's own hash of it. The client verifies this
+// hash equals the schemaHash advertised on /status before trusting the signature (F1 — defeats a stale/
+// cached /schema served against a fresher /status).
+export interface SchemaResponse {
+  hash: string;
+  signature: Signature;
 }
 
 // The signature this plugin build was compiled against.
@@ -70,6 +82,12 @@ function byName(fields: SigField[]): Map<string, SigField> {
 export function diffSignature(embedded: Signature, server: Signature): Delta[] {
   const deltas: Delta[] = [];
 
+  // Semantic epoch (F3): a change means the server declared a shape-identical but semantically breaking
+  // change (e.g. a chunk-hash algorithm change) that a structural diff cannot see — refuse.
+  if (embedded.api_version !== server.api_version) {
+    deltas.push({ breaking: true, reason: `the server's protocol epoch changed (v${embedded.api_version} → v${server.api_version}) — a semantic change this plugin can't verify` });
+  }
+
   // Endpoints the client relies on that the server no longer exposes → breaking.
   const serverEndpoints = new Set(server.endpoints);
   for (const e of embedded.endpoints) {
@@ -89,13 +107,17 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
     const sMap = byName(sFields);
 
     if (role === "response") {
-      // The client READS this. A field it reads that's gone or retyped breaks it; new fields are additive.
+      // The client READS this. A field it reads that's gone, retyped, or newly OMISSIBLE breaks it; new
+      // fields are additive. (F2: a field the server used to guarantee (required) becoming optional means it
+      // may now omit a value the client's response validator still requires → a real, otherwise-silent break.)
       for (const [name, ef] of eMap) {
         const sf = sMap.get(name);
         if (!sf) {
           deltas.push({ breaking: true, reason: `the server dropped "${typeName}.${name}", which this plugin reads` });
         } else if (sf.type !== ef.type) {
           deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin reads` });
+        } else if (ef.required && !sf.required) {
+          deltas.push({ breaking: true, reason: `the server may now omit "${typeName}.${name}", which this plugin requires` });
         }
       }
     } else {
@@ -122,7 +144,7 @@ export function signatureVerdict(embedded: Signature, server: Signature): Signat
   return breaking.length === 0 ? { ok: true } : { ok: false, reasons: breaking };
 }
 
-// The cheap per-poll gate over the server's advertised schemaHash. `verifiedHash` is a hash we already
+// The cheap connect-time gate over the server's advertised schemaHash. `verifiedHash` is a hash we already
 // diffed-and-accepted this session (in-memory). Fail CLOSED on an absent hash — an older server that can't
 // advertise a signature is treated as incompatible, never silently trusted.
 export type HashCheck =
@@ -141,6 +163,7 @@ export function validateSignature(o: unknown): Signature {
   const s = o as Record<string, unknown>;
   if (!s || typeof s !== "object") throw new Error("malformed signature: not an object");
   if (typeof s.version !== "number") throw new Error("malformed signature: version not a number");
+  if (typeof s.api_version !== "number") throw new Error("malformed signature: api_version not a number");
   if (!Array.isArray(s.endpoints) || s.endpoints.some((e) => typeof e !== "string")) {
     throw new Error("malformed signature: endpoints not string[]");
   }
@@ -156,12 +179,24 @@ export function validateSignature(o: unknown): Signature {
       return { name: x.name, type: x.type, required: x.required };
     });
   }
-  return { version: s.version, endpoints: s.endpoints as string[], types };
+  return { version: s.version, api_version: s.api_version, endpoints: s.endpoints as string[], types };
+}
+
+// Validate the GET /schema wrapper (untrusted): a `hash` string + a well-formed `signature`.
+export function validateSchemaResponse(o: unknown): SchemaResponse {
+  const r = o as Record<string, unknown>;
+  if (!r || typeof r !== "object") throw new Error("malformed schema response: not an object");
+  if (typeof r.hash !== "string" || r.hash.length === 0) throw new Error("malformed schema response: hash not a non-empty string");
+  return { hash: r.hash, signature: validateSignature(r.signature) };
 }
 
 // User-facing messages (kept here so they're consistent + testable).
 export const FAIL_CLOSED_MESSAGE =
   "Your server didn't report a sync-protocol signature, so this plugin can't confirm they're compatible — update your server. Not syncing until then (your notes are untouched).";
+// The server DID advertise a signature hash, but its /schema couldn't be fetched or didn't match that
+// hash (a mid-upgrade window or a stale cache in front of /schema — F1). Refuse until it settles.
+export const UNVERIFIED_MESSAGE =
+  "This plugin couldn't verify your server's sync-protocol signature (the server may be mid-upgrade, or a cache is serving a stale copy). Not syncing until it settles (your notes are untouched).";
 export function incompatibleMessage(reasons: string[]): string {
   const shown = reasons.slice(0, 3).join("; ") + (reasons.length > 3 ? `; +${reasons.length - 3} more` : "");
   return `This plugin and your server have incompatible sync protocols — ${shown}. Update whichever is older. Not syncing until they match (your notes are untouched).`;

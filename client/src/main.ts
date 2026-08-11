@@ -21,7 +21,7 @@ import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, isJunkFile, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
 import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
-import { EMBEDDED_SIGNATURE, Signature, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
+import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, UNVERIFIED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
@@ -333,7 +333,7 @@ class LogModal extends Modal {
 export type ApiClient = SyncApi & {
   connectWs(onChanged: () => void): WebSocket | null;
   status(): Promise<{ status: string; detail: string; version: number; apiVersion?: number; schemaHash?: string }>;
-  schema(): Promise<Signature>; // D0042: the server's canonical wire-contract signature (GET /schema)
+  schema(): Promise<SchemaResponse>; // D0042: the server's wire-contract signature + its hash (GET /schema)
 };
 
 export default class NewLiveSyncPlugin extends Plugin {
@@ -1841,11 +1841,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     const hc = hashCheck(serverHash, this.verifiedWireHash);
     if (hc.kind === "compatible") return { ok: true };
     if (hc.kind === "failClosed") return { ok: false, message: FAIL_CLOSED_MESSAGE, detail: "server advertises no wire signature" };
-    // needsDiff — fetch the server's full signature and classify the differences.
-    let serverSig: Signature;
-    try { serverSig = await this.api!.schema(); }
-    catch { return { ok: false, message: FAIL_CLOSED_MESSAGE, detail: "wire signature unavailable or malformed" }; }
-    const verdict = signatureVerdict(EMBEDDED_SIGNATURE, serverSig);
+    // needsDiff — fetch the server's signature+hash and classify the differences.
+    let sr: SchemaResponse;
+    try { sr = await this.api!.schema(); }
+    catch { return { ok: false, message: UNVERIFIED_MESSAGE, detail: "wire signature unavailable or malformed" }; }
+    // F1: the fetched /schema must actually be the one /status advertised. A stale/cached /schema (it's
+    // unauthenticated + cacheable) served against a fresher /status hash would otherwise diff a signature
+    // the server isn't really running → a false-compatible. Refuse on skew; never cache an unverified hash.
+    if (sr.hash !== serverHash) return { ok: false, message: UNVERIFIED_MESSAGE, detail: `wire signature hash skew (/schema ${sr.hash} vs /status ${serverHash})` };
+    const verdict = signatureVerdict(EMBEDDED_SIGNATURE, sr.signature);
     if (verdict.ok) { this.verifiedWireHash = serverHash; return { ok: true }; }
     return { ok: false, message: incompatibleMessage(verdict.reasons), detail: `incompatible wire contract: ${verdict.reasons.join("; ")}` };
   }

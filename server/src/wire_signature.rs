@@ -186,6 +186,11 @@ pub fn canonical_signature() -> Value {
 
     json!({
         "version": SIGNATURE_FORMAT_VERSION,
+        // The SEMANTIC EPOCH (F3): a shape-identical but semantically breaking change — a chunk-hash
+        // algorithm change, a `?since` cursor-semantics change — is invisible to a structural signature
+        // (Rice's theorem). Bumping crate::protocol::API_VERSION for such a change flows into the signature
+        // + its hash here, so the client's diff refuses it. A bugfix leaves it unchanged (no lockstep).
+        "api_version": crate::protocol::API_VERSION,
         "endpoints": endpoints,
         "types": Value::Object(types),
     })
@@ -194,6 +199,14 @@ pub fn canonical_signature() -> Value {
 /// Deterministic compact JSON of the canonical signature (the bytes that get hashed).
 pub fn signature_json() -> String {
     serde_json::to_string(&canonical_signature()).expect("signature serializes")
+}
+
+/// The `GET /schema` body: the canonical signature PAIRED with its own hash. The client verifies this
+/// self-declared `hash` equals the `schemaHash` it got from /status BEFORE trusting the signature — so a
+/// stale/cached `/schema` (it's unauthenticated + cacheable) served against a fresher /status (authed +
+/// uncacheable) is detected as skew and refused, instead of yielding a false-compatible (F1).
+pub fn schema_response() -> Value {
+    json!({ "hash": signature_hash(), "signature": canonical_signature() })
 }
 
 /// `sha256:<hex>` of the canonical signature. Computed once (the contract is fixed at build time).
@@ -266,6 +279,20 @@ mod tests {
         let up = cr.as_array().unwrap().iter().find(|f| f["name"] == "upserts").cloned().unwrap();
         assert_eq!(up["type"], json!("array<FileMeta>"));
         assert!(sig["types"].get("FileMeta").is_some());
+    }
+
+    #[test]
+    fn signature_carries_the_semantic_epoch() {
+        // F3: API_VERSION is folded into the signature so a shape-identical semantic bump is caught by the diff.
+        assert_eq!(canonical_signature()["api_version"], json!(crate::protocol::API_VERSION));
+    }
+
+    #[test]
+    fn schema_response_pairs_signature_with_its_hash() {
+        // F1: /schema carries its own hash so the client can detect a stale/cached body vs a fresher /status.
+        let r = schema_response();
+        assert_eq!(r["hash"], json!(signature_hash()));
+        assert_eq!(r["signature"], canonical_signature());
     }
 
     #[test]
