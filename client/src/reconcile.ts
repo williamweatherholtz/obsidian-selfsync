@@ -955,7 +955,10 @@ async function reconcileMergeOrConflict(
       // preserve the reader's version as a LOCAL copy (a read-only copy can never sync).
       const copy = conflictCopyName(path, d.device, nowUtc(), liveLocalHash.slice(0, 6));
       await d.io.write(copy, liveLocal);
-      d.onReadOnly?.(path); d.onConflict?.(path, copy);
+      // NOT onReadOnly: the reader's edit is ALREADY preserved (the conflict copy) and the source restored, so
+      // this is a resolved conflict, not an un-kept edit — onConflict surfaces it (the RO-edit keep-flow, which
+      // reads the local path expecting the edit, would otherwise copy the just-restored SOURCE — F1).
+      d.onConflict?.(path, copy);
       await d.io.write(path, remoteBytes);
       setBase(d, path, remoteBytes, rmeta.hash);
       return;
@@ -1157,8 +1160,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     }
     case "keptAbsentReadOnly":
-      // Same no-tombstone case on a read-only share: can't restore; keep local + report (observational).
-      d.onKeptAbsent?.(path); d.onReadOnly?.(path);
+      // Same no-tombstone case on a read-only share: can't restore; keep local + report (observational). NOT
+      // onReadOnly — this is a locally-DELETED file, not an editable "edit" the keep-flow could copy (F7).
+      d.onKeptAbsent?.(path);
       return;
     case "removeLocal":
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.();

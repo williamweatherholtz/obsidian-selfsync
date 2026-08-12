@@ -1034,15 +1034,18 @@ describe("read-only shared vault (never mutates the server)", () => {
     const io = fakeIo({ "n.md": "MY edit" });
     const base = new BaseStore();
     base.set("n.md", { hash: await sha256hex(enc("v1")), text: "v1" }); // both sides changed from base
-    const ro: string[] = [];
-    await reconcileAll(deps(api, io, { base, readOnly: true, onReadOnly: (p) => ro.push(p) }));
+    const ro: string[] = [], conflicts: string[] = [];
+    await reconcileAll(deps(api, io, { base, readOnly: true, onReadOnly: (p) => ro.push(p), onConflict: (p) => conflicts.push(p) }));
     const m = (io as any).m as Map<string, Uint8Array>;
     expect(dec(m.get("n.md")!)).toBe("OWNER edit");         // owner canonical at the path
     const copies = [...m.keys()].filter((k) => k.includes("(conflict"));
     expect(copies.length).toBe(1);
     expect(dec(m.get(copies[0])!)).toBe("MY edit");          // local edit kept locally
     expect([...files.keys()].some((k) => k.includes("(conflict"))).toBe(false); // NOT pushed
-    expect(ro).toContain("n.md");
+    // A resolved conflict (the edit IS preserved + the source restored), so it surfaces via onConflict — NOT
+    // onReadOnly, which is reserved for a genuinely un-kept edit the keep-flow could copy (critique F1).
+    expect(conflicts).toContain("n.md");
+    expect(ro).not.toContain("n.md");
   });
 
   it("NO-BASE divergence: adopts the owner's version WITHOUT a conflict copy (field: read-only PNGs spuriously copied)", async () => {

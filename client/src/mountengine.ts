@@ -92,6 +92,7 @@ export class MountRuntime {
   private readonly api: MountedApi;
   private sawConflict = false; // set when reconcile makes a conflict copy this pass → drives the FSM to `diverged` (R5-MED-1)
   private _held: string[] = []; // D0041: paths this pass held for incoming bulk-delete confirmation
+  private _roEdits: string[] = []; // issueMountRoLocalEditBehavior: read-only-mount paths reported this pass as un-syncable local edits
   constructor(readonly mount: Mount, private readonly ctx: MountRuntimeCtx) {
     this.base = new BaseStore(ctx.restore?.base ?? {});
     this.state = { version: ctx.restore?.version ?? 0 };
@@ -128,14 +129,20 @@ export class MountRuntime {
       onConflict: (p: string, copy: string) => { this.sawConflict = true; this.ctx.callbacks?.onConflict?.(p, copy); },
       // D0041: record paths held for incoming bulk-delete confirmation this pass (the caller reads takeHeld()).
       onGuard: (p: string) => { this._held.push(p); this.ctx.callbacks?.onGuard?.(p); },
+      // issueMountRoLocalEditBehavior: collect read-only local edits this pass so the driver can AUTHORITATIVELY
+      // replace the tracked set on a full pass (a reverted edit stops being reported → drops off, never phantom).
+      onReadOnly: (p: string) => { this._roEdits.push(p); this.ctx.callbacks?.onReadOnly?.(p); },
     };
   }
   // Read + reset whether this poll made a conflict copy (drives the scope to `diverged`).
   tookConflict(): boolean { const c = this.sawConflict; this.sawConflict = false; return c; }
   // D0041 held-deletion collection: reset before a poll, take (read+reset) after, so the caller records this
   // pass's held incoming deletions into the review set.
-  resetHeld(): void { this._held = []; }
+  resetHeld(): void { this._held = []; this._roEdits = []; }
   takeHeld(): string[] { const h = this._held; this._held = []; return h; }
+  // issueMountRoLocalEditBehavior: this pass's read-only local edits (the caller replaces the tracked set on a
+  // full pass so a reverted/resolved edit drops off — never a phantom "won't sync" entry, F2).
+  takeRoEdits(): string[] { const e = this._roEdits; this._roEdits = []; return e; }
   // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
   ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
   baseNonEmpty(): boolean { return this.base.paths().length > 0; }

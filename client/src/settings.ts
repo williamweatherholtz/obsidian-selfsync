@@ -513,7 +513,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         .onClick(() => void this.switchMountDirectionFlow(m)));
       row.addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
       // issueMountRoLocalEditBehavior: read-only edits that can't sync back — surface them + offer to keep them.
-      const roEdits = this.plugin.roMountEditsFor(key);
+      const roEdits = m.direction === "pull" ? this.plugin.roMountEditsFor(key) : []; // F3: only a read-only mount shows this
       if (roEdits.length) new Setting(body).setName(`⚠ ${roEdits.length} read-only edit${roEdits.length > 1 ? "s" : ""} in ${m.mountPoint} won't sync back`)
         .setDesc("This is a read-only mount, so your local edits can't reach the source. Keep them as your own notes in a separate folder, then the mount restores the source versions.")
         .addButton((b) => b.setButtonText("Keep my edits in a folder").setCta().onClick(() => void this.keepRoEditsFlow(m)));

@@ -2296,9 +2296,8 @@ export default class NewLiveSyncPlugin extends Plugin {
           // (a sync mount could otherwise re-upload a peer's deletion silently). Full D0019 reset-detection for
           // mounts is a tracked follow-up (issueMountResetDetection).
           onKeptAbsent: (p) => this.log(`mount ${mount.mountPoint}: kept '${p}' — absent from the source with no deletion record (not treating it as deleted)`, true),
-          // issueMountRoLocalEditBehavior: a local edit to a file in a READ-ONLY mount can't sync back. Track it +
-          // notice once, so the settings surface can offer "keep my edits in a folder" (never silent, never lost).
-          onReadOnly: (p) => this.noteRoMountEdit(mountKey(mount), mount.mountPoint, p),
+          // issueMountRoLocalEditBehavior: read-only local edits are COLLECTED per pass by the runtime and
+          // applied authoritatively via the onRoEdits hook below (so a reverted edit drops off) — no direct callback here.
         },
       });
       next.push({ runtime, state: "detached", fails: 0 });
@@ -2337,6 +2336,7 @@ export default class NewLiveSyncPlugin extends Plugin {
         },
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
         onHeld: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setPendingBulk(scope.runtime.key, paths, authoritative); }, // D0041: record the mount's held incoming deletions for review
+        onRoEdits: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setRoMountEdits(scope.runtime.key, scope.runtime.mount.mountPoint, paths, authoritative); }, // issueMountRoLocalEditBehavior
 
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
       // it, so a just-removed mount's disk isn't mutated and no write happens during teardown.
@@ -2413,22 +2413,31 @@ export default class NewLiveSyncPlugin extends Plugin {
     const key = mountKey(m);
     this.settings.mounts = this.mounts().map((x) => (mountKey(x) === key ? { ...x, direction: dir } : x));
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key); // rebuild with the new direction, base preserved
+    this.clearRoMountEdits(key); // F3: a now-writable (or re-pulled) mount must not keep showing stale read-only edits
     await this.saveSettings();
     void this.reconcileMounts();
     this.log(`composed vaults: ${m.mountPoint} is now ${dir === "sync" ? "Sync (two-way)" : "Pull (read-only)"}`, true);
   }
 
-  // issueMountRoLocalEditBehavior: a local edit to a read-only mount file, tracked + noticed once so it's never
-  // silent (mounts previously didn't even wire onReadOnly).
-  private noteRoMountEdit(key: string, mountPoint: string, rel: string): void {
-    const set = this.roMountEdits.get(key) ?? new Set<string>();
-    set.add(rel); this.roMountEdits.set(key, set);
-    const nk = `${key} ${rel}`;
-    if (!this.roEditNoticed.has(nk)) {
-      this.roEditNoticed.add(nk);
-      this.log(`mount ${mountPoint}: your edit to read-only '${rel}' won't sync back — open Settings to keep your edits in a folder`, true);
+  // issueMountRoLocalEditBehavior: apply this pass's read-only local edits AUTHORITATIVELY. A full pass REPLACES
+  // the tracked set (a reverted/resolved edit drops off — never a phantom "won't sync" entry, F2); a delta pass
+  // UNIONS. Each newly-appeared edit is noticed once (NUL-keyed, F9); notices for dropped paths are pruned.
+  private setRoMountEdits(key: string, mountPoint: string, paths: string[], authoritative: boolean): void {
+    const before = this.roMountEdits.get(key) ?? new Set<string>();
+    const next = authoritative ? new Set<string>() : new Set(before);
+    for (const p of paths) next.add(p);
+    if (next.size) this.roMountEdits.set(key, next); else this.roMountEdits.delete(key);
+    for (const p of before) if (!next.has(p)) this.roEditNoticed.delete(`${key}\0${p}`);  // prune notices for resolved edits
+    for (const p of next) if (!before.has(p)) {                                            // notice each newly-appeared edit once
+      const nk = `${key}\0${p}`;
+      if (!this.roEditNoticed.has(nk)) { this.roEditNoticed.add(nk); this.log(`mount ${mountPoint}: your edit to read-only '${p}' will not sync back — open Settings to keep your edits in a folder`, true); }
     }
     this.bumpMountUi();
+  }
+  // Clear all read-only-edit tracking for a mount (removed / reinstated / direction-changed) — F3/F4.
+  private clearRoMountEdits(key: string): void {
+    for (const p of this.roMountEdits.get(key) ?? []) this.roEditNoticed.delete(`${key}\0${p}`);
+    this.roMountEdits.delete(key);
   }
   // The mount-relative paths edited on a read-only mount (the settings surface reads this).
   roMountEditsFor(key: string): string[] { return [...(this.roMountEdits.get(key) ?? [])].sort(); }
@@ -2441,6 +2450,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     const rels = this.roMountEditsFor(key);
     if (!rels.length) return 0;
     const folder = normMountFolder(keeperFolder) || "Read-only edits";
+    // F6: the keeper folder must be a plain vault folder — never .obsidian and never inside a mount point
+    // (which would re-report the kept notes as fresh read-only edits, a self-perpetuating loop).
+    if (folder.split("/")[0].toLowerCase() === ".obsidian" || primaryExcludes(this.activeMounts(), folder)) {
+      new Notice("SelfSync: choose a plain folder (not .obsidian or inside a mount) to keep your edits."); return 0;
+    }
     await this.ensureMountFolder(folder);
     const scope = this.mountScopes.find((s) => s.runtime.key === key);
     const restored: string[] = [];
@@ -2448,30 +2462,32 @@ export default class NewLiveSyncPlugin extends Plugin {
       const localPath = localFromMountRel(m, rel);
       try {
         const content = await this.io.read(localPath);                 // the edited version
-        await this.io.write(await this.uniqueKeeperPath(folder, rel.split("/").pop()!), content); // retain as the user's own note
+        await this.io.write(await this.uniqueKeeperPath(folder, rel), content); // subpath preserved (F10) // retain as the user's own note
         scope?.runtime.base.delete(rel);                               // drop base so the re-pull re-adopts the source (and the delete-guard doesn't count it)
         const st = this.mountStateStore[key]; if (st) delete st.base[rel];
-        await this.io.remove(localPath);                               // remove the edited local file → re-pulled from the source
         restored.push(rel);
       } catch (e: any) { this.log(`couldn't keep your edit to '${rel}' (${e?.message ?? e})`); }
     }
     if (scope) scope.forceFull = true; // a FULL pass re-adopts the source (a delta poll won't re-pull a locally-absent file)
-    this.roMountEdits.delete(key);
-    for (const rel of restored) this.roEditNoticed.delete(`${key} ${rel}`);
-    await this.persist();
-    void this.reconcileMounts();                                       // re-pull the restored files from the source
+    this.clearRoMountEdits(key);
+    await this.persist();                                              // F8: durably drop base BEFORE removing local (crash then leaves files re-pullable)
+    for (const rel of restored) { try { await this.io.remove(localFromMountRel(m, rel)); } catch { /* re-pull recreates it */ } }
+    void this.reconcileMounts();                                       // re-pull the restored source versions
     this.log(`kept ${restored.length} read-only edit${restored.length === 1 ? "" : "s"} in “${folder}” and restored the source in ${m.mountPoint}`, true);
     return restored.length;
   }
-  // A non-colliding path in the keeper folder ("name.md" → "name (2).md" if taken).
-  private async uniqueKeeperPath(folder: string, name: string): Promise<string> {
-    const dot = name.lastIndexOf(".");
-    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+  // A non-colliding keeper path that PRESERVES the source subpath (F10): <folder>/<rel>, or <...> (2) on a
+  // collision with a pre-existing note. io.write mkdirs the parents.
+  private async uniqueKeeperPath(folder: string, rel: string): Promise<string> {
+    const full = `${folder}/${rel}`;
+    const slash = full.lastIndexOf("/"), dot = full.lastIndexOf(".");
+    const hasExt = dot > slash + 1;
+    const stem = hasExt ? full.slice(0, dot) : full, ext = hasExt ? full.slice(dot) : "";
     for (let i = 0; i < 1000; i++) {
-      const p = `${folder}/${i === 0 ? name : `${stem} (${i + 1})${ext}`}`;
+      const p = i === 0 ? full : `${stem} (${i + 1})${ext}`;
       if (!(await this.app.vault.adapter.exists(p))) return p;
     }
-    return `${folder}/${stem} (${Date.now()})${ext}`;
+    return `${stem} (${Date.now()})${ext}`;
   }
   // Remove a mount (settings UI). NON-DESTRUCTIVE (D0039 default): the local files under the mount point are
   // KEPT as normal notes — activeMounts() no longer excludes that folder, so the PRIMARY scope now owns them
@@ -2486,6 +2502,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
     delete this.mountStateStore[key];
     this.pendingBulkDeletes.delete(key); // D0041: drop any held-deletion review for a removed mount
+    this.clearRoMountEdits(key); // F4: drop read-only-edit tracking for a removed mount
     await this.saveSettings();
     this.log(`composed vaults: removed mount ${m.mountPoint} — its files are kept as normal notes in this vault`);
   }
@@ -2497,6 +2514,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     delete this.mountStateStore[key];                                        // fresh first-contact → full re-pull from the source
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key); // drop the localGone scope so it rebuilds
     this.pendingBulkDeletes.delete(key);                                     // F5: drop any stale held-deletion review keyed to this mount
+    this.clearRoMountEdits(key);                                            // F4: drop read-only-edit tracking on reinstate
     await this.ensureMountFolder(m.mountPoint);                              // re-create the dedicated folder now (visible immediately)
     await this.saveSettings();
     void this.reconcileMounts();
