@@ -57,6 +57,11 @@ export const TYPE_ROLES: Record<string, TypeRole> = {
   MissingResponse: "response",
   VaultListResponse: "response",
   StatusResponse: "response",
+  // sharing responses the client READS (F5)
+  SharedVault: "response",
+  VaultShares: "response",
+  GrantView: "response",
+  LinkInfo: "response",
   // requests the client SENDS
   LoginRequest: "request",
   ChangePasswordRequest: "request",

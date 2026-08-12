@@ -53,12 +53,12 @@ pub async fn me(AuthToken(user): AuthToken, State(st): State<AppState>) -> Json<
     Json(MeResp { username: user, is_server_admin, mfa_enabled: st.cfg.mfa_enabled })
 }
 
-#[derive(Serialize, Clone)]
-struct GrantView {
+#[derive(Serialize, Clone, schemars::JsonSchema)]
+pub(crate) struct GrantView {
     grantee: String,
     perm: Perm,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct VaultShares {
     vault: String,
     grants: Vec<GrantView>,

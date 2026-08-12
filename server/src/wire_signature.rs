@@ -14,10 +14,12 @@
 //! breaking and WHICH field/endpoint differs. Comparing two parsed Values — not two formatted
 //! strings — makes the committed-artifact drift gate insensitive to whitespace.
 //!
-//! Scope note (v1): the field-level `types` map covers the core sync/auth/status protocol types in
-//! `protocol.rs` (they reference only each other + primitives, so the map is self-contained). Other
-//! client routes (e.g. `/api/shared`) are covered at the endpoint level; their response shapes can
-//! be promoted into the `types` map later without breaking the format.
+//! Scope note: the field-level `types` map covers the core sync/auth/status protocol types in
+//! `protocol.rs` AND the sharing response types the client consumes (`SharedVault` from `/api/shared`,
+//! `VaultShares`+`GrantView` from `/api/admin/vaults`, `LinkInfo` from `/api/share-links`) — so a field
+//! removed/retyped in any of those is caught by the hash, not just a whole route disappearing (F5,
+//! issueSharingResponseTypesUncovered). `Perm` is referenced by name (an enum has no structural fields;
+//! a variant rename is a semantic change carried by `api_version`, not the field map).
 
 use std::sync::OnceLock;
 
@@ -76,6 +78,11 @@ const ENDPOINTS: &[&str] = &[
     "DELETE /api/u/:owner/:vault/file",
     "GET /api/ws",
 ];
+
+/// The client-facing routes this signature declares (METHOD + path). Exposed so a test can verify each one
+/// actually exists in the router (issueEndpointsRouterDrift, F4) — the ENDPOINTS const is hand-maintained, and
+/// the artifact drift-gate is generated FROM it, so nothing else cross-checks it against the real axum routes.
+pub fn declared_endpoints() -> &'static [&'static str] { ENDPOINTS }
 
 /// Reduce a schemars property schema to a single normalized type string. Handles primitives, arrays
 /// (`array<inner>`), `$ref` (the referenced type NAME), and the nullable forms schemars emits for
@@ -180,6 +187,11 @@ pub fn canonical_signature() -> Value {
     types.insert("VaultListResponse".into(), Value::Array(type_fields::<VaultListResponse>()));
     types.insert("CreateVaultRequest".into(), Value::Array(type_fields::<CreateVaultRequest>()));
     types.insert("StatusResponse".into(), Value::Array(type_fields::<StatusResponse>()));
+    // Sharing response types the client parses (F5) — brought under field-level drift detection.
+    types.insert("SharedVault".into(), Value::Array(type_fields::<crate::api::SharedVault>()));
+    types.insert("VaultShares".into(), Value::Array(type_fields::<crate::admin::VaultShares>()));
+    types.insert("GrantView".into(), Value::Array(type_fields::<crate::admin::GrantView>()));
+    types.insert("LinkInfo".into(), Value::Array(type_fields::<crate::sharelinks::LinkInfo>()));
 
     let mut endpoints: Vec<&str> = ENDPOINTS.to_vec();
     endpoints.sort_unstable();
@@ -306,6 +318,28 @@ mod tests {
         let mut sorted = eps.clone();
         sorted.sort_unstable();
         assert_eq!(eps, sorted, "endpoints must be sorted");
+    }
+
+    #[test]
+    fn sharing_response_types_are_field_covered() {
+        // F5: the sharing responses the client parses are in the field-level map (not just endpoint-level),
+        // so a removed/retyped field changes the hash. Spot-check a representative field of each.
+        let sig = canonical_signature();
+        let field = |ty: &str, name: &str| {
+            sig["types"][ty].as_array().unwrap_or_else(|| panic!("type {ty} missing from signature"))
+                .iter().find(|f| f["name"] == name).cloned()
+                .unwrap_or_else(|| panic!("{ty}.{name} missing"))
+        };
+        // SharedVault { owner, vault, perm } — /api/shared
+        assert_eq!(field("SharedVault", "owner")["type"], json!("string"));
+        assert_eq!(field("SharedVault", "perm")["type"], json!("Perm"));
+        // VaultShares { vault, grants: [GrantView], .. } — /api/admin/vaults; grants nests GrantView by name.
+        assert_eq!(field("VaultShares", "grants")["type"], json!("array<GrantView>"));
+        assert_eq!(field("GrantView", "grantee")["type"], json!("string"));
+        // LinkInfo { id, vault, perm, label, expires_at?, redeemed_by? } — /api/share-links.
+        // Option<u64>/Option<String> contribute their inner type; the Option-ness rides the `required` set.
+        assert_eq!(field("LinkInfo", "expires_at")["type"], json!("integer"));
+        assert_eq!(field("LinkInfo", "redeemed_by")["type"], json!("string"));
     }
 
     // DRIFT GATE (D0042, srContractDriftGate): the committed artifact MUST match the signature derived

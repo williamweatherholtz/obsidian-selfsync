@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 // storage (DATA_ROOT/.shares.json) so both "who can see this vault" and "what's shared
 // with me" are cheap lookups. No DB (D0005) — filesystem JSON, atomic-written.
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Perm {
     Read,

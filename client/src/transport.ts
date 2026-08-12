@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
-import { ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
+import { asNum, asOptNum, asOptStr, asStr, ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
 import { SyncApi } from "./sync";
 import { isInsecureRemote } from "./connstr";
 import { ConnError, Endpoint } from "./connstate";
@@ -36,6 +36,60 @@ export type VaultShares = { vault: string; grants: { grantee: string; perm: Shar
 // A capability share-link's owner-facing metadata (never the token). `redeemed_by` = the account that
 // consumed it (null while pending); `expires_at` = epoch secs (null if the owner opted out of expiry).
 export type ShareLinkInfo = { id: string; vault: string; perm: SharePerm; label: string; expires_at: number | null; redeemed_by: string | null };
+
+// PROTO-3 (F5, issueSharingResponseTypesUncovered): shape-validate the sharing responses the client acts on,
+// exactly like the sync responses (validateChanges/validateFileMeta). These were `as`-cast straight from the
+// wire into the vault-switcher + share-management UI, so a malformed/hostile /api/shared, /api/admin/vaults,
+// or /api/share-links body reached the UI unchecked. Parse-don't-validate: construct fresh, fully-checked
+// values (only the fields the client reads — the server's extra VaultShares.status/last_used are dropped).
+function asArray(v: unknown, f: string): unknown[] {
+  if (!Array.isArray(v)) throw new Error(`malformed response: ${f} not an array`);
+  return v;
+}
+function asPerm(v: unknown, f: string): SharePerm {
+  if (v !== "read" && v !== "readWrite") throw new Error(`malformed response: ${f} not a valid permission`);
+  return v;
+}
+function asSharedVaultRef(x: unknown, ctx: string): SharedVaultRef {
+  const r = x as Record<string, unknown>;
+  return { owner: asStr(r?.owner, `${ctx}.owner`), vault: asStr(r?.vault, `${ctx}.vault`), perm: asPerm(r?.perm, `${ctx}.perm`) };
+}
+export function validateSharedVaults(o: unknown): SharedVaultRef[] {
+  return asArray(o, "shared").map((x, i) => asSharedVaultRef(x, `shared[${i}]`));
+}
+// The single ref a redeem/redeem-register returns (the vault the caller just gained). redeem-register also
+// returns a session `token`; validate the ref and carry the token through if present.
+export function validateRedeemedVault(o: unknown): SharedVaultRef {
+  return asSharedVaultRef(o, "redeem");
+}
+export function validateRedeemedRegister(o: unknown): SharedVaultRef & { token: string } {
+  const r = o as Record<string, unknown>;
+  return { ...asSharedVaultRef(o, "redeem"), token: asStr(r?.token, "redeem.token") };
+}
+export function validateVaultShares(o: unknown): VaultShares[] {
+  return asArray(o, "my vaults").map((x, i) => {
+    const r = x as Record<string, unknown>;
+    const grants = asArray(r?.grants, `vaults[${i}].grants`).map((g, j) => {
+      const gr = g as Record<string, unknown>;
+      return { grantee: asStr(gr?.grantee, `vaults[${i}].grants[${j}].grantee`), perm: asPerm(gr?.perm, `vaults[${i}].grants[${j}].perm`) };
+    });
+    return { vault: asStr(r?.vault, `vaults[${i}].vault`), grants };
+  });
+}
+export function validateShareLinks(o: unknown): ShareLinkInfo[] {
+  return asArray(o, "share links").map((x, i) => {
+    const r = x as Record<string, unknown>;
+    return {
+      id: asStr(r?.id, `links[${i}].id`),
+      vault: asStr(r?.vault, `links[${i}].vault`),
+      perm: asPerm(r?.perm, `links[${i}].perm`),
+      label: asStr(r?.label, `links[${i}].label`),
+      // Option<u64>/Option<String> on the wire → the client's `number | null` / `string | null`.
+      expires_at: asOptNum(r?.expires_at, `links[${i}].expires_at`) ?? null,
+      redeemed_by: asOptStr(r?.redeemed_by, `links[${i}].redeemed_by`) ?? null,
+    };
+  });
+}
 
 // Server error bodies are PLAIN TEXT (AppError renders as text, not JSON). RequestUrlResponse.json is
 // a getter that JSON-parses .text and THROWS on non-JSON — so reading r.json on an error response
@@ -180,7 +234,7 @@ export class HttpTransport implements SyncApi {
 
   // Vaults shared WITH this account (owned by others) — the complement of listVaults.
   static async listShared(baseUrl: string, token: string): Promise<SharedVaultRef[]> {
-    return apiJson<SharedVaultRef[]>({ url: `${normBase(baseUrl)}/api/shared`, method: "GET", headers: bearer(token) }, "shared");
+    return validateSharedVaults(await apiJson<unknown>({ url: `${normBase(baseUrl)}/api/shared`, method: "GET", headers: bearer(token) }, "shared"));
   }
   // Grantee leaves/declines a share — removes THIS account's own access to someone else's vault.
   static async leaveShare(baseUrl: string, token: string, owner: string, vault: string): Promise<void> {
@@ -206,7 +260,7 @@ export class HttpTransport implements SyncApi {
   // Owner-scoped share management (R14 sec#4). Reachable on the public port now that the endpoints
   // are on the shared surface, so a user can manage THEIR OWN shares from the plugin (was admin-only).
   static async myVaults(baseUrl: string, token: string): Promise<VaultShares[]> {
-    return apiJson<VaultShares[]>({ url: `${normBase(baseUrl)}/api/admin/vaults`, method: "GET", headers: bearer(token) }, "my vaults");
+    return validateVaultShares(await apiJson<unknown>({ url: `${normBase(baseUrl)}/api/admin/vaults`, method: "GET", headers: bearer(token) }, "my vaults"));
   }
   // D0037: shareCreate (POST /api/admin/shares, grantee-username) was retired — sharing is link-based.
   // shareDelete (revoke) stays: a redeemed link mints the same D0008 grant, revoked the same way.
@@ -226,16 +280,16 @@ export class HttpTransport implements SyncApi {
     }, "share link")).token;
   }
   static async listShareLinks(baseUrl: string, token: string): Promise<ShareLinkInfo[]> {
-    return apiJson<ShareLinkInfo[]>({ url: `${normBase(baseUrl)}/api/share-links`, method: "GET", headers: bearer(token) }, "share links");
+    return validateShareLinks(await apiJson<unknown>({ url: `${normBase(baseUrl)}/api/share-links`, method: "GET", headers: bearer(token) }, "share links"));
   }
   static async revokeShareLink(baseUrl: string, token: string, id: string): Promise<void> {
     await apiVoid({ url: `${normBase(baseUrl)}/api/share-links/${encodeURIComponent(id)}`, method: "DELETE", headers: bearer(token) }, "revoke share link");
   }
   static async redeemShareLink(baseUrl: string, token: string, linkToken: string): Promise<SharedVaultRef> {
-    return apiJson<SharedVaultRef>({
+    return validateRedeemedVault(await apiJson<unknown>({
       url: `${normBase(baseUrl)}/api/share-redeem`, method: "POST", contentType: "application/json",
       headers: bearer(token), body: JSON.stringify({ token: linkToken }),
-    }, "redeem");
+    }, "redeem"));
   }
   // D0037 onboarding: redeem a vault share link AS a brand-new account, in one PUBLIC call (no prior
   // login). The valid single-use link authorizes account creation even under Closed registration
@@ -244,10 +298,10 @@ export class HttpTransport implements SyncApi {
     if (isInsecureRemote(baseUrl)) {
       throw new Error("Refusing to send a new password over an unencrypted http:// connection to a remote server. Use an https:// address.");
     }
-    return apiJson<SharedVaultRef & { token: string }>({
+    return validateRedeemedRegister(await apiJson<unknown>({
       url: `${normBase(baseUrl)}/api/share-redeem-register`, method: "POST", contentType: "application/json",
       body: JSON.stringify({ token: linkToken, username, password }),
-    }, "redeem & register");
+    }, "redeem & register"));
   }
 
   private auth() { return bearer(this.token); }

@@ -28,7 +28,7 @@ struct LinkRec {
 }
 
 // Owner-facing metadata — never the hash or token.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, schemars::JsonSchema)]
 pub struct LinkInfo {
     pub id: String,
     pub vault: String,

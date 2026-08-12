@@ -50,7 +50,7 @@ export class CommitConflictError extends Error {
 // otherwise reaches reconcile and could drive spurious local deletes or a corrupt rebuild.
 // Reject loudly instead — a bad response fails the sync round, it never mutates the vault.
 // (Pure, obsidian-free, so it is unit-testable in isolation from the transport.)
-function asStr(v: unknown, f: string): string {
+export function asStr(v: unknown, f: string): string {
   if (typeof v !== "string") throw new Error(`malformed response: ${f} not a string`);
   return v;
 }
@@ -59,15 +59,20 @@ function asStr(v: unknown, f: string): string {
 // negative `version` would otherwise become state.version and serialize into `?since=1.5`/`-1`,
 // which the server can't parse → falls back to since=0 → the client re-runs a full whole-vault
 // reconcile on every poll forever (cursor never converges).
-function asNum(v: unknown, f: string): number {
+export function asNum(v: unknown, f: string): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Error(`malformed response: ${f} not a non-negative integer`);
   return v;
 }
 // An OPTIONAL wire string: absent/null → undefined (a pre-provenance record), else a validated string.
 // Used for the provenance fields (author/device_*), which an older server or a reindexed file omits.
-function asOptStr(v: unknown, f: string): string | undefined {
+export function asOptStr(v: unknown, f: string): string | undefined {
   if (v === undefined || v === null) return undefined;
   return asStr(v, f);
+}
+// An OPTIONAL non-negative integer: absent/null → undefined (e.g. a link with no expiry), else validated.
+export function asOptNum(v: unknown, f: string): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  return asNum(v, f);
 }
 export function validateFileMeta(o: unknown): FileMeta {
   const m = o as Record<string, unknown>;

@@ -57,7 +57,7 @@ async fn scoped(
 
 // Vaults shared WITH the caller (owned-by-others), so the client can offer them in its
 // vault switcher. Own vaults come from /api/vaults; this is the complement.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct SharedVault {
     owner: String,
     vault: String,
