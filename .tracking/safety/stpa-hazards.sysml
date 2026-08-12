@@ -20,49 +20,49 @@ package ProjectHazards {
 
     // ---- Hazards (H-n): preventable system states, each linked to >=1 Loss ----
     part h1 : Hazard {
-        :>> id = "c0f1a5cc-c001-4a10-9b20-a1b2c3d4c001";
+        :>> id = "1484b6b9-a334-4679-b2de-d4f2ac581f33";
         :>> title = "H-1: local content removed/overwritten without a superseding authorized change";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "A local copy of a user's content is removed or overwritten though no authorized change has superseded it (e.g. acting on a wrong/empty/restored remote, or resolving a divergence by discarding a side). [L-1]";
     }
     part h2 : Hazard {
-        :>> id = "c0f1a5cc-c002-4a10-9b20-a1b2c3d4c002";
+        :>> id = "46dfb92e-0924-479a-a918-b349cbbbe4e2";
         :>> title = "H-2: devices converge on content that drops an authored version with no preserved copy";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "When two devices hold divergent content for a path, the system converges them on one version without preserving the other, so an authored edit is silently dropped (lost update / clobbering merge). [L-1]";
     }
     part h3 : Hazard {
-        :>> id = "c0f1a5cc-c003-4a10-9b20-a1b2c3d4c003";
+        :>> id = "21b3df54-eb0c-44af-a19c-f16ba909543e";
         :>> title = "H-3: content is treated as valid though it does not match its verified hash";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "Stored or served content whose bytes do not match its recorded content hash is accepted as authoritative, so undetected corruption propagates to devices. [L-1]";
     }
     part h4 : Hazard {
-        :>> id = "c0f1a5cc-c004-4a10-9b20-a1b2c3d4c004";
+        :>> id = "bc0f89d7-61a8-4840-9e1f-7a5a3feb776b";
         :>> title = "H-4: content or credentials accessible to a principal without an authorizing grant";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "A user's note content, or a credential/token protecting it, is readable by a principal that holds no authorizing grant for it. [L-2]";
     }
     part h5 : Hazard {
-        :>> id = "c0f1a5cc-c005-4a10-9b20-a1b2c3d4c005";
+        :>> id = "2ead3d49-4f12-4d17-8ec4-b845f5305a67";
         :>> title = "H-5: content from an unauthorized source is applied so it can act on a device";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "Content originating from a source the user did not authorize (e.g. a shared vault's owner) is applied to a device in a form that can execute or take effect there without the user's explicit authorization. [L-3]";
     }
     part h6 : Hazard {
-        :>> id = "c0f1a5cc-c006-4a10-9b20-a1b2c3d4c006";
+        :>> id = "6cae817e-6578-4fb3-8c28-0e6c8247a91b";
         :>> title = "H-6: system cannot accept or deliver a user's changes for an extended period";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "The system is unable to accept a user's new changes or deliver changes to their devices for an extended period, and does not make the reason actionable (e.g. a vault stuck unrepairable, or an undiagnosable client/server incompatibility). [L-4]";
     }
     part h7 : Hazard {
-        :>> id = "c0f1a5cc-c007-4a10-9b20-a1b2c3d4c007";
+        :>> id = "2c264633-a7e9-4875-ae47-53e7ca733f8f";
         :>> title = "H-7: access to content persists after its authorization is withdrawn";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "A principal continues to reach content (or its change metadata) after the grant that authorized them has been withdrawn or the account removed, or a reused identity inherits a prior principal's residual data. [L-2]";
     }
     part h8 : Hazard {
-        :>> id = "c0f1a5cc-c008-4a10-9b20-a1b2c3d4c008";
+        :>> id = "f47071d4-1153-4628-ad16-25cda89aced6";
         :>> title = "H-8: content commingled across isolation domains (accounts / vaults)";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> statement = "Content belonging to one isolation domain (an account, or a named vault) appears in another that was not granted it (e.g. two identities collapsing to one store, or a path escaping its vault). [L-1, L-2]";
@@ -70,13 +70,13 @@ package ProjectHazards {
     // ---- L-5 deepening (D0036, 2026-08-02): the feedback + connection-lifecycle loops the severity-first
     // pass treated as cosmetic. H-9 is the feedback-truthfulness state; H-10 the recovery-cessation state. ----
     part h9 : Hazard {
-        :>> id = "c0f1a5cc-c009-4a10-9b20-a1b2c3d4c009";
+        :>> id = "b85b0096-8ae9-499f-8ac9-404e7f19772c";
         :>> title = "H-9: reported sync state does not match the actual system state";
         :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
         :>> statement = "The state the plugin reports to the user (status indicator/card + progress) does not match what the system is actually doing — e.g. it indicates synced/idle while it cannot reach the server or is mid-operation, or shows no intelligible progress during a long operation — so the user's understanding diverges from the actual state. [L-5]";
     }
     part h10 : Hazard {
-        :>> id = "c0f1a5cc-c00a-4a10-9b20-a1b2c3d4c00a";
+        :>> id = "04c1bb9f-2fce-4d6f-8263-a4e1c988239a";
         :>> title = "H-10: the client ceases recovery of a recoverable connection";
         :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
         :>> statement = "The client stops attempting to recover a connection that could succeed (the link is down but the server/network is reachable again), so sync does not resume without manual intervention — while nothing in the reported state signals that it has stopped trying. [L-4, L-5]";

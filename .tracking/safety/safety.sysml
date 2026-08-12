@@ -38,25 +38,25 @@ package ProjectSafety {
     // Losses (L-n): unacceptable outcomes, stakeholder-valued, worst-case. No component/cause
     // reference (that belongs in a Step-4 scenario), no "unsafe/unintended/accidental" wording.
     part l1 : Loss {
-        :>> id = "c0f1a5cc-a001-4a10-9b20-a1b2c3d4a001";
+        :>> id = "6cd56144-859b-4cf8-8014-52508cde0140";
         :>> title = "L-1: Loss or corruption of note content";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
         :>> statement = "Note content a user created — including a specific edit or version — is permanently lost, silently corrupted, or overwritten so the stored content no longer reflects what the user wrote. This is INDUCED, USER-PERCEIVED loss: the SYSTEM making a note gone or wrong from the user's vantage — which also covers RESURRECTING content the user deliberately deleted (the deletion is undone). Raw byte durability (disk / backups) is out of scope for L-1; the concern is what the sync system itself induces. Priority: highest (the core value: never lose or silently alter what I write). Traces to selfHoster + collaborator.";
     }
     part l2 : Loss {
-        :>> id = "c0f1a5cc-a002-4a10-9b20-a1b2c3d4a002";
+        :>> id = "979520ca-f3be-4d3b-bc89-c53f1d6e2bf6";
         :>> title = "L-2: Disclosure of private information";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
         :>> statement = "A user's private note content, or a credential/token that protects it, becomes accessible to a party the user did not intend to share it with. Priority: high (privacy). Traces to selfHoster + collaborator.";
     }
     part l3 : Loss {
-        :>> id = "c0f1a5cc-a003-4a10-9b20-a1b2c3d4a003";
+        :>> id = "36079df2-9099-4078-9801-9117f425dbd1";
         :>> title = "L-3: Harm to the user's device or environment via sync";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
         :>> statement = "A user's device or environment is harmed — for example, code the user did not choose runs on it — as a consequence of using the sync system. Priority: high (the tool must be safe to run; bounded by A6 — peers/content untrusted, server operator trusted). Traces to selfHoster.";
     }
     part l4 : Loss {
-        :>> id = "c0f1a5cc-a004-4a10-9b20-a1b2c3d4a004";
+        :>> id = "a44c7f76-c65f-4b15-9bf3-12f96a40d668";
         :>> title = "L-4: Inability to access or sync notes";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
         :>> statement = "A user is unable to capture, retrieve, or reconcile their notes when they need them. Priority: medium (availability). Traces to selfHoster + collaborator.";
@@ -66,7 +66,7 @@ package ProjectSafety {
     // UCAs/scenarios reach it, never pre-judged in the loss. Distinct from L-4: L-4 is the system unable to
     // do its job; L-5 is the user's UNDERSTANDING of the system being wrong, even when the system works.
     part l5 : Loss {
-        :>> id = "c0f1a5cc-a005-4a10-9b20-a1b2c3d4a005";
+        :>> id = "d430229c-1c85-4d35-ad34-1e4a862fe2ce";
         :>> title = "L-5: The user is misled by the plugin's UX";
         :>> createdAt = "2026-08-02"; :>> createdBy = "wweatherholtz";
         :>> statement = "The user's understanding of the system diverges from its actual state because the plugin's UX conveys a false or unintelligible picture of what it is doing, whether an operation succeeded, or how to act. The USER is a controller and the UX is feedback to their process model — any feedback capable of misrepresenting state affects this loss. Priority: medium (informed control + trust — the D0054 adoption risk). Traces to selfHoster + collaborator.";

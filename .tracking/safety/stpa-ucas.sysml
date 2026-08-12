@@ -23,49 +23,49 @@ package ProjectStpaAnalysis {
     // ================= STEP 3 — Unsafe Control Actions =================
     // Context is the ACTUAL state that makes the action unsafe (not a belief, not the outcome).
     part uca1 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d001-4a10-9b20-a1b2c3d4d001"; :>> ucaType = UcaType::provided;
+        :>> id = "807b2ec0-8f75-4dc6-9083-289b5c6f1ba3"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-1: Reconciler deletes a local file when the remote lacks it but issued no deletion tombstone";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "The remote is a wrong / fresh / restored server that never held the file (no tombstone), while the local copy matches the last-agreed base.";
         :>> statement = "The Reconciler provides delete-local for a path while the server has issued no deletion tombstone for it (the file is merely absent). [H-1]";
     }
     part uca2 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d002-4a10-9b20-a1b2c3d4d002"; :>> ucaType = UcaType::provided;
+        :>> id = "16e090a4-48d6-4c9e-bec8-5ab2d568c7a9"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-2: Reconciler bulk-deletes local files against a degraded/partial manifest";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "The server manifest has lost a large fraction of previously-synced paths (partial index loss / restore over an incomplete dir).";
         :>> statement = "The Reconciler provides delete-local across many paths when the remote manifest is missing a suspicious fraction of the synced history. [H-1]";
     }
     part uca3 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d003-4a10-9b20-a1b2c3d4d003"; :>> ucaType = UcaType::provided;
+        :>> id = "f5fc0ca7-a1cc-4264-8a43-13bc25e3d619"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-3: Reconciler records a base / acts on a path outside this device's accept-scope";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "A path falls outside this device's selective-sync scope (a .obsidian category it filters out) yet is present on the server or locally.";
         :>> statement = "The Reconciler provides push/base-record (or delete) for a path this device does not accept, so a filtered path later reads as a phantom deletion on the device that holds it. [H-1, H-8]";
     }
     part uca4 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d004-4a10-9b20-a1b2c3d4d004"; :>> ucaType = UcaType::provided;
+        :>> id = "a2c98178-d844-4fa4-9e5e-a45affca0628"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-4: Reconciler pulls over a local file that changed since the decision, without preserving it";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "A local save landed after the reconcile decision was taken but before the downloaded bytes are written.";
         :>> statement = "The Reconciler provides pull (overwrite local) using a stale pre-fetch snapshot, discarding a racing local edit with no preserved copy. [H-1, H-2]";
     }
     part uca5 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d005-4a10-9b20-a1b2c3d4d005"; :>> ucaType = UcaType::provided;
+        :>> id = "c03fa62b-3442-4f39-a527-844ddc101346"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-5: Reconciler adopts downloaded content without verifying it against its hash";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "A served chunk/file is corrupt (bit rot / bad restore) — its bytes do not match the recorded content hash.";
         :>> statement = "The Reconciler provides pull, writing downloaded bytes to the note and stamping base = claimed hash without re-verifying the reassembled bytes. [H-3]";
     }
     part uca6 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d006-4a10-9b20-a1b2c3d4d006"; :>> ucaType = UcaType::provided;
+        :>> id = "82713394-c9b4-4106-a528-5ba4561097ec"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-6: Reconciler deletes a file on the server when local absence is not an authorized deletion";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "The file is absent locally because it was filtered/never-held on this device (or a base desync), not because the user deleted it.";
         :>> statement = "The Reconciler provides delete-remote for a path whose local absence is not evidence of a user deletion. [H-1]";
     }
     part uca7 : UnsafeControlAction {
-        :>> id = "c0f1a5cc-d007-4a10-9b20-a1b2c3d4d007"; :>> ucaType = UcaType::provided;
+        :>> id = "d13779a1-6149-440f-9049-3ec42f68fc8a"; :>> ucaType = UcaType::provided;
         :>> title = "UCA-7: Reconciler applies config that enables plugin code from a non-owned shared vault";
         :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> context = "The changed config carries plugin CODE (or theme/snippet CSS) that originated from an UNTRUSTED writer — a share peer, whether the local account owns the vault or not (Round-6: the untrusted writer can be a readWrite grantee on a vault the local account OWNS, not only a non-owned vault).";
