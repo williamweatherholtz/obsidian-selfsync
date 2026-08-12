@@ -10,7 +10,7 @@ import { Mount } from "./mounts";
 import { MountedIo, MountedApi, isDataPath } from "./mountio";
 import { VaultIo, SyncApi, SyncState, ChunkCache } from "./sync";
 import { BaseStore, BaseEntry } from "./base";
-import { ReconcileDeps, BulkDeleteStrategy, BULK_DELETE_MIN, BULK_DELETE_RATIO } from "./reconcile";
+import { ReconcileDeps, BulkDeleteStrategy, BULK_DELETE_MIN } from "./reconcile";
 
 // A stable per-mount identity for persisting (and looking up) its own base + cursor, independent of array
 // order. Uniquely identified by source (owner/vault + subfolder) + local mount point. JSON-encoded (not a
@@ -153,9 +153,13 @@ export class MountRuntime {
     const basePaths = this.base.paths();
     if (basePaths.length === 0) return false;                          // fresh/empty mount — nothing to protect
     if (this.io.exists && !(await this.io.exists(""))) return true;    // (a) the mount-point folder itself is gone
-    const local = await this.io.list();                               // (b) bulk of the content locally absent
+    const local = await this.io.list();
     const absent = basePaths.filter((p) => !local.has(p)).length;
-    return absent >= BULK_DELETE_MIN && absent / basePaths.length >= BULK_DELETE_RATIO;
+    // (b) ALL the content is gone (any size — an emptied mount is a reset gesture, not a shared-source wipe;
+    // closes the small <6-file "delete all, leave the empty folder" case), or (c) a BULK (>= the fixed floor)
+    // is gone in this pass. The RATIO is dropped on purpose: a delete-remote prunes base, so a ratio against the
+    // shrinking base is defeatable (a paced sub-floor drain — the bounded residual issueMountPacedDrain).
+    return absent === basePaths.length || absent >= BULK_DELETE_MIN;
   }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).
   toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version }; }

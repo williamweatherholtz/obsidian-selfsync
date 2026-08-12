@@ -173,6 +173,26 @@ describe("reconcileMountScope — a MASS local deletion never wipes the source (
     expect(src.deleted).toEqual([]);                          // source NOT wiped despite the folder node surviving
   });
 
+  it("deleting ALL files of a SMALL (<6) mount, folder remaining → still localGone (all-content-absent, finding 3)", async () => {
+    const { src, io, scope } = await established(3);
+    io.files.clear();                                        // folder "Work/ASI" persists; 3 of 3 absent
+    expect(await io.exists!("Work/ASI")).toBe(true);
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(scope.state).toBe("localGone");                   // caught by absent === base even below the floor
+    expect(src.deleted).toEqual([]);
+  });
+
+  it("a source REWIND (reset) that escalates to a full pass is ALSO guarded — no source wipe (finding 1)", async () => {
+    const { src, io, scope } = await established(8);
+    scope.runtime.state.version = 99;                        // our cursor ahead of the source → the next poll reads as rewound
+    io.files.clear();                                        // mass local deletion, folder remains
+    scope.forceFull = false;                                 // NOT forceFull — the reset path escalates to a full pass internally
+    await reconcileMountScope(scope);
+    expect(scope.state).toBe("localGone");                   // the guard now lives inside pollMount → covers the reset route
+    expect(src.deleted).toEqual([]);
+  });
+
   it("a SMALL local deletion (below the bulk floor) still propagates exactly to the source (D0043)", async () => {
     const { src, io, scope } = await established(10);
     io.files.delete("Work/ASI/n0.md"); io.files.delete("Work/ASI/n1.md"); // 2 of 10 — well under the floor

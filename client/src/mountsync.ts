@@ -27,7 +27,7 @@ export interface MountSyncHooks {
 // Run ONE poll cycle for one mount against its OWN cursor + source api, reusing the real reconcile engine.
 // `forceFull` (first contact / reconnect) runs a whole-subtree reconcileAll; otherwise an incremental delta.
 // A data-only mount never has a config scan, so the mode is only noop/full/delta.
-export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } = {}): Promise<void> {
+export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } = {}, onLocalGone?: () => void): Promise<void> {
   const d = rt.deps();
   const before = rt.state.version;
   const delta = await d.api.changes(before);
@@ -39,8 +39,13 @@ export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } 
   const rewound = delta.version < before;
   const mode = decideReconcileMode({ forceConfigScan: false, forceFullScan: !!opts.forceFull, reset: rewound, noChange });
   if (mode === "noop") return;
-  if (mode === "full") await reconcileAll(d);
-  else await reconcileDelta(d, delta);
+  if (mode === "full") {
+    // issueMountFolderDeletedWipesSource (critique finding 1): guard BEFORE any local-scanning full reconcile —
+    // whether it was triggered by forceFull OR a source rewind (reset). A mass local deletion must never
+    // delete-remote the whole subtree from the (possibly shared) source, regardless of what forced the full pass.
+    if (await rt.massLocalDeletion()) { onLocalGone?.(); return; }
+    await reconcileAll(d);
+  } else await reconcileDelta(d, delta); // a delta pass applies the SOURCE's incoming changes (a purely-local mass deletion is never in the delta)
 }
 
 // Drive ONE mount scope one cycle, advancing its FSM via the pure transition. Detached/unmounting/failed
@@ -55,16 +60,6 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
   const wasOffline = scope.state === "offline";
   const full = wasMounting || wasOffline || !!scope.forceFull; // forceFull: a Keep asked us to re-push (R11-F2)
   scope.forceFull = false;
-  // issueMountFolderDeletedWipesSource (critique F1): the user removed this mount's CONTENT (the whole folder,
-  // all files, or a bulk of them). NEVER reconcile — a full pass would delete-remote the whole subtree from the
-  // (possibly shared) source. Flag `localGone` and hold for an explicit Reinstate/Remove (owner: intentional
-  // delete → intentional reinstate). Only a FULL pass scans local + could delete-remote (a delta poll pulls the
-  // source only), and a local deletion always sets forceFull via the nudge, so gating on `full` is both correct
-  // and avoids a per-poll subtree list. Content-based (not folder-node existence — an empty folder still exists).
-  if (full && await scope.runtime.massLocalDeletion()) {
-    scope.state = "localGone"; hooks.onEvent?.(scope); // flag; the early return above skips it on later passes
-    return;
-  }
   if (scope.state === "live") { scope.state = mountTransition(scope.state, "syncStart"); hooks.onEvent?.(scope); }
   try {
     // R4-F4: on a first-contact / reconnect pass, refuse to reconcile a NOT-READY source (mid-reindex/
@@ -72,7 +67,12 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
     // spurious delete-local. Throwing routes to offline (retries), never failing destructively.
     if ((wasMounting || wasOffline) && !(await scope.runtime.ready())) throw new Error("source vault not ready (reindexing?)");
     scope.runtime.resetHeld(); // D0041: collect this pass's held incoming deletions
-    await pollMount(scope.runtime, { forceFull: full });
+    // issueMountFolderDeletedWipesSource (critique finding 1): the mass-local-deletion guard lives INSIDE
+    // pollMount, right before any local-scanning reconcileAll — so it covers BOTH the forceFull route and the
+    // source-rewind (reset) route to a full pass. On a hit, hold as `localGone` and never propagate.
+    let localGone = false;
+    await pollMount(scope.runtime, { forceFull: full }, () => { localGone = true; });
+    if (localGone) { scope.state = "localGone"; hooks.onEvent?.(scope); return; }
     hooks.onHeld?.(scope, scope.runtime.takeHeld(), full); // record held deletions (a full pass is authoritative → replace)
     scope.fails = 0;
     // Success lands `live` — UNLESS this pass produced a conflict copy, which surfaces as `diverged` ("Needs
