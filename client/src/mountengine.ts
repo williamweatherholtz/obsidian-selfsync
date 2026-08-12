@@ -24,9 +24,14 @@ export function mountKey(m: Mount): string {
   return JSON.stringify([m.source.owner, m.source.vaultId, m.source.sourcePath, m.mountPoint]);
 }
 
-// The persisted per-mount state (own base snapshot + own cursor). Stored in settings under mountKey(m), the
-// per-mount analogue of the primary's single data.json `base` + per-vault lastVersions map.
-export interface MountPersist { base: Record<string, BaseEntry>; version: number }
+// The persisted per-mount state (own base snapshot + own cursor + own source-history floor). Stored in settings
+// under mountKey(m), the per-mount analogue of the primary's single data.json `base` + per-vault lastVersions +
+// historyFloors maps. `historyFloor` is the SOURCE vault's last-seen deletion-history floor — an ADVANCE past
+// it means the source truncated its history (a reindex/reset), so tombstones for files deleted before the new
+// floor are gone and a delta pass would miss them; the sync loop routes that to a full reconcile (D0019,
+// mountResetDetection). Absent (an older data.json / a fresh mount) ⇒ undefined ⇒ the first observation just
+// records it, never a false reset (mirrors the primary's `sf !== undefined` guard).
+export interface MountPersist { base: Record<string, BaseEntry>; version: number; historyFloor?: number }
 
 // Parse-don't-validate at the persistence boundary (like parseSettings/parseMounts): harden an untrusted
 // persisted mountState blob into a well-formed map. A malformed entry is DROPPED (that mount just starts
@@ -56,7 +61,11 @@ export function parseMountState(raw: unknown): Record<string, MountPersist> {
       if (typeof r.mtime === "number" && Number.isFinite(r.mtime) && r.mtime >= 0) entry.mtime = r.mtime;
       base[p] = entry;
     }
-    out[key] = { base, version };
+    const entryOut: MountPersist = { base, version };
+    // D0019 (mountResetDetection): preserve a valid persisted source-history floor; a type-wrong/negative one
+    // is dropped (→ undefined → the next observation re-seeds it, never a false reset).
+    if (typeof e.historyFloor === "number" && Number.isFinite(e.historyFloor) && e.historyFloor >= 1) entryOut.historyFloor = e.historyFloor; // >=1: the server genesis floor is 1; a persisted 0/negative is invalid → drop → re-seed (critique F4)
+    out[key] = entryOut;
   }
   return out;
 }
@@ -93,9 +102,11 @@ export class MountRuntime {
   private sawConflict = false; // set when reconcile makes a conflict copy this pass → drives the FSM to `diverged` (R5-MED-1)
   private _held: string[] = []; // D0041: paths this pass held for incoming bulk-delete confirmation
   private _roEdits: string[] = []; // issueMountRoLocalEditBehavior: read-only-mount paths reported this pass as un-syncable local edits
+  private histFloor: number | undefined; // D0019 (mountResetDetection): last-seen SOURCE deletion-history floor
   constructor(readonly mount: Mount, private readonly ctx: MountRuntimeCtx) {
     this.base = new BaseStore(ctx.restore?.base ?? {});
     this.state = { version: ctx.restore?.version ?? 0 };
+    this.histFloor = ctx.restore?.historyFloor;
     this.retryBudget = new Map();
     this.io = new MountedIo(ctx.io, mount);
     this.api = new MountedApi(ctx.sourceApi, mount);
@@ -168,6 +179,16 @@ export class MountRuntime {
     // shrinking base is defeatable (a paced sub-floor drain — the bounded residual issueMountPacedDrain).
     return absent === basePaths.length || absent >= BULK_DELETE_MIN;
   }
-  // Snapshot the OWN base + cursor for persistence (stored under this.key).
-  toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version }; }
+  // D0019 (mountResetDetection): the last-seen SOURCE deletion-history floor (undefined until first observed).
+  historyFloor(): number | undefined { return this.histFloor; }
+  // Record the source's current history floor. MONOTONIC-forward: only ever RAISES the floor, never lowers it
+  // (a server floor is monotonic; a lower reported value is noise/skew — storing it would arm a later spurious
+  // reset when it climbs back, critique F3). The caller records it only AFTER a successful reconcile, so a
+  // failed/partial pass leaves the floor un-advanced and the reset re-fires next poll (critique F1 — mirrors
+  // the primary's floor-after-reconcile).
+  noteHistoryFloor(floor: number | undefined): void {
+    if (floor !== undefined && (this.histFloor === undefined || floor > this.histFloor)) this.histFloor = floor;
+  }
+  // Snapshot the OWN base + cursor + source-history floor for persistence (stored under this.key).
+  toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version, historyFloor: this.histFloor }; }
 }

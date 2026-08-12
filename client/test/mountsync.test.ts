@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { pollMount, reconcileMountScope, reconcileMountScopes, MountScope, MAX_MOUNT_FAILS } from "../src/mountsync";
-import { MountRuntime, MountRuntimeCtx } from "../src/mountengine";
+import { MountRuntime, MountRuntimeCtx, parseMountState } from "../src/mountengine";
 import { Mount } from "../src/mounts";
 import { VaultIo, SyncApi, ChunkCache } from "../src/sync";
 import { FileMeta, CommitRequest } from "../src/protocol";
@@ -274,5 +274,124 @@ describe("fail-isolation + FSM driving", () => {
       await reconcileMountScope(scope);
       expect(scope.state).toBe(state); // unchanged — never even touched the (throwing) api
     }
+  });
+});
+
+// D0019 (mountResetDetection, R2-F3): full source deletion-history reset detection for mounts — the per-mount
+// analogue of the primary's historyResetDetected. A source that TRUNCATES its history (its history_floor
+// advances past our cursor) drops the tombstones for files deleted before the new floor, so a DELTA poll
+// silently misses those deletions. The mount must route a floor advance (like a version rewind) to a FULL
+// reconcile, which re-scans and KEEPS absent-without-tombstone files (onKeptAbsent) instead of trusting the
+// truncated delta. The floor is tracked per-mount so a LATER truncation stays detectable.
+describe("pollMount — D0019 source history reset detection (mountResetDetection)", () => {
+  // A source whose full manifest + version + floor can be mutated to simulate a history truncation.
+  function resettableSource(chunks: Map<string, Uint8Array>, manifest: FileMeta[], version: number, floor?: number) {
+    let ver = version, fl = floor, man = [...manifest], failFull = false;
+    const committed: CommitRequest[] = [], deleted: string[] = [];
+    return {
+      committed, deleted,
+      changes: async (since: number) => {
+        if (since === 0 && failFull) throw new Error("source unavailable (simulated full-manifest failure)"); // makes reconcileAll throw
+        return { version: ver, upserts: since === 0 ? [...man] : [], deletes: [], history_floor: fl };
+      },
+      fileMeta: async (p: string) => man.find((u) => u.path === p) ?? null,
+      missing: async (hs: string[]) => hs.filter((h) => !chunks.has(h)),
+      getChunk: async (h: string) => { const b = chunks.get(h); if (!b) throw new Error("no chunk " + h); return b; },
+      putChunk: async (h: string, b: Uint8Array) => { chunks.set(h, b); },
+      commit: async (req: CommitRequest) => { committed.push(req); return { ...req, version: ver + 1 }; },
+      deleteFile: async (p: string) => { deleted.push(p); },
+      __truncate: (newFloor: number, newManifest: FileMeta[]) => { fl = newFloor; man = newManifest; },
+      __failFull: (v: boolean) => { failFull = v; },
+    } as any;
+  }
+
+  it("a SOURCE history-floor advance routes an otherwise-idle poll to a FULL reconcile (keeps the absent-without-tombstone file)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 2); // version 1, floor 2
+    const io = memIo();
+    const kept: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src, { callbacks: { onKeptAbsent: (p) => kept.push(p) } }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {}); // first contact (full): pulls a.md, records floor 2
+    expect(dec(io.files.get("Work/ASI/a.md"))).toBe("hello");
+    expect(rt.historyFloor()).toBe(2);
+    expect(kept).toEqual([]);
+
+    // The source truncates its history: a.md was deleted and its tombstone dropped (floor 2 → 9); version
+    // unchanged, no new delta. Without floor detection this poll is a NOOP and a.md lingers forever.
+    src.__truncate(9, []);
+    await reconcileMountScopes([scope], {}); // steady 'live' scope → would be a delta/noop but for the reset
+    expect(kept.length).toBeGreaterThan(0);           // a FULL reconcile ran and surfaced the absent file
+    expect(io.files.has("Work/ASI/a.md")).toBe(true); // kept (not silently deleted) — D0019 safe behavior
+    expect(rt.historyFloor()).toBe(9);                // the new floor is recorded so it won't re-trigger
+  });
+
+  it("the FIRST floor observation is NOT a reset (just seeds it); an unchanged floor is a normal delta/noop", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 5); // floor present from the very first pass
+    const io = memIo();
+    const kept: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src, { callbacks: { onKeptAbsent: (p) => kept.push(p) } }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {}); // first contact: floor 5 SEEDED, not treated as a reset
+    expect(rt.historyFloor()).toBe(5);
+    expect(io.files.has("Work/ASI/a.md")).toBe(true);
+    // A steady poll with the SAME floor + no delta → noop, no spurious keep/rescan.
+    await reconcileMountScopes([scope], {});
+    expect(kept).toEqual([]);
+  });
+
+  it("the per-mount floor round-trips through toPersist/restore (a later truncation stays detectable across a rebuild)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 4);
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
+    await reconcileMountScopes([{ runtime: rt, state: "detached", fails: 0 }], {});
+    const persisted = rt.toPersist();
+    expect(persisted.historyFloor).toBe(4);
+    // Rebuild from the persisted state → the floor is restored, so a truncation is still caught.
+    const rt2 = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(memIo({ "Work/ASI/a.md": "hello" }), src, { restore: persisted } as any));
+    expect(rt2.historyFloor()).toBe(4);
+  });
+
+  // Critique F1: the floor must advance only AFTER a successful reconcile — a failed reset pass must NOT spend
+  // the one-shot signal (mounts have no periodic full-scan), so the full reconcile RE-FIRES next poll.
+  it("a floor advance whose full reconcile FAILS does not spend the reset — it re-fires on recovery (F1)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 2);
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {}); // first contact: floor 2
+    expect(rt.historyFloor()).toBe(2);
+
+    src.__truncate(9, []); src.__failFull(true); // source truncated (floor→9) AND its full manifest now errors
+    await reconcileMountScopes([scope], {});     // reset detected → full reconcile → THROWS
+    expect(scope.state).toBe("offline");         // routed to a transient retry
+    expect(rt.historyFloor()).toBe(2);           // floor NOT advanced — the reset is still pending
+
+    src.__failFull(false);                        // source recovers
+    await reconcileMountScopes([scope], {});     // offline → forced full pass → reset re-handled, succeeds
+    expect(rt.historyFloor()).toBe(9);           // NOW consumed
+    expect(scope.state).toBe("live");
+  });
+
+  it("the floor is MONOTONIC — a lower reported floor is ignored, an undefined does not clobber (F3)", () => {
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(memIo(), sourceApi([], new Map(), 1)));
+    rt.noteHistoryFloor(5); expect(rt.historyFloor()).toBe(5);
+    rt.noteHistoryFloor(3); expect(rt.historyFloor()).toBe(5);        // lower → ignored (never arms a spurious later reset)
+    rt.noteHistoryFloor(undefined); expect(rt.historyFloor()).toBe(5); // undefined → no clobber
+    rt.noteHistoryFloor(8); expect(rt.historyFloor()).toBe(8);        // higher → raised
+  });
+
+  it("parseMountState drops a sub-genesis historyFloor (server genesis is 1) so it can't spuriously fire a reset (F4)", () => {
+    expect(parseMountState({ k: { base: {}, version: 1, historyFloor: 0 } }).k.historyFloor).toBeUndefined();
+    expect(parseMountState({ k: { base: {}, version: 1, historyFloor: -3 } }).k.historyFloor).toBeUndefined();
+    expect(parseMountState({ k: { base: {}, version: 1, historyFloor: 3 } }).k.historyFloor).toBe(3);
+    expect(parseMountState({ k: { base: {}, version: 1 } }).k.historyFloor).toBeUndefined(); // absent (old data.json) → undefined
   });
 });

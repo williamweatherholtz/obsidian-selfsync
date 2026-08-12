@@ -33,20 +33,33 @@ export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } 
   const before = rt.state.version;
   const delta = await d.api.changes(before);
   const noChange = delta.upserts.length === 0 && delta.deletes.length === 0 && delta.version === before;
-  // R9-C: a source-global version that went BACKWARDS since our cursor means the SOURCE vault was reindexed/
-  // restored (its history was rewritten). Route that through the engine's `reset` path (→ a full reconcile) so
-  // the mount re-pulls the whole subtree instead of trusting an incremental delta against a now-meaningless
-  // cursor. (Full D0019 history_floor/keptAbsent reset-detection for mounts remains a tracked follow-up.)
+  // D0019 (mountResetDetection) — full source-history reset detection, mirroring the primary's historyResetDetected:
+  //  (a) R9-C VERSION REWIND: the source-global version went BACKWARDS since our cursor → the source was
+  //      reindexed/restored (history rewritten) → the cursor is meaningless.
+  //  (b) FLOOR ADVANCE: the source's deletion-history FLOOR advanced past what we last saw → tombstones for
+  //      files deleted before the new floor are GONE, so a delta pass would silently MISS those deletions.
+  // Either routes to a FULL reconcile (reconcileAll re-scans the whole subtree and KEEPS absent-without-tombstone
+  // files via onKeptAbsent, never trusting the truncated delta). The first-ever floor observation (priorFloor
+  // undefined) is NOT a reset — it just seeds the floor (the `priorFloor !== undefined` guard, as the primary does).
   const rewound = delta.version < before;
-  const mode = decideReconcileMode({ forceConfigScan: false, forceFullScan: !!opts.forceFull, reset: rewound, noChange });
-  if (mode === "noop") return;
+  const priorFloor = rt.historyFloor();
+  const floorAdvanced = priorFloor !== undefined && delta.history_floor !== undefined && delta.history_floor > priorFloor;
+  const reset = rewound || floorAdvanced;
+  const mode = decideReconcileMode({ forceConfigScan: false, forceFullScan: !!opts.forceFull, reset, noChange });
+  if (mode === "noop") { rt.noteHistoryFloor(delta.history_floor); return; } // steady idle: keep the floor current (monotonic; no reset was pending)
   if (mode === "full") {
     // issueMountFolderDeletedWipesSource (critique finding 1): guard BEFORE any local-scanning full reconcile —
     // whether it was triggered by forceFull OR a source rewind (reset). A mass local deletion must never
     // delete-remote the whole subtree from the (possibly shared) source, regardless of what forced the full pass.
+    // NOTE: return WITHOUT advancing the floor — the mount is localGone, and a spent reset must re-fire on recovery.
     if (await rt.massLocalDeletion()) { onLocalGone?.(); return; }
     await reconcileAll(d);
   } else await reconcileDelta(d, delta); // a delta pass applies the SOURCE's incoming changes (a purely-local mass deletion is never in the delta)
+  // D0019 (mountResetDetection, critique F1): advance the floor ONLY here — after the reconcile SUCCEEDED. A
+  // throw above propagates to reconcileMountScope's catch (→ offline/retry) with the floor UN-advanced, so a
+  // failed/partial reset pass re-fires the full reconcile next poll instead of silently spending the one-shot
+  // signal (mounts have no periodic full-scan to fall back on). Mirrors the primary's floor-after-reconcile.
+  rt.noteHistoryFloor(delta.history_floor);
 }
 
 // Drive ONE mount scope one cycle, advancing its FSM via the pure transition. Detached/unmounting/failed
