@@ -13,7 +13,7 @@ class FolderSuggest extends AbstractInputSuggest<string> {
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
-import { confirmModal } from "./confirm";
+import { confirmModal, promptModal } from "./confirm";
 import { pushPreviewModal } from "./pushpreviewmodal";
 import { Mount, parseMounts } from "./mounts";
 import { mountKey } from "./mountengine";
@@ -505,7 +505,18 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       // localGone: the user deleted the local folder — offer an explicit Reinstate (re-pull from source); the
       // container deletion was NOT propagated to the source (issueMountFolderDeletedWipesSource).
       if (state === "localGone") row.addButton((b) => b.setButtonText("Reinstate").setTooltip("Re-create the folder and re-pull it from the source").onClick(() => void this.reinstateMountFlow(m)));
+      // issueMountRoToRwChange: change direction IN PLACE (base preserved). Offered for OWN-vault sources (always
+      // writable); a shared source's write permission is fixed by the grant, so it's not toggled here.
+      else if (m.source.owner === "") row.addExtraButton((b) => b
+        .setIcon(m.direction === "pull" ? "arrow-up-down" : "lock")
+        .setTooltip(m.direction === "pull" ? "Switch to Sync (two-way)" : "Switch to Pull (read-only)")
+        .onClick(() => void this.switchMountDirectionFlow(m)));
       row.addExtraButton((b) => b.setIcon("trash-2").setTooltip("Remove this mount").onClick(() => void this.removeMountFlow(m)));
+      // issueMountRoLocalEditBehavior: read-only edits that can't sync back — surface them + offer to keep them.
+      const roEdits = this.plugin.roMountEditsFor(key);
+      if (roEdits.length) new Setting(body).setName(`⚠ ${roEdits.length} read-only edit${roEdits.length > 1 ? "s" : ""} in ${m.mountPoint} won't sync back`)
+        .setDesc("This is a read-only mount, so your local edits can't reach the source. Keep them as your own notes in a separate folder, then the mount restores the source versions.")
+        .addButton((b) => b.setButtonText("Keep my edits in a folder").setCta().onClick(() => void this.keepRoEditsFlow(m)));
     }
     if (!mounts.length) body.createEl("p", { text: "No mounts yet.", attr: { style: "font-size:12px;opacity:.6;margin:0 0 8px;" } });
 
@@ -536,6 +547,38 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     });
     if (!ok) return;
     await this.plugin.reinstateMount(m);
+    this.display();
+  }
+
+  // issueMountRoToRwChange: flip a mount Pull<->Sync in place (base preserved). Switching to Sync warns that
+  // local edits will then be written back to the source.
+  private async switchMountDirectionFlow(m: Mount): Promise<void> {
+    const toSync = m.direction === "pull";
+    if (toSync) {
+      const ok = await confirmModal(this.app, {
+        title: "Switch to Sync (two-way)?",
+        body: `Changes you make in “${m.mountPoint}” will then be written back to the source vault and seen by anyone with access to it. The files already synced here are kept — only the direction changes.`,
+        confirmText: "Switch to Sync",
+      });
+      if (!ok) return;
+    }
+    await this.plugin.updateMountDirection(m, toSync ? "sync" : "pull");
+    this.display();
+  }
+
+  // issueMountRoLocalEditBehavior: copy the user's read-only-mount edits into a folder of their choice (their
+  // own notes), then the mount restores the source versions. The edit is retained, never discarded.
+  private async keepRoEditsFlow(m: Mount): Promise<void> {
+    const folder = await promptModal(this.app, {
+      title: "Keep your read-only edits",
+      body: `Your edited files in “${m.mountPoint}” will be COPIED into this folder as your own notes, then the mount restores the source versions. Choose where to keep them:`,
+      placeholder: "Read-only edits",
+      initial: "Read-only edits",
+      confirmText: "Keep them",
+    });
+    if (folder === null) return; // cancelled
+    const n = await this.plugin.keepRoMountEdits(m, folder || "Read-only edits");
+    new Notice(`SelfSync: kept ${n} edit${n === 1 ? "" : "s"} and restored the source.`);
     this.display();
   }
 

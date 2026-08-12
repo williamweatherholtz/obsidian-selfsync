@@ -44,6 +44,18 @@ describe("settings tab renders and wires its controls", () => {
     expect(text).not.toContain("No mounts yet");
   });
 
+  it("composed vaults: a read-only edit surfaces a Keep-my-edits action (issueMountRoLocalEditBehavior)", () => {
+    const p = fakePlugin({
+      settings: { mounts: [{ source: { owner: "", vaultId: "asi", sourcePath: "Projects" }, mountPoint: "Work/ASI", direction: "pull" }] },
+      mountStates: () => ({ '["","asi","Projects","Work/ASI"]': "live" }),
+      roMountEditsFor: (k: string) => (k === '["","asi","Projects","Work/ASI"]' ? ["a.md", "b.md"] : []),
+    });
+    const { containerEl } = renderTab(p);
+    const text = containerEl.textContent ?? "";
+    expect(text).toContain("2 read-only edits");
+    expect(buttonByText(containerEl, "Keep my edits in a folder")).toBeTruthy();
+  });
+
   it("composed vaults: with no mounts, shows the empty state + Add button (dormant, opt-in)", () => {
     const { containerEl } = renderTab(fakePlugin({ settings: { mounts: [] } }));
     expect((containerEl.textContent ?? "")).toContain("No mounts yet");
