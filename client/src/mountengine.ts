@@ -10,7 +10,7 @@ import { Mount } from "./mounts";
 import { MountedIo, MountedApi, isDataPath } from "./mountio";
 import { VaultIo, SyncApi, SyncState, ChunkCache } from "./sync";
 import { BaseStore, BaseEntry } from "./base";
-import { ReconcileDeps, BulkDeleteStrategy } from "./reconcile";
+import { ReconcileDeps, BulkDeleteStrategy, BULK_DELETE_MIN, BULK_DELETE_RATIO } from "./reconcile";
 
 // A stable per-mount identity for persisting (and looking up) its own base + cursor, independent of array
 // order. Uniquely identified by source (owner/vault + subfolder) + local mount point. JSON-encoded (not a
@@ -138,14 +138,25 @@ export class MountRuntime {
   takeHeld(): string[] { const h = this._held; this._held = []; return h; }
   // Is the SOURCE vault ready to sync (not mid-reindex/degraded)? Default true when no probe is wired.
   ready(): Promise<boolean> { return this.ctx.sourceReady ? this.ctx.sourceReady() : Promise.resolve(true); }
-  // Container-deletion guard (issueMountFolderDeletedWipesSource): did this mount ever hold content, and does
-  // its local root still exist? If the user deleted the WHOLE mount-point folder while it held content, a
-  // reconcile would delete-remote the entire subtree from the (possibly shared) source. The driver checks
-  // these to flag `localGone` and SKIP the pass instead of propagating. `localRootExists` maps to the mount
-  // root: MountedIo.exists("") → base.exists(mountPoint). Best-effort — when the adapter has no exists()
-  // (can't detect), it returns true so the guard never false-fires on a platform that can't check.
   baseNonEmpty(): boolean { return this.base.paths().length > 0; }
-  localRootExists(): Promise<boolean> { return this.io.exists ? this.io.exists("") : Promise.resolve(true); }
+  // Mass-local-deletion guard (issueMountFolderDeletedWipesSource, critique F1). Detects that the user removed
+  // this mount's CONTENT — the whole mount-point folder, all its files, or most of them — so the driver flags
+  // `localGone` and holds instead of delete-remoting the whole subtree from the (possibly shared) source.
+  // CONTENT-based, not folder-node existence: on the real adapter an EMPTY folder still exists, so "select all
+  // → delete" leaves the node present; keying on the node (the original flawed guard) missed exactly that. Two
+  // signals: (a) the mount-point FOLDER is gone (an explicit container delete, any size), or (b) a BULK of the
+  // base content is now locally absent (files deleted, folder may remain — the F1 case). Uses a FIXED floor
+  // (BULK_DELETE_MIN/RATIO), independent of the user's INCOMING D0041 setting, since wiping a shared source is
+  // catastrophic regardless. Below-floor deletions still propagate exactly (D0043). Only meaningful before a
+  // FULL pass (a delta poll never scans local, so it never delete-remotes), so the driver gates on that.
+  async massLocalDeletion(): Promise<boolean> {
+    const basePaths = this.base.paths();
+    if (basePaths.length === 0) return false;                          // fresh/empty mount — nothing to protect
+    if (this.io.exists && !(await this.io.exists(""))) return true;    // (a) the mount-point folder itself is gone
+    const local = await this.io.list();                               // (b) bulk of the content locally absent
+    const absent = basePaths.filter((p) => !local.has(p)).length;
+    return absent >= BULK_DELETE_MIN && absent / basePaths.length >= BULK_DELETE_RATIO;
+  }
   // Snapshot the OWN base + cursor for persistence (stored under this.key).
   toPersist(): MountPersist { return { base: this.base.toJSON(), version: this.state.version }; }
 }

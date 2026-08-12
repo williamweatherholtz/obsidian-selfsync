@@ -2420,6 +2420,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     const key = mountKey(m);
     delete this.mountStateStore[key];                                        // fresh first-contact → full re-pull from the source
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key); // drop the localGone scope so it rebuilds
+    this.pendingBulkDeletes.delete(key);                                     // F5: drop any stale held-deletion review keyed to this mount
     await this.ensureMountFolder(m.mountPoint);                              // re-create the dedicated folder now (visible immediately)
     await this.saveSettings();
     void this.reconcileMounts();

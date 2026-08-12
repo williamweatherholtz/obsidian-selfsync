@@ -31,16 +31,20 @@ function sourceApi(upserts: FileMeta[], chunks: Map<string, Uint8Array>, version
   } as any;
 }
 // An in-memory local vault io.
-function memIo(seed: Record<string, string> = {}): VaultIo & { files: Map<string, Uint8Array> } {
+function memIo(seed: Record<string, string> = {}): VaultIo & { files: Map<string, Uint8Array>; folders: Set<string> } {
   const files = new Map<string, Uint8Array>(Object.entries(seed).map(([p, c]) => [p, new TextEncoder().encode(c)]));
+  // Track folders EXPLICITLY, like Obsidian's real adapter: an EMPTY folder still exists (deleting all files
+  // under a folder leaves the folder node) — the critique F1 case the old model masked.
+  const folders = new Set<string>();
+  const track = (p: string) => { const s = p.split("/"); for (let i = 1; i < s.length; i++) folders.add(s.slice(0, i).join("/")); };
+  for (const p of files.keys()) track(p);
   return {
-    files,
+    files, folders,
     list: async () => new Map([...files].map(([p, b]) => [p, { size: b.length, mtime: 1000 }])),
     read: async (p: string) => { const b = files.get(p); if (!b) throw new Error("enoent " + p); return b; },
-    write: async (p: string, b: Uint8Array) => { files.set(p, b); },
-    remove: async (p: string) => { files.delete(p); },
-    // folder-aware, like Obsidian's adapter: a path exists if it's a file OR the ancestor of one (a folder).
-    exists: async (p: string) => files.has(p) || [...files.keys()].some((k) => k.startsWith(p + "/")),
+    write: async (p: string, b: Uint8Array) => { files.set(p, b); track(p); },
+    remove: async (p: string) => { files.delete(p); }, // folder persists (Obsidian keeps empty folders)
+    exists: async (p: string) => files.has(p) || folders.has(p) || [...files.keys()].some((k) => k.startsWith(p + "/")),
   } as any;
 }
 const ctx = (io: VaultIo, sourceApi: SyncApi, over: Partial<MountRuntimeCtx> = {}): MountRuntimeCtx =>
@@ -130,28 +134,54 @@ describe("reconcileMountScope — SYNC pushes a LATER local edit only via a forc
   });
 });
 
-describe("reconcileMountScope — deleting the local mount FOLDER never wipes the source (issueMountFolderDeletedWipesSource)", () => {
-  it("a mount whose local root is deleted (with content) → localGone, and NEVER delete-remotes the source", async () => {
+describe("reconcileMountScope — a MASS local deletion never wipes the source (issueMountFolderDeletedWipesSource / critique F1)", () => {
+  // Establish a sync mount holding `n` files pulled from the source subfolder "notes".
+  async function established(n: number): Promise<{ src: ReturnType<typeof sourceApi>; io: ReturnType<typeof memIo>; scope: MountScope }> {
     const chunks = new Map<string, Uint8Array>();
-    const src = sourceApi([await serveFile(chunks, "notes/a.md", "hi", 1)], chunks, 1);
+    const upserts: FileMeta[] = [];
+    for (let i = 0; i < n; i++) upserts.push(await serveFile(chunks, `notes/n${i}.md`, `v${i}`, 1));
+    const src = sourceApi(upserts, chunks, 1);
     const io = memIo();
     const rt = new MountRuntime(mk("Work/ASI", "notes", "sync"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "mounting", fails: 0 };
-    await reconcileMountScope(scope);                 // establish: pulls notes/a.md → Work/ASI/a.md
+    await reconcileMountScope(scope);                          // full first pass → pulls all n
     expect(scope.state).toBe("live");
     expect(rt.baseNonEmpty()).toBe(true);
-    expect([...io.files.keys()]).toContain("Work/ASI/a.md");
-    // The user deletes the WHOLE mount folder (all files under it vanish → the folder no longer exists).
-    io.files.clear();
+    return { src, io, scope };
+  }
+
+  it("deleting the whole mount FOLDER (node gone) → localGone, source untouched — any size", async () => {
+    const { src, io, scope } = await established(3);
+    io.files.clear(); io.folders.delete("Work/ASI");          // the folder node itself is removed
+    scope.forceFull = true;
     await reconcileMountScope(scope);
-    expect(scope.state).toBe("localGone");            // flagged + held, not reconciled
-    expect(src.deleted).toEqual([]);                  // CRITICAL: nothing deleted from the source
+    expect(scope.state).toBe("localGone");
+    expect(src.deleted).toEqual([]);                          // CRITICAL: nothing deleted from the source
     expect(src.committed).toEqual([]);
-    // A later pass keeps it held (skipped), still no source mutation.
-    await reconcileMountScope(scope);
+    await reconcileMountScope(scope);                         // stays held on a later pass
     expect(scope.state).toBe("localGone");
     expect(src.deleted).toEqual([]);
   });
+
+  it("deleting ALL the files but leaving the (empty) folder → still localGone (the critique F1 case)", async () => {
+    const { src, io, scope } = await established(8);
+    io.files.clear();                                         // folder "Work/ASI" PERSISTS (Obsidian keeps empty folders)
+    expect(await io.exists!("Work/ASI")).toBe(true);          // the empty folder still exists — the F1 trap
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(scope.state).toBe("localGone");
+    expect(src.deleted).toEqual([]);                          // source NOT wiped despite the folder node surviving
+  });
+
+  it("a SMALL local deletion (below the bulk floor) still propagates exactly to the source (D0043)", async () => {
+    const { src, io, scope } = await established(10);
+    io.files.delete("Work/ASI/n0.md"); io.files.delete("Work/ASI/n1.md"); // 2 of 10 — well under the floor
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(scope.state).not.toBe("localGone");
+    expect(src.deleted.sort()).toEqual(["notes/n0.md", "notes/n1.md"]); // exact outgoing delete, no over-hold
+  });
+
   it("a FRESH mount (empty base) whose folder doesn't exist yet still pulls — not mistaken for a deletion", async () => {
     const chunks = new Map<string, Uint8Array>();
     const src = sourceApi([await serveFile(chunks, "notes/a.md", "hi", 1)], chunks, 1);
@@ -159,7 +189,7 @@ describe("reconcileMountScope — deleting the local mount FOLDER never wipes th
     const rt = new MountRuntime(mk("Work/ASI", "notes", "sync"), ctx(io, src));
     const scope: MountScope = { runtime: rt, state: "mounting", fails: 0 };
     await reconcileMountScope(scope);
-    expect(scope.state).toBe("live");                 // fresh → pulled, folder materialized
+    expect(scope.state).toBe("live");                          // fresh → pulled, folder materialized
     expect([...io.files.keys()]).toContain("Work/ASI/a.md");
   });
 });
