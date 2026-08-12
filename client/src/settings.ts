@@ -817,14 +817,9 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       if (availableIds.length) st.addButton((b) => b.setButtonText("Install all from the sync").setCta().onClick(async () => { await this.plugin.installAllServerPlugins(); this.display(); }));
     });
 
-    // Explain the disabled Push/Pull state (owner-requested) — shown when there are installed synced plugins
-    // (the ones that carry the buttons) on a writable vault.
-    if (!ro && syncedIds.some((id) => installed.has(id))) {
-      g.addSetting((st) => st.setDesc("Greyed Push/Pull = already in sync."));
-    }
 
     // The plugins THIS device actually syncs.
-    this.renderPluginRows(c, syncedIds, cs, manifests, installed, onServer, ro, `${syncedIds.length} synced`);
+    this.renderPluginRows(g.listEl, syncedIds, cs, manifests, installed, onServer, ro, `${syncedIds.length} synced`);
 
     // A SEPARATE, subordinate group for the AVAILABLE-to-adopt set: plugins on the server not installed/
     // adopted here. When the autopilot is on, the ones ANOTHER PERSON added are gated here for your approval
@@ -846,6 +841,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string, pendingAuthors?: Map<string, string>): void {
     if (!ids.length) return;
     const body = this.collapsible(c, summaryLabel, this.pluginsExpanded ?? ids.length <= 8, (v) => { this.pluginsExpanded = v; });
+    // issueGreyedNoteWrongSection: explain the greyed Push/Pull RIGHT here with the rows that carry the buttons,
+    // not up in the summary group a section away. Only when this list has installed synced plugins (the ones
+    // with Push/Pull) on a writable vault.
+    if (!ro && ids.some((id) => installed.has(id))) new Setting(body).setDesc("Greyed Push/Pull = already in sync.");
     for (const id of ids) {
       const on = cs.pluginAllow.includes(id);
       const here = installed.has(id);
