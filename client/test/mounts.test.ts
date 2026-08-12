@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Mount, normFolder, normMountFolder, claimsLocal, primaryExcludes, mountRelFromLocal, mountRelFromSource, localFromMountRel, sourceFromMountRel, validateMounts, parseMounts } from "../src/mounts";
+import { Mount, normFolder, normMountFolder, claimsLocal, primaryExcludes, mountRelFromLocal, mountRelFromSource, localFromMountRel, sourceFromMountRel, validateMounts, parseMounts, nudgeTarget } from "../src/mounts";
 
 const mk = (mountPoint: string, sourcePath = "", direction: "pull" | "sync" = "pull"): Mount =>
   ({ source: { owner: "will", vaultId: "asi", sourcePath }, mountPoint, direction });
@@ -129,4 +129,32 @@ describe("parseMounts — persistence boundary (parse-don't-validate)", () => {
     expect(m).toEqual([{ source: { owner: "will", vaultId: "asi", sourcePath: "" }, mountPoint: "Refs", direction: "sync" }]);
   });
   it("non-array → []", () => { expect(parseMounts(undefined)).toEqual([]); expect(parseMounts("x")).toEqual([]); });
+});
+
+describe("nudgeTarget — the local-file-event nudge decision (mountNudgeHardening F4)", () => {
+  const never = () => false; // no path is a self-echo
+  const sync = mk("Work/ASI", "", "sync");
+  const pull = mk("Refs", "", "pull");
+  const mounts = [sync, pull];
+
+  it("returns the claiming mount for a user edit under a SYNC mount (force a push-scanning pass)", () => {
+    expect(nudgeTarget(mounts, "Work/ASI/note.md", never)).toBe(sync);
+    expect(nudgeTarget(mounts, "Work/ASI", never)).toBe(sync); // the mount point itself
+  });
+
+  it("also nudges a PULL mount (a local edit surfaces promptly as a read-only conflict; the io still can't write the source)", () => {
+    expect(nudgeTarget(mounts, "Refs/a/b.md", never)).toBe(pull);
+  });
+
+  it("returns null for a path outside every mount (the primary scope owns it)", () => {
+    expect(nudgeTarget(mounts, "Inbox/x.md", never)).toBeNull();
+    expect(nudgeTarget(mounts, "Work/ASIx/y.md", never)).toBeNull(); // sibling by name-prefix, NOT under the mount
+    expect(nudgeTarget([], "Work/ASI/note.md", never)).toBeNull();
+  });
+
+  it("returns null when the event is the echo of the mount's OWN pull-write (not a user edit)", () => {
+    const echo = (p: string) => p === "Work/ASI/pulled.md";
+    expect(nudgeTarget(mounts, "Work/ASI/pulled.md", echo)).toBeNull(); // our write coming back → ignore
+    expect(nudgeTarget(mounts, "Work/ASI/typed.md", echo)).toBe(sync);  // a different file → a real edit → nudge
+  });
 });

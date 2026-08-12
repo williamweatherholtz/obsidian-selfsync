@@ -56,6 +56,21 @@ export function primaryExcludes(mounts: readonly Mount[], localPath: string): bo
   return mounts.some((m) => claimsLocal(m, localPath));
 }
 
+// Pure decision for the local-file-event NUDGE (mountNudgeHardening F4): given the in-effect mount set and a
+// changed local path, which mount (if any) should be forced to run a full local-scanning pass NOW instead of
+// waiting for the ~60s poll? Returns the claiming mount, or null to ignore. `isSelfEcho(path)` is true when the
+// event is the echo of the mount's OWN pull-write (within the self-write window) — a genuine user edit only.
+// DIRECTION-AGNOSTIC on purpose: a sync mount pushes the edit; a PULL mount surfaces it promptly as a read-only
+// conflict (the read-only io still can't write the source), so both want the prompt local scan.
+export function nudgeTarget(
+  mounts: readonly Mount[], localPath: string, isSelfEcho: (p: string) => boolean,
+): Mount | null {
+  const claimed = mounts.find((m) => claimsLocal(m, localPath));
+  if (!claimed) return null;      // outside every mount — the primary scope owns it
+  if (isSelfEcho(localPath)) return null; // our own pull-write coming back as an event, not a user edit
+  return claimed;
+}
+
 // local `<mountPoint>/<rel>` → `<rel>` (the mount-relative middle the reconcile operates on), or null if the
 // path is not under this mount. The returned rel keeps the REAL path's case/segments (the match is canonical,
 // the slice is real), so the round-trip through localFromMountRel finds the real on-disk file.

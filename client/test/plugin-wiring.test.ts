@@ -6,6 +6,7 @@ import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { ConnError, Endpoint } from "../src/connstate";
 import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
 import { TFile } from "obsidian";
+import { mountKey as mountKeyOf } from "../src/mountengine";
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
 // In-memory VaultIo (enough for reconcile to run).
@@ -308,6 +309,48 @@ describe("plugin wiring — producers → engine → effects", () => {
     fire("modify", f);
     await flush();
     expect(api.__calls.fileMeta?.some((c) => c[0] === "note.md")).toBe(true);
+    p.onunload();
+  });
+
+  // mountNudgeHardening F4: a user edit UNDER a live mount folder forces that mount's scope to run a full
+  // local-scanning pass NOW (scope.forceFull) instead of waiting for the ~60s poll — the push-back nudge.
+  // Drives the REAL onLocalEvent → nudgeMountForLocalPath wiring over the plugin (no live source transport
+  // needed: a minimal fake scope stands in, and reconcileMounts is stubbed so nothing tries to run it).
+  it("a local edit under a mount forces that mount's scope full (push nudge); an echo or an outside path does NOT", async () => {
+    const { p, fire } = await bootPlugin();
+    const anyp = p as any;
+    const mount = { source: { owner: "will", vaultId: "asi", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" };
+    p.settings.mounts = [mount as any];
+    const key = mountKeyOf(mount as any);
+    const scope: any = { runtime: { key, mount }, state: "idle", fails: 0, forceFull: false };
+    anyp.mountScopes = [scope];
+    anyp.reconcileMounts = () => {}; // don't actually run the fake scope
+    const edit = (path: string) => { const f = new TFile(); f.path = path; f.stat = { size: 1, mtime: 0, ctime: 0 }; fire("modify", f); };
+
+    edit("Inbox/out.md");                 // outside every mount → primary owns it
+    expect(scope.forceFull).toBe(false);
+    edit("Work/ASI/note.md");             // a user edit under the mount → nudge
+    expect(scope.forceFull).toBe(true);
+
+    scope.forceFull = false;
+    anyp.recentSelfWrites.set("Work/ASI/pulled.md", Date.now()); // mark as our own pull-write
+    edit("Work/ASI/pulled.md");           // the echo of our write → NOT a user edit → no nudge
+    expect(scope.forceFull).toBe(false);
+    p.onunload();
+  });
+
+  // mountNudgeHardening F7: activeMounts() is memoized (it runs on every file event) and self-invalidates when
+  // the mount set changes — the same result identity on repeat, a fresh compute after an edit.
+  it("activeMounts() memoizes and invalidates on a mount-set change (F7)", async () => {
+    const { p } = await bootPlugin();
+    p.settings.mounts = [{ source: { owner: "will", vaultId: "asi", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" } as any];
+    const a = p.activeMounts();
+    expect(a).toHaveLength(1);
+    expect(p.activeMounts()).toBe(a);               // cache hit → same array reference (no recompute)
+    p.settings.mounts = [...p.settings.mounts, { source: { owner: "will", vaultId: "asi", sourcePath: "Refs" }, mountPoint: "Docs", direction: "pull" } as any];
+    const b = p.activeMounts();
+    expect(b).not.toBe(a);                           // set changed → recomputed
+    expect(b).toHaveLength(2);
     p.onunload();
   });
 

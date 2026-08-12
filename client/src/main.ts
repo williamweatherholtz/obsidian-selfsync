@@ -25,7 +25,7 @@ import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_C
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts } from "./mounts";
+import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, nudgeTarget } from "./mounts";
 import { foldersWithContent } from "./mountsettings";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
@@ -2225,13 +2225,22 @@ export default class NewLiveSyncPlugin extends Plugin {
   // scope-building, so a bad set can't leave a folder excluded-from-primary yet handled-by-no-mount (N1). A
   // hand-edited invalid set → activeMounts() empty → the primary keeps syncing those folders (safe), nothing
   // mounted, until the set is fixed.
+  private _activeMountsMemo?: { sig: string; result: Mount[] };
   activeMounts(): Mount[] {
     // The valid, non-overlapping SUBSET (R5-MED-3: one bad hand-edited mount drops only itself, not all — a
     // full-set deactivation would re-absorb the good mounts' folders into the primary and upload their
     // source-derived content there). Also EXCLUDE a mount of the CURRENT primary vault (R5-LOW-3: after a
     // switchToVault onto a mount's source, that mount is self-referential → auto-dormant).
     const po = this.settings.vaultOwner ?? "", pv = this.settings.vaultId ?? "";
-    return validMounts(this.mounts()).filter((m) => !(m.source.owner === po && m.source.vaultId === pv));
+    // F7 (mountNudgeHardening): this runs on EVERY primary file event (nudge + primary-scope exclusion), and
+    // validMounts does O(n²) overlap checks. Memoize on a cheap signature of the only inputs (the raw mount
+    // set + the primary identity) so a burst of saves recomputes at most once. The memo is self-invalidating —
+    // any add/remove/edit/switch changes the signature — so there is no scattered invalidation to keep in sync.
+    const sig = JSON.stringify([po, pv, this.mounts()]);
+    if (this._activeMountsMemo?.sig === sig) return this._activeMountsMemo.result;
+    const result = validMounts(this.mounts()).filter((m) => !(m.source.owner === po && m.source.vaultId === pv));
+    this._activeMountsMemo = { sig, result };
+    return result;
   }
   // A transport bound to a mount's SOURCE vault (same server + session token; a different owner/vault). The
   // source is on the SAME server (cross-server mounts are out of scope, D0039), so the session token authorizes
@@ -2686,13 +2695,15 @@ export default class NewLiveSyncPlugin extends Plugin {
   // is a no-op and never propagates. The primary engine excludes mount folders, so it can't handle this. The
   // re-entrancy guard in reconcileMounts coalesces a burst of edits; forceFull is idempotent.
   private nudgeMountForLocalPath(path: string): void {
-    const claimed = this.activeMounts().find((m) => claimsLocal(m, path));
-    if (!claimed) return;
     // F2: skip the echo of the mount's OWN pull-write (every io write marks recentSelfWrites within a 4s
     // window). Only a genuine USER edit should force a local-scanning pass — otherwise every pulled file would
     // upgrade the next poll to a full re-hash, de-optimizing the incremental delta path on an active source.
-    const wrote = this.recentSelfWrites.get(path);
-    if (wrote !== undefined && Date.now() - wrote < SELF_WRITE_WINDOW_MS) return;
+    // The claim-filter + echo-skip decision is pure (mounts.nudgeTarget) and unit-tested.
+    const claimed = nudgeTarget(this.activeMounts(), path, (p) => {
+      const wrote = this.recentSelfWrites.get(p);
+      return wrote !== undefined && Date.now() - wrote < SELF_WRITE_WINDOW_MS;
+    });
+    if (!claimed) return;
     const scope = this.mountScopes.find((s) => s.runtime.key === mountKey(claimed));
     if (scope) scope.forceFull = true; // a live scope: scan local this pass and push the local change
     void this.reconcileMounts();       // a not-yet-built scope starts as a full pass anyway
