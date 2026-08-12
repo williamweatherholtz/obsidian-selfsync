@@ -354,6 +354,42 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // mountBaseFreshness R8-F4 (in-session): when the primary is ON a mount's source, that mount is self-
+  // referentially dormant while the primary rewrites the same local folder → its persisted base goes stale.
+  // The CENTRAL drop lives in rebuildMountScopes (reached by EVERY repoint via reconnect — switchToVault, the
+  // setup wizard's direct-sets, a redeem — closing the F1 missed-cases + the F2 write-back race the critique
+  // found). It drops only the self-ref mount's base and leaves unrelated mounts' bases intact.
+  it("mountBaseFreshness: rebuildMountScopes drops the stale base of a mount whose source IS the primary; others untouched (R8-F4)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.mountIo = {};                // skip buildMountIo (needs a real adapter)
+    anyp.buildMountApi = () => null;  // don't build/poll real source transports in the test
+    p.settings.vaultId = "shared-src"; p.settings.vaultOwner = undefined; // primary IS src's source
+    const src = { source: { owner: "", vaultId: "shared-src", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" };
+    const other = { source: { owner: "", vaultId: "other-src", sourcePath: "" }, mountPoint: "Docs", direction: "pull" };
+    p.settings.mounts = [src as any, other as any];
+    const kSrc = mountKeyOf(src as any), kOther = mountKeyOf(other as any);
+    anyp.mountStateStore[kSrc] = { base: { "a.md": { hash: "h", text: "", normHash: "n", size: 1, mtime: 1 } }, version: 3 };
+    anyp.mountStateStore[kOther] = { base: { "b.md": { hash: "h2", text: "", normHash: "n2", size: 1, mtime: 1 } }, version: 2 };
+    anyp.rebuildMountScopes();        // the central drop — reached by every repoint via reconnect
+    expect(anyp.mountStateStore[kSrc]).toBeUndefined();  // self-ref → stale base dropped → reactivation re-first-contacts
+    expect(anyp.mountStateStore[kOther]).toBeDefined();  // an unrelated mount is untouched
+    p.onunload();
+  });
+
+  // mountBaseFreshness R8-F4 (cross-session): booting ALREADY ON a mount's source (switched onto it a prior
+  // session, reopened here) must likewise drop that mount's stale persisted base at load.
+  it("mountBaseFreshness: loading already on a mount's source drops that mount's stale base (cross-session)", async () => {
+    const mount = { source: { owner: "", vaultId: "shared-src", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" };
+    const key = mountKeyOf(mount as any);
+    const { p } = await bootPlugin(true, {
+      settings: { vaultId: "shared-src", mounts: [mount] },
+      preOnload: (pp) => { (pp as any)._data.mountState = { [key]: { base: { "a.md": { hash: "h", text: "", normHash: "n", size: 1, mtime: 1 } }, version: 5 } }; },
+    });
+    expect((p as any).mountStateStore[key]).toBeUndefined(); // dropped at load (we're on its source) → clean reactivation later
+    p.onunload();
+  });
+
   it("a WS poke → a fresh reconcileAll (changes re-queried)", async () => {
     const { p, api } = await bootPlugin();
     const before = api.__calls.changes?.length ?? 0;

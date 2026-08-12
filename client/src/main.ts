@@ -1154,6 +1154,10 @@ export default class NewLiveSyncPlugin extends Plugin {
   // a persistent setting: the caller (the switch modal) picks the resolution and it is
   // applied ONCE on the next reconnect, then forgotten. `merge` is the safe default union.
   async switchToVault(name: string, mode: SwitchMode = "merge", owner = "", readOnly = false): Promise<void> {
+    // mountBaseFreshness (R8-F4): dropping the stale base of a mount whose source becomes the primary is handled
+    // CENTRALLY in rebuildMountScopes (reached by EVERY repoint via reconnect — switchToVault, the setup wizard,
+    // a redeem, a pendingSwitch replay — and after doTeardown has cleared mountScopes, so no in-flight pass can
+    // resurrect the dropped base). Nothing mount-specific to do here.
     this.settings.vaultId = name;
     this.settings.vaultOwner = owner || undefined; // empty = own vault
     this.settings.vaultReadOnly = readOnly;
@@ -2225,6 +2229,22 @@ export default class NewLiveSyncPlugin extends Plugin {
   // scope-building, so a bad set can't leave a folder excluded-from-primary yet handled-by-no-mount (N1). A
   // hand-edited invalid set → activeMounts() empty → the primary keeps syncing those folders (safe), nothing
   // mounted, until the set is fixed.
+  // mountBaseFreshness (R8-F4): drop the persisted base of every mount whose SOURCE is the given vault (the
+  // one the primary is on / switching to). Such a mount is self-referentially dormant (activeMounts excludes
+  // it), and the primary sync owns + rewrites that same local folder while it's dormant — so its base silently
+  // goes stale. Dropping it makes reactivation re-first-contact (non-destructive: matching content is adopted,
+  // real divergence still makes a real conflict copy) instead of restoring a stale base that fabricates copies.
+  // `owner` is "" for an own vault (matching how own-source mounts store source.owner).
+  private invalidateSelfReferentialMountBases(owner: string, vaultId: string): void {
+    let dropped = 0;
+    for (const m of this.mounts()) {
+      if (m.source.owner === owner && m.source.vaultId === vaultId) {
+        const key = mountKey(m);
+        if (this.mountStateStore[key]) { delete this.mountStateStore[key]; dropped++; }
+      }
+    }
+    if (dropped > 0) this.log(`composed vaults: dropped ${dropped} stale mount base(s) whose source is now the primary vault — they will re-sync fresh from the source when reactivated`);
+  }
   private _activeMountsMemo?: { sig: string; result: Mount[] };
   activeMounts(): Mount[] {
     // The valid, non-overlapping SUBSET (R5-MED-3: one bad hand-edited mount drops only itself, not all — a
@@ -2258,6 +2278,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // activeMounts() = the valid, non-overlapping, non-self SUBSET (R5-MED-3: a single bad entry drops only
     // itself, not the good mounts — dropping all would re-absorb their folders into the primary). The primary
     // exclusion (passes/accepts) uses the SAME activeMounts() set, so the two scopes stay provably disjoint (N1).
+    // mountBaseFreshness (R8-F4): CENTRAL drop of a self-referentially-dormant mount's stale base. Every path
+    // that repoints the primary reaches here via reconnect (switchToVault, the setup wizard's direct-sets, a
+    // redeem, a pendingSwitch replay), and doTeardown has already cleared mountScopes on that reconnect — so an
+    // in-flight pass of the now-dormant mount can't resurrect the base (its write-back guard finds no live scope).
+    this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
     const want = this.activeMounts();
     if (want.length < this.mounts().length) this.log(`composed vaults: ${this.mounts().length - want.length} mount(s) ignored (invalid, overlapping, .obsidian-anchored, or the current primary vault) — the rest are active`);
     this.mountIo ??= this.buildMountIo();
@@ -2751,6 +2776,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // keeps its base until fixed). A dropped key just re-first-contacts (non-destructive: preserveLocalFirstContact).
     const liveKeys = new Set(this.mounts().map(mountKey));
     for (const k of Object.keys(this.mountStateStore)) if (!liveKeys.has(k)) delete this.mountStateStore[k];
+    // mountBaseFreshness (R8-F4): the CROSS-SESSION half — if we're loading ALREADY ON a mount's source (the
+    // primary was switched onto it in a prior session and reopened here), that mount's persisted base is stale
+    // for the same reason (the primary owned that folder while the mount was dormant). Drop it so a later
+    // switch-away re-first-contacts rather than restoring a stale base. (The in-session half is switchToVault.)
+    this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
   }
   async saveSettings() { await this.persist(); }
   // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so
