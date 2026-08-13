@@ -390,6 +390,93 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // mountLiveSubscription: each active mount gets its own live WS to its source vault so a source change syncs
+  // promptly (not just on the ~60s poll). The subscription set is idempotent, pokes a mount reconcile on a
+  // source change, and closes sockets for mounts that leave the active set. The server already authorizes a
+  // shared-source Read subscription, so this is client-only.
+  const liveMount = { source: { owner: "alice", vaultId: "shared", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" };
+  const liveScope = (p: any) => { const key = mountKeyOf(liveMount as any); (p as any).mountScopes = [{ runtime: { key, mount: liveMount }, state: "live", fails: 0 }]; return key; };
+
+  it("mountLiveSubscription: opens a WS per HEALTHY active mount, pokes reconcile on a source change, closes on removal", async () => {
+    const { p } = await bootPlugin();                 // connects → engine 'idle' → primaryLinkUp() true
+    const anyp = p as any;
+    const key = liveScope(p);
+    let onChanged: (() => void) | null = null;
+    let closed = false;
+    const fakeWs: any = { addEventListener() {}, close() { closed = true; } };
+    const connectWsCalls: Array<() => void> = [];
+    anyp.buildMountApi = () => ({ connectWs: (cb: () => void) => { connectWsCalls.push(cb); onChanged = cb; return fakeWs; } });
+    let reconcileMountsCalls = 0;
+    anyp.reconcileMounts = async () => { reconcileMountsCalls++; };
+
+    anyp.syncMountSubscriptions([liveMount]);
+    expect(connectWsCalls.length).toBe(1);            // one WS opened for the healthy active mount
+    expect(anyp.mountSockets.get(key)).toBe(fakeWs);
+
+    anyp.syncMountSubscriptions([liveMount]);         // idempotent — already subscribed → no second socket
+    expect(connectWsCalls.length).toBe(1);
+
+    onChanged!();                                     // a source change notification
+    expect(reconcileMountsCalls).toBeGreaterThan(0);  // → polls the mounts promptly (not on the ~60s poll)
+
+    anyp.syncMountSubscriptions([]);                  // the mount left the active set (removed/dormant)
+    expect(closed).toBe(true);                        // its WS is closed…
+    expect(anyp.mountSockets.has(key)).toBe(false);   // …and forgotten (reopens if it returns)
+    p.onunload();
+  });
+
+  it("mountLiveSubscription: a dropped mount socket (close/error) reopens on the next subscription sync", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const key = liveScope(p);
+    const listeners: Record<string, Array<() => void>> = {};
+    const mkWs = () => ({ addEventListener: (t: string, cb: () => void) => { (listeners[t] ??= []).push(cb); }, close() {}, __fire: (t: string) => (listeners[t] ?? []).forEach((cb) => cb()) });
+    let ws: any;
+    anyp.buildMountApi = () => ({ connectWs: () => { ws = mkWs(); return ws; } });
+    anyp.reconcileMounts = async () => {};
+
+    anyp.syncMountSubscriptions([liveMount]);
+    const first = ws;
+    expect(anyp.mountSockets.get(key)).toBe(first);
+    first.__fire("close");                            // the source WS dropped
+    expect(anyp.mountSockets.has(key)).toBe(false);   // forgotten so the next sync reopens it
+    anyp.syncMountSubscriptions([liveMount]);         // next poll cycle
+    expect(anyp.mountSockets.get(key)).toBe(ws);      // a FRESH socket opened
+    expect(ws).not.toBe(first);
+    p.onunload();
+  });
+
+  // Critique F1/F3/F4: a subscription is gated on the PRIMARY link being up, the scope being HEALTHY, and
+  // buildMountApi not throwing — no source WS opened (or held) otherwise.
+  it("mountLiveSubscription: no socket when the primary link is DOWN, the scope is UNHEALTHY, or buildMountApi throws", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const key = liveScope(p);
+    let opens = 0;
+    anyp.buildMountApi = () => ({ connectWs: () => { opens++; return { addEventListener() {}, close() {} }; } });
+    anyp.reconcileMounts = async () => {};
+
+    const realGetState = anyp.engine.getState.bind(anyp.engine); // post-boot: 'idle'
+    // F1: primary link down (engine 'disconnected') → no socket even with a healthy scope.
+    anyp.engine.getState = () => "disconnected";
+    anyp.syncMountSubscriptions([liveMount]);
+    expect(opens).toBe(0);
+    expect(anyp.mountSockets.size).toBe(0);
+
+    // Bring the link back (idle) but make the scope UNHEALTHY (offline) → still no socket (F3).
+    anyp.engine.getState = realGetState;
+    anyp.mountScopes = [{ runtime: { key, mount: liveMount }, state: "offline", fails: 1 }];
+    anyp.syncMountSubscriptions([liveMount]);
+    expect(opens).toBe(0);
+
+    // Healthy scope + link up but buildMountApi THROWS (insecure remote) → caught, no crash, no socket (F4).
+    liveScope(p);
+    anyp.buildMountApi = () => { throw new Error("insecure remote"); };
+    expect(() => anyp.syncMountSubscriptions([liveMount])).not.toThrow();
+    expect(anyp.mountSockets.size).toBe(0);
+    p.onunload();
+  });
+
   it("a WS poke → a fresh reconcileAll (changes re-queried)", async () => {
     const { p, api } = await bootPlugin();
     const before = api.__calls.changes?.length ?? 0;

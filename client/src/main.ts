@@ -1930,6 +1930,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.ws?.close(); this.ws = undefined;
     this.transport = "offline"; // torn down → no realtime channel (realtimeConnected getter reads false)
     this.mountScopes = []; // composed vaults (D0039): drop live mount scopes so a reconnect rebuilds them (their persisted base/cursor survive in mountStateStore)
+    this.closeMountSockets(); // mountLiveSubscription: drop every mount WS on teardown (they reopen on the next connect's rebuild)
   }
 
   // Open the change-notification WebSocket and route its lifecycle through the ONE engine queue:
@@ -1940,6 +1941,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   private spinUpWs(): WebSocket | null {
     if (this.unloading || !this.api) return null;
     this.ws?.close();
+    // mountLiveSubscription (F2): a primary WS (re)connect — which the liveness timer triggers when the primary
+    // socket goes half-open — cycles the mount sockets too. A network condition that half-opened the primary WS
+    // very likely half-opened the same-server mount sockets (which have no liveness timer of their own), so
+    // dropping them here makes the next reconcile pass reopen fresh ones instead of clinging to a dead socket.
+    this.closeMountSockets();
     const ws = this.api.connectWs(() => this.engine.enqueue({ kind: "remote" }));
     this.ws = ws ?? undefined;
     if (!ws) { this.log("ws not available — polling fallback active"); return null; }
@@ -2289,7 +2295,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // R1-F2: mount source transports capture the session token by value. If the token rotated (a reactive-401
     // relogin), every preserved scope would 401 forever. Drop all existing scopes so they rebuild with the
     // fresh token; their own base+cursor survive in mountStateStore, so a rebuild resumes, not restarts.
-    if (this.mountScopesToken !== this.sessionToken) { this.mountScopes = []; this.mountScopesToken = this.sessionToken; }
+    if (this.mountScopesToken !== this.sessionToken) { this.mountScopes = []; this.closeMountSockets(); this.mountScopesToken = this.sessionToken; } // token rotated → drop scopes AND their WS (captured a stale token); both reopen below with the fresh one
     const byKey = new Map(this.mountScopes.map((s) => [s.runtime.key, s]));
     const seen = new Set<string>();
     const next: MountScope[] = [];
@@ -2328,7 +2334,8 @@ export default class NewLiveSyncPlugin extends Plugin {
           onGuard: (p) => this.log(`mount ${mount.mountPoint}: refused a suspicious bulk delete near '${p}' — not deleting local copies; remove + re-add the mount if the source folder was intentionally emptied`, true),
           // R2-F3: surface a file kept/restored because it was absent from the source with no deletion record
           // (a sync mount could otherwise re-upload a peer's deletion silently). Full D0019 reset-detection for
-          // mounts is a tracked follow-up (issueMountResetDetection).
+          // mounts is now implemented (mountResetDetection): a source history_floor advance OR version rewind
+          // routes to a full reconcile, and THIS callback surfaces the absent-without-tombstone files it keeps.
           onKeptAbsent: (p) => this.log(`mount ${mount.mountPoint}: kept '${p}' — absent from the source with no deletion record (not treating it as deleted)`, true),
           // issueMountRoLocalEditBehavior: read-only local edits are COLLECTED per pass by the runtime and
           // applied authoritatively via the onRoEdits hook below (so a reverted edit drops off) — no direct callback here.
@@ -2337,6 +2344,56 @@ export default class NewLiveSyncPlugin extends Plugin {
       next.push({ runtime, state: "detached", fails: 0 });
     }
     this.mountScopes = next;
+  }
+  // Per-mount live WebSocket subscriptions to each source vault (mountLiveSubscription). Keyed by mountKey.
+  private mountSockets = new Map<string, WebSocket>();
+  // Is the PRIMARY link up (so mounts should be live)? NOT off (user-disconnected / unconfigured), disconnected
+  // (link down — the source is likely unreachable too), or unloading. A mount's live WS must track this, not
+  // just `unloading` — else a user disconnect/pause followed by a mount-setting change would silently reopen a
+  // source subscription while the primary is intentionally offline (critique F1).
+  private primaryLinkUp(): boolean {
+    const s = this.engine.getState();
+    return s === "connecting" || s === "reconciling" || s === "idle";
+  }
+  // mountLiveSubscription (D0039's deferred "own subscription", realized per D0040): keep a live source WS per
+  // HEALTHY active mount so a source change syncs PROMPTLY instead of only on the ~60s poll. Idempotent —
+  // reuses live sockets, opens missing ones, closes sockets for mounts that leave the healthy+active set. Runs
+  // AFTER the scope pass (so scope state is settled) on every reconcile cycle; a dropped socket reopens within
+  // one poll interval and the poll itself remains the backstop. The server WS already authorizes a shared-source
+  // Read subscription (re-checked per notification), so this is client-only.
+  private syncMountSubscriptions(active: Mount[]): void {
+    // Only a HEALTHY scope (live/diverged) holds a subscription — a failed/offline/localGone/detached scope is
+    // driven by the poll's backoff retry, never an unbounded per-cycle WS reconnect to a dead source (critique F3).
+    const healthy = new Set(this.mountScopes.filter((s) => s.state === "live" || s.state === "diverged").map((s) => s.runtime.key));
+    const wantKeys = new Set(active.map(mountKey).filter((k) => healthy.has(k)));
+    // Close sockets for mounts that left the healthy+active set (removed, dormant, failed, or link-down below).
+    for (const [key, ws] of this.mountSockets) {
+      if (!wantKeys.has(key)) { try { ws.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
+    }
+    if (this.unloading || !this.sessionToken || !this.primaryLinkUp()) return; // link down/paused → don't (re)open; the poll still runs
+    for (const mount of active) {
+      const key = mountKey(mount);
+      if (!wantKeys.has(key) || this.mountSockets.has(key)) continue; // no healthy scope yet, or already subscribed
+      let api: ApiClient | null = null;
+      try { api = this.buildMountApi(mount); } catch { continue; } // buildMountApi throws (not just null) on an insecure remote (critique F4)
+      if (!api) continue;
+      // A source poke → poll the mounts NOW (reconcileMounts is re-entrancy-guarded + fail-isolated; it deltas
+      // the changed mount and noops the rest — an own-push echo converges to a noop).
+      const ws = api.connectWs(() => { if (!this.unloading) void this.reconcileMounts(); });
+      if (!ws) continue;
+      this.mountSockets.set(key, ws);
+      // On close/error, drop from the map so the next cycle reopens it. The identity check ignores a superseded
+      // socket's late event (matches the primary WS). NOTE (F2): a HALF-OPEN socket that never fires close is
+      // recovered by the primary WS's liveness→reconnect cycling the mount sockets (spinUpWs → closeMountSockets).
+      const drop = () => { if (this.mountSockets.get(key) === ws) this.mountSockets.delete(key); };
+      ws.addEventListener("close", drop);
+      ws.addEventListener("error", drop);
+    }
+  }
+  // Close + forget every mount WS (teardown, or a token rotation that invalidates their captured token).
+  private closeMountSockets(): void {
+    for (const ws of this.mountSockets.values()) { try { ws.close(); } catch { /* already closed */ } }
+    this.mountSockets.clear();
   }
   // Drive every mount one cycle after the primary pass, fully FAIL-ISOLATED: any error in the whole subsystem
   // is caught here so a mount problem can NEVER break the primary sync. Persists each mount's own base+cursor
@@ -2351,7 +2408,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.mountReconciling) { this.mountReconcilePending = true; return; }
     this.mountReconciling = true;
     try {
-      if (this.mounts().length === 0) { if (this.mountScopes.length) { this.mountScopes = []; this.renderLight(); } return; }
+      if (this.mounts().length === 0) { if (this.mountScopes.length || this.mountSockets.size) { this.mountScopes = []; this.closeMountSockets(); this.renderLight(); } return; } // last mount removed → drop scopes AND their WS (rebuildMountScopes doesn't run on the empty path)
       // R1-F1: rebuild EVERY pass (not just initial/empty) — rebuildMountScopes preserves live scopes by key and
       // adds/drops to match the configured set, so a mount added or removed in steady state is picked up here.
       this.rebuildMountScopes();
@@ -2375,6 +2432,10 @@ export default class NewLiveSyncPlugin extends Plugin {
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
       // it, so a just-removed mount's disk isn't mutated and no write happens during teardown.
       }, (scope) => !this.unloading && this.mountScopes.includes(scope));
+      // mountLiveSubscription: (re)sync the per-mount source WS set AFTER the pass, so scope state is settled
+      // (only healthy scopes get a socket) and the link-state gate is current. A source poke then drives a
+      // prompt reconcile instead of waiting for the ~60s poll (which stays the backstop).
+      this.syncMountSubscriptions(this.activeMounts());
     } catch (e: any) {
       this.log(`mount subsystem error (${e?.message ?? e}) — primary sync unaffected`); // never rethrow: isolate from the primary
     } finally {
