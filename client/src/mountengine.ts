@@ -172,11 +172,27 @@ export class MountRuntime {
     if (basePaths.length === 0) return false;                          // fresh/empty mount — nothing to protect
     if (this.io.exists && !(await this.io.exists(""))) return true;    // (a) the mount-point folder itself is gone
     const local = await this.io.list();
-    const absent = basePaths.filter((p) => !local.has(p)).length;
+    let absentPaths = basePaths.filter((p) => !local.has(p));
+    // Finding 5 (issueMountDeleteGuardResiduals): io.list() can return a TRANSIENT empty/partial listing (an
+    // adapter hiccup, a mid-write, an unhydrated cloud placeholder) — which would spuriously look like a mass
+    // deletion and hold the mount as localGone (fail-safe, but a needless manual Reinstate). RE-PROBE each
+    // list-absent path individually (indeterminate-treat-as-present): a file io.exists() still finds is NOT
+    // absent, so a partial/empty list can't trip the guard. This mirrors reconcileAll's own per-file
+    // false-absence re-probe (issueFalseAbsenceDelete) that backstops the actual delete-remote. Cheap in the
+    // common case (few absent → tiny loop); the full re-probe only runs when a mass deletion is SUSPECTED (rare),
+    // where confirming absence before a possible shared-source wipe is worth the stat calls.
+    if (this.io.exists && absentPaths.length > 0) {
+      const confirmed: string[] = [];
+      for (const p of absentPaths) if (!(await this.io.exists(p))) confirmed.push(p);
+      absentPaths = confirmed;
+    }
+    const absent = absentPaths.length;
     // (b) ALL the content is gone (any size — an emptied mount is a reset gesture, not a shared-source wipe;
     // closes the small <6-file "delete all, leave the empty folder" case), or (c) a BULK (>= the fixed floor)
     // is gone in this pass. The RATIO is dropped on purpose: a delete-remote prunes base, so a ratio against the
-    // shrinking base is defeatable (a paced sub-floor drain — the bounded residual issueMountPacedDrain).
+    // shrinking base is defeatable (a paced sub-floor drain). D0043 (outgoing deletes are exact/immediate) makes
+    // that paced drain LEGITIMATE — each sub-floor batch is a genuine exact deletion, gated on the receive side
+    // by each peer's incoming bulk-delete confirmation (D0041); the mass-guard's job is only the one-shot wipe.
     return absent === basePaths.length || absent >= BULK_DELETE_MIN;
   }
   // D0019 (mountResetDetection): the last-seen SOURCE deletion-history floor (undefined until first observed).

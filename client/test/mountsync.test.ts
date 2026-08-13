@@ -193,6 +193,30 @@ describe("reconcileMountScope — a MASS local deletion never wipes the source (
     expect(src.deleted).toEqual([]);
   });
 
+  it("Finding 5: a TRANSIENT empty/partial local list does NOT flag localGone — the guard re-probes via io.exists (issueMountDeleteGuardResiduals)", async () => {
+    const { src, io, scope } = await established(8);          // 8 files pulled → base populated, files on disk
+    const realList = io.list;
+    io.list = async () => new Map();                          // adapter hiccup / mid-write: list() transiently returns EMPTY
+    scope.forceFull = true;                                   // force a full pass → pollMount runs massLocalDeletion
+    await reconcileMountScope(scope);
+    expect(scope.state).not.toBe("localGone");                // io.exists still finds the files → re-probe rescues it → NOT flagged
+    expect(src.deleted).toEqual([]);                          // and nothing deleted from the source
+    io.list = realList;
+  });
+
+  it("Finding 5: a PARTIAL list (some files unlisted but present) stays below the floor via the re-probe", async () => {
+    const { src, io, scope } = await established(8);
+    const realList = io.list;
+    // list() drops 6 of 8 (transiently), but they're still on disk (io.exists finds them) → only the 0 truly-gone
+    // count, so the guard does NOT trip. Without the re-probe, 6 list-absent would meet the floor and spuriously flag.
+    io.list = async () => new Map([...(await realList())].slice(0, 2));
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(scope.state).not.toBe("localGone");
+    expect(src.deleted).toEqual([]);
+    io.list = realList;
+  });
+
   it("a SMALL local deletion (below the bulk floor) still propagates exactly to the source (D0043)", async () => {
     const { src, io, scope } = await established(10);
     io.files.delete("Work/ASI/n0.md"); io.files.delete("Work/ASI/n1.md"); // 2 of 10 — well under the floor
