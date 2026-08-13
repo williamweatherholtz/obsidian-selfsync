@@ -1156,8 +1156,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   async switchToVault(name: string, mode: SwitchMode = "merge", owner = "", readOnly = false): Promise<void> {
     // mountBaseFreshness (R8-F4): dropping the stale base of a mount whose source becomes the primary is handled
     // CENTRALLY in rebuildMountScopes (reached by EVERY repoint via reconnect — switchToVault, the setup wizard,
-    // a redeem, a pendingSwitch replay — and after doTeardown has cleared mountScopes, so no in-flight pass can
-    // resurrect the dropped base). Nothing mount-specific to do here.
+    // a redeem, a pendingSwitch replay). Nothing mount-specific to do here.
     this.settings.vaultId = name;
     this.settings.vaultOwner = owner || undefined; // empty = own vault
     this.settings.vaultReadOnly = readOnly;
@@ -2264,7 +2263,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // any add/remove/edit/switch changes the signature — so there is no scattered invalidation to keep in sync.
     const sig = JSON.stringify([po, pv, this.mounts()]);
     if (this._activeMountsMemo?.sig === sig) return this._activeMountsMemo.result;
-    const result = validMounts(this.mounts()).filter((m) => !(m.source.owner === po && m.source.vaultId === pv));
+    // FREEZE the cached array (5-pass review): every caller reads it (find/filter/map/some) — none mutate — but
+    // the memo hands the SAME instance to all of them, so a future caller that sorted/spliced it would silently
+    // corrupt the cache for the primary-scope exclusion, scope building, and subscriptions. Frozen → such a
+    // mutation throws in strict mode instead of corrupting; read-only iteration is unaffected.
+    const result = Object.freeze(validMounts(this.mounts()).filter((m) => !(m.source.owner === po && m.source.vaultId === pv))) as Mount[];
     this._activeMountsMemo = { sig, result };
     return result;
   }
@@ -2286,8 +2289,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     // exclusion (passes/accepts) uses the SAME activeMounts() set, so the two scopes stay provably disjoint (N1).
     // mountBaseFreshness (R8-F4): CENTRAL drop of a self-referentially-dormant mount's stale base. Every path
     // that repoints the primary reaches here via reconnect (switchToVault, the setup wizard's direct-sets, a
-    // redeem, a pendingSwitch replay), and doTeardown has already cleared mountScopes on that reconnect — so an
-    // in-flight pass of the now-dormant mount can't resurrect the base (its write-back guard finds no live scope).
+    // redeem, a pendingSwitch replay). The drop is race-safe NOT because teardown cleared scopes (doTeardown does
+    // NOT run on an in-session reconnect — 5-pass review corrected this): reconcileMounts is re-entrancy-
+    // serialized, so any in-flight pass fully COMPLETES its write-back before this rebuild runs, and the now-
+    // self-referential mount is excluded from `want` below so it is never re-driven to resurrect the base; the
+    // out-of-guard writers (onEvent, refreshMountPersist) are additionally gated on `mountScopes.includes(scope)`.
     this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
     const want = this.activeMounts();
     if (want.length < this.mounts().length) this.log(`composed vaults: ${this.mounts().length - want.length} mount(s) ignored (invalid, overlapping, .obsidian-anchored, or the current primary vault) — the rest are active`);
@@ -2347,6 +2353,21 @@ export default class NewLiveSyncPlugin extends Plugin {
   }
   // Per-mount live WebSocket subscriptions to each source vault (mountLiveSubscription). Keyed by mountKey.
   private mountSockets = new Map<string, WebSocket>();
+  private mountPokeTimer?: number;
+  // A source-change WS poke → a COALESCED mount reconcile (5-pass review). Firing reconcileMounts on EVERY
+  // notification meant a PACED incoming deletion arrived as a stream of single-tombstone passes, each below the
+  // bulk-delete threshold, so the user's ">N deletions, review?" confirmation (D0041) never fired — the 60s poll
+  // used to batch them. A short trailing window collapses a burst of notifications into ONE pass that sees the
+  // whole tombstone batch, so the confirmation still trips, while keeping sync near-instant (was 60s). (A truly
+  // slow drip still fragments — the inherent D0041 paced-drain limit the primary vault's WS shares.)
+  private readonly MOUNT_POKE_COALESCE_MS = 3000;
+  private pokeMounts(): void {
+    if (this.unloading || this.mountPokeTimer !== undefined) return; // already scheduled → coalesce into it
+    this.mountPokeTimer = window.setTimeout(() => {
+      this.mountPokeTimer = undefined;
+      if (!this.unloading) void this.reconcileMounts();
+    }, this.MOUNT_POKE_COALESCE_MS);
+  }
   // Is the PRIMARY link up (so mounts should be live)? NOT off (user-disconnected / unconfigured), disconnected
   // (link down — the source is likely unreachable too), or unloading. A mount's live WS must track this, not
   // just `unloading` — else a user disconnect/pause followed by a mount-setting change would silently reopen a
@@ -2379,7 +2400,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (!api) continue;
       // A source poke → poll the mounts NOW (reconcileMounts is re-entrancy-guarded + fail-isolated; it deltas
       // the changed mount and noops the rest — an own-push echo converges to a noop).
-      const ws = api.connectWs(() => { if (!this.unloading) void this.reconcileMounts(); });
+      const ws = api.connectWs(() => this.pokeMounts());
       if (!ws) continue;
       this.mountSockets.set(key, ws);
       // On close/error, drop from the map so the next cycle reopens it. The identity check ignores a superseded
@@ -2394,6 +2415,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private closeMountSockets(): void {
     for (const ws of this.mountSockets.values()) { try { ws.close(); } catch { /* already closed */ } }
     this.mountSockets.clear();
+    if (this.mountPokeTimer !== undefined) { window.clearTimeout(this.mountPokeTimer); this.mountPokeTimer = undefined; } // drop a pending coalesced poke
   }
   // Drive every mount one cycle after the primary pass, fully FAIL-ISOLATED: any error in the whole subsystem
   // is caught here so a mount problem can NEVER break the primary sync. Persists each mount's own base+cursor
@@ -2595,6 +2617,11 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (live) live.state = "unmounting";
     this.settings.mounts = this.mounts().filter((x) => mountKey(x) !== key);
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
+    // mountLiveSubscription (5-pass review): close this mount's live WS NOW. Unlike the sibling mutators,
+    // removeMount doesn't call reconcileMounts, so syncMountSubscriptions won't reap the socket — it would
+    // linger open (a live poke source for a gone mount) until an unrelated pass. Close it here.
+    const sock = this.mountSockets.get(key);
+    if (sock) { try { sock.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
     delete this.mountStateStore[key];
     this.pendingBulkDeletes.delete(key); // D0041: drop any held-deletion review for a removed mount
     this.clearRoMountEdits(key); // F4: drop read-only-edit tracking for a removed mount

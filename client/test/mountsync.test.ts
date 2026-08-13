@@ -217,6 +217,20 @@ describe("reconcileMountScope — a MASS local deletion never wipes the source (
     io.list = realList;
   });
 
+  it("5-pass review: a mass-absent LISTING with a FLAPPING io.exists HOLDS (conservative — the two oracles aren't collapsed)", async () => {
+    const { src, io, scope } = await established(8);
+    io.list = async () => new Map();                     // the listing says ALL 8 gone (a mass)
+    let n = 0;
+    // io.exists is INCONSISTENT: folder present, files flap present/absent. The OLD (my-first-fix) logic counted
+    // only confirmed-absent (~4 < the floor) → would NOT hold → the ~4 confirmed-absent get wiped from the source.
+    // The corrected guard holds because the listing shows a mass AND at least one path is confirmed absent.
+    io.exists = async (p: string) => (!p.endsWith(".md") ? true : (n++ % 2 === 0));
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(scope.state).toBe("localGone");               // conservative HOLD → no partial shared-source wipe
+    expect(src.deleted).toEqual([]);
+  });
+
   it("a SMALL local deletion (below the bulk floor) still propagates exactly to the source (D0043)", async () => {
     const { src, io, scope } = await established(10);
     io.files.delete("Work/ASI/n0.md"); io.files.delete("Work/ASI/n1.md"); // 2 of 10 — well under the floor
@@ -326,6 +340,7 @@ describe("pollMount — D0019 source history reset detection (mountResetDetectio
       deleteFile: async (p: string) => { deleted.push(p); },
       __truncate: (newFloor: number, newManifest: FileMeta[]) => { fl = newFloor; man = newManifest; },
       __failFull: (v: boolean) => { failFull = v; },
+      __setVersion: (v: number) => { ver = v; },
     } as any;
   }
 
@@ -404,12 +419,30 @@ describe("pollMount — D0019 source history reset detection (mountResetDetectio
     expect(scope.state).toBe("live");
   });
 
-  it("the floor is MONOTONIC — a lower reported floor is ignored, an undefined does not clobber (F3)", () => {
+  it("a version REWIND re-baselines the floor DOWN, so a restore that dropped the true floor leaves no blind band (5-pass review)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 5);
+    const src = resettableSource(chunks, [a], 5, 8); // version 5, floor 8
+    const io = memIo();
+    const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(io, src));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {});       // first contact: floor 8 seeded
+    expect(rt.historyFloor()).toBe(8);
+    // The source is restored from an older backup: its version REWINDS (2 < cursor 5) and its true floor drops to 3.
+    src.__setVersion(2); src.__truncate(3, [a]);
+    await reconcileMountScopes([scope], {});       // rewound → reset → full reconcile → AUTHORITATIVE re-baseline
+    expect(rt.historyFloor()).toBe(3);             // re-baselined DOWN (was monotonic-stuck at 8 before the fix) →
+                                                   // a later truncation in the band 3→4 now fires (4 > 3), not missed (4 > 8)
+  });
+
+  it("the floor is MONOTONIC on a normal (non-rewind) poll — a lower reported floor is ignored, an undefined does not clobber (F3)", () => {
     const rt = new MountRuntime(mk("Work/ASI", "", "pull"), ctx(memIo(), sourceApi([], new Map(), 1)));
     rt.noteHistoryFloor(5); expect(rt.historyFloor()).toBe(5);
     rt.noteHistoryFloor(3); expect(rt.historyFloor()).toBe(5);        // lower → ignored (never arms a spurious later reset)
     rt.noteHistoryFloor(undefined); expect(rt.historyFloor()).toBe(5); // undefined → no clobber
     rt.noteHistoryFloor(8); expect(rt.historyFloor()).toBe(8);        // higher → raised
+    rt.noteHistoryFloor(2, true); expect(rt.historyFloor()).toBe(2);  // AUTHORITATIVE (a rewind) → re-baselined DOWN
+    rt.noteHistoryFloor(undefined, true); expect(rt.historyFloor()).toBeUndefined(); // authoritative + no floor → CLEAR (re-seeds; no stale blind band)
   });
 
   it("parseMountState drops a sub-genesis historyFloor (server genesis is 1) so it can't spuriously fire a reset (F4)", () => {
@@ -417,5 +450,9 @@ describe("pollMount — D0019 source history reset detection (mountResetDetectio
     expect(parseMountState({ k: { base: {}, version: 1, historyFloor: -3 } }).k.historyFloor).toBeUndefined();
     expect(parseMountState({ k: { base: {}, version: 1, historyFloor: 3 } }).k.historyFloor).toBe(3);
     expect(parseMountState({ k: { base: {}, version: 1 } }).k.historyFloor).toBeUndefined(); // absent (old data.json) → undefined
+    // 5-pass review: fractional or absurd values are dropped (Number.isInteger + a sane ceiling) so a hostile
+    // data.json can't park the floor above every real value and permanently disable reset detection.
+    expect(parseMountState({ k: { base: {}, version: 1, historyFloor: 3.5 } }).k.historyFloor).toBeUndefined();
+    expect(parseMountState({ k: { base: {}, version: 1, historyFloor: 1e20 } }).k.historyFloor).toBeUndefined();
   });
 });

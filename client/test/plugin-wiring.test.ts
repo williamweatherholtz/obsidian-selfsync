@@ -408,6 +408,7 @@ describe("plugin wiring — producers → engine → effects", () => {
     anyp.buildMountApi = () => ({ connectWs: (cb: () => void) => { connectWsCalls.push(cb); onChanged = cb; return fakeWs; } });
     let reconcileMountsCalls = 0;
     anyp.reconcileMounts = async () => { reconcileMountsCalls++; };
+    anyp.MOUNT_POKE_COALESCE_MS = 0;                  // fire the coalesced poke on the next tick (no debounce wait)
 
     anyp.syncMountSubscriptions([liveMount]);
     expect(connectWsCalls.length).toBe(1);            // one WS opened for the healthy active mount
@@ -416,12 +417,28 @@ describe("plugin wiring — producers → engine → effects", () => {
     anyp.syncMountSubscriptions([liveMount]);         // idempotent — already subscribed → no second socket
     expect(connectWsCalls.length).toBe(1);
 
-    onChanged!();                                     // a source change notification
-    expect(reconcileMountsCalls).toBeGreaterThan(0);  // → polls the mounts promptly (not on the ~60s poll)
+    onChanged!(); onChanged!(); onChanged!();          // a BURST of source-change notifications…
+    await flush();
+    expect(reconcileMountsCalls).toBe(1);             // …COALESCED into ONE reconcile pass (bulk-delete confirmation intact)
 
     anyp.syncMountSubscriptions([]);                  // the mount left the active set (removed/dormant)
     expect(closed).toBe(true);                        // its WS is closed…
     expect(anyp.mountSockets.has(key)).toBe(false);   // …and forgotten (reopens if it returns)
+    p.onunload();
+  });
+
+  it("mountLiveSubscription: removeMount closes the mount's WS immediately (no leak) (5-pass review)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const key = liveScope(p);
+    p.settings.mounts = [liveMount as any];
+    let closed = false;
+    anyp.buildMountApi = () => ({ connectWs: () => ({ addEventListener() {}, close() { closed = true; } }) });
+    anyp.syncMountSubscriptions([liveMount]);
+    expect(anyp.mountSockets.has(key)).toBe(true);
+    await p.removeMount(liveMount as any);
+    expect(closed).toBe(true);                        // closed on removal, not left dangling until an unrelated pass
+    expect(anyp.mountSockets.has(key)).toBe(false);
     p.onunload();
   });
 

@@ -39,6 +39,37 @@ describe("signatureVerdict / diffSignature — directional classification", () =
     expect(signatureVerdict(base, clone(base))).toEqual({ ok: true });
   });
 
+  it("NON-GATING: omitting or changing a SHARING type does NOT break core sync; a CORE type change still does (5-pass review)", () => {
+    const withShare: Signature = { version: 1, api_version: 1, endpoints: ["GET /a"], types: {
+      StatusResponse: [{ name: "status", type: "string", required: true }],
+      SharedVault: [{ name: "owner", type: "string", required: true }, { name: "perm", type: "Perm", required: true }],
+      VaultShares: [{ name: "vault", type: "string", required: true }, { name: "status", type: "string", required: true }],
+    } };
+    // An older/compatible server that simply OMITS the (additive) sharing types → core sync proceeds.
+    const missing = clone(withShare); delete missing.types.SharedVault; delete missing.types.VaultShares;
+    expect(signatureVerdict(withShare, missing)).toEqual({ ok: true });
+    // A dropped field INSIDE a sharing type (incl. the client-unread VaultShares.status) → still non-gating.
+    const dropped = clone(withShare);
+    dropped.types.SharedVault = dropped.types.SharedVault.filter((f) => f.name !== "owner");
+    dropped.types.VaultShares = dropped.types.VaultShares.filter((f) => f.name !== "status");
+    expect(signatureVerdict(withShare, dropped)).toEqual({ ok: true });
+    // But a CORE (non-sharing) type change is STILL breaking — the gate still protects core sync.
+    const coreBroken = clone(withShare);
+    coreBroken.types.StatusResponse = coreBroken.types.StatusResponse.filter((f) => f.name !== "status");
+    expect(signatureVerdict(withShare, coreBroken).ok).toBe(false);
+  });
+
+  it("NON-GATING: a dropped SHARE/ADMIN endpoint does NOT break core sync; a dropped CORE endpoint does (5-pass verify, Fix 1)", () => {
+    const withEps: Signature = { version: 1, api_version: 1, types: { StatusResponse: [{ name: "status", type: "string", required: true }] },
+      endpoints: ["GET /api/v/:vault/changes", "GET /api/shared", "GET /api/share-links", "GET /api/admin/vaults"] };
+    // Server drops the share/admin endpoints (older/compatible or a feature change) → core sync proceeds.
+    const noShare = clone(withEps); noShare.endpoints = ["GET /api/v/:vault/changes"];
+    expect(signatureVerdict(withEps, noShare)).toEqual({ ok: true });
+    // Server drops a CORE endpoint → still breaking.
+    const noCore = clone(withEps); noCore.endpoints = ["GET /api/shared", "GET /api/share-links", "GET /api/admin/vaults"];
+    expect(signatureVerdict(withEps, noCore).ok).toBe(false);
+  });
+
   it("RESPONSE: a field the client READS removed → breaking", () => {
     const s = clone(base); s.types.StatusResponse = s.types.StatusResponse.filter((f) => f.name !== "status");
     const v = signatureVerdict(base, s);

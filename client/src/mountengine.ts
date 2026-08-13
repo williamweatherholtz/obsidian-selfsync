@@ -64,7 +64,13 @@ export function parseMountState(raw: unknown): Record<string, MountPersist> {
     const entryOut: MountPersist = { base, version };
     // D0019 (mountResetDetection): preserve a valid persisted source-history floor; a type-wrong/negative one
     // is dropped (→ undefined → the next observation re-seeds it, never a false reset).
-    if (typeof e.historyFloor === "number" && Number.isFinite(e.historyFloor) && e.historyFloor >= 1) entryOut.historyFloor = e.historyFloor; // >=1: the server genesis floor is 1; a persisted 0/negative is invalid → drop → re-seed (critique F4)
+    // The floor must be a >=1 INTEGER within the safe-integer range (the server genesis floor is 1; floors are
+    // integer version-counters). This rejects the shapes that could mislead the reset detector — fractional,
+    // 0/negative, NaN/Infinity, and precision-losing values above 2^53 — matching the wire path's asNum rigor.
+    // NOTE: it does NOT (and can't with a fixed ceiling) defend against a corrupt data.json parking the floor at
+    // any plausible-but-too-large value (real floors are unbounded); that residual is recovered by the AUTHORITATIVE
+    // re-baseline on the next version-rewind (noteHistoryFloor), and it's local-only corruption (the user's own machine).
+    if (typeof e.historyFloor === "number" && Number.isInteger(e.historyFloor) && e.historyFloor >= 1 && e.historyFloor <= Number.MAX_SAFE_INTEGER) entryOut.historyFloor = e.historyFloor;
     out[key] = entryOut;
   }
   return out;
@@ -172,37 +178,43 @@ export class MountRuntime {
     if (basePaths.length === 0) return false;                          // fresh/empty mount — nothing to protect
     if (this.io.exists && !(await this.io.exists(""))) return true;    // (a) the mount-point folder itself is gone
     const local = await this.io.list();
-    let absentPaths = basePaths.filter((p) => !local.has(p));
-    // Finding 5 (issueMountDeleteGuardResiduals): io.list() can return a TRANSIENT empty/partial listing (an
-    // adapter hiccup, a mid-write, an unhydrated cloud placeholder) — which would spuriously look like a mass
-    // deletion and hold the mount as localGone (fail-safe, but a needless manual Reinstate). RE-PROBE each
-    // list-absent path individually (indeterminate-treat-as-present): a file io.exists() still finds is NOT
-    // absent, so a partial/empty list can't trip the guard. This mirrors reconcileAll's own per-file
-    // false-absence re-probe (issueFalseAbsenceDelete) that backstops the actual delete-remote. Cheap in the
-    // common case (few absent → tiny loop); the full re-probe only runs when a mass deletion is SUSPECTED (rare),
-    // where confirming absence before a possible shared-source wipe is worth the stat calls.
-    if (this.io.exists && absentPaths.length > 0) {
-      const confirmed: string[] = [];
-      for (const p of absentPaths) if (!(await this.io.exists(p))) confirmed.push(p);
-      absentPaths = confirmed;
+    const listAbsent = basePaths.filter((p) => !local.has(p));
+    // (b) ALL the content is gone (any size — an emptied mount is a reset gesture; closes the small <6-file
+    // "delete all, leave the empty folder" case), or (c) a BULK (>= the fixed floor) is gone. The RATIO is
+    // dropped on purpose: a delete-remote prunes base, so a ratio against the shrinking base is defeatable (a
+    // paced sub-floor drain). D0043 (outgoing deletes are exact/immediate) makes that paced drain LEGITIMATE —
+    // each sub-floor batch is a genuine exact deletion, gated on the receive side by each peer's incoming
+    // bulk-delete confirmation (D0041); the mass-guard's job is only the one-shot catastrophic wipe.
+    const listMass = listAbsent.length === basePaths.length || listAbsent.length >= BULK_DELETE_MIN;
+    if (!listMass) return false; // below the mass floor → normal exact deletes, no hold
+    // The LISTING says a mass wipe. Re-probe to rule out a TRANSIENT/partial listing (an adapter hiccup, a
+    // mid-write, an unhydrated cloud placeholder): SUPPRESS the hold ONLY if EVERY list-absent path is actually
+    // still present (io.exists) — a listing that lied wholesale. If ANY remains absent — a genuine wipe OR a
+    // FLAPPING/inconsistent oracle — HOLD. This keeps the CONSERVATIVE bias a catastrophe guard must have (a
+    // false hold is fail-safe + recoverable via Reinstate; a MISSED wipe deletes a possibly-shared source) and
+    // does NOT collapse the listing and io.exists oracles into one (5-pass review: transient-list vs flapping-exists).
+    if (this.io.exists) {
+      for (const p of listAbsent) if (!(await this.io.exists(p))) return true; // any confirmed-absent → hold
+      return false; // every list-absent path is actually present → the listing was transient → don't hold
     }
-    const absent = absentPaths.length;
-    // (b) ALL the content is gone (any size — an emptied mount is a reset gesture, not a shared-source wipe;
-    // closes the small <6-file "delete all, leave the empty folder" case), or (c) a BULK (>= the fixed floor)
-    // is gone in this pass. The RATIO is dropped on purpose: a delete-remote prunes base, so a ratio against the
-    // shrinking base is defeatable (a paced sub-floor drain). D0043 (outgoing deletes are exact/immediate) makes
-    // that paced drain LEGITIMATE — each sub-floor batch is a genuine exact deletion, gated on the receive side
-    // by each peer's incoming bulk-delete confirmation (D0041); the mass-guard's job is only the one-shot wipe.
-    return absent === basePaths.length || absent >= BULK_DELETE_MIN;
+    return true; // no exists probe available → trust the listing (a mass-absent listing holds)
   }
   // D0019 (mountResetDetection): the last-seen SOURCE deletion-history floor (undefined until first observed).
   historyFloor(): number | undefined { return this.histFloor; }
-  // Record the source's current history floor. MONOTONIC-forward: only ever RAISES the floor, never lowers it
-  // (a server floor is monotonic; a lower reported value is noise/skew — storing it would arm a later spurious
-  // reset when it climbs back, critique F3). The caller records it only AFTER a successful reconcile, so a
-  // failed/partial pass leaves the floor un-advanced and the reset re-fires next poll (critique F1 — mirrors
-  // the primary's floor-after-reconcile).
-  noteHistoryFloor(floor: number | undefined): void {
+  // Record the source's current history floor. Normally MONOTONIC-forward: only RAISES the floor, never lowers
+  // it (a server floor climbs; a lower reported value is transient skew — storing it would arm a later spurious
+  // reset when it climbs back). BUT on an `authoritative` observation — a version REWIND, hard evidence the
+  // source rebuilt/restored its history — RE-BASELINE to the observed value even if lower, mirroring the
+  // primary's noteHistory (which records last-seen up OR down). Without this, a restore that drops the true
+  // floor below a stale high-water mark leaves a BLIND BAND in which a later genuine truncation is missed and a
+  // push mount could resurrect a peer's deletions (5-pass review, state+data-loss lenses). Called only AFTER a
+  // successful reconcile, so a failed/partial pass leaves the floor un-advanced and the reset re-fires.
+  noteHistoryFloor(floor: number | undefined, authoritative = false): void {
+    // AUTHORITATIVE (a version rewind — the source rebuilt its history) → re-baseline to EXACTLY what we observed,
+    // including `undefined` (the restored source no longer reports a floor) → CLEAR the stale high-water so the
+    // next reading re-seeds. A stale mark would otherwise leave a blind band for a later truncation (5-pass verify).
+    if (authoritative) { this.histFloor = floor; return; }
+    // Normal poll: MONOTONIC-forward — only RAISE; a transient-low value is skew, ignore it.
     if (floor !== undefined && (this.histFloor === undefined || floor > this.histFloor)) this.histFloor = floor;
   }
   // Snapshot the OWN base + cursor + source-history floor for persistence (stored under this.key).

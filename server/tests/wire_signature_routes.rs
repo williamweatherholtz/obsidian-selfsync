@@ -21,6 +21,13 @@ async fn every_declared_endpoint_exists_in_the_router() {
     let base = serve(app(state)).await; // the MERGED router (public sync + admin) carries every client-facing route
     let client = reqwest::Client::new();
 
+    // GUARD the guard (5-pass review): the "not-404 ⇒ route exists" premise holds ONLY while the router has no
+    // catch-all fallback. If someone later adds a `.fallback()` (e.g. an SPA), EVERY probe would return non-404
+    // and this drift test would silently become a no-op — a false pass exactly when drift is most likely. Assert
+    // a definitely-unrouted path genuinely 404s first, so that regression fails HERE, loudly.
+    let control = client.get(format!("{base}/definitely/not/a/real/route/xyzzy")).send().await.unwrap().status().as_u16();
+    assert_eq!(control, 404, "an unrouted path must 404 — a router fallback would turn the endpoint-existence probe below into a no-op");
+
     for entry in wire_signature::declared_endpoints() {
         let (method, path) = entry.split_once(' ').unwrap_or_else(|| panic!("malformed ENDPOINTS entry: {entry}"));
         // Concretize path params (:vault, :owner, :hash, :id) with a placeholder so the route matches.

@@ -71,6 +71,23 @@ export const TYPE_ROLES: Record<string, TypeRole> = {
   CreateVaultRequest: "request",
 };
 
+// Types that are covered for DRIFT (their fields ride in the signature + its hash, and the runtime response
+// validators reject malformed data) but must NOT GATE core note sync. They belong to the share-management
+// feature — NOT the core sync/auth/status protocol — so an older server that merely doesn't DECLARE them, or a
+// benign change to a field the client doesn't consume, must not refuse-block a wire-compatible server (the
+// review pass found the 1.27 client was refusing ALL sync against a 1.24–1.26 server over additive share
+// metadata; owner-directed: make them non-gating). A REAL problem in one of these still surfaces at runtime
+// where the client actually reads it (validateSharedVaults/VaultShares/ShareLinks throw on a bad shape).
+export const NON_GATING_TYPES = new Set(["SharedVault", "VaultShares", "GrantView", "LinkInfo"]);
+
+// An endpoint entry ("METHOD /path") belongs to the share-management / admin feature (not core sync) → its
+// presence must not gate core note sync (Fix 1 symmetry). Covers /api/shared, /api/share-links*, /api/share-
+// redeem*, and /api/admin/* — a server dropping one degrades the share UI (a caught fetch error), never sync.
+export function isNonGatingEndpoint(entry: string): boolean {
+  const path = entry.split(" ")[1] ?? "";
+  return path.startsWith("/api/share") || path.startsWith("/api/admin");
+}
+
 export interface Delta {
   breaking: boolean;
   reason: string; // human, actionable — names the specific endpoint/field + direction
@@ -93,15 +110,20 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
     deltas.push({ breaking: true, reason: `the server's protocol epoch changed (v${embedded.api_version} → v${server.api_version}) — a semantic change this plugin can't verify` });
   }
 
-  // Endpoints the client relies on that the server no longer exposes → breaking.
+  // Endpoints the client relies on for CORE sync that the server no longer exposes → breaking. Share-management
+  // + admin routes are NON-GATING for the same reason as the share types (5-pass verify, Fix 1 symmetry): they
+  // belong to a non-core feature, so a server that drops/renames one must degrade the share UI, not refuse core
+  // note sync. (A share route missing at runtime is a caught fetch error where the client actually calls it.)
   const serverEndpoints = new Set(server.endpoints);
   for (const e of embedded.endpoints) {
+    if (isNonGatingEndpoint(e)) continue;
     if (!serverEndpoints.has(e)) {
       deltas.push({ breaking: true, reason: `the server no longer exposes "${e}", which this plugin needs` });
     }
   }
 
   for (const [typeName, eFields] of Object.entries(embedded.types)) {
+    if (NON_GATING_TYPES.has(typeName)) continue; // share-metadata: drift-detected + runtime-validated, never gates core sync
     const sFields = server.types[typeName];
     if (!sFields) {
       deltas.push({ breaking: true, reason: `the server no longer defines "${typeName}", which this plugin expects` });

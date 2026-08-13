@@ -55,11 +55,13 @@ export async function pollMount(rt: MountRuntime, opts: { forceFull?: boolean } 
     if (await rt.massLocalDeletion()) { onLocalGone?.(); return; }
     await reconcileAll(d);
   } else await reconcileDelta(d, delta); // a delta pass applies the SOURCE's incoming changes (a purely-local mass deletion is never in the delta)
-  // D0019 (mountResetDetection, critique F1): advance the floor ONLY here — after the reconcile SUCCEEDED. A
-  // throw above propagates to reconcileMountScope's catch (→ offline/retry) with the floor UN-advanced, so a
-  // failed/partial reset pass re-fires the full reconcile next poll instead of silently spending the one-shot
-  // signal (mounts have no periodic full-scan to fall back on). Mirrors the primary's floor-after-reconcile.
-  rt.noteHistoryFloor(delta.history_floor);
+  // D0019 (mountResetDetection): advance the floor ONLY here — after the reconcile SUCCEEDED. A throw above
+  // propagates to reconcileMountScope's catch (→ offline/retry) with the floor UN-advanced, so a failed/partial
+  // reset pass re-fires the full reconcile next poll instead of silently spending the one-shot signal (mounts
+  // have no periodic full-scan to fall back on). A version REWIND is AUTHORITATIVE (the source rebuilt its
+  // history) → re-baseline the floor to the observed value even if lower, so a restore that dropped the true
+  // floor doesn't leave a blind band that misses a later truncation (5-pass review).
+  rt.noteHistoryFloor(delta.history_floor, rewound);
 }
 
 // Drive ONE mount scope one cycle, advancing its FSM via the pure transition. Detached/unmounting/failed
