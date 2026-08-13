@@ -56,6 +56,26 @@ describe("settings tab renders and wires its controls", () => {
     expect(buttonByText(containerEl, "Keep my edits in a folder")).toBeTruthy();
   });
 
+  it("composed vaults: a SHARED read-WRITE source gets the direction toggle; a shared read-only one does not (issueMountSharedDirectionToggle)", async () => {
+    const rw = { source: { owner: "alice", vaultId: "shared", sourcePath: "" }, mountPoint: "Work/ASI", direction: "pull" };
+    const ro = { source: { owner: "bob", vaultId: "ro", sourcePath: "" }, mountPoint: "Read/Only", direction: "pull" };
+    const p = fakePlugin({
+      settings: { mounts: [rw, ro] },
+      activeMounts: () => [rw, ro],
+      mountStates: () => ({ '["alice","shared","","Work/ASI"]': "live", '["bob","ro","","Read/Only"]': "live" }),
+      listSharedVaults: vi.fn(async () => [
+        { owner: "alice", vault: "shared", perm: "readWrite" }, // a read-WRITE grant → toggleable
+        { owner: "bob", vault: "ro", perm: "read" },            // a read-only grant → fixed at Pull
+      ]),
+    });
+    const { containerEl } = renderTab(p);
+    expect(containerEl.querySelector('[aria-label="Switch to Sync (two-way)"]')).toBeFalsy(); // not until the grants load (safe default)
+    await flush(); // loadSharedWritable resolves → re-render
+    expect(p.listSharedVaults).toHaveBeenCalled();
+    const toggles = containerEl.querySelectorAll('[aria-label="Switch to Sync (two-way)"]');
+    expect(toggles.length).toBe(1); // ONLY the shared read-write mount gets the toggle; the read-only one stays fixed
+  });
+
   it("composed vaults: with no mounts, shows the empty state + Add button (dormant, opt-in)", () => {
     const { containerEl } = renderTab(fakePlugin({ settings: { mounts: [] } }));
     expect((containerEl.textContent ?? "")).toContain("No mounts yet");

@@ -193,6 +193,20 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
 
 export class NewLiveSyncSettingTab extends PluginSettingTab {
   constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
+  // issueMountSharedDirectionToggle: the set of SHARED sources ("owner/vaultId") the user holds a read-WRITE
+  // grant on — so the in-row Pull<->Sync direction toggle can be offered for them too (not only own vaults).
+  // undefined = not yet fetched; loaded lazily once per tab lifetime (the grant set changes rarely). A shared
+  // read-only source stays non-toggleable (correct — the grant forbids writing).
+  private sharedWritable?: Set<string>;
+  private async loadSharedWritable(): Promise<void> {
+    try {
+      const shared = await this.plugin.listSharedVaults();
+      const set = new Set(shared.filter((v) => v.perm === "readWrite").map((v) => `${v.owner}/${v.vault}`));
+      const changed = set.size !== this.sharedWritable!.size || [...set].some((k) => !this.sharedWritable!.has(k));
+      this.sharedWritable = set;
+      if (changed) this.display(); // re-render so a shared-RW mount's toggle appears once the grants load
+    } catch { /* leave shared sources non-writable — the safe default */ }
+  }
   private statusGroup?: SettingGroup;
   private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
   // Per-plugin "already in sync" cache (id → converged?) for the Push/Pull grey-out: applied instantly on a
@@ -487,6 +501,12 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
     const states = this.plugin.mountStates();
     const po = s.vaultOwner ?? "", pv = s.vaultId ?? "";
+    // issueMountSharedDirectionToggle: lazily load which shared sources are read-WRITE (once per tab). Until it
+    // resolves, shared sources default to non-writable (no toggle) — the safe default; the fetch re-renders.
+    if (this.sharedWritable === undefined) { this.sharedWritable = new Set(); if (mounts.some((m) => m.source.owner !== "")) void this.loadSharedWritable(); }
+    // A mount's direction is TOGGLEABLE when writing is actually permitted: an OWN source (always writable), or a
+    // SHARED source the grant makes read-write. A shared read-only source stays fixed at Pull (grant forbids push).
+    const canToggleDirection = (m: Mount) => m.source.owner === "" || this.sharedWritable!.has(`${m.source.owner}/${m.source.vaultId}`);
     for (const m of mounts) {
       const key = mountKey(m);
       const dir = m.direction === "pull" ? "Pull · read-only" : "Sync · two-way";
@@ -505,9 +525,10 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
       // localGone: the user deleted the local folder — offer an explicit Reinstate (re-pull from source); the
       // container deletion was NOT propagated to the source (issueMountFolderDeletedWipesSource).
       if (state === "localGone") row.addButton((b) => b.setButtonText("Reinstate").setTooltip("Re-create the folder and re-pull it from the source").onClick(() => void this.reinstateMountFlow(m)));
-      // issueMountRoToRwChange: change direction IN PLACE (base preserved). Offered for OWN-vault sources (always
-      // writable); a shared source's write permission is fixed by the grant, so it's not toggled here.
-      else if (m.source.owner === "") row.addExtraButton((b) => b
+      // issueMountRoToRwChange + issueMountSharedDirectionToggle: change direction IN PLACE (base preserved).
+      // Offered for an OWN-vault source (always writable) OR a SHARED source the grant makes read-write; a shared
+      // read-ONLY source stays fixed at Pull (the grant forbids pushing), so no toggle there.
+      else if (canToggleDirection(m)) row.addExtraButton((b) => b
         .setIcon(m.direction === "pull" ? "arrow-up-down" : "lock")
         .setTooltip(m.direction === "pull" ? "Switch to Sync (two-way)" : "Switch to Pull (read-only)")
         .onClick(() => void this.switchMountDirectionFlow(m)));
