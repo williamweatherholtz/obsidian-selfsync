@@ -26,6 +26,13 @@ describe("parseSettings — harden + freshen the persisted settings object", () 
     expect(s.vaultId).toBe(DEFAULT_SETTINGS.vaultId); // untouched fields keep defaults
   });
 
+  it("canonicalizes the username to lowercase, matching the server (issueUsernameNotCanonicalized)", () => {
+    expect(parseSettings({ username: "Alice" }).username).toBe("alice");   // migrates an existing as-typed name on load
+    expect(parseSettings({ username: "  BoB  " }).username).toBe("bob");    // trims + lowercases
+    expect(parseSettings({ username: "already" }).username).toBe("already");
+    expect(parseSettings({}).username).toBe("");                            // default unaffected
+  });
+
   it("coerces a non-array configConflicts to an empty array (a corrupt data.json can't crash the queue)", () => {
     expect(parseSettings({ configConflicts: "oops" }).configConflicts).toEqual([]);
     expect(parseSettings({ configConflicts: null }).configConflicts).toEqual([]);

@@ -89,7 +89,7 @@ export class SetupWizardModal extends Modal {
       new Setting(c).setName("Mode")
         .addDropdown((dd) => dd.addOption("login", "Log in").addOption("register", "Create account")
           .setValue(this.s.mode).onChange((v) => { this.s.mode = v as "login" | "register"; }));
-      new Setting(c).setName("Username").addText((t) => { usernameInput = t.inputEl; t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim(); }); });
+      new Setting(c).setName("Username").addText((t) => { usernameInput = t.inputEl; t.setValue(this.s.username).onChange((v) => { this.s.username = v.trim().toLowerCase(); if (t.inputEl.value !== this.s.username) t.inputEl.value = this.s.username; }); }); // lowercase + echo back: the server canonicalizes usernames (issueUsernameNotCanonicalized)
       new Setting(c).setName("Password").addText((t) => { passwordInput = t.inputEl; t.inputEl.type = "password"; t.setValue(this.s.password).onChange((v) => { this.s.password = v; }); });
       new Setting(c).addButton((b) => b.setButtonText(
         redeeming ? (this.s.mode === "login" ? "Log in & get access" : "Create account & get access")
@@ -165,7 +165,7 @@ export class SetupWizardModal extends Modal {
         }
         try {
           const link = parseSetupLink(text);
-          this.s.server = link.server; this.s.username = link.user; this.s.serverOk = false; this.serverMsg = "";
+          this.s.server = link.server; this.s.username = (link.user ?? "").trim().toLowerCase(); this.s.serverOk = false; this.serverMsg = ""; // lowercase (a link may carry an as-typed name from an older client)
           if (link.vault) this.s.chosenVault = link.vault; // pre-select the shared vault (kept if the account has it)
           this.render();
         } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
@@ -265,7 +265,7 @@ export class SetupWizardModal extends Modal {
   // rest by default (the password is kept only in storePassword mode).
   private persistSession() {
     const st = this.plugin.settings;
-    st.serverUrl = this.s.server; st.username = this.s.username; st.authToken = this.token;
+    st.serverUrl = this.s.server; st.username = (this.s.username ?? "").trim().toLowerCase(); st.authToken = this.token;
     st.password = st.storePassword ? this.s.password : "";
   }
 
@@ -339,7 +339,7 @@ export class SetupWizardModal extends Modal {
       // through the safe merge-switch when local data exists, exactly like the "Switch vault" action; a plain
       // reconfigure (same server + vault) still adopts directly.
       const vaultChanged = !!st.vaultId && (st.vaultId !== cred.vaultId || st.serverUrl !== cred.serverUrl);
-      st.serverUrl = cred.serverUrl; st.username = cred.username; st.password = cred.password;
+      st.serverUrl = cred.serverUrl; st.username = (cred.username ?? "").trim().toLowerCase(); st.password = cred.password;
       st.authToken = cred.authToken;
       // Changing to a DIFFERENT vault must NOT reconcile it against the OLD vault's base (a single global
       // base, cleared only by switchTo) — that can SILENTLY OVERWRITE local files whose new-vault copy

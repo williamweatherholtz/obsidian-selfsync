@@ -13,6 +13,14 @@ describe("shouldNotifyConfigChange — the source-driven notify rule", () => {
     expect(shouldNotifyConfigChange({ author: "alice", deviceId: "dev-Z" }, self, "user")).toBe(true);
     expect(shouldNotifyConfigChange({ author: "alice", deviceId: "dev-A" }, self, "userDevice")).toBe(true); // even if the device id happens to collide
   });
+  it("matches the account CASE-INSENSITIVELY — a your-own change stamped as-typed by an older server isn't flagged as another person (issueUsernameNotCanonicalized)", () => {
+    // self.user is now canonically lowercase ("will"); an older server may have stamped the author "Will".
+    expect(shouldNotifyConfigChange({ author: "Will", deviceId: "dev-A" }, self, "user")).toBe(false); // still YOU → silent
+    expect(shouldNotifyConfigChange({ author: "WILL", deviceId: "dev-B" }, self, "user")).toBe(false);
+    expect(shouldNotifyConfigChange({ author: "Alice", deviceId: "dev-Z" }, self, "user")).toBe(true);  // a real other person still notifies
+    expect(changeSourceLabel({ author: "Will", deviceName: "Laptop" }, self)).toBe("Laptop");           // not labeled "Will (Laptop)" — it's you
+  });
+
   it("in userDevice mode, also notifies for YOUR OWN account from a DIFFERENT device", () => {
     expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-B" }, self, "userDevice")).toBe(true);
     expect(shouldNotifyConfigChange({ author: "will", deviceId: "dev-A" }, self, "userDevice")).toBe(false); // this very device → silent

@@ -906,7 +906,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       for (const id of serverIds) {
         if (allow.has(id)) continue;
         const author = this.serverPluginAuthors.get(id); // the main.js committer (who wrote the code), from the manifest — no fetch
-        const mine = author === this.settings.username || (!author && this.vaultIsPrivate);
+        const mine = this.isOwnAccount(author) || (!author && this.vaultIsPrivate); // case-insensitive: server author is lowercase, settings.username may be as-typed (issueUsernameNotCanonicalized). Usernames are unique per server, so a case-insensitive match still means author IS you (no widening of the RCE-adopt gate).
         if (mine) {
           if (!seen.has(id)) { allow.add(id); (cs.pluginDir ??= {})[id] = "download"; }
           seen.add(id); // observed as mine → won't re-adopt after an un-tick

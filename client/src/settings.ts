@@ -165,6 +165,14 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   // lazily) and the notify mode (only the two known values; anything else → the safe "user" default).
   out.deviceId = typeof s.deviceId === "string" && s.deviceId ? s.deviceId : undefined;
   out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
+  // Canonicalize the username to lowercase (issueUsernameNotCanonicalized): the SERVER lowercases usernames
+  // (auth.rs to_ascii_lowercase), but the client persisted them as-typed — so every `x === settings.username`
+  // comparison against a server-authenticated value (the plugin-autopilot "is this plugin mine?" gate, the
+  // config-change "who changed this?" author check, the self-owned-vault check) silently broke for a
+  // capitalized username. Normalizing HERE (the persistence boundary) makes the whole client agree with the
+  // server; login/register/redeem still work (the server lowercases its side identically). This also MIGRATES
+  // an existing as-typed username on the next load.
+  if (typeof out.username === "string") out.username = out.username.trim().toLowerCase();
   // D0041 bulk-delete confirmation: strategy is one of the three known values (default "count"); the threshold
   // is a whole number > 0 (default 10) — a bad/absent value falls back so the control can never be un-usable.
   out.bulkDeleteStrategy = s.bulkDeleteStrategy === "off" || s.bulkDeleteStrategy === "percent" ? s.bulkDeleteStrategy : "count";

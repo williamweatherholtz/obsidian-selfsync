@@ -225,6 +225,21 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("plugin autopilot: a CAPITALIZED username still matches its own (server-lowercased) plugin author (issueUsernameNotCanonicalized)", async () => {
+    const { p } = await bootPlugin(true, { settings: { autoSyncNewPlugins: true, configSync: { enabled: true, community: true, pluginAllow: [] } } });
+    const anyp = p as any;
+    p.settings.username = "Alice";                 // as-typed (capitalized)
+    (p.app as any).plugins = { manifests: {}, plugins: {} };
+    anyp.serverPluginIds = new Set(["mineplug", "peerplug"]);
+    anyp.serverPluginAuthors = new Map([["mineplug", "alice"], ["peerplug", "bob"]]); // server authors are lowercase
+    anyp.vaultIsPrivate = false;
+    await anyp.runPluginAutopilot();
+    const allow = p.settings.configSync.pluginAllow;
+    expect(allow).toContain("mineplug");           // "alice" === isOwnAccount("Alice") → adopted (was gated before the fix)
+    expect(allow).not.toContain("peerplug");       // a real peer is still gated
+    p.onunload();
+  });
+
   it("plugin autopilot is a NO-OP when the setting is off (nothing auto-synced)", async () => {
     const { p } = await bootPlugin(true, { settings: { autoSyncNewPlugins: false, configSync: { enabled: true, community: true, pluginAllow: [] } } });
     const anyp = p as any;

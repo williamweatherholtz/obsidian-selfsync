@@ -258,9 +258,14 @@ export interface SelfIdentity { user: string; deviceId: string }
 // own devices stay silent. "userDevice" mode: also notify when it was you but from a DIFFERENT device.
 // An UNKNOWN author (a pre-provenance change: older server / peer on an older plugin / reindex-from-disk)
 // can't be proven to be you, so it notifies — conservative, and self-resolving once every device is upgraded.
+// Case-insensitive account match: the server canonicalizes usernames to lowercase, but an OLDER server build
+// may have stamped an author as-typed while settings.username is now lowercased — compare NORMALIZED so a
+// user's OWN historical change isn't misattributed to "another person" (issueUsernameNotCanonicalized).
+const sameUser = (a: string | undefined, b: string | undefined): boolean => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
+
 export function shouldNotifyConfigChange(p: ChangeProvenance, self: SelfIdentity, mode: NotifyMode): boolean {
-  if (!p.author) return true;              // unknown source → can't prove it was us → notify
-  if (p.author !== self.user) return true; // another PERSON → always notify
+  if (!p.author) return true;                     // unknown source → can't prove it was us → notify
+  if (!sameUser(p.author, self.user)) return true; // another PERSON → always notify
   if (mode === "user") return false;       // your own change, user mode → silent (your devices are "you")
   // userDevice mode: it's you, but was it THIS device? Unknown device id → can't confirm → notify.
   if (!p.deviceId) return true;
@@ -270,7 +275,7 @@ export function shouldNotifyConfigChange(p: ChangeProvenance, self: SelfIdentity
 // The human label for who made a change: the friendly device name if present, else the account, else a
 // generic fallback — for the actionable "<who> changed …" notice. Never surfaces a raw UUID.
 export function changeSourceLabel(p: ChangeProvenance, self: SelfIdentity): string {
-  const other = p.author && p.author !== self.user ? p.author : undefined;
+  const other = p.author && !sameUser(p.author, self.user) ? p.author : undefined;
   if (p.deviceName) return other ? `${other} (${p.deviceName})` : p.deviceName;
   return other ?? "another device";
 }
