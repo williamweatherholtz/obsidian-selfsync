@@ -54,6 +54,10 @@ fn default_admin_bind(bind_addr: &str) -> Option<String> {
     }
 }
 
+// Canonicalize a username to the server's stored form (trim + lowercase), matching account creation +
+// SafeName. Applied to the bootstrap SYNC_USER so a capitalized value still seeds (issueBootstrapSyncUserNotLowercased).
+fn canon_user(s: &str) -> String { s.trim().to_ascii_lowercase() }
+
 impl Config {
     pub fn from_env() -> Self {
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
@@ -75,7 +79,11 @@ impl Config {
             bind_addr,
             admin_bind,
             vault: env("VAULT", "vault"),
-            user: env("SYNC_USER", "admin"),
+            // Canonicalize the bootstrap admin username the SAME way account creation does (trim +
+            // to_ascii_lowercase; SafeName rejects uppercase). Without this, SYNC_USER=Admin fails safe_name()
+            // in state.rs → the bootstrap admin is never seeded (can't log in) AND the `user == cfg.user`
+            // password-change protection (auth.rs) never matches, silently disabling it (issueBootstrapSyncUserNotLowercased).
+            user: canon_user(&env("SYNC_USER", "admin")),
             password: env("SYNC_PASSWORD", "admin"),
             registration: env("REGISTRATION", "closed"),
             invite_code: env("INVITE_CODE", ""),
@@ -127,5 +135,14 @@ mod tests {
         }
         assert!(!weak_admin_refused("aStrongPassphrase1", false), "a strong password boots");
         assert!(!weak_admin_refused("password", true), "override still lets a trusted box through");
+    }
+
+    // issueBootstrapSyncUserNotLowercased: the bootstrap SYNC_USER is canonicalized (trim + lowercase) like
+    // every account name, so SYNC_USER=Admin seeds the "admin" account instead of failing safe_name() silently.
+    #[test]
+    fn canon_user_trims_and_lowercases() {
+        assert_eq!(canon_user("Admin"), "admin");
+        assert_eq!(canon_user("  MixedCase  "), "mixedcase");
+        assert_eq!(canon_user("admin"), "admin");
     }
 }
