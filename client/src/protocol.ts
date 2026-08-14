@@ -14,7 +14,11 @@ export interface FileMeta {
   // (author / device_id / device_name) in validateFileMeta.
   author?: string; deviceId?: string; deviceName?: string;
 }
-export interface Deletion { path: string; version: number; }
+// Provenance of a DELETION — same shape/rules as FileMeta's (recorded on the tombstone, so a peer can
+// attribute an incoming config/plugin REMOVAL to WHO made it, issueDeletionProvenanceUnnotified). Optional: an
+// older server / a rebuild-preserved tombstone omits them → UNKNOWN author → notify conservatively. Mapped from
+// the wire's snake_case (author / device_id / device_name) in validateChanges.
+export interface Deletion { path: string; version: number; author?: string; deviceId?: string; deviceName?: string; }
 // history_floor (D0019): the version at/above which the server's DELETION history is complete
 // (genesis = 1). A rebuild-from-disk reindex raises it, declaring the deletion history reset. When
 // it advances past the floor this client last synced at (or the version rewinds), an absent-without-
@@ -124,8 +128,17 @@ export function validateChanges(o: unknown): ChangesResponse {
   if (!Array.isArray(c.upserts) || !Array.isArray(c.deletes)) {
     throw new Error("malformed response: upserts/deletes not arrays");
   }
-  c.upserts.forEach(validateFileMeta);
-  c.deletes.forEach((d) => { const x = d as Record<string, unknown>; asStr(x?.path, "delete.path"); asNum(x?.version, "delete.version"); });
+  // MAP (not just validate) so the returned objects carry the camelCase provenance the consumers read
+  // (recordIncomingConfig reads meta.deviceId/deviceName). forEach previously discarded the mapping, so the
+  // wire's snake_case device_id/device_name never reached the client as deviceId/deviceName — masked because
+  // the notify decision keys mainly on `author` (same key both sides). Deletions need the full mapping to
+  // attribute a removal (issueDeletionProvenanceUnnotified), so map both for consistency.
+  c.upserts = c.upserts.map(validateFileMeta);
+  c.deletes = c.deletes.map((d) => {
+    const x = d as Record<string, unknown>;
+    return { path: asStr(x?.path, "delete.path"), version: asNum(x?.version, "delete.version"),
+      author: asOptStr(x?.author, "delete.author"), deviceId: asOptStr(x?.device_id, "delete.device_id"), deviceName: asOptStr(x?.device_name, "delete.device_name") };
+  });
   // history_floor drives the deletion-history-reset path (keep-and-push); type-check it too (R23 LOW)
   // so a malformed/hostile value can't coerce through the `>` comparison — PROTO-3 validates the
   // shape of EVERY server field the client acts on, and this was the one that slipped through.

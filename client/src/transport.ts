@@ -397,7 +397,12 @@ export class HttpTransport implements SyncApi {
     // commit; an authoritative delete (user gesture / adjudication / switch) omits it. Snake_case to match
     // commit's wire field; older servers ignore the unknown query param (still always-wins there).
     const cas = expectedVersion !== undefined ? `&expected_version=${expectedVersion}` : "";
-    const r = await httpReq({ url: this.v(`/file?path=${encodeURIComponent(path)}${cas}`), method: "DELETE", headers: this.auth(), throw: false });
+    // Deletion provenance (issueDeletionProvenanceUnnotified): this device's stable UUID + friendly name as
+    // query params (DELETE has no body), so the server records WHO deleted the path on the tombstone and a peer
+    // can attribute an incoming config/plugin removal. The AUTHOR is server-set from the token, never here. Only
+    // sent when present — an unconfigured/older device omits them and the deletion is recorded as unknown-device.
+    const dev = `${this.deviceId ? `&device_id=${encodeURIComponent(this.deviceId)}` : ""}${this.deviceName ? `&device_name=${encodeURIComponent(this.deviceName)}` : ""}`;
+    const r = await httpReq({ url: this.v(`/file?path=${encodeURIComponent(path)}${cas}${dev}`), method: "DELETE", headers: this.auth(), throw: false });
     // 409 = the server advanced past our base (a concurrent edit). Signal it as a conflict — like commit —
     // so reconcile converges via edit-wins-pull on the next pass instead of losing the edit or looping.
     if (r.status === 409) throw new CommitConflictError(`delete conflict on '${path}' (server version advanced)`);

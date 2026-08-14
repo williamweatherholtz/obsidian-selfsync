@@ -78,6 +78,40 @@ describe("timestamp-ignore + always-on content identity", () => {
     expect(srv.files.has("n.md")).toBe(false); // stays deleted on the server
   });
 
+  it("fires onRemoteConfigDelete with the tombstone's provenance for an incoming CONFIG deletion (issueDeletionProvenanceUnnotified)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const cfg = ".obsidian/snippets/x.css";
+    await serverPutBytes(srv.api, cfg, enc("body{}"));
+    await serverPutBytes(srv.api, "keep.md", enc("keeper\n")); // a second file so the one delete isn't a mass/empty-manifest delete
+    const seen: { p: string; prov: { author?: string; deviceId?: string; deviceName?: string } }[] = [];
+    const d = mdeps(srv, io, { onRemoteConfigDelete: (p, prov) => seen.push({ p, prov }) });
+    await reconcileAll(d);                     // pull cfg → local + base
+    expect(io.m.has(cfg)).toBe(true);
+    // A peer deletes it WITH provenance — the real server records author/device on the tombstone (fakeServer
+    // bypasses the transport, so the deletion carries camelCase directly, as validateChanges would produce).
+    srv.files.delete(cfg);
+    srv.deletions.push({ path: cfg, version: 999, author: "alice", deviceId: "dev-Z", deviceName: "Alice-PC" } as never);
+    await reconcileAll(d);
+    expect(io.m.has(cfg)).toBe(false);         // removed locally (the delete propagated)
+    expect(seen).toEqual([{ p: cfg, prov: { author: "alice", deviceId: "dev-Z", deviceName: "Alice-PC" } }]);
+  });
+
+  it("does NOT fire onRemoteConfigDelete when the local removal FAILS — no false 'removed' notice (critique)", async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    const cfg = ".obsidian/snippets/x.css";
+    await serverPutBytes(srv.api, cfg, enc("body{}"));
+    await serverPutBytes(srv.api, "keep.md", enc("keeper\n"));
+    const seen: string[] = [];
+    const d = mdeps(srv, io, { onRemoteConfigDelete: (p) => seen.push(p), onFileError: () => {} });
+    await reconcileAll(d);
+    srv.files.delete(cfg);
+    srv.deletions.push({ path: cfg, version: 999, author: "alice" } as never);
+    io.remove = async () => { throw new Error("locked"); }; // the removal fails (adapter lock)
+    await reconcileAll(d);
+    expect(io.m.has(cfg)).toBe(true);          // still present — the remove threw
+    expect(seen).toEqual([]);                  // and NO notice fired for a removal that didn't happen
+  });
+
   it("a real body merge is NOT spoiled by a divergent timestamp line — clean merge, no conflict copy (Finding B)", async () => {
     const srv = fakeServer(); const io = fakeIo();
     const base = "---\nupdated: 2026-01-01T00:00:00+00:00\n---\nline1\nline2\n";

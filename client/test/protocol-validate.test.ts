@@ -75,4 +75,23 @@ describe("response-shape validation (PROTO-3)", () => {
     expect(() => validateFileMeta({ ...goodMetaForProv, author: { evil: 1 } })).toThrow(/author/);
     expect(() => validateFileMeta({ ...goodMetaForProv, device_id: 42 })).toThrow(/device_id/);
   });
+
+  // issueDeletionProvenanceUnnotified: validateChanges maps a DELETION's snake_case provenance to camelCase
+  // (so the client can attribute a config removal), and — fixing a latent forEach-discard — maps UPSERTS too.
+  it("maps a deletion's provenance to camelCase; absent → undefined", () => {
+    const c = validateChanges({ version: 7, upserts: [], deletes: [{ path: "gone.md", version: 6, author: "alice", device_id: "dev-Z", device_name: "Alice-PC" }] });
+    expect(c.deletes[0].author).toBe("alice");
+    expect(c.deletes[0].deviceId).toBe("dev-Z");
+    expect(c.deletes[0].deviceName).toBe("Alice-PC");
+    const c2 = validateChanges({ version: 1, upserts: [], deletes: [{ path: "x.md", version: 2 }] });
+    expect(c2.deletes[0].author).toBeUndefined();
+  });
+  it("now maps UPSERTS' provenance through validateChanges too (was a forEach-discard)", () => {
+    const c = validateChanges({ version: 1, upserts: [{ ...goodMetaForProv, device_id: "dev-U" }], deletes: [] });
+    expect(c.upserts[0].deviceId).toBe("dev-U"); // camelCase reached the consumer, not just author
+  });
+  it("rejects a hostile non-string delete author/device", () => {
+    expect(() => validateChanges({ version: 1, upserts: [], deletes: [{ path: "x.md", version: 1, author: { evil: 1 } }] })).toThrow(/delete\.author/);
+    expect(() => validateChanges({ version: 1, upserts: [], deletes: [{ path: "x.md", version: 1, device_id: 42 }] })).toThrow(/delete\.device_id/);
+  });
 });

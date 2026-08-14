@@ -1381,6 +1381,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // plugin is reloaded at most once even if several of its files changed.
   private pendingReload = new Set<string>();
   onConfigWritten(path: string) { this.pendingReload.add(path); this.markConfigSelfWrite(path); } // mark: ignore the raw echo
+  // issueDeletionProvenanceUnnotified: config/plugin paths REMOVED this pass by an incoming peer deletion, with
+  // the tombstone's provenance, so flushConfigDeletions can fire a source-of-change notice (the delete analogue
+  // of pendingReload + configProvenance). Its own map (not configProvenance) so flushConfigReload's clear can't race it.
+  private pendingConfigDelete = new Map<string, ChangeProvenance>();
+  recordIncomingConfigDelete(path: string, provenance: ChangeProvenance) { this.pendingConfigDelete.set(path, provenance); }
 
   // Provenance (author/device) of each pending config change, recorded by reconcile as the remote change
   // is applied (deps.onRemoteConfig) and consumed by flushConfigReload to decide — purely by SOURCE — whether
@@ -1450,6 +1455,25 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Consume ALL provenance recorded this pass — not just the flushed paths — so a race-aborted pull's
     // recorded-but-unwritten entry can't leak or later misattribute a same-path write (crit finding 5).
     this.configProvenance.clear();
+  }
+
+  // issueDeletionProvenanceUnnotified: after a pass, fire ONE source-of-change notice if a PEER removed synced
+  // config/plugin files (the delete analogue of flushConfigReload). Silent for your OWN deletions. A removal
+  // may need a restart to fully reflect (a deleted plugin folder / snippet), so the notice says so.
+  flushConfigDeletions(): void {
+    if (this.pendingConfigDelete.size === 0) return;
+    const entries = [...this.pendingConfigDelete]; this.pendingConfigDelete.clear();
+    const self = this.selfIdentity(); const mode = this.settings.configChangeNotify;
+    const notifying = entries.filter(([, prov]) => shouldNotifyConfigChange(prov, self, mode)); // drop your OWN removals
+    if (!notifying.length) { this.log(`applied ${entries.length} synced config deletion(s)`); return; } // all your own → silent
+    // Name the source, then count ONLY that source's removals — a single pass can mix sources (two peers, or a
+    // peer + your own device), so folding the whole batch under one name would MIS-attribute + over-count (critique).
+    const label = changeSourceLabel(notifying[0][1], self);
+    const mine = notifying.filter(([, p]) => changeSourceLabel(p, self) === label);
+    const n = mine.length;
+    // Restart hint only when a plugin/snippet/theme was removed (a plain data.json/appearance.json needs none).
+    const needsRestart = mine.some(([p]) => p.includes("/plugins/") || p.includes("/snippets/") || p.includes("/themes/"));
+    new Notice(`SelfSync: ${label} removed ${n} synced config file${n === 1 ? "" : "s"}${needsRestart ? " — restart Obsidian if a plugin or snippet doesn't fully clear" : ""}.`);
   }
 
   // A synced change to community-plugin CODE. TWO ORTHOGONAL concerns:
@@ -1766,6 +1790,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onRemoteConfig: (p, meta) => this.recordIncomingConfig(p, meta), // record who/which-device for the source-driven reload notice
+      onRemoteConfigDelete: (p, prov) => this.recordIncomingConfigDelete(p, prov), // record who deleted a synced config file (issueDeletionProvenanceUnnotified)
 
       onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       onDeclined: (paths) => this.noteDeclined(paths),
@@ -1994,6 +2019,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   // guard, the last-synced time, and a re-evaluation of the hot-load privacy gate).
   private async finishConnect(): Promise<void> {
     await this.flushConfigReload();
+    this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
     this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
     this.spinUpWs();
     this.startPolling();
@@ -2217,6 +2243,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (forceConfigScan) this.lastConfigScanAt = now;
     if (forceFullScan) this.lastFullScanAt = now;
     await this.flushConfigReload();
+    this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.setPendingBulk("primary", held, mode === "full"); // D0041: a full pass is authoritative (replace); a delta only adds (union)
@@ -2919,6 +2946,7 @@ export default class NewLiveSyncPlugin extends Plugin {
   private async reconcilePathOnce(path: string, size: number): Promise<void> {
     await reconcilePath(this.deps(), path, size);
     await this.flushConfigReload();
+    this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
   }
 
   // Coalesced burst of raw config events → enqueue each changed path onto the ONE serial queue.

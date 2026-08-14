@@ -707,7 +707,7 @@ impl Vault {
     /// deliberate user gestures / adjudication / switch (and tests). CAS-guarded deletes (the reconcile
     /// path) go through `delete_checked`.
     pub fn delete(&mut self, path: &str) -> std::io::Result<Option<Deletion>> {
-        self.delete_checked(path, None)
+        self.delete_checked(path, None, "", "", "") // authoritative (adjudication/switch/tests): no client provenance
     }
 
     /// CAS-guarded delete, SYMMETRIC WITH `commit`'s optimistic concurrency (issueDeleteNoCasLostUpdate).
@@ -718,7 +718,7 @@ impl Vault {
     /// because `decide` keys on hashes, remote-advanced-since-base then reads as `edit-wins-pull` and the
     /// edit is RESURRECTED, never lost. A MISSING file (already gone) needs no guard — the delete's goal is
     /// already met, so it falls through to the None/404 path. `None` ⇒ authoritative (always wins).
-    pub fn delete_checked(&mut self, path: &str, expected_version: Option<u64>) -> std::io::Result<Option<Deletion>> {
+    pub fn delete_checked(&mut self, path: &str, expected_version: Option<u64>, author_user: &str, author_device_id: &str, author_device_name: &str) -> std::io::Result<Option<Deletion>> {
         if let Some(expected) = expected_version {
             if let Some(m) = self.index.file_meta(path)? {
                 if expected != m.version {
@@ -735,7 +735,7 @@ impl Vault {
         // (there's no safe rel path to join).
         let rel = safe_rel_path(path);
         let new_version = self.version + 1;
-        match self.index.delete(path, new_version)? {
+        match self.index.delete(path, new_version, author_user, author_device_id, author_device_name)? {
             None => Ok(None), // absent (or a bad name that isn't an index key) → nothing to delete
             Some((d, dereferenced)) => {
                 self.version = new_version;
@@ -940,6 +940,38 @@ mod tests {
         v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
         let m = v.changes(0).upserts.into_iter().find(|m| m.path == "n.md").unwrap();
         assert_eq!((m.author, m.device_id, m.device_name), (None, None, None));
+    }
+
+    // Deletion provenance (issueDeletionProvenanceUnnotified): delete_checked records WHO removed the path on
+    // the tombstone, and changes() returns it so a peer can attribute an incoming config/plugin removal.
+    #[test]
+    fn delete_records_provenance_and_changes_returns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"hello";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: body.len() as u64, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "will").unwrap();
+        v.delete_checked("n.md", None, "alice", "dev-9", "Alice's Phone").unwrap();
+        let d = v.changes(0).deletes.into_iter().find(|d| d.path == "n.md").unwrap();
+        assert_eq!(d.author.as_deref(), Some("alice"), "records the authenticated deleter");
+        assert_eq!(d.device_id.as_deref(), Some("dev-9"), "records the client-asserted device UUID");
+        assert_eq!(d.device_name.as_deref(), Some("Alice's Phone"));
+    }
+
+    // Empty author/device (an authoritative delete — adjudication/switch/tests — or an older client) records as
+    // UNKNOWN (None), never a bogus "" a peer could mistake for a real deleter. The honest reindex-preserved state.
+    #[test]
+    fn delete_with_empty_author_records_unknown_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut v = Vault::open(dir.path()).unwrap();
+        let body = b"x";
+        let h = crate::hash::sha256_hex(body);
+        v.put_chunk(&h, body).unwrap();
+        v.commit(CommitRequest { path: "n.md".into(), hash: h.clone(), size: 1, mtime: 1, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None }, "").unwrap();
+        v.delete("n.md").unwrap(); // authoritative → empty provenance
+        let d = v.changes(0).deletes.into_iter().find(|d| d.path == "n.md").unwrap();
+        assert_eq!((d.author, d.device_id, d.device_name), (None, None, None));
     }
 
     #[test]
@@ -1153,12 +1185,12 @@ mod tests {
 
         // The lagging device (still at `base`) tries to delete → CAS mismatch → rejected. Deleting here
         // would DISCARD the "two" edit fleet-wide; the guard converts that silent loss into a 409.
-        let err = v.delete_checked("a.md", Some(base)).unwrap_err();
+        let err = v.delete_checked("a.md", Some(base), "", "", "").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists, "a stale delete must 409, not clobber the newer commit");
         assert!(v.file_meta("a.md").is_some(), "the file (and the newer edit) survives the rejected delete");
 
         // A delete based on the CURRENT version — the non-racing case — proceeds normally.
-        assert!(v.delete_checked("a.md", Some(newer)).unwrap().is_some(), "a delete at the current version proceeds");
+        assert!(v.delete_checked("a.md", Some(newer), "", "", "").unwrap().is_some(), "a delete at the current version proceeds");
         assert!(v.file_meta("a.md").is_none(), "the file is now deleted");
     }
 
@@ -1174,7 +1206,7 @@ mod tests {
         assert!(v.delete("a.md").unwrap().is_some(), "authoritative delete deletes");
         assert!(v.file_meta("a.md").is_none(), "authoritative delete always wins");
         // Now absent: a CAS delete with any expected_version is a no-op (404), not a conflict.
-        assert!(v.delete_checked("a.md", Some(999)).unwrap().is_none(), "delete of an absent path is a no-op, not a 409");
+        assert!(v.delete_checked("a.md", Some(999), "", "", "").unwrap().is_none(), "delete of an absent path is a no-op, not a 409");
     }
 
     // CRITIQUE R+1 (issueVersionEpochRewind): the version counter must NOT rewind below its high-water

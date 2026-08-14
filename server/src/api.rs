@@ -273,12 +273,18 @@ pub async fn delete_file(
     // it. Symmetric with commit's `expected_version`; an older client that never sends it keeps the
     // prior always-wins behavior.
     let expected_version = q.get("expected_version").and_then(|s| s.parse::<u64>().ok());
+    // Deletion provenance (schema v3, issueDeletionProvenanceUnnotified): the client asserts its stable device
+    // UUID + friendly label (same as commit's CommitRequest fields, here as query params since DELETE has no
+    // body); the AUTHOR is the server-authenticated `user`, never a client field. An older client omits these →
+    // recorded as '' (unknown) → the peer notifies conservatively.
+    let device_id = q.get("device_id").cloned().unwrap_or_default();
+    let device_name = q.get("device_name").cloned().unwrap_or_default();
     let tx = h.tx.clone();
-    let (p, o, vlt, u) = (path.clone(), owner.clone(), vault.clone(), user.clone());
+    let (p, o, vlt, u, did, dname) = (path.clone(), owner.clone(), vault.clone(), user.clone(), device_id, device_name);
     let d = blocking(move || {
         let mut v = wlock(&h.vault)?;
         ensure_ready(&v)?;
-        v.delete_checked(&p, expected_version).map_err(|e| match e.kind() {
+        v.delete_checked(&p, expected_version, &u, &did, &dname).map_err(|e| match e.kind() {
             // CAS mismatch: a stale delete raced a newer commit — a NORMAL concurrent-edit outcome. 409
             // so the client re-reconciles (→ edit-wins-pull, resurrecting the edit). Debug-log, not error.
             std::io::ErrorKind::AlreadyExists => {

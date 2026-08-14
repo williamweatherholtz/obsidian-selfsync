@@ -13,7 +13,7 @@
 //   meta(key TEXT PK, value INTEGER)                    -- 'version', 'history_floor'
 //   files(path TEXT PK, hash, size, mtime, version)     -- + idx on version for changes(since)
 //   file_chunks(path, seq, chunk, PK(path,seq))         -- ordered chunk list; + idx on chunk
-//   deletions(path, version)                            -- tombstones; + idx on version
+//   deletions(path, version, author_*)                  -- tombstones (+ v3 deletion provenance); + idx on version
 
 use crate::protocol::{ChangesResponse, Deletion, FileMeta};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -63,7 +63,12 @@ const SCHEMA: &str = "
         path TEXT NOT NULL, seq INTEGER NOT NULL, chunk TEXT NOT NULL, PRIMARY KEY(path, seq));
     CREATE INDEX IF NOT EXISTS idx_fc_chunk ON file_chunks(chunk);
     CREATE INDEX IF NOT EXISTS idx_fc_path ON file_chunks(path);
-    CREATE TABLE IF NOT EXISTS deletions (path TEXT NOT NULL, version INTEGER NOT NULL);
+    -- Provenance (schema v3): who deleted this path. Same columns/rules as `files` (v2). author_user is the
+    -- server-authenticated username; author_device_id/_name are the client-asserted stable UUID + label.
+    CREATE TABLE IF NOT EXISTS deletions (path TEXT NOT NULL, version INTEGER NOT NULL,
+        author_user TEXT NOT NULL DEFAULT '',
+        author_device_id TEXT NOT NULL DEFAULT '',
+        author_device_name TEXT NOT NULL DEFAULT '');
     CREATE INDEX IF NOT EXISTS idx_del_version ON deletions(version);
 ";
 
@@ -71,7 +76,8 @@ impl SqliteIndex {
     // The on-disk table-shape version this binary understands. Bump + add a migrate() step for any
     // change to the `files`/`file_chunks`/`deletions` columns.
     //   v2: add author_user / author_device_id / author_device_name to `files` (change provenance).
-    const CURRENT_SCHEMA: u64 = 2;
+    //   v3: add the same author_user / author_device_id / author_device_name to `deletions` (deletion provenance).
+    const CURRENT_SCHEMA: u64 = 3;
 
     // Open (creating if absent) the per-vault index DB, apply the schema (idempotent), seed the
     // version + history_floor. WAL makes concurrent readers + a single writer crash-safe.
@@ -138,6 +144,17 @@ impl SqliteIndex {
             conn.execute("ALTER TABLE files ADD COLUMN author_user TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
             conn.execute("ALTER TABLE files ADD COLUMN author_device_id TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
             conn.execute("ALTER TABLE files ADD COLUMN author_device_name TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+        }
+        // v3 (deletion provenance): add the same last-writer columns to a pre-v3 `deletions` table. No backfill —
+        // existing tombstones keep '' (unknown author), the honest state for a deletion recorded before provenance
+        // (or preserved through a rebuild-from-disk that can't recover authorship). Probe one column (all three added together).
+        let has_del_author: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('deletions') WHERE name='author_user'", [], |r| r.get(0))
+            .map_err(io)?;
+        if has_del_author == 0 {
+            conn.execute("ALTER TABLE deletions ADD COLUMN author_user TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+            conn.execute("ALTER TABLE deletions ADD COLUMN author_device_id TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
+            conn.execute("ALTER TABLE deletions ADD COLUMN author_device_name TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
         }
         if v != Self::CURRENT_SCHEMA {
             conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
@@ -279,8 +296,9 @@ impl SqliteIndex {
         }
         let mut deletes = Vec::new();
         {
-            let mut stmt = conn.prepare_cached("SELECT path, version FROM deletions WHERE version > ?1").map_err(io)?;
-            let rows = stmt.query_map(params![since as i64], |r| Ok(Deletion { path: r.get(0)?, version: r.get::<_, i64>(1)? as u64 })).map_err(io)?;
+            let mut stmt = conn.prepare_cached("SELECT path, version, author_user, author_device_id, author_device_name FROM deletions WHERE version > ?1").map_err(io)?;
+            let rows = stmt.query_map(params![since as i64], |r| Ok(Deletion { path: r.get(0)?, version: r.get::<_, i64>(1)? as u64,
+                author: empty_to_none(r.get::<_, String>(2)?), device_id: empty_to_none(r.get::<_, String>(3)?), device_name: empty_to_none(r.get::<_, String>(4)?) })).map_err(io)?;
             for row in rows { deletes.push(row.map_err(io)?); }
         }
         Ok(ChangesResponse { version, upserts, deletes, history_floor })
@@ -378,18 +396,22 @@ impl SqliteIndex {
     // the authoritative presence signal within the tx (one fewer query), and the decref-collect is now the
     // shared dereferenced_after() (∅ keep). tx auto-rolls back on the early return. Behavior unchanged.
     // @audit-hash sha256:1f738781736ce5a2
-    pub fn delete(&self, path: &str, version: u64) -> std::io::Result<Option<(Deletion, Vec<String>)>> {
+    pub fn delete(&self, path: &str, version: u64, author_user: &str, author_device_id: &str, author_device_name: &str) -> std::io::Result<Option<(Deletion, Vec<String>)>> {
         let mut conn = self.conn.lock().map_err(io)?;
         let tx = conn.transaction().map_err(io)?;
         let old = Self::chunks_of(&tx, path)?;
         let hit = tx.execute("DELETE FROM files WHERE path=?1", params![path]).map_err(io)?;
         if hit == 0 { return Ok(None); } // absent (or a bad-name non-key) → nothing to delete; tx drops → rollback
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![path]).map_err(io)?;
-        tx.execute("INSERT INTO deletions(path, version) VALUES (?1,?2)", params![path, version as i64]).map_err(io)?;
+        // Record deletion provenance on the tombstone (schema v3). author_user is the SERVER-authenticated
+        // caller; the device fields are client-asserted. '' == unknown (an older client omits them).
+        tx.execute("INSERT INTO deletions(path, version, author_user, author_device_id, author_device_name) VALUES (?1,?2,?3,?4,?5)",
+                   params![path, version as i64, author_user, author_device_id, author_device_name]).map_err(io)?;
         tx.execute("UPDATE meta SET value=MAX(value, ?1) WHERE key='version'", params![version as i64]).map_err(io)?;
         let dereferenced = Self::dereferenced_after(&tx, &old, &std::collections::HashSet::new())?;
         tx.commit().map_err(io)?;
-        Ok(Some((Deletion { path: path.to_string(), version }, dereferenced)))
+        Ok(Some((Deletion { path: path.to_string(), version,
+            author: empty_to_none(author_user.to_string()), device_id: empty_to_none(author_device_id.to_string()), device_name: empty_to_none(author_device_name.to_string()) }, dereferenced)))
     }
 }
 
@@ -472,6 +494,35 @@ mod tests {
         assert_eq!((n.author.as_deref(), n.device_id.as_deref(), n.device_name.as_deref()), (Some("will"), Some("dev-uuid"), Some("Desktop")));
     }
 
+    // v2->v3 (deletion provenance): a pre-v3 index (files already have provenance, `deletions` does NOT) must
+    // ALTER-ADD the three author_* columns to `deletions`; a legacy tombstone reads None, and the delete path
+    // records provenance on the migrated table. Mirrors the v1->v2 files test above.
+    #[test]
+    fn migrate_adds_provenance_columns_to_a_pre_v3_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL, author_user TEXT NOT NULL DEFAULT '', author_device_id TEXT NOT NULL DEFAULT '', author_device_name TEXT NOT NULL DEFAULT '');\n\
+                 CREATE TABLE deletions (path TEXT NOT NULL, version INTEGER NOT NULL);\n\
+                 INSERT INTO deletions VALUES ('gone.md', 3);\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',2),('version',3),('history_floor',1);",
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap(); // must ALTER-ADD the three deletions author_* columns
+        // Legacy tombstone survives migration with UNKNOWN provenance (None, not "").
+        let d = s.changes(0).unwrap().deletes.into_iter().find(|d| d.path == "gone.md").unwrap();
+        assert_eq!((d.author, d.device_id, d.device_name), (None, None, None), "pre-v3 tombstone survives with unknown provenance");
+        assert_eq!(SqliteIndex::meta_get(&s.conn.lock().unwrap(), "schema_version").unwrap(), SqliteIndex::CURRENT_SCHEMA);
+        // Delete path works on the migrated table and records provenance.
+        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None }).unwrap();
+        s.delete("x.md", 5, "alice", "dev-9", "Phone").unwrap();
+        let dx = s.changes(3).unwrap().deletes.into_iter().find(|d| d.path == "x.md").unwrap();
+        assert_eq!((dx.author.as_deref(), dx.device_id.as_deref(), dx.device_name.as_deref()), (Some("alice"), Some("dev-9"), Some("Phone")));
+    }
+
     // CRITIQUE R+1 (issueFoldBackfillAsciiOnly): healing a pre-fold DB must backfill fold with the SAME
     // fold the write path + colliding_key use (Rust to_lowercase, full Unicode) — NOT SQLite's ASCII-only
     // lower(), which would leave a legacy non-ASCII row's fold disagreeing with the guard's probe.
@@ -551,12 +602,12 @@ mod tests {
         let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
         s.put(&meta("a.md", "h1", 2, &["c1", "shared"])).unwrap();
         s.put(&meta("b.md", "h2", 3, &["shared"])).unwrap();
-        let (del, deref) = s.delete("a.md", 4).unwrap().unwrap();
+        let (del, deref) = s.delete("a.md", 4, "", "", "").unwrap().unwrap();
         assert_eq!(del.version, 4);
         assert_eq!(deref, vec!["c1"]);                 // c1 dropped, 'shared' kept (b.md)
         assert!(s.file_meta("a.md").unwrap().is_none());
         assert_eq!(s.changes(3).unwrap().deletes.iter().map(|d| d.path.clone()).collect::<Vec<_>>(), vec!["a.md"]);
-        assert!(s.delete("a.md", 5).unwrap().is_none(), "deleting an absent path is a no-op");
+        assert!(s.delete("a.md", 5, "", "", "").unwrap().is_none(), "deleting an absent path is a no-op");
     }
 
     #[test]
@@ -574,9 +625,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
         s.put(&meta("old.md", "h", 2, &["c1"])).unwrap();
-        s.delete("gone.md", 3).ok(); // no-op (absent) — but record a real tombstone via put+delete:
+        s.delete("gone.md", 3, "", "", "").ok(); // no-op (absent) — but record a real tombstone via put+delete:
         s.put(&meta("t.md", "h", 4, &["c1"])).unwrap();
-        s.delete("t.md", 5).unwrap();
+        s.delete("t.md", 5, "", "", "").unwrap();
         // Rebuild with a fresh set; tombstone for t.md must survive.
         s.replace_files(&[meta("new.md", "h2", 9, &["c2"])], 9).unwrap();
         assert_eq!(s.all_paths().unwrap(), vec!["new.md"]);
@@ -600,8 +651,8 @@ mod tests {
     fn prune_tombstones_drops_below_floor_and_raises_it() {
         let dir = tempfile::tempdir().unwrap();
         let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
-        s.put(&meta("a.md", "h", 2, &["c"])).unwrap(); s.delete("a.md", 3).unwrap();
-        s.put(&meta("b.md", "h", 4, &["c"])).unwrap(); s.delete("b.md", 5).unwrap();
+        s.put(&meta("a.md", "h", 2, &["c"])).unwrap(); s.delete("a.md", 3, "", "", "").unwrap();
+        s.put(&meta("b.md", "h", 4, &["c"])).unwrap(); s.delete("b.md", 5, "", "", "").unwrap();
         // Prune below floor 4: a.md's tombstone (v3) goes, b.md's (v5) stays; floor raised to 4.
         let n = s.prune_tombstones(4).unwrap();
         assert_eq!(n, 1);

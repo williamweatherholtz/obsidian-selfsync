@@ -31,10 +31,22 @@ pub struct FileMeta {
     pub device_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default, schemars::JsonSchema)]
 pub struct Deletion {
     pub path: String,
     pub version: u64,
+    // Provenance of the DELETION — same shape + rules as FileMeta's (recorded on the tombstone at delete
+    // time, returned on every delete so a client can attribute an incoming config/plugin REMOVAL to WHO made
+    // it, closing issueDeletionProvenanceUnnotified). `author` is the SERVER-AUTHENTICATED username; the
+    // device fields are client-asserted (the stable UUID + friendly label). All optional + `#[serde(default)]`:
+    // a pre-provenance tombstone (older server, or one preserved through a rebuild-from-disk that can't recover
+    // authorship) carries none → the client reads UNKNOWN and notifies conservatively. Additive on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]

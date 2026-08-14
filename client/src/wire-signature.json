@@ -125,6 +125,21 @@
     ],
     "Deletion": [
       {
+        "name": "author",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "device_id",
+        "required": false,
+        "type": "string"
+      },
+      {
+        "name": "device_name",
+        "required": false,
+        "type": "string"
+      },
+      {
         "name": "path",
         "required": true,
         "type": "string"

@@ -981,6 +981,35 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  // SOURCE-DRIVEN DELETION notice (issueDeletionProvenanceUnnotified): a peer removing a synced config file
+  // notifies + names WHO; your own removal is silent; a MIXED batch counts ONLY the named source's removals.
+  it("a peer's config DELETION notifies + names the source; your own is silent; a mixed batch counts only that source", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    p.settings.username = "will";
+    p.settings.configChangeNotify = "user";
+    // A peer (alice) removed one snippet → names alice, count 1, restart hint (snippet).
+    __notices.length = 0;
+    anyp.pendingConfigDelete = new Map([[".obsidian/snippets/x.css", { author: "alice", deviceId: "dev-Z", deviceName: "Alice-PC" }]]);
+    p.flushConfigDeletions();
+    expect(__notices.some((m) => /alice/i.test(m) && /removed 1 synced config file/.test(m))).toBe(true);
+    // MIXED: alice removed one, YOUR OWN device removed another → names alice, counts ONLY alice's (1), never 2.
+    __notices.length = 0;
+    anyp.pendingConfigDelete = new Map([
+      [".obsidian/snippets/x.css", { author: "alice", deviceId: "dev-Z" }],
+      [".obsidian/app.json", { author: "will", deviceId: anyp.deviceId() }],
+    ]);
+    p.flushConfigDeletions();
+    expect(__notices.some((m) => /alice/i.test(m) && /removed 1 synced config/.test(m))).toBe(true);
+    expect(__notices.some((m) => /removed 2 /.test(m))).toBe(false); // NOT folded into "2"
+    // ALL your own → completely silent.
+    __notices.length = 0;
+    anyp.pendingConfigDelete = new Map([[".obsidian/app.json", { author: "will", deviceId: anyp.deviceId() }]]);
+    p.flushConfigDeletions();
+    expect(__notices.length).toBe(0);
+    p.onunload();
+  });
+
   // fix ① (2026-08-01): the hot-load gate re-derives privacy FRESH at the decision point, so a
   // `vaultIsPrivate` left STALE-true (e.g. from a previous private vault after a switch, or predating an
   // out-of-band grant on the delta path — which never refreshed it) can't auto-execute a now-shared vault's

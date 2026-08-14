@@ -92,6 +92,23 @@ describe("commit() status→error mapping", () => {
   });
 });
 
+describe("deleteFile provenance (issueDeletionProvenanceUnnotified)", () => {
+  it("stamps the transport's device provenance as query params (DELETE has no body); omits when unconfigured", async () => {
+    req.mockResolvedValue(res(200));
+    const withDev = new HttpTransport(HTTPS, "tok", "vault", "", "dev-uuid-1", "Will's Desktop");
+    await withDev.deleteFile("n.md");
+    const url = req.mock.calls[0][0].url as string;
+    expect(url).toContain("device_id=dev-uuid-1");
+    expect(url).toContain(`device_name=${encodeURIComponent("Will's Desktop")}`);
+    req.mockClear();
+    // The default transport (no identity) sends neither — the deletion is recorded as unknown-device.
+    await t().deleteFile("n.md");
+    const bareUrl = req.mock.calls[0][0].url as string;
+    expect(bareUrl).not.toContain("device_id");
+    expect(bareUrl).not.toContain("device_name");
+  });
+});
+
 describe("fileMeta() / status() / missing() mapping", () => {
   it("fileMeta 404 → null; 200 → meta; 500 → throw", async () => {
     req.mockResolvedValueOnce(res(404));

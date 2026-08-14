@@ -2,7 +2,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFile
 import { sha256hex } from "./chunker";
 import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
-import { ChangesResponse, CommitConflictError, FileMeta } from "./protocol";
+import { ChangesResponse, CommitConflictError, Deletion, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
 import { isExcluded } from "./excludedFolders";
 import { normalizedHash, neutralizeTimestamps, restoreTimestamps } from "./frontmatter";
@@ -337,6 +337,10 @@ export interface ReconcileDeps {
   // vault's shared/private status. Config-only (gated to CONFIG_PREFIX in applyPull) so note pulls don't
   // pay for it; fires before the write, so a subsequent race-abort just leaves an unread entry.
   onRemoteConfig?: (path: string, meta: FileMeta) => void;
+  // A config/plugin path this device is DELETING because a peer removed it (an incoming tombstone → removeLocal).
+  // Carries the tombstone's provenance so the plugin can fire the same source-of-change notice as an upsert
+  // (issueDeletionProvenanceUnnotified). Config-only (gated to CONFIG_PREFIX in the removeLocal branch).
+  onRemoteConfigDelete?: (path: string, provenance: { author?: string; deviceId?: string; deviceName?: string }) => void;
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
@@ -743,6 +747,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   const basePaths = acceptedBasePaths(d);
   // Positive deletion evidence: only a path the server actually TOMBSTONED may be delete-local'd.
   const tombstoned = new Set(resp.deletes.map((x) => x.path));
+  const delByPath = new Map(resp.deletes.map((x) => [x.path, x])); // for the incoming config-delete provenance notice
   // Count ONLY the paths that would actually be HELD delete-locals — a tombstoned base path still present
   // locally. (A base path merely ABSENT from the manifest without a tombstone is `restore`, not a delete, so
   // it must not inflate the threshold count / diverge from the surfaced set — R11-F5.)
@@ -787,7 +792,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   let examined = 0;
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardBulkPush, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardBulkPush, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => {
       if (pendingPaths.has(p)) d.onProgress?.(--pending);
@@ -813,6 +818,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const remote = new Map<string, FileMeta>();
   for (const f of delta.upserts) remote.set(f.path, f);
   const tombstoned = new Set(delta.deletes.map((x) => x.path));
+  const delByPath = new Map(delta.deletes.map((x) => [x.path, x])); // incoming config-delete provenance notice
   const baseSet = new Set(acceptedBasePaths(d));
   const wouldDelete = [...tombstoned].filter((p) => baseSet.has(p)).length;
   // Same INCOMING confirmation as reconcileAll (D0041): the delta path also delete-locals on tombstones, so
@@ -838,7 +844,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       // destroy; a genuine local deletion still propagates via the event path / full scan (which have
       // authoritative presence). Matches reconcilePath's own io.exists probe.
       const present = d.io.exists ? await d.io.exists(p) : true;
-      await reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: d.localSizeOf?.(p) ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: present });
+      await reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: d.localSizeOf?.(p) ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: present });
     },
     versionOf,
     () => d.onProgress?.(--pending),
@@ -922,6 +928,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // extra manifest fetch happen, so the common case stays a single /meta call.
   let guardDelete = false;
   let hasTombstone: (p: string) => boolean = () => false;
+  let deletionOf: ((p: string) => Deletion | undefined) | undefined; // provenance for an incoming config-delete notice
   // reconcilePath is the PRIMARY vault's single-event route (always this.deps(), never noResurrect — composed-
   // mount folders are excluded from the primary scope and driven poll-only by reconcileAll/reconcileDelta, D0040),
   // so the F2 bulk-push-to-shared guard is not needed here — a mount's local-only-new push is only ever emitted
@@ -936,6 +943,8 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     const remoteSet = new Set(manifest.upserts.map((f) => f.path));
     const tombstoned = new Set(manifest.deletes.map((x) => x.path));
     hasTombstone = (p) => tombstoned.has(p); // delete-local requires a real deletion tombstone
+    const delByPath = new Map(manifest.deletes.map((x) => [x.path, x])); // carry the tombstone's provenance to the config-delete notice (issueDeletionProvenanceUnnotified)
+    deletionOf = (p) => delByPath.get(p);
     const basePaths = acceptedBasePaths(d); // accepted-only denominator (DI-R2 note)
     const wouldDelete = basePaths.filter((p) => !remoteSet.has(p)).length;
     // Per-pass ratio ONLY, no cumulative DeleteRateGuard (A5): a paced SERVER drain propagates via the
@@ -948,7 +957,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // deciding. O(1) exists check, only when the server-has-it precondition holds.
   const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
   try {
-    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, locallyPresent, localStat: d.statOf?.(path) });
+    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, deletionOf, locallyPresent, localStat: d.statOf?.(path) });
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
@@ -1103,6 +1112,7 @@ interface ReconcileOneOpts {
   guardBulkPush?: boolean;                     // this pass's local-only-new push batch to a SHARED source exceeded the user threshold → HOLD (F2)
   localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
   hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
+  deletionOf?: (p: string) => Deletion | undefined; // the tombstone record for p (carries deletion provenance) → the removeLocal config-delete notice
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
   localStat?: { size: number; mtime: number; ctime?: number }; // on-disk stat (scan-skip fast path + first-seed source)
 }
@@ -1116,7 +1126,7 @@ interface ReconcileOneOpts {
 // read boundary instead of a null + a separate presence flag + a runtime if).
 // @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
-  const { rmeta, guardDelete = false, guardBulkPush = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
+  const { rmeta, guardDelete = false, guardBulkPush = false, localSize = 0, hasTombstone = () => false, deletionOf, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -1282,6 +1292,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     case "removeLocal":
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.();
+      // Attribute an incoming CONFIG/plugin removal to WHO deleted it (issueDeletionProvenanceUnnotified) — AFTER
+      // the remove SUCCEEDS (a throw above propagates → no notice, no re-fire loop; the notice tracks the real
+      // removal, unlike onRemoteConfig which fires provenance pre-write but gates its NOTICE on a post-write flag).
+      if (isConfig(path)) { const del = deletionOf?.(path); d.onRemoteConfigDelete?.(path, { author: del?.author, deviceId: del?.deviceId, deviceName: del?.deviceName }); }
       return;
     case "deleteRemote":
       // EVIDENCED ABSENCE (issueFalseAbsenceDelete): the local LISTING under-reports (a dir that failed to
