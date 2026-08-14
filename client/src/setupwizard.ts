@@ -286,16 +286,25 @@ export class SetupWizardModal extends Modal {
   // of account creation). The session must already be persisted (both callers persistSession first).
   private async adoptRedeemed(ref: { owner: string; vault: string; perm: SharePerm }) {
     const st = this.plugin.settings;
-    new Notice(`SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
+    // SELF-REDEEM: a share link for a vault THIS account owns is not a share — it's your OWN vault. The server
+    // mints no grant for a self-redeem, and /api/shared never lists your own vaults, so stamping vaultOwner
+    // with your own name would make the connect-time grant check falsely report "revoked" and BLOCK all sync.
+    // Adopt it as OWNED (vaultOwner empty, read-write) instead.
+    const own = this.plugin.isOwnAccount(ref.owner); // CASE-INSENSITIVE (server lowercases usernames; the client persists as-typed)
+    const owner = own ? "" : ref.owner;
+    const readOnly = own ? false : ref.perm === "read";
+    new Notice(own
+      ? `SelfSync: now syncing your vault "${ref.vault}" on this device.`
+      : `SelfSync: access granted — now syncing ${ref.owner}/${ref.vault} (${ref.perm === "readWrite" ? "read-write" : "read-only"}).`, 9000);
     this.close();
     // V2 (2026-08-02): redeeming a share on a device that already has local notes must NOT silently
     // reconcile them against the shared vault's base (a foreign base) — route through the safe merge-switch
     // (clears the stale base + unions, nothing lost), exactly like the wizard's own vault-change path and
     // the "Switch vault" action. A fresh/empty device adopts directly.
     if (await this.plugin.hasLocalData()) {
-      await this.plugin.switchToVault(ref.vault, "merge", ref.owner, ref.perm === "read");
+      await this.plugin.switchToVault(ref.vault, "merge", owner, readOnly);
     } else {
-      st.vaultId = ref.vault; st.vaultOwner = ref.owner; st.vaultReadOnly = ref.perm === "read";
+      st.vaultId = ref.vault; st.vaultOwner = owner || undefined; st.vaultReadOnly = readOnly;
       await this.plugin.saveSettings();
       void this.plugin.reconnect();
     }

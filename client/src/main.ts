@@ -1249,6 +1249,14 @@ export default class NewLiveSyncPlugin extends Plugin {
     }
     try {
       const ref = await this.redeemShareLink(link);
+      // SELF-REDEEM: a link for a vault THIS account owns mints no grant (it's already yours), so it won't
+      // appear in the "Shared with you" list. Say so plainly instead of "choose it below" (it's under your OWN
+      // vaults) — and never treat it as a shared vault.
+      if (this.isOwnAccount(ref.owner)) {
+        new Notice(`SelfSync: "${ref.vault}" is your own vault — no share needed. Open Switch vault and pick it from your own vaults.`, 9000);
+        new SwitchVaultModal(this.app, this).open();
+        return;
+      }
       // Redeem only ADDS the grant — the user still has to switch this device to it. Don't leave that
       // second step to a toast they might miss; open the Switch modal (the redeemed vault is in its
       // "Shared with you" list) so the flow reads to completion, matching the wizard's auto-adopt path.
@@ -1270,8 +1278,27 @@ export default class NewLiveSyncPlugin extends Plugin {
   // read↔write change takes effect immediately and a revoked grant stops us before a push would 403.
   // Own vaults short-circuit with no extra call. Throws on revocation → offline with a clear, actionable
   // card message; recovers automatically if the owner re-grants (the next connect re-checks).
+  // True when `owner` names THIS signed-in account — CASE-INSENSITIVE: the server canonicalizes usernames to
+  // lowercase (auth.rs to_ascii_lowercase) but the client persists what the user typed, so a capitalized
+  // username ("Alice") must still match its own vault ("alice"). Empty owner ⇒ false (an OWN vault carries "").
+  isOwnAccount(owner: string | undefined): boolean {
+    const a = (owner ?? "").trim().toLowerCase();
+    return a !== "" && a === (this.settings.username ?? "").trim().toLowerCase();
+  }
   private async refreshShareGrant(token: string): Promise<void> {
     if (!this.settings.vaultOwner) return;
+    // SELF-HEAL (self-redeem bug): a vaultOwner equal to THIS account's own username means the vault is your
+    // OWN — it was mis-marked as shared-to-you (e.g. by self-redeeming a share link for a vault you own). The
+    // server mints no grant for that, and /api/shared lists only OTHERS' vaults, so the check below would
+    // falsely report "revoked" and block ALL sync. Correct it to an owned, read-WRITE vault (a read-only
+    // self-redeem also left vaultReadOnly stale-true, which would then block pushes to your own vault).
+    if (this.isOwnAccount(this.settings.vaultOwner)) {
+      this.settings.vaultOwner = undefined;
+      this.settings.vaultReadOnly = false; // your own vault is always read-write (matches switchToVault/forkVault)
+      await this.saveSettings();
+      this.log(`corrected a self-owned vault mis-marked as shared (${this.settings.username}/${this.settings.vaultId}) — syncing it as your own`);
+      return;
+    }
     const grants = await HttpTransport.listShared(this.settings.serverUrl, token);
     const g = resolveShareGrant(grants, this.settings.vaultOwner, this.settings.vaultId);
     if (g.status === "revoked") {

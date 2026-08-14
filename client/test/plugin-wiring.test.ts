@@ -830,6 +830,26 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  // self-redeem bug: redeeming a share link for a vault YOU OWN stamps vaultOwner with your own username, and
+  // the connect-time grant check then reports "revoked" (your own vault is never in /api/shared) and blocks ALL
+  // sync. refreshShareGrant must SELF-HEAL: a vaultOwner === my own username is corrected to an owned vault.
+  it("self-redeem self-heal: a vaultOwner matching my username (case-insensitive) → own, read-WRITE vault (never 'revoked')", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    p.settings.username = "Alice";           // as-typed (capitalized) — the server stores/returns it lowercased
+    p.settings.vaultId = "notes";
+    p.settings.vaultOwner = "alice";          // POISONED with the server-lowercased owner; case must NOT defeat the heal (F1)
+    p.settings.vaultReadOnly = true;          // a read-only self-redeem also left this stale-true (F2)
+    // The self-heal must short-circuit BEFORE HttpTransport.listShared (which would hit the real network and,
+    // for an own vault, drive the false "revoked"): it clears vaultOwner + vaultReadOnly and returns cleanly.
+    await expect(anyp.refreshShareGrant("tok")).resolves.toBeUndefined();
+    expect(p.settings.vaultOwner).toBeUndefined();   // corrected to an OWN vault → syncs normally
+    expect(p.settings.vaultReadOnly).toBe(false);    // …and read-WRITE, so pushes to your own vault aren't blocked
+    expect(p.isOwnAccount("ALICE")).toBe(true);      // the predicate itself is case-insensitive both ways
+    expect(p.isOwnAccount("bob")).toBe(false);
+    expect(p.isOwnAccount("")).toBe(false);
+  });
+
   it("refreshVaultPrivacy: own+unshared → private; a readWrite grant/link or a shared-TO-us vault → NOT private (fail-safe)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;
