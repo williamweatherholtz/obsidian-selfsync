@@ -53,4 +53,32 @@ package EngineRelationships {
     // entirely, so issue021 dissolves. List: `query.py process-changes`.
     metadata def ProspectiveChange;
     metadata def SafetyChange;
+
+    // D0045 (satisfies the toolkit marker-declaration guard, issue077/D0133): a metadata MARKER used in an edge (`#X dependency from A to B;`) MUST be
+    // declared as a `metadata def` — an undeclared/misspelled marker is not type-checked, so it validates
+    // clean while silently dropping the item from whatever guard/view depends on it. The engine originally
+    // treated satisfy/verify/allocate as NATIVE edges (so they were left undeclared, see the note above), but
+    // the instance data authors them in MARKER form (`#Verify dependency ...`, `#Satisfies ...`) — chiefly the
+    // compliance (NIST 800-171) traceability and the STPA safety model — so the actually-used marker vocabulary
+    // is declared here to make it type-checked. These are the edge KINDS in use; the marker only asserts the
+    // relationship (no payload). Grouped by purpose:
+    // Traceability / coverage / derivation:
+    metadata def Verify;        // a Test/verification -> the requirement it verifies
+    metadata def Satisfies;     // a design/requirement element -> the higher requirement it satisfies
+    metadata def Covers;        // a per-sitting review -> the delivery sprint it covers (D0049)
+    metadata def DerivedFrom;   // a #Capability feature -> the Need it derives from (D0098/D0099 rootedness)
+    metadata def RealizedBy;    // a requirement/capability -> the work item that realizes it
+    metadata def Measures;      // an Indicator/measure -> the element it measures (D0088/D0089)
+    metadata def Informs;       // a monitored measure/indicator -> what it informs (non-gating, D0089)
+    metadata def JustifiedBy;   // an element -> the rationale/evidence that justifies it
+    metadata def Changes;       // a Decision -> the definition/item it changes
+    // STPA safety model (Losses / Hazards / UCAs / Control Structure — the stpa-* files):
+    metadata def Causes;        // a cause/UCA -> the hazard it causes
+    metadata def LeadsTo;       // a Hazard -> the Loss it leads to
+    metadata def Inverts;       // a Safety Constraint -> the Hazard it inverts (prevents)
+    metadata def Enforces;      // a Controller -> the Safety Constraint it enforces
+    metadata def Senses;        // a controller/monitor -> the state it senses
+    metadata def Mitigates;     // a control/action -> the hazard/loss it mitigates
+    metadata def Analyzes;      // an analysis -> the element it analyzes
+    metadata def Explains;      // a scenario/analysis -> the UCA/hazard it explains
 }
