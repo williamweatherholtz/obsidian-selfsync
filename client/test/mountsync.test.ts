@@ -480,6 +480,28 @@ describe("pollMount — D0019 source history reset detection (mountResetDetectio
     expect(kept).toContain("gone.md");                   // surfaced observationally
   });
 
+  it("F2 floor: a mass push to a shared source is HELD even with the incoming bulk-delete confirmation OFF (issueMountPushGuardThresholdCoupling)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = resettableSource(chunks, [], 1, 1);                     // source manifest EMPTY (peer deleted everything)
+    const seed: Record<string, string> = {};
+    for (let i = 0; i < 12; i++) seed[`Work/ASI/n${i}.md`] = `body ${i}`; // 12 local-only files > the SHARED_PUSH_FLOOR of 10
+    const io = memIo(seed);
+    const held: string[] = [];
+    // bulkDeleteStrategy 'off' would disable the DELETE guard — but the push guard protects a PEER's vault and
+    // must not be silently disabled by that toggle, so a mass push is still held via the built-in floor.
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { bulkDeleteStrategy: "off" }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], { onHeldPush: (_s, paths) => { held.push(...paths); } });
+    expect(held.length).toBe(12);                                      // all held despite 'off' — floor protects the peer
+    expect(src.committed).toEqual([]);                                 // none resurrected
+
+    // Finding-2: the floor is a TRUE minimum — a HIGHER active user threshold can't weaken it either.
+    const io2 = memIo(seed); const held2: string[] = [];
+    const rt2 = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io2, resettableSource(new Map(), [], 1, 1), { bulkDeleteStrategy: "count", bulkDeleteThreshold: 50 }));
+    await reconcileMountScopes([{ runtime: rt2, state: "detached", fails: 0 }], { onHeldPush: (_s, paths) => { held2.push(...paths); } });
+    expect(held2.length).toBe(12);                                     // 12 > floor 10, though 12 < user threshold 50 → still held
+  });
+
   it("F2 HIGH resolve-race: keepHeldPushes does NOT base-stamp a path the source tombstones mid-window — it stays kept-local, never deleted", async () => {
     const chunks = new Map<string, Uint8Array>();
     const committed: CommitRequest[] = [], deleted: string[] = [];

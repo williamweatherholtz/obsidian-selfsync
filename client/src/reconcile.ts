@@ -209,6 +209,12 @@ export function bulkDeleteHold(strategy: BulkDeleteStrategy | undefined, thresho
 // deletion set (and it equally confirms a legitimate large first seed). Reuses the incoming bulk-delete
 // threshold knob (off / > N files / > N%); the % denominator is the ACCEPTED-LOCAL set, not the base — on a
 // re-first-contact the base is empty, so a base denominator would divide by zero and never fire the percent gate.
+// A built-in FLOOR (in FILES) for the bulk-push-to-shared guard. The push guard protects a PEER's data (a mass
+// resurrection on their vault), so it must hold at AT LEAST this count no matter the LOCAL incoming-delete
+// toggle — a different decision that happens to share a knob (issueMountPushGuardThresholdCoupling). This is a
+// TRUE floor, not a fallback: it applies even when the delete guard is OFF *and* when the user set a HIGHER
+// delete threshold (a partial base loss of, say, 30 files must not slip under a delete threshold of 50).
+export const SHARED_PUSH_FLOOR = 10;
 function computeBulkPushHold(d: ReconcileDeps, local: Map<string, unknown>, remote: Map<string, unknown>, tombstoned: Set<string>): boolean {
   if (!d.noResurrect) return false;
   // A live-tombstoned path is NOT a push candidate (finalize keeps it local, never held), so exclude it from
@@ -216,7 +222,13 @@ function computeBulkPushHold(d: ReconcileDeps, local: Map<string, unknown>, remo
   // a sizable pruned-tombstone resurrection batch slips UNDER the percent threshold (un-held). Consistent on both.
   const notTombstoned = [...local.keys()].filter((p) => accepts(d, p) && !tombstoned.has(p));
   const wouldPushNew = notTombstoned.filter((p) => !d.base.get(p) && !remote.has(p)).length;
-  return bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldPushNew, notTombstoned.length);
+  // Hold if the user's ACTIVE incoming-delete gate trips (so a user who TIGHTENED it also tightens the push
+  // guard) OR the raw count exceeds the built-in floor — whichever is stricter. The floor can't be weakened by
+  // "off", a higher user threshold, or percent mode, since it protects someone else's vault (Finding-2 critique).
+  const userHold = d.bulkDeleteStrategy && d.bulkDeleteStrategy !== "off"
+    ? bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldPushNew, notTombstoned.length)
+    : false;
+  return userHold || wouldPushNew > SHARED_PUSH_FLOOR;
 }
 
 // At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
@@ -910,6 +922,11 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // extra manifest fetch happen, so the common case stays a single /meta call.
   let guardDelete = false;
   let hasTombstone: (p: string) => boolean = () => false;
+  // reconcilePath is the PRIMARY vault's single-event route (always this.deps(), never noResurrect — composed-
+  // mount folders are excluded from the primary scope and driven poll-only by reconcileAll/reconcileDelta, D0040),
+  // so the F2 bulk-push-to-shared guard is not needed here — a mount's local-only-new push is only ever emitted
+  // by the full scan, which carries it (issueMountReconcilePathPushUnguarded — not reachable here; see the
+  // mountReconcilePathPushUnreachable analysis).
   if (rmeta === null && d.base.get(path)) {
     // DI-5: apply the SAME widened bulk-delete guard reconcileAll uses — not just the
     // empty-manifest case. A PARTIAL server index loss (restore-from-backup / reindex over an

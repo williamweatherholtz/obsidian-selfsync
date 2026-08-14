@@ -453,6 +453,24 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("runMountExclusive serializes overlapping mount work — a held-review resolver can't interleave with an in-flight pass (issueMountHeldResolverSerialization)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const aGate = new Promise<void>((r) => { releaseA = r; });
+    const slow = async () => { order.push("A-start"); await aGate; order.push("A-end"); };
+    const fast = async () => { order.push("B-run"); };
+    const pa = anyp.runMountExclusive(slow);
+    const pb = anyp.runMountExclusive(fast);
+    for (let i = 0; i < 6; i++) await Promise.resolve(); // flush microtasks so A starts + reaches its gate
+    expect(order).toEqual(["A-start"]); // A started + gated; B is BLOCKED behind A (no interleave)
+    releaseA();
+    await Promise.all([pa, pb]);
+    expect(order).toEqual(["A-start", "A-end", "B-run"]); // B ran strictly after A finished
+    p.onunload();
+  });
+
   it("mountLiveSubscription: mount sockets are periodically RECYCLED so a zombie half-open recovers (issueMountHalfOpenSocketLiveness)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;

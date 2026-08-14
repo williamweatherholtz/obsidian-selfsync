@@ -352,6 +352,38 @@ export default class NewLiveSyncPlugin extends Plugin {
   private mountIo?: VaultIo; // the shared data-only io mounts wrap (built lazily via buildMountIo)
   private mountReconciling = false; // re-entrancy guard: only one mount pass in flight at a time (B1 detach)
   private mountReconcilePending = false; // a reconcile was requested while one was in flight → re-run on release (R1-F1/F5)
+  // issueMountHeldResolverSerialization: a chained-promise MUTEX shared by mount reconcile PASSES and the held-
+  // review RESOLVERS (accept/keep bulk push/delete), so a settings-UI button callback that mutates a scope's
+  // base can never interleave with an in-flight poll-driven pass touching the same base. Both sides funnel their
+  // base-mutating work through runMountExclusive; the pre-existing mountReconciling flag still coalesces
+  // fire-and-forget pass requests, this serialises passes-vs-resolvers on top.
+  private mountWork: Promise<unknown> = Promise.resolve();
+  private async runMountExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.mountWork;
+    let release!: () => void;
+    this.mountWork = new Promise<void>((r) => (release = r));
+    try { await prev.catch(() => {}); return await fn(); }
+    finally { release(); }
+  }
+  // Run a held-review resolver's base mutation for one scope, correctly serialised. A MOUNT scope goes through
+  // runMountExclusive (vs the poll pass) AND re-resolves its deps INSIDE the lock — a rebuild while we waited may
+  // have recreated the scope with a fresh BaseStore, so a deps captured before the wait would mutate an orphaned
+  // base (Finding-4 critique). The primary scope mutates this.base directly: its RECONCILE passes serialise
+  // against each other via the engine queue, but this resolver is a non-enqueued UI callback, so it is NOT fully
+  // serialised against an in-flight primary pass — a pre-existing, narrow, bounded race tracked as
+  // issuePrimaryHeldResolverSerialization (the primary analogue of the mount fix; a distinct mechanism — the
+  // engine event queue, not this mutex). Returns false if the scope isn't live (caller surfaces the reconnecting
+  // notice). NOTE (Finding-3, accepted): a MOUNT resolver now waits behind the in-flight pass — bounded by
+  // REQUEST_TIMEOUT_MS per request, so a never-settling wait isn't reachable via the real HttpTransport (issueMountHeldResolverSerialization).
+  private async runScopeExclusive(scope: string, fn: (d: ReconcileDeps) => Promise<void>): Promise<boolean> {
+    if (scope === "primary") { const d = this.depsForScope(scope); if (!d) return false; await fn(d); return true; }
+    return this.runMountExclusive(async () => {
+      const d = this.depsForScope(scope); // fresh AFTER acquiring the lock (the scope may have been rebuilt while we waited)
+      if (!d) return false;
+      await fn(d);
+      return true;
+    });
+  }
   private mountScopesToken = "";     // the session token the current mount transports were built with (R1-F2 staleness)
   // Persisted per-mount own-base + cursor, keyed by mountKey — the per-mount analogue of the single `base`
   // key. Loaded in loadSettings, snapshotted into saveData, updated as each mount reconciles.
@@ -2253,9 +2285,9 @@ export default class NewLiveSyncPlugin extends Plugin {
   async acceptBulkDeletions(scope: string): Promise<void> {
     const paths = this.pendingBulkDeletes.get(scope);
     if (!paths?.length) return;
-    const d = this.depsForScope(scope);
-    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; } // R11-F7: scope not live (e.g. mid-reconnect)
-    await applyHeldDeletions(d, paths);
+    // Serialise a MOUNT resolver against the poll pass + re-resolve deps inside the lock (issueMountHeldResolverSerialization).
+    const ok = await this.runScopeExclusive(scope, (d) => applyHeldDeletions(d, paths));
+    if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; } // R11-F7: scope not live (e.g. mid-reconnect)
     this.pendingBulkDeletes.delete(scope);
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
@@ -2268,9 +2300,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   async keepBulkDeletions(scope: string): Promise<void> {
     const paths = this.pendingBulkDeletes.get(scope);
     if (!paths?.length) return;
-    const d = this.depsForScope(scope);
-    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    keepHeldDeletions(d, paths);
+    const ok = await this.runScopeExclusive(scope, async (d) => { keepHeldDeletions(d, paths); }); // serialise + fresh deps (issueMountHeldResolverSerialization)
+    if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.pendingBulkDeletes.delete(scope);
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
@@ -2304,9 +2335,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   async acceptBulkPushes(scope: string): Promise<void> {
     const paths = this.pendingBulkPushes.get(scope);
     if (!paths?.length) return;
-    const d = this.depsForScope(scope);
-    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    await applyHeldPushes(d, paths);
+    const ok = await this.runScopeExclusive(scope, (d) => applyHeldPushes(d, paths)); // mount-only; serialise + fresh deps (issueMountHeldResolverSerialization)
+    if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.pendingBulkPushes.delete(scope);
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
@@ -2317,9 +2347,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   async keepBulkPushes(scope: string): Promise<void> {
     const paths = this.pendingBulkPushes.get(scope);
     if (!paths?.length) return;
-    const d = this.depsForScope(scope);
-    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    await keepHeldPushes(d, paths);
+    const ok = await this.runScopeExclusive(scope, (d) => keepHeldPushes(d, paths)); // serialise + fresh deps (issueMountHeldResolverSerialization)
+    if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.pendingBulkPushes.delete(scope);
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
@@ -2544,6 +2573,8 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (this.mountReconciling) { this.mountReconcilePending = true; return; }
     this.mountReconciling = true;
     try {
+      // Serialise the pass against any held-review resolver mutating the same base (issueMountHeldResolverSerialization).
+      await this.runMountExclusive(async () => {
       if (this.mounts().length === 0) { if (this.mountScopes.length || this.mountSockets.size) { this.mountScopes = []; this.closeMountSockets(); this.renderLight(); } return; } // last mount removed → drop scopes AND their WS (rebuildMountScopes doesn't run on the empty path)
       // R1-F1: rebuild EVERY pass (not just initial/empty) — rebuildMountScopes preserves live scopes by key and
       // adds/drops to match the configured set, so a mount added or removed in steady state is picked up here.
@@ -2574,6 +2605,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       // (only healthy scopes get a socket) and the link-state gate is current. A source poke then drives a
       // prompt reconcile instead of waiting for the ~60s poll (which stays the backstop).
       this.syncMountSubscriptions(this.activeMounts());
+      });
     } catch (e: any) {
       this.log(`mount subsystem error (${e?.message ?? e}) — primary sync unaffected`); // never rethrow: isolate from the primary
     } finally {
@@ -2689,22 +2721,27 @@ export default class NewLiveSyncPlugin extends Plugin {
       new Notice("SelfSync: choose a plain folder (not .obsidian or inside a mount) to keep your edits."); return 0;
     }
     await this.ensureMountFolder(folder);
-    const scope = this.mountScopes.find((s) => s.runtime.key === key);
     const restored: string[] = [];
-    for (const rel of rels) {
-      const localPath = localFromMountRel(m, rel);
-      try {
-        const content = await this.io.read(localPath);                 // the edited version
-        await this.io.write(await this.uniqueKeeperPath(folder, rel), content); // subpath preserved (F10) // retain as the user's own note
-        scope?.runtime.base.delete(rel);                               // drop base so the re-pull re-adopts the source (and the delete-guard doesn't count it)
-        const st = this.mountStateStore[key]; if (st) delete st.base[rel];
-        restored.push(rel);
-      } catch (e: any) { this.log(`couldn't keep your edit to '${rel}' (${e?.message ?? e})`); }
-    }
-    if (scope) scope.forceFull = true; // a FULL pass re-adopts the source (a delta poll won't re-pull a locally-absent file)
-    this.clearRoMountEdits(key);
-    await this.persist();                                              // F8: durably drop base BEFORE removing local (crash then leaves files re-pullable)
-    for (const rel of restored) { try { await this.io.remove(localFromMountRel(m, rel)); } catch { /* re-pull recreates it */ } }
+    // Serialise the base-mutating section against the poll-driven pass (issueMountHeldResolverSerialization) — this
+    // is the same class of UI-callback base writer as the held-review resolvers. Re-look up the scope INSIDE the
+    // lock (a rebuild while we waited may have recreated it, Finding-4 critique).
+    await this.runMountExclusive(async () => {
+      const scope = this.mountScopes.find((s) => s.runtime.key === key);
+      for (const rel of rels) {
+        const localPath = localFromMountRel(m, rel);
+        try {
+          const content = await this.io.read(localPath);                 // the edited version
+          await this.io.write(await this.uniqueKeeperPath(folder, rel), content); // subpath preserved (F10) // retain as the user's own note
+          scope?.runtime.base.delete(rel);                               // drop base so the re-pull re-adopts the source (and the delete-guard doesn't count it)
+          const st = this.mountStateStore[key]; if (st) delete st.base[rel];
+          restored.push(rel);
+        } catch (e: any) { this.log(`couldn't keep your edit to '${rel}' (${e?.message ?? e})`); }
+      }
+      if (scope) scope.forceFull = true; // a FULL pass re-adopts the source (a delta poll won't re-pull a locally-absent file)
+      this.clearRoMountEdits(key);
+      await this.persist();                                              // F8: durably drop base BEFORE removing local (crash then leaves files re-pullable)
+      for (const rel of restored) { try { await this.io.remove(localFromMountRel(m, rel)); } catch { /* re-pull recreates it */ } }
+    });
     void this.reconcileMounts();                                       // re-pull the restored source versions
     this.log(`kept ${restored.length} read-only edit${restored.length === 1 ? "" : "s"} in “${folder}” and restored the source in ${m.mountPoint}`, true);
     return restored.length;
