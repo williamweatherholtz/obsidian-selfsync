@@ -20,11 +20,11 @@ describe("sharing response-shape validation (F5)", () => {
       expect(validateSharedVaults([])).toEqual([]);
     });
 
-    it("rejects a non-array, a bad perm, or a missing field", () => {
+    it("rejects a non-array or a missing string field; an unknown perm fails CLOSED to read (issueWirePermVariantBlindSpot)", () => {
       expect(() => validateSharedVaults({})).toThrow(/not an array/);
-      expect(() => validateSharedVaults([{ owner: "a", vault: "v", perm: "admin" }])).toThrow(/perm/);
-      expect(() => validateSharedVaults([{ owner: "a", vault: "v" }])).toThrow(/perm/);
-      expect(() => validateSharedVaults([{ owner: 1, vault: "v", perm: "read" }])).toThrow(/owner/);
+      expect(validateSharedVaults([{ owner: "a", vault: "v", perm: "admin" }])[0].perm).toBe("read"); // unknown/future variant → least-privilege read, not a whole-list throw
+      expect(validateSharedVaults([{ owner: "a", vault: "v" }])[0].perm).toBe("read");                 // missing perm → read
+      expect(() => validateSharedVaults([{ owner: 1, vault: "v", perm: "read" }])).toThrow(/owner/);   // a non-string owner still rejects (identity fields stay strict)
     });
   });
 
@@ -36,9 +36,9 @@ describe("sharing response-shape validation (F5)", () => {
       expect(validateVaultShares(wire)).toEqual([{ vault: "notes", grants: [{ grantee: "bob", perm: "readWrite" }] }]);
     });
 
-    it("rejects bad grants, a bad perm, or a non-array grants", () => {
+    it("rejects a non-array grants or a missing grantee; an unknown grant perm fails closed to read", () => {
       expect(() => validateVaultShares([{ vault: "v", grants: "nope" }])).toThrow(/grants/);
-      expect(() => validateVaultShares([{ vault: "v", grants: [{ grantee: "b", perm: "x" }] }])).toThrow(/perm/);
+      expect(validateVaultShares([{ vault: "v", grants: [{ grantee: "b", perm: "x" }] }])[0].grants[0].perm).toBe("read"); // unknown perm → read
       expect(() => validateVaultShares([{ vault: "v", grants: [{ perm: "read" }] }])).toThrow(/grantee/);
     });
   });
@@ -61,9 +61,10 @@ describe("sharing response-shape validation (F5)", () => {
   });
 
   describe("redeem single-object validators", () => {
-    it("validateRedeemedVault accepts a ref and rejects a bad one", () => {
+    it("validateRedeemedVault accepts a ref; a non-string owner rejects, an unknown perm fails closed to read", () => {
       expect(validateRedeemedVault({ owner: "a", vault: "v", perm: "read" })).toEqual({ owner: "a", vault: "v", perm: "read" });
-      expect(() => validateRedeemedVault({ owner: "a", vault: "v", perm: "nope" })).toThrow(/perm/);
+      expect(validateRedeemedVault({ owner: "a", vault: "v", perm: "nope" }).perm).toBe("read"); // unknown perm → read (graceful)
+      expect(() => validateRedeemedVault({ owner: 1, vault: "v", perm: "read" })).toThrow(/owner/);
     });
     it("validateRedeemedRegister carries the session token through", () => {
       expect(validateRedeemedRegister({ owner: "a", vault: "v", perm: "readWrite", token: "T" })).toEqual(

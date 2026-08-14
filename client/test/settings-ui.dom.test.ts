@@ -118,6 +118,17 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.keepBulkDeletions).toHaveBeenCalledWith("primary");
   });
 
+  it("F2: the review surface lists a held bulk-push-to-shared batch and wires Keep-local/Push", () => {
+    const p = fakePlugin({ pendingBulkPushReview: () => [{ scope: "m1", label: "Work/ASI", count: 5 }] });
+    const { containerEl } = renderTab(p);
+    const text = containerEl.textContent ?? "";
+    expect(text).toContain("5 local files to add to Work/ASI");
+    expect(buttonByText(containerEl, "Keep local")).toBeTruthy();
+    expect(buttonByText(containerEl, "Push them")).toBeTruthy();
+    buttonByText(containerEl, "Keep local").click(); // non-destructive → no confirm modal
+    expect(p.keepBulkPushes).toHaveBeenCalledWith("m1");
+  });
+
   it("P2: toggling the config-sync master calls applyConfigSyncChange (immediate apply) + flips the setting", () => {
     const { containerEl } = renderTab(plugin);
     const master = toggleByName(containerEl, "Sync settings, themes, or plugins");

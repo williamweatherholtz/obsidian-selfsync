@@ -14,7 +14,7 @@ const ACTIONS: Action[] = [
 // A neutral fact set: not read-only, no tombstone, no guards tripped, both sides present with a base.
 function facts(over: Partial<FinalizeFacts> = {}): FinalizeFacts {
   return {
-    readOnly: false, hasTombstone: false, guardDelete: false,
+    readOnly: false, noResurrect: false, hasTombstone: false, guardDelete: false, guardBulkPush: false,
     isConflictCopy: false, hasLocalBytes: true, hasRmeta: true, hasBaseEntry: true, remoteVersion: 7,
     ...over,
   };
@@ -25,7 +25,7 @@ describe("finalize — pure reconcile decision table", () => {
   it("is total: every action yields a valid effect kind and never throws", () => {
     const kinds = new Set<string>([
       "noop", "setBaseInSync", "clearBase", "reportReadOnly", "reportGuard",
-      "push", "pull", "restore", "keptAbsentReadOnly", "removeLocal", "deleteRemote", "mergeOrConflict",
+      "push", "pull", "restore", "keptAbsentReadOnly", "removeLocal", "deleteRemote", "mergeOrConflict", "reportPushGuard",
     ]);
     for (const a of ACTIONS) {
       for (const ro of [false, true]) for (const tomb of [false, true]) for (const gd of [false, true]) {
@@ -65,6 +65,10 @@ describe("finalize — pure reconcile decision table", () => {
     expect(kind("delete-local", { hasTombstone: false, readOnly: true })).toBe("keptAbsentReadOnly");
     // even with a bulk-delete guard tripped, no-tombstone still restores (never removes)
     expect(kind("delete-local", { hasTombstone: false, guardDelete: true })).toBe("restore");
+    // noResurrect (a SHARED mount source): keep local but do NOT re-push — never resurrect a peer's
+    // tombstone-pruned deletion on their vault (issueMountSharedSourceResurrection). Never removes either.
+    expect(kind("delete-local", { hasTombstone: false, noResurrect: true })).toBe("keptAbsentReadOnly");
+    expect(kind("delete-local", { hasTombstone: true, noResurrect: true })).toBe("removeLocal"); // a REAL tombstone still removes (noResurrect only guards the no-tombstone case)
   });
 
   it("delete-local WITH a tombstone: removes, unless a mass-delete guard tripped → reportGuard", () => {
@@ -84,6 +88,30 @@ describe("finalize — pure reconcile decision table", () => {
   it("edit-wins-keep-local: re-pushes at the CAS version but does NOT stamp (allowStamp false); read-only reports", () => {
     expect(finalize("edit-wins-keep-local", facts())).toEqual({ kind: "push", version: 7, allowStamp: false });
     expect(kind("edit-wins-keep-local", { readOnly: true })).toBe("reportReadOnly");
+    // F1 (issueMountSharedSourceResurrection): on a SHARED source, an edit to a file the source no longer has
+    // (edit-wins-keep-local fires ONLY when the remote is absent) must KEEP the edited copy local, never push —
+    // pushing would resurrect the peer's tombstone-pruned deletion. Live collaboration (remote PRESENT) never
+    // routes here, so this never suppresses a genuine collaborative edit.
+    expect(kind("edit-wins-keep-local", { noResurrect: true })).toBe("keptAbsentReadOnly");
+  });
+
+  it("F2: a mass local-only-NEW push to a SHARED source is HELD (reportPushGuard); never held on an own vault or a normal edit-push", () => {
+    // A local-only-new push has the REMOTE ABSENT (decide only yields "push" with R absent when B is null).
+    // On a noResurrect source, when the bulk-push guard tripped → HOLD instead of resurrecting the batch.
+    expect(kind("push", { noResurrect: true, hasRmeta: false, guardBulkPush: true })).toBe("reportPushGuard");
+    // …UNLESS the source holds a LIVE tombstone for it: a base-loss re-first-contact mis-reads a KNOWN-deleted
+    // file as "new". Keep it local, never push (resurrect) and never hold (a held→keep→base-stamp would let the
+    // tombstone re-assert as removeLocal — the F2 HIGH critique). Wins over the guard, so it's never in the hold set.
+    expect(kind("push", { noResurrect: true, hasRmeta: false, hasTombstone: true, guardBulkPush: true })).toBe("keptAbsentReadOnly");
+    expect(kind("push", { noResurrect: true, hasRmeta: false, hasTombstone: true, guardBulkPush: false })).toBe("keptAbsentReadOnly");
+    // NOT held: own vault (noResurrect false) seeds freely…
+    expect(finalize("push", facts({ noResurrect: false, hasRmeta: false, guardBulkPush: true }))).toEqual({ kind: "push", version: 7, allowStamp: true });
+    // …a normal only-local-CHANGED push (remote PRESENT) is live collaboration, never held…
+    expect(finalize("push", facts({ noResurrect: true, hasRmeta: true, guardBulkPush: true }))).toEqual({ kind: "push", version: 7, allowStamp: true });
+    // …and a below-threshold batch (guard not tripped) pushes normally.
+    expect(finalize("push", facts({ noResurrect: true, hasRmeta: false, guardBulkPush: false }))).toEqual({ kind: "push", version: 7, allowStamp: true });
+    // read-only still wins over the push guard (a read-only share never pushes at all).
+    expect(kind("push", { readOnly: true, noResurrect: true, hasRmeta: false, guardBulkPush: true })).toBe("reportReadOnly");
   });
 
   it("merge and conflict-copy both defer to the merge/conflict shell", () => {

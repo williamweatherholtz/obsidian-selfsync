@@ -97,7 +97,7 @@ export interface MountRuntimeCtx {
   // Per-mount reconcile callbacks the plugin wires (progress/conflict/error/status). Scope-private truth
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
-    "onProgress" | "onConflict" | "onFileError" | "onGuard" | "onBaseChanged" |
+    "onProgress" | "onConflict" | "onFileError" | "onGuard" | "onPushGuard" | "onBaseChanged" |
     "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent" | "onPullExhausted">>;
   // Optional source-vault readiness probe (the raw transport's status()) — the mount holds OFFLINE on a not-
   // ready source (mid-reindex/degraded), the same guard the primary connect applies (R4-F4).
@@ -112,6 +112,7 @@ export class MountRuntime {
   private readonly api: MountedApi;
   private sawConflict = false; // set when reconcile makes a conflict copy this pass → drives the FSM to `diverged` (R5-MED-1)
   private _held: string[] = []; // D0041: paths this pass held for incoming bulk-delete confirmation
+  private _heldPush: string[] = []; // F2: local-only-new paths this pass held for bulk-push-to-shared-source confirmation
   private _roEdits: string[] = []; // issueMountRoLocalEditBehavior: read-only-mount paths reported this pass as un-syncable local edits
   private histFloor: number | undefined; // D0019 (mountResetDetection): last-seen SOURCE deletion-history floor
   constructor(readonly mount: Mount, private readonly ctx: MountRuntimeCtx) {
@@ -134,6 +135,7 @@ export class MountRuntime {
       device: this.ctx.device,
       accepts: isDataPath,                              // data-only, in mount-relative space
       readOnly: this.mount.direction === "pull" || !!this.ctx.sourceReadOnly?.(), // pull, OR the grant forbids writing this shared source — never mutate it
+      noResurrect: this.mount.source.owner !== "", // a SHARED source (owned by someone else): keep an absent-without-tombstone file locally but do NOT re-push it — that would resurrect a peer's tombstone-pruned deletion on their vault (issueMountSharedSourceResurrection). Genuine local edits still push (owner-directed 2026-08-14).
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)
       bulkDeleteStrategy: this.ctx.bulkDeleteStrategy,   // D0041: the global incoming bulk-delete confirmation applies to mounts too
       bulkDeleteThreshold: this.ctx.bulkDeleteThreshold,
@@ -151,6 +153,8 @@ export class MountRuntime {
       onConflict: (p: string, copy: string) => { this.sawConflict = true; this.ctx.callbacks?.onConflict?.(p, copy); },
       // D0041: record paths held for incoming bulk-delete confirmation this pass (the caller reads takeHeld()).
       onGuard: (p: string) => { this._held.push(p); this.ctx.callbacks?.onGuard?.(p); },
+      // F2: record local-only-new paths held for bulk-push-to-shared-source confirmation this pass (takeHeldPush()).
+      onPushGuard: (p: string) => { this._heldPush.push(p); this.ctx.callbacks?.onPushGuard?.(p); },
       // issueMountRoLocalEditBehavior: collect read-only local edits this pass so the driver can AUTHORITATIVELY
       // replace the tracked set on a full pass (a reverted edit stops being reported → drops off, never phantom).
       onReadOnly: (p: string) => { this._roEdits.push(p); this.ctx.callbacks?.onReadOnly?.(p); },
@@ -160,8 +164,10 @@ export class MountRuntime {
   tookConflict(): boolean { const c = this.sawConflict; this.sawConflict = false; return c; }
   // D0041 held-deletion collection: reset before a poll, take (read+reset) after, so the caller records this
   // pass's held incoming deletions into the review set.
-  resetHeld(): void { this._held = []; this._roEdits = []; }
+  resetHeld(): void { this._held = []; this._heldPush = []; this._roEdits = []; }
   takeHeld(): string[] { const h = this._held; this._held = []; return h; }
+  // F2: this pass's held bulk-push-to-shared-source paths (the caller replaces the review set on a full pass).
+  takeHeldPush(): string[] { const h = this._heldPush; this._heldPush = []; return h; }
   // issueMountRoLocalEditBehavior: this pass's read-only local edits (the caller replaces the tracked set on a
   // full pass so a reverted/resolved edit drops off — never a phantom "won't sync" entry, F2).
   takeRoEdits(): string[] { const e = this._roEdits; this._roEdits = []; return e; }

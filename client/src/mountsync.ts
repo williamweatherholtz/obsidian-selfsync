@@ -22,6 +22,7 @@ export interface MountSyncHooks {
   onEvent?: (scope: MountScope) => void;   // fired on every state change (drives the status light + persistence)
   onError?: (scope: MountScope, err: unknown) => void; // a mount's poll threw (logged; never propagated)
   onHeld?: (scope: MountScope, paths: string[], authoritative: boolean) => void; // D0041: paths this pass held for confirmation (authoritative = a full pass saw the whole scope → replace, not union)
+  onHeldPush?: (scope: MountScope, paths: string[], authoritative: boolean) => void; // F2: local-only-new paths held this pass by the bulk-push-to-shared-source guard (authoritative = a full pass → replace)
   onRoEdits?: (scope: MountScope, paths: string[], authoritative: boolean) => void; // issueMountRoLocalEditBehavior: read-only local edits this pass (authoritative = a full pass → REPLACE the tracked set)
 }
 
@@ -90,6 +91,7 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
     await pollMount(scope.runtime, { forceFull: full }, () => { localGone = true; });
     if (localGone) { scope.state = "localGone"; hooks.onEvent?.(scope); return; }
     hooks.onHeld?.(scope, scope.runtime.takeHeld(), full); // record held deletions (a full pass is authoritative → replace)
+    hooks.onHeldPush?.(scope, scope.runtime.takeHeldPush(), full); // F2: record held bulk-pushes-to-shared (full pass → replace)
     hooks.onRoEdits?.(scope, scope.runtime.takeRoEdits(), full); // record read-only edits (full pass → replace, so a reverted edit drops off — F2)
     scope.fails = 0;
     // Success lands `live` — UNLESS this pass produced a conflict copy, which surfaces as `diverged` ("Needs

@@ -5,6 +5,7 @@ import { Mount } from "../src/mounts";
 import { VaultIo, SyncApi, ChunkCache } from "../src/sync";
 import { FileMeta, CommitRequest } from "../src/protocol";
 import { chunk, sha256hex } from "../src/chunker";
+import { applyHeldPushes, keepHeldPushes } from "../src/reconcile";
 
 const mk = (mountPoint: string, sourcePath = "", direction: "pull" | "sync" = "pull"): Mount =>
   ({ source: { owner: "will", vaultId: "asi", sourcePath }, mountPoint, direction });
@@ -380,6 +381,136 @@ describe("pollMount — D0019 source history reset detection (mountResetDetectio
     // A steady poll with the SAME floor + no delta → noop, no spurious keep/rescan.
     await reconcileMountScopes([scope], {});
     expect(kept).toEqual([]);
+  });
+
+  it("shared-source noResurrect: an absent-without-tombstone file is KEPT locally and NOT re-pushed (issueMountSharedSourceResurrection)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 1); // mk() source owner "will" ⇒ a SHARED source
+    const io = memIo();
+    const kept: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { callbacks: { onKeptAbsent: (p) => kept.push(p) } }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {});                    // pull a.md → local + base
+    expect(dec(io.files.get("Work/ASI/a.md"))).toBe("hello");
+    // The source drops a.md with NO tombstone (a peer deleted it + the tombstone was pruned, or a reindex).
+    // The LOCAL copy is untouched, so this is not a local mass-deletion — it's a source absence.
+    src.__truncate(1, []); // manifest now empty (floor unchanged ⇒ no reset); a.md is absent-without-tombstone
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(io.files.has("Work/ASI/a.md")).toBe(true);           // KEPT locally (never removed)
+    expect(kept.length).toBeGreaterThan(0);                     // surfaced (onKeptAbsent), so the user can decide
+    expect(src.committed).toEqual([]);                          // and NOT re-pushed — no resurrection on the peer's shared vault
+  });
+
+  it("F1 shared-source noResurrect: a LOCAL EDIT to a file the source deleted is KEPT locally, never re-pushed", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const a = await serveFile(chunks, "a.md", "hello", 1);
+    const src = resettableSource(chunks, [a], 1, 1); // mk() owner "will" ⇒ SHARED source
+    const io = memIo();
+    const kept: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { callbacks: { onKeptAbsent: (p) => kept.push(p) } }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], {});                            // pull a.md → local + base
+    await io.write("Work/ASI/a.md", new TextEncoder().encode("my local edit")); // the user edits their copy…
+    src.__truncate(1, []);                                              // …meanwhile the peer deletes a.md, tombstone pruned
+    scope.forceFull = true;
+    await reconcileMountScope(scope);
+    expect(dec(io.files.get("Work/ASI/a.md"))).toBe("my local edit");   // the edited copy is KEPT verbatim
+    expect(src.committed).toEqual([]);                                  // NOT re-pushed — the peer's deletion is not resurrected
+    expect(kept.length).toBeGreaterThan(0);                             // surfaced so the user can decide
+  });
+
+  it("F2 shared-source: a MASS local-only-new push (re-first-contact) is HELD for confirmation, not auto-resurrected", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = resettableSource(chunks, [], 1, 1);                     // source manifest EMPTY (a peer deleted everything, tombstones pruned)
+    const io = memIo({ "Work/ASI/a.md": "one", "Work/ASI/b.md": "two", "Work/ASI/c.md": "three" }); // base lost, local files remain
+    const held: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { bulkDeleteStrategy: "count", bulkDeleteThreshold: 2 }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], { onHeldPush: (_s, paths) => { held.push(...paths); } });
+    expect(held.sort()).toEqual(["a.md", "b.md", "c.md"]);              // all three HELD (mount-relative paths)
+    expect(src.committed).toEqual([]);                                  // NONE pushed — no mass resurrection
+    expect(io.files.size).toBe(3);                                     // all kept locally
+
+    // PUSH (the user confirms they're theirs): applyHeldPushes uploads all three to the shared source.
+    await applyHeldPushes(rt.deps(), held);
+    expect(src.committed.map((c: CommitRequest) => c.path).sort()).toEqual(["a.md", "b.md", "c.md"]);
+  });
+
+  it("F2 KEEP-local: keepHeldPushes stabilizes the files so a later pass keeps them local (never resurrects)", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const src = resettableSource(chunks, [], 1, 1);
+    const io = memIo({ "Work/ASI/a.md": "one", "Work/ASI/b.md": "two", "Work/ASI/c.md": "three" });
+    const held: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { bulkDeleteStrategy: "count", bulkDeleteThreshold: 2 }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], { onHeldPush: (_s, paths) => { held.push(...paths); } });
+    expect(held.length).toBe(3);
+
+    await keepHeldPushes(rt.deps(), held);                              // "a peer deleted them — keep local, don't add"
+    scope.forceFull = true;
+    await reconcileMountScope(scope);                                   // a later full pass…
+    expect(src.committed).toEqual([]);                                  // …still never pushes them (established kept-local)
+    expect(io.files.size).toBe(3);                                     // and keeps every local copy
+  });
+
+  it("F2 HIGH: a re-first-contact file with a LIVE source tombstone is kept local — never held, never pushed, never deleted", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const committed: CommitRequest[] = [], deleted: string[] = [];
+    const src = {
+      committed, deleted,
+      changes: async (_since: number) => ({ version: 5, upserts: [], deletes: [{ path: "gone.md", version: 4 }] }), // source EXPLICITLY deleted gone.md (a LIVE, un-pruned tombstone)
+      fileMeta: async () => null,
+      missing: async (hs: string[]) => hs.filter((h) => !chunks.has(h)),
+      getChunk: async (h: string) => { const b = chunks.get(h); if (!b) throw new Error("no chunk"); return b; },
+      putChunk: async (h: string, b: Uint8Array) => { chunks.set(h, b); },
+      commit: async (req: CommitRequest) => { committed.push(req); return { ...req, version: 6 }; },
+      deleteFile: async (p: string) => { deleted.push(p); },
+    } as any;
+    const io = memIo({ "Work/ASI/gone.md": "my copy" }); // re-first-contact: base LOST, the file the peer deleted is still local
+    const held: string[] = []; const kept: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { bulkDeleteStrategy: "count", bulkDeleteThreshold: 0, callbacks: { onKeptAbsent: (p) => kept.push(p) } }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], { onHeldPush: (_s, paths) => { held.push(...paths); } });
+    expect(held).toEqual([]);                             // NOT held (a live tombstone is definitive, not the ambiguous no-tombstone case)
+    expect(io.files.has("Work/ASI/gone.md")).toBe(true); // KEPT locally — never removed (the F2 HIGH data-loss is closed)
+    expect(committed).toEqual([]);                        // never pushed (no resurrection on the peer's vault)
+    expect(deleted).toEqual([]);                          // and never deleted on the source
+    expect(kept).toContain("gone.md");                   // surfaced observationally
+  });
+
+  it("F2 HIGH resolve-race: keepHeldPushes does NOT base-stamp a path the source tombstones mid-window — it stays kept-local, never deleted", async () => {
+    const chunks = new Map<string, Uint8Array>();
+    const committed: CommitRequest[] = [], deleted: string[] = [];
+    let deletes: { path: string; version: number }[] = [];
+    const src = {
+      committed, deleted,
+      changes: async (_since: number) => ({ version: 5, upserts: [], deletes: [...deletes] }),
+      fileMeta: async () => null,
+      missing: async (hs: string[]) => hs.filter((h) => !chunks.has(h)),
+      getChunk: async (h: string) => { const b = chunks.get(h); if (!b) throw new Error("no chunk"); return b; },
+      putChunk: async (h: string, b: Uint8Array) => { chunks.set(h, b); },
+      commit: async (req: CommitRequest) => { committed.push(req); return { ...req, version: 6 }; },
+      deleteFile: async (p: string) => { deleted.push(p); },
+      __setDeletes: (d: { path: string; version: number }[]) => { deletes = d; },
+    } as any;
+    const io = memIo({ "Work/ASI/a.md": "one", "Work/ASI/b.md": "two", "Work/ASI/c.md": "three" });
+    const held: string[] = [];
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx(io, src, { bulkDeleteStrategy: "count", bulkDeleteThreshold: 2 }));
+    const scope: MountScope = { runtime: rt, state: "detached", fails: 0 };
+    await reconcileMountScopes([scope], { onHeldPush: (_s, paths) => { held.push(...paths); } });
+    expect(held.sort()).toEqual(["a.md", "b.md", "c.md"]);   // all held (no tombstone visible yet)
+
+    // Between the hold and the user's "Keep local", a peer's deletion of a.md becomes visible (a live tombstone).
+    src.__setDeletes([{ path: "a.md", version: 4 }]);
+    await keepHeldPushes(rt.deps(), held);                    // user keeps all three
+    scope.forceFull = true;
+    await reconcileMountScope(scope);                         // a later full pass
+    expect(io.files.has("Work/ASI/a.md")).toBe(true);        // a.md KEPT (screened → base-null → keptAbsentReadOnly, never removeLocal)
+    expect(io.files.size).toBe(3);                           // b.md/c.md kept too (base-stamped; no tombstone)
+    expect(committed).toEqual([]);                           // nothing resurrected
+    expect(deleted).toEqual([]);                             // nothing deleted on the source
   });
 
   it("the per-mount floor round-trips through toPersist/restore (a later truncation stays detectable across a rebuild)", async () => {

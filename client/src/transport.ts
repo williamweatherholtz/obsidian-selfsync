@@ -46,9 +46,14 @@ function asArray(v: unknown, f: string): unknown[] {
   if (!Array.isArray(v)) throw new Error(`malformed response: ${f} not an array`);
   return v;
 }
-function asPerm(v: unknown, f: string): SharePerm {
-  if (v !== "read" && v !== "readWrite") throw new Error(`malformed response: ${f} not a valid permission`);
-  return v;
+function asPerm(v: unknown, _f: string): SharePerm {
+  if (v === "readWrite") return "readWrite";
+  // Any other value — a hostile string, OR a FUTURE Perm variant this build doesn't know (e.g. "admin") — FAILS
+  // CLOSED to the least-privilege "read" rather than throwing. Throwing would reject the WHOLE shared-vault/
+  // share-link list (one unknown entry breaks the entire share/switch UI). Perm's variant set is invisible to
+  // the wire signature (an enum has no fields), so degrade gracefully instead of loud-failing — a new variant is
+  // treated as read-only until the plugin is updated, never escalated (issueWirePermVariantBlindSpot).
+  return "read";
 }
 function asSharedVaultRef(x: unknown, ctx: string): SharedVaultRef {
   const r = x as Record<string, unknown>;

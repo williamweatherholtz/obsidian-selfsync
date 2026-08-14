@@ -69,6 +69,11 @@ describe("MountRuntime — STRUCTURAL isolation (issueMountBaseIsolation)", () =
     forbidden = false;                        // grant re-granted to readWrite…
     expect(rt.deps().readOnly).toBe(false);  // …picked up on the next pass (deps is per-call), no scope rebuild needed
   });
+  it("a SHARED source sets noResurrect (never re-push a peer's pruned deletion); an OWN source does not (issueMountSharedSourceResurrection)", () => {
+    expect(new MountRuntime(mk("Work/ASI", "", "sync"), ctx()).deps().noResurrect).toBe(true); // mk source owner "will" = shared
+    const own: Mount = { source: { owner: "", vaultId: "asi", sourcePath: "" }, mountPoint: "Work/ASI", direction: "sync" };
+    expect(new MountRuntime(own, ctx()).deps().noResurrect).toBe(false); // own source (owner "") → restore is fine for your own data
+  });
   it("passes the global bulk-delete policy into deps + collects held paths via onGuard (D0041)", () => {
     const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx({ bulkDeleteStrategy: "count", bulkDeleteThreshold: 7 }));
     const d = rt.deps();

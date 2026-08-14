@@ -47,6 +47,7 @@ export type ReconcileEffect =
   | { kind: "clearBase" }                     // in-sync + both absent but a stale base lingers → drop it
   | { kind: "reportReadOnly" }                // a read-only share can't perform this write → surface it
   | { kind: "reportGuard" }                   // a bulk-delete guard tripped → refuse + surface, keep data
+  | { kind: "reportPushGuard" }               // a bulk-PUSH-to-shared-source guard tripped → refuse the push, keep local, surface for confirmation (F2)
   | { kind: "push"; version: number; allowStamp: boolean } // upload local at CAS base `version`
   | { kind: "pull" }                          // download remote (guarded against a racing local edit)
   | { kind: "restore" }                       // delete-local w/o a tombstone → re-push (+ report kept-absent)
@@ -58,8 +59,10 @@ export type ReconcileEffect =
 // Facts the shell resolves BEFORE finalize (all synchronous booleans / counts — no IO inside finalize):
 export interface FinalizeFacts {
   readOnly: boolean;          // this vault is a read-only share (owner's version canonical; we push nothing)
+  noResurrect: boolean;       // a SHARED source: keep a local-present/absent-without-tombstone file, but do NOT re-push it — re-pushing would resurrect a PEER's tombstone-pruned deletion on their vault (issueMountSharedSourceResurrection). Distinct from readOnly: genuine local EDITS still push.
   hasTombstone: boolean;      // the server holds a REAL deletion tombstone for this path (delete-local needs it)
   guardDelete: boolean;       // this pass's incoming delete-LOCAL batch exceeded the user threshold → HOLD for confirmation (D0041)
+  guardBulkPush: boolean;     // this pass's local-only-NEW push batch TO A SHARED SOURCE exceeded the user threshold → HOLD for confirmation (issueMountSharedSourceResurrection F2). A base-loss re-first-contact makes every peer-deleted-but-still-local file look "brand-new local" → a mass push would resurrect the peer's whole deletion set; the same guard also confirms a legitimate large SEED of a shared folder. Only ever consulted for a local-only-new push (R absent, B null) on a noResurrect source.
   isConflictCopy: boolean;    // path is a conflict-copy file (a deliberately-local file on a read-only share)
   hasLocalBytes: boolean;     // local content is present (for the in-sync base-record)
   hasRmeta: boolean;          // the server has this path (for the in-sync base-record)
@@ -78,15 +81,32 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
       return { kind: "noop" };
     case "push":
       if (f.readOnly) return f.isConflictCopy ? { kind: "noop" } : { kind: "reportReadOnly" };
+      // A LOCAL-ONLY-NEW push (R absent ⇒ !hasRmeta; decide only yields "push" with R absent when B is null) TO A
+      // SHARED SOURCE. Two sub-cases, both of which avoid resurrecting a peer's deletion (issueMountSharedSource-
+      // Resurrection). An "only-local-changed" push (R PRESENT ⇒ hasRmeta) is normal collaboration, never touched.
+      if (f.noResurrect && !f.hasRmeta) {
+        // A LIVE tombstone ⇒ the source EXPLICITLY deleted this path; a base-loss re-first-contact lost our base
+        // so decide() mis-reads the still-local file as "new". KEEP it local, never push (would resurrect) and
+        // never delete. This ALSO keeps it OUT of the F2 hold: routing a live-tombstoned path through the push-
+        // hold, then a "Keep local" that stamps a base, would let the tombstone re-assert as removeLocal on the
+        // next pass — silently deleting a file the user chose to keep (F2 HIGH critique). So the held set only
+        // ever contains NO-tombstone paths, for which keepHeldPushes's base-stamp reaches a clean kept-local fixed point.
+        if (f.hasTombstone) return { kind: "keptAbsentReadOnly" };
+        // No tombstone but a MASS batch tripped the guard: a base-loss re-first-contact makes every peer-deleted-
+        // but-still-local file look brand-new, so an un-held mass push would resurrect the peer's whole deletion
+        // set — HOLD for confirmation (the same guard also confirms a legitimate large seed of a shared folder).
+        if (f.guardBulkPush) return { kind: "reportPushGuard" };
+      }
       return { kind: "push", version: f.remoteVersion, allowStamp: true };
     case "pull":
     case "edit-wins-pull":
       return { kind: "pull" };
     case "delete-local":
-      // No tombstone ⇒ mere absence, never proof of deletion — restore to the server (or, read-only, keep
-      // local). WITH a tombstone: refuse if a mass-delete guard tripped, else remove. (onKeptAbsent fires
-      // in both no-tombstone effects; the executor emits it.)
-      if (!f.hasTombstone) return f.readOnly ? { kind: "keptAbsentReadOnly" } : { kind: "restore" };
+      // No tombstone ⇒ mere absence, never proof of deletion — restore to the server (or KEEP local without a
+      // re-push when read-only, OR when noResurrect: a SHARED source where re-pushing would resurrect a peer's
+      // tombstone-pruned deletion on their vault, issueMountSharedSourceResurrection). WITH a tombstone: refuse
+      // if a mass-delete guard tripped, else remove. (onKeptAbsent fires in both no-tombstone-keep effects.)
+      if (!f.hasTombstone) return (f.readOnly || f.noResurrect) ? { kind: "keptAbsentReadOnly" } : { kind: "restore" };
       if (f.guardDelete) return { kind: "reportGuard" };
       return { kind: "removeLocal" };
     case "delete-remote":
@@ -97,6 +117,13 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
       return { kind: "deleteRemote", version: f.remoteVersion }; // CAS base: the remote version this delete is based on (issueDeleteNoCasLostUpdate)
     case "edit-wins-keep-local":
       if (f.readOnly) return { kind: "reportReadOnly" };
+      // edit-wins-keep-local fires ONLY when the REMOTE is ABSENT (decide: L present, R null, B present, L≠B) —
+      // i.e. the source no longer has this file but our local copy diverged from base. On a SHARED source that
+      // means a PEER deleted it (tombstone pruned) while we happened to edit our stale copy; pushing would
+      // RESURRECT the peer's deletion (F1, issueMountSharedSourceResurrection). Keep our edited copy LOCALLY,
+      // never re-push. (Live collaboration — the peer still HAS the file, R present — routes through push/merge
+      // at decide()'s both-present branch, never here, so this never suppresses a genuine collaborative edit.)
+      if (f.noResurrect) return { kind: "keptAbsentReadOnly" };
       return { kind: "push", version: f.remoteVersion, allowStamp: false };
     case "merge":
     case "conflict-copy":
@@ -175,6 +202,23 @@ export function bulkDeleteHold(strategy: BulkDeleteStrategy | undefined, thresho
   return baseCount > 0 && (deleteCount / baseCount) * 100 > threshold; // percent
 }
 
+// Should a mass local-only-NEW push TO A SHARED SOURCE be HELD for confirmation? (F2, issueMountSharedSource-
+// Resurrection). Only on a noResurrect (shared) source — own vaults seed freely. The batch = accepted local
+// files with NO base AND absent from the source manifest: a base-loss re-first-contact makes every peer-
+// deleted-but-still-local file look brand-new, so an un-held mass push would resurrect the peer's whole
+// deletion set (and it equally confirms a legitimate large first seed). Reuses the incoming bulk-delete
+// threshold knob (off / > N files / > N%); the % denominator is the ACCEPTED-LOCAL set, not the base — on a
+// re-first-contact the base is empty, so a base denominator would divide by zero and never fire the percent gate.
+function computeBulkPushHold(d: ReconcileDeps, local: Map<string, unknown>, remote: Map<string, unknown>, tombstoned: Set<string>): boolean {
+  if (!d.noResurrect) return false;
+  // A live-tombstoned path is NOT a push candidate (finalize keeps it local, never held), so exclude it from
+  // BOTH the numerator AND the percent denominator — else it inflates the count (over-hold) OR pads the base so
+  // a sizable pruned-tombstone resurrection batch slips UNDER the percent threshold (un-held). Consistent on both.
+  const notTombstoned = [...local.keys()].filter((p) => accepts(d, p) && !tombstoned.has(p));
+  const wouldPushNew = notTombstoned.filter((p) => !d.base.get(p) && !remote.has(p)).length;
+  return bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldPushNew, notTombstoned.length);
+}
+
 // At/above this size a DOWNLOAD is streamed to disk (never buffered whole) when the io
 // supports it — which also lets it bypass the buffered size gate. Uploads still buffer
 // (chunking reads the whole local file), so they stay gated.
@@ -235,6 +279,7 @@ export interface ReconcileDeps {
   statOf?: (path: string) => { size: number; mtime: number } | undefined;
   maxSyncBytes?: number;
   readOnly?: boolean; // a read-only shared vault: pull only, NEVER mutate the server
+  noResurrect?: boolean; // a SHARED mount source: keep an absent-without-tombstone file locally but do NOT re-push it (would resurrect a peer's tombstone-pruned deletion). Genuine local EDITS still push (unlike readOnly). issueMountSharedSourceResurrection.
   // A read-only scope COMPOSED OVER EXISTING LOCAL DATA (a composed-vault mount) — unlike a fresh whole-vault
   // read-only SHARE, its mount point may already hold the user's own notes, so a no-base first-contact
   // divergence must PRESERVE the local version as a copy (readOnlyKeepCopy), never silently adopt-over-it
@@ -249,6 +294,7 @@ export interface ReconcileDeps {
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired per path HELD by the incoming bulk-delete confirmation (D0041) — the plugin collects these into the pending-review set
+  onPushGuard?: (path: string) => void; // fired per LOCAL-ONLY-NEW path HELD by the bulk-push-to-shared-source guard (F2) — the plugin collects these into a pending-push-review set (never resurrect a peer's mass deletion, never blind-seed a shared folder). Reuses the bulkDeleteStrategy/Threshold knob.
   // D0041: user-configurable INCOMING bulk-delete confirmation. When a full/delta pass would delete-LOCAL more
   // than the chosen threshold (off ⇒ never; count ⇒ > N files; percent ⇒ > N% of the accepted base), those
   // deletions are HELD (reportGuard) for the user to confirm, instead of a fixed ratio heuristic. Undefined ⇒
@@ -690,6 +736,12 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // it must not inflate the threshold count / diverge from the surfaced set — R11-F5.)
   const wouldDelete = basePaths.filter((p) => tombstoned.has(p) && local.has(p)).length;
   const guardBulkDelete = bulkDeleteHold(d.bulkDeleteStrategy, d.bulkDeleteThreshold, wouldDelete, basePaths.length);
+  // OUTGOING bulk-push CONFIRMATION to a SHARED source (F2, issueMountSharedSourceResurrection): count the
+  // local-only-NEW files bound for the source (present locally, accepted, no base, absent from the manifest) —
+  // a base-loss re-first-contact makes every peer-deleted-but-still-local file look brand-new, so a mass push
+  // would RESURRECT the peer's whole deletion set; the same guard also confirms a legitimate large seed. Held
+  // via the SAME user threshold as incoming deletes. Only on a noResurrect (shared) source; own vaults seed freely.
+  const guardBulkPush = computeBulkPushHold(d, local, remote, tombstoned);
   const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
   const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
   // Progress = files that actually need TRANSFER, not files examined (a 900-file vault with 3 changes
@@ -723,7 +775,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   let examined = 0;
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardBulkPush, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => {
       if (pendingPaths.has(p)) d.onProgress?.(--pending);
@@ -798,6 +850,47 @@ export async function applyHeldDeletions(d: ReconcileDeps, paths: readonly strin
 //   keeps it as a local-only file. Either way it stops being a delete-local candidate. Caller triggers a pass.
 export function keepHeldDeletions(d: ReconcileDeps, paths: readonly string[]): void {
   for (const p of paths) d.base.delete(p);
+  if (paths.length) d.onBaseChanged?.();
+}
+
+// F2 (issueMountSharedSourceResurrection) — resolve a HELD bulk-PUSH-to-shared-source batch (the local-only-
+// new paths reportPushGuard surfaced via onPushGuard). Both actions converge so the confirmation clears and
+// doesn't re-nag next pass:
+//   PUSH (they're mine — add them to the shared source): upload each at CAS base 0 (expected-absent; a peer
+//   that created it meanwhile 409s → next reconcile merges), recording the committed base. This is the user
+//   explicitly authorizing the seed/re-push.
+export async function applyHeldPushes(d: ReconcileDeps, paths: readonly string[]): Promise<void> {
+  for (const p of paths) {
+    try { const { hash, bytes } = await pushFile(d, p, 0); setBase(d, p, bytes, hash); }
+    catch (e) { d.onFileError?.(p, e); } // per-file isolated — one failure never aborts the batch
+  }
+  if (paths.length) d.onBaseChanged?.();
+}
+//   KEEP-LOCAL (a peer deleted them — don't resurrect): record a base from the local bytes so each becomes an
+//   ESTABLISHED kept-local file. The next reconcile then reads L===B / remote-absent as delete-local, which on
+//   a noResurrect source finalizes to keptAbsentReadOnly (kept, never pushed) — so it stops being a push
+//   candidate AND is never resurrected on the peer's vault. A file whose local copy vanished before we resolve
+//   is simply skipped (nothing to keep).
+export async function keepHeldPushes(d: ReconcileDeps, paths: readonly string[]): Promise<void> {
+  // Screen the CURRENT source tombstones FIRST: a path the source now holds a LIVE tombstone for must NOT get a
+  // base stamped — that would let the next pass read delete-local + tombstone → removeLocal, silently deleting a
+  // file the user chose to keep (F2 HIGH race: a peer's deletion becoming visible in the window between the hold
+  // and this resolve). A still-tombstoned path is left base-NULL, so it routes back through finalize's push case
+  // where a live tombstone → keptAbsentReadOnly (kept, never pushed, never deleted, never re-held). If the screen
+  // can't run (offline), stamp NONE: leaving every path base-null never deletes LOCAL data (it re-enters the push
+  // case — kept, or re-held at worst). (It does NOT immunize a below-threshold pruned-deletion from a later push;
+  // that residue is inherent to a mass-only threshold, tracked separately, not something the base-null state changes.)
+  let tombstoned: Set<string>;
+  try { tombstoned = new Set((await d.api.changes(0)).deletes.map((x) => x.path)); }
+  catch { tombstoned = new Set(paths); }
+  for (const p of paths) {
+    if (tombstoned.has(p)) continue; // leave base-null → keptAbsentReadOnly next pass (never removeLocal)
+    try {
+      const bytes = await readOrNull(d.io, p);
+      if (bytes === null) continue; // gone locally before resolution → nothing to stabilize
+      setBase(d, p, bytes, await sha256hex(bytes));
+    } catch (e) { d.onFileError?.(p, e); }
+  }
   if (paths.length) d.onBaseChanged?.();
 }
 
@@ -990,6 +1083,7 @@ async function reconcileMergeOrConflict(
 interface ReconcileOneOpts {
   rmeta?: FileMeta;                            // the server's meta for this path (undefined = server-absent)
   guardDelete?: boolean;                       // this pass's incoming delete-LOCAL batch exceeded the user threshold → HOLD for confirmation (D0041)
+  guardBulkPush?: boolean;                     // this pass's local-only-new push batch to a SHARED source exceeded the user threshold → HOLD (F2)
   localSize?: number;                          // O(1) local size for the size gate (0 when unknown; reconcileOne reads to hash anyway)
   hasTombstone?: (p: string) => boolean;       // does the server hold a real deletion tombstone for p? (delete-local requires it)
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
@@ -1005,7 +1099,7 @@ interface ReconcileOneOpts {
 // read boundary instead of a null + a separate presence flag + a runtime if).
 // @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
-  const { rmeta, guardDelete = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
+  const { rmeta, guardDelete = false, guardBulkPush = false, localSize = 0, hasTombstone = () => false, locallyPresent, localStat } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -1111,8 +1205,10 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
   // stays conditional. The rich per-branch rationale now lives beside finalize + on the effect variants.
   const eff = finalize(action, {
     readOnly: !!d.readOnly,
+    noResurrect: !!d.noResurrect,
     hasTombstone: hasTombstone(path),
     guardDelete,
+    guardBulkPush,
     isConflictCopy: isConflictCopy(path),
     hasLocalBytes: !!localBytes,
     hasRmeta: !!rmeta,
@@ -1136,6 +1232,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     case "reportGuard":
       d.onGuard?.(path); // a real tombstone / evidenced deletion, but a suspicious MASS delete — refuse, keep data
+      return;
+    case "reportPushGuard":
+      d.onPushGuard?.(path); // a local-only-new file bound for a SHARED source, but part of a suspicious MASS push (re-first-contact signature) — refuse the push, keep local, surface for confirmation (F2)
       return;
     case "push": {
       // A genuine local change → push AS-IS (SelfSync no longer writes anything into the note — a cosmetic /

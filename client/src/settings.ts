@@ -467,7 +467,8 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     const configGroups = groupConfigConflicts(this.plugin.getConfigConflicts());
     const noteConflicts = this.plugin.listNoteConflicts();
     const pendingDeletes = this.plugin.pendingBulkDeletions(); // D0041: incoming bulk deletions held for confirmation
-    if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length) return;
+    const pendingPushes = this.plugin.pendingBulkPushReview(); // F2: local-only-new files held before mass-pushing to a shared source
+    if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length && !pendingPushes.length) return;
     const g = new SettingGroup(c).setHeading("Conflicts");
     if (noteConflicts.length) {
       g.addSetting((st) => st.setName(`${noteConflicts.length} file${noteConflicts.length > 1 ? "s" : ""} need review`).setClass("mod-warning")
@@ -488,6 +489,18 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
         .addButton((b) => b.setButtonText("Delete them").setWarning().onClick(async () => {
           const ok = await confirmModal(this.app, { title: `Delete ${pd.count} file${pd.count > 1 ? "s" : ""}?`, body: `These were deleted on the other side and will be removed from ${pd.label} (to your local trash where available). This can't be undone from here.`, confirmText: "Delete them", warn: true });
           if (ok) { await this.plugin.acceptBulkDeletions(pd.scope); this.display(); }
+        })));
+    }
+    // F2: a large batch of local-only files bound for a SHARED source, held for your OK. This guards against a
+    // re-first-contact resurrecting a peer's mass deletion (and confirms a legitimate large first seed). Push
+    // them (add to the shared vault) or Keep them local (don't add). One row per mount.
+    for (const pp of pendingPushes) {
+      g.addSetting((st) => st.setName(`${pp.count} local file${pp.count > 1 ? "s" : ""} to add to ${pp.label}`).setClass("mod-warning")
+        .setDesc("These local files aren't on the shared source. Push them (add to the shared vault) or keep them local (e.g. if the source owner deleted them and you don't want them re-added).")
+        .addButton((b) => b.setButtonText("Keep local").setCta().onClick(async () => { await this.plugin.keepBulkPushes(pp.scope); this.display(); }))
+        .addButton((b) => b.setButtonText("Push them").setWarning().onClick(async () => {
+          const ok = await confirmModal(this.app, { title: `Add ${pp.count} file${pp.count > 1 ? "s" : ""} to ${pp.label}?`, body: `These local files will be uploaded to the shared source vault, where everyone with access will see them. If the owner deleted them, this re-adds them.`, confirmText: "Push them", warn: true });
+          if (ok) { await this.plugin.acceptBulkPushes(pp.scope); this.display(); }
         })));
     }
   }

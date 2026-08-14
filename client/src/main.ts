@@ -5,7 +5,7 @@ import { sha256hex } from "./chunker";
 import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
-import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, applyHeldDeletions, keepHeldDeletions } from "./reconcile";
+import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, applyHeldDeletions, keepHeldDeletions, applyHeldPushes, keepHeldPushes } from "./reconcile";
 import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
@@ -408,6 +408,11 @@ export default class NewLiveSyncPlugin extends Plugin {
   // mountKey). Derived each pass (not persisted) — self-converges once the user picks Delete/Keep. The
   // settings review surface reads this; acceptBulkDeletions/keepBulkDeletions act on it.
   private pendingBulkDeletes = new Map<string, string[]>();
+  // F2 (issueMountSharedSourceResurrection): local-only-NEW paths HELD this pass by the bulk-push-to-shared-
+  // source guard, keyed by scope (a mountKey — never "primary"; only shared MOUNTS are noResurrect). Derived
+  // each pass (not persisted) — self-converges once the user picks Push/Keep. acceptBulkPushes/keepBulkPushes
+  // act on it. Protects against resurrecting a peer's mass deletion after a base-loss re-first-contact.
+  private pendingBulkPushes = new Map<string, string[]>();
   // issueMountRoLocalEditBehavior: mount-relative paths the user has edited locally on a READ-ONLY (pull) mount,
   // keyed by mountKey. A read-only mount can't push, so these edits won't sync — tracked (not persisted; re-
   // derived as the reconcile re-reports them) so the settings surface can offer "keep my edits in a folder".
@@ -2274,6 +2279,53 @@ export default class NewLiveSyncPlugin extends Plugin {
     this.log(`kept ${paths.length} file${paths.length === 1 ? "" : "s"} the ${scope === "primary" ? "server" : "source"} deleted — re-syncing them`);
   }
 
+  // --- F2 (issueMountSharedSourceResurrection) bulk-PUSH-to-shared review surface ---
+  // Record a mount scope's held bulk-push batch + refresh the review surface. Same authoritative/union rule as
+  // setPendingBulk: a FULL pass saw the whole scope → replace (drops now-resolved paths); a delta only adds.
+  private setPendingBulkPush(scope: string, held: string[], authoritative: boolean): void {
+    const cur = this.pendingBulkPushes.get(scope) ?? [];
+    const next = authoritative ? held : [...new Set([...cur, ...held])];
+    if (next.length) this.pendingBulkPushes.set(scope, next); else this.pendingBulkPushes.delete(scope);
+    if (next.length !== cur.length) { this.settingsRefresh?.(); this.statusListener?.(); this.renderLight(); }
+    if (next.length > cur.length) { const n = [...this.pendingBulkPushes.values()].reduce((s, a) => s + a.length, 0); this.log(`${n} local file${n === 1 ? "" : "s"} awaiting your OK to add to a shared vault (Settings → SelfSync → Conflicts)`, true); }
+  }
+  // One group per mount scope with held bulk-pushes: { scope key, human label, count }.
+  pendingBulkPushReview(): { scope: string; label: string; count: number }[] {
+    const out: { scope: string; label: string; count: number }[] = [];
+    for (const [scope, paths] of this.pendingBulkPushes) {
+      if (!paths.length) continue;
+      const label = this.mounts().find((m) => mountKey(m) === scope)?.mountPoint ?? "a mount";
+      out.push({ scope, label, count: paths.length });
+    }
+    return out;
+  }
+  bulkPushPaths(scope: string): string[] { return [...(this.pendingBulkPushes.get(scope) ?? [])]; }
+  // PUSH = the user confirms these local-only files are theirs to add → upload them to the shared source.
+  async acceptBulkPushes(scope: string): Promise<void> {
+    const paths = this.pendingBulkPushes.get(scope);
+    if (!paths?.length) return;
+    const d = this.depsForScope(scope);
+    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
+    await applyHeldPushes(d, paths);
+    this.pendingBulkPushes.delete(scope);
+    this.refreshMountPersist(scope);
+    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    this.log(`pushed ${paths.length} local file${paths.length === 1 ? "" : "s"} to the shared source for a mount`);
+  }
+  // KEEP-LOCAL = a peer deleted them → don't resurrect. Stamp a base so each becomes an established kept-local
+  // file (the next pass reads delete-local → keptAbsentReadOnly on a noResurrect source: kept, never pushed).
+  async keepBulkPushes(scope: string): Promise<void> {
+    const paths = this.pendingBulkPushes.get(scope);
+    if (!paths?.length) return;
+    const d = this.depsForScope(scope);
+    if (!d) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
+    await keepHeldPushes(d, paths);
+    this.pendingBulkPushes.delete(scope);
+    this.refreshMountPersist(scope);
+    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    this.log(`kept ${paths.length} local file${paths.length === 1 ? "" : "s"} local-only (not added to the shared source)`);
+  }
+
   // ---- composed vaults (D0039): the per-mount sync subsystem (dormant when settings.mounts is empty) ----
   mounts(): Mount[] { return this.settings.mounts ?? []; } // public: the settings UI reads the raw configured set
   // The mounts actually IN EFFECT — the raw set only if it's valid (no overlapping/nested/duplicate mount
@@ -2402,6 +2454,8 @@ export default class NewLiveSyncPlugin extends Plugin {
   // Per-mount live WebSocket subscriptions to each source vault (mountLiveSubscription). Keyed by mountKey.
   private mountSockets = new Map<string, WebSocket>();
   private mountPokeTimer?: number;
+  private lastMountSocketRecycleAt = 0;                        // issueMountHalfOpenSocketLiveness: last periodic recycle (0 = not yet seeded)
+  private readonly MOUNT_SOCKET_RECYCLE_MS = 15 * 60 * 1000;   // recycle mount sockets ~every 15 min so a zombie half-open recovers (poll-backstopped meanwhile)
   // A source-change WS poke → a COALESCED mount reconcile (5-pass review). Firing reconcileMounts on EVERY
   // notification meant a PACED incoming deletion arrived as a stream of single-tombstone passes, each below the
   // bulk-delete threshold, so the user's ">N deletions, review?" confirmation (D0041) never fired — the 60s poll
@@ -2440,6 +2494,18 @@ export default class NewLiveSyncPlugin extends Plugin {
       if (!wantKeys.has(key)) { try { ws.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
     }
     if (this.unloading || !this.sessionToken || !this.primaryLinkUp()) return; // link down/paused → don't (re)open; the poll still runs
+    // issueMountHalfOpenSocketLiveness: a mount WS can HALF-OPEN independently of the primary (its own source
+    // subscription's TCP dies while the primary's stays healthy). The server's keepalive is a protocol Ping,
+    // invisible to JS onmessage, and JS can't send its own pings — so the client can't detect a zombie socket
+    // directly. As a SAFETY FLOOR, periodically recycle the mount sockets (close → reopened by the loop below)
+    // so any zombie recovers within one interval; the poll is the backstop meanwhile. Time-based, piggybacked on
+    // the poll-driven syncMountSubscriptions — NOT a per-mount timer (D0040). Seeded on first use (no churn at t0).
+    const now = Date.now();
+    if (this.lastMountSocketRecycleAt === 0) this.lastMountSocketRecycleAt = now;
+    else if (now - this.lastMountSocketRecycleAt >= this.MOUNT_SOCKET_RECYCLE_MS) {
+      this.lastMountSocketRecycleAt = now;
+      for (const [key, ws] of this.mountSockets) { try { ws.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
+    }
     for (const mount of active) {
       const key = mountKey(mount);
       if (!wantKeys.has(key) || this.mountSockets.has(key)) continue; // no healthy scope yet, or already subscribed
@@ -2497,6 +2563,8 @@ export default class NewLiveSyncPlugin extends Plugin {
         },
         onError: (scope, e: any) => this.log(`mount ${scope.runtime.mount.mountPoint} sync error (${e?.message ?? e}) — ${scope.state}`),
         onHeld: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setPendingBulk(scope.runtime.key, paths, authoritative); }, // D0041: record the mount's held incoming deletions for review
+        onHeldPush: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setPendingBulkPush(scope.runtime.key, paths, authoritative); }, // F2: record the mount's held bulk-push-to-shared for review
+
         onRoEdits: (scope, paths, authoritative) => { if (this.mountScopes.includes(scope)) this.setRoMountEdits(scope.runtime.key, scope.runtime.mount.mountPoint, paths, authoritative); }, // issueMountRoLocalEditBehavior
 
       // R1-F3/F4: skip a scope that was removed (no longer in mountScopes) or that we're unloading BEFORE driving
@@ -2672,6 +2740,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (sock) { try { sock.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
     delete this.mountStateStore[key];
     this.pendingBulkDeletes.delete(key); // D0041: drop any held-deletion review for a removed mount
+    this.pendingBulkPushes.delete(key); // F2: drop any held-push review for a removed mount
     this.clearRoMountEdits(key); // F4: drop read-only-edit tracking for a removed mount
     await this.saveSettings();
     this.log(`composed vaults: removed mount ${m.mountPoint} — its files are kept as normal notes in this vault`);
@@ -2684,6 +2753,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     delete this.mountStateStore[key];                                        // fresh first-contact → full re-pull from the source
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key); // drop the localGone scope so it rebuilds
     this.pendingBulkDeletes.delete(key);                                     // F5: drop any stale held-deletion review keyed to this mount
+    this.pendingBulkPushes.delete(key);                                      // F2: drop any stale held-push review keyed to this mount
     this.clearRoMountEdits(key);                                            // F4: drop read-only-edit tracking on reinstate
     await this.ensureMountFolder(m.mountPoint);                              // re-create the dedicated folder now (visible immediately)
     await this.saveSettings();

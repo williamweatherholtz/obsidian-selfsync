@@ -453,6 +453,26 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("mountLiveSubscription: mount sockets are periodically RECYCLED so a zombie half-open recovers (issueMountHalfOpenSocketLiveness)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const key = liveScope(p);
+    const opened: any[] = []; let closed = 0;
+    anyp.buildMountApi = () => ({ connectWs: () => { const ws = { addEventListener() {}, close() { closed++; } }; opened.push(ws); return ws; } });
+    anyp.reconcileMounts = async () => {};
+
+    anyp.syncMountSubscriptions([liveMount]);   // opens socket #1; seeds the recycle clock (no churn at t0)
+    expect(opened.length).toBe(1);
+    anyp.syncMountSubscriptions([liveMount]);   // within the interval → no recycle, no new socket
+    expect(opened.length).toBe(1);
+    anyp.lastMountSocketRecycleAt = Date.now() - anyp.MOUNT_SOCKET_RECYCLE_MS - 1; // a full interval has passed
+    anyp.syncMountSubscriptions([liveMount]);   // → recycle: close #1, reopen as #2
+    expect(closed).toBe(1);
+    expect(opened.length).toBe(2);
+    expect(anyp.mountSockets.get(key)).toBe(opened[1]);
+    p.onunload();
+  });
+
   it("mountLiveSubscription: removeMount closes the mount's WS immediately (no leak) (5-pass review)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;
