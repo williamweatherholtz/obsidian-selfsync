@@ -442,6 +442,17 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("mountSourceReadOnly: own→writable, shared-readWrite→writable, shared-read/unknown→read-only (fail closed) (issueMountReadOnlyRailDirectionKeyed)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.sourceGrants = new Map([["alice/rw", "readWrite"], ["bob/ro", "read"]]);
+    expect(anyp.mountSourceReadOnly({ source: { owner: "", vaultId: "mine" } })).toBe(false);       // own vault → always writable
+    expect(anyp.mountSourceReadOnly({ source: { owner: "alice", vaultId: "rw" } })).toBe(false);     // shared, readWrite grant → writable
+    expect(anyp.mountSourceReadOnly({ source: { owner: "bob", vaultId: "ro" } })).toBe(true);        // shared, read grant → read-only
+    expect(anyp.mountSourceReadOnly({ source: { owner: "carol", vaultId: "x" } })).toBe(true);       // unknown grant → read-only (fail closed)
+    p.onunload();
+  });
+
   it("mountLiveSubscription: removeMount closes the mount's WS immediately (no leak) (5-pass review)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;

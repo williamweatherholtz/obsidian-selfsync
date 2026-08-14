@@ -89,6 +89,11 @@ export interface MountRuntimeCtx {
   maxSyncBytes?: number;
   bulkDeleteStrategy?: BulkDeleteStrategy; // D0041: the GLOBAL incoming bulk-delete confirmation policy applies to mounts too
   bulkDeleteThreshold?: number;
+  // issueMountReadOnlyRailDirectionKeyed: is writing to the SOURCE actually FORBIDDEN by the grant (a shared
+  // source we only hold a read grant on)? Evaluated per-pass (deps() is per-call), so a grant downgraded to
+  // read-only is honored on the next pass — the mount then takes the read-only path instead of attempting a
+  // write that the server 403s (a stuck-failing scope + lost read-only UX). Own sources are always writable.
+  sourceReadOnly?: () => boolean;
   // Per-mount reconcile callbacks the plugin wires (progress/conflict/error/status). Scope-private truth
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
@@ -128,7 +133,7 @@ export class MountRuntime {
       api: this.api, io: this.io, base: this.base, cache: this.ctx.cache, state: this.state,
       device: this.ctx.device,
       accepts: isDataPath,                              // data-only, in mount-relative space
-      readOnly: this.mount.direction === "pull",        // pull = never mutate the source
+      readOnly: this.mount.direction === "pull" || !!this.ctx.sourceReadOnly?.(), // pull, OR the grant forbids writing this shared source — never mutate it
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)
       bulkDeleteStrategy: this.ctx.bulkDeleteStrategy,   // D0041: the global incoming bulk-delete confirmation applies to mounts too
       bulkDeleteThreshold: this.ctx.bulkDeleteThreshold,

@@ -1314,6 +1314,25 @@ export default class NewLiveSyncPlugin extends Plugin {
       this.log(`share permission updated: ${this.settings.vaultOwner}/${this.settings.vaultId} is now ${g.readOnly ? "read-only" : "read-write"}`);
     }
   }
+  // issueMountReadOnlyRailDirectionKeyed: the CURRENT write-grant for each SHARED mount source, keyed
+  // `owner/vaultId`. A mount's read-only rail keyed only on the user-editable `direction` let a shared source we
+  // hold a READ grant on (hand-edited to `sync`, or a grant downgraded after the toggle) run the read-WRITE
+  // path and 403 every push (a stuck-failing scope + lost read-only UX). Refreshed on connect from /api/shared.
+  private sourceGrants = new Map<string, SharePerm>();
+  private async refreshSourceGrants(token: string): Promise<void> {
+    if (!this.mounts().some((m) => m.source.owner !== "")) { this.sourceGrants.clear(); return; } // no shared mounts → nothing to know
+    try {
+      const grants = await HttpTransport.listShared(this.settings.serverUrl, token);
+      this.sourceGrants = new Map(grants.map((g) => [`${g.owner}/${g.vault}`, g.perm]));
+    } catch { /* keep the last-known grants; a mount write still fails CLOSED via mountSourceReadOnly's default */ }
+  }
+  // Is writing this mount's source FORBIDDEN by the grant? An OWN source (owner "") is always writable. A shared
+  // source is writable ONLY on a known readWrite grant — an unknown/read grant → read-only (fail closed: don't
+  // push into a source we can't prove we may write). Consulted per reconcile pass, so a downgrade takes effect promptly.
+  private mountSourceReadOnly(m: Mount): boolean {
+    if (!m.source.owner) return false;
+    return this.sourceGrants.get(`${m.source.owner}/${m.source.vaultId}`) !== "readWrite";
+  }
   // Does this local vault hold any syncable content (notes + any enabled synced config)?
   // io.list() is already selective-sync-filtered, so this excludes SelfSync's own files.
   async hasLocalData(): Promise<boolean> {
@@ -1866,6 +1885,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
     this.setConnectStage("checking your access");
     await this.refreshShareGrant(activeToken);
+    await this.refreshSourceGrants(activeToken); // mounts: know each shared source's write-grant so the read-only rail follows the GRANT, not just direction
   }
 
   // D0042 wire-contract compatibility decision (imperative shell over the pure hashCheck/diff cores). Cheap
@@ -2350,6 +2370,7 @@ export default class NewLiveSyncPlugin extends Plugin {
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
         bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: the global incoming bulk-delete confirmation applies to mounts too
         bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
+        sourceReadOnly: () => this.mountSourceReadOnly(mount), // issueMountReadOnlyRailDirectionKeyed: the read-only rail follows the grant, not just direction (evaluated per pass)
         // R4-F4 + R7-F1: hold the mount OFFLINE unless the SOURCE is both READY and on a COMPATIBLE protocol
         // version — the same guard the primary connect applies. sessionToken is set even after a version-
         // mismatched primary connect, so without this a mount could poll a protocol-incompatible source (shape

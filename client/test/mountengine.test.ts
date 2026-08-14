@@ -62,6 +62,13 @@ describe("MountRuntime — STRUCTURAL isolation (issueMountBaseIsolation)", () =
     expect(new MountRuntime(mk("Work/ASI", "", "pull"), ctx()).deps().readOnly).toBe(true);
     expect(new MountRuntime(mk("Work/ASI", "", "sync"), ctx()).deps().readOnly).toBe(false);
   });
+  it("a SYNC mount whose source GRANT forbids writing is readOnly too — evaluated per deps() call (issueMountReadOnlyRailDirectionKeyed)", () => {
+    let forbidden = true;
+    const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx({ sourceReadOnly: () => forbidden }));
+    expect(rt.deps().readOnly).toBe(true);   // grant read-only → the sync mount takes the read-only path (no 403-spamming pushes)
+    forbidden = false;                        // grant re-granted to readWrite…
+    expect(rt.deps().readOnly).toBe(false);  // …picked up on the next pass (deps is per-call), no scope rebuild needed
+  });
   it("passes the global bulk-delete policy into deps + collects held paths via onGuard (D0041)", () => {
     const rt = new MountRuntime(mk("Work/ASI", "", "sync"), ctx({ bulkDeleteStrategy: "count", bulkDeleteThreshold: 7 }));
     const d = rt.deps();
