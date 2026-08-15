@@ -453,6 +453,25 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("noteDeclined: ONE notice per distinct declined PLUGIN SET — a different file subset of the same plugins doesn't re-log (owner: 'just one')", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.logs.length = 0;
+    const declinedLines = () => (anyp.logs as string[]).filter((l) => /synced to this device/.test(l));
+    anyp.noteDeclined([".obsidian/plugins/a/main.js", ".obsidian/plugins/b/main.js"]); // plugins {a,b}
+    expect(declinedLines().length).toBe(1);
+    expect(declinedLines()[0]).toMatch(/2 community plugins/);
+    expect(declinedLines()[0]).not.toMatch(/main\.js/); // a COUNT, not the file/plugin list
+    // Same plugin set, DIFFERENT files (what a later pass reports) → NO new log (deduped on the plugin set).
+    anyp.noteDeclined([".obsidian/plugins/a/styles.css", ".obsidian/plugins/b/data.json"]);
+    expect(declinedLines().length).toBe(1);
+    // The set CHANGES (b enabled → only {a}) → one new log.
+    anyp.noteDeclined([".obsidian/plugins/a/main.js"]);
+    expect(declinedLines().length).toBe(2);
+    expect(declinedLines()[1]).toMatch(/1 community plugin\b/);
+    p.onunload();
+  });
+
   it("runMountExclusive serializes overlapping mount work — a held-review resolver can't interleave with an in-flight pass (issueMountHeldResolverSerialization)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;

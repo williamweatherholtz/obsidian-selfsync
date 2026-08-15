@@ -829,10 +829,10 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   const changedAll = [...new Set<string>([...remote.keys(), ...tombstoned])];
   // Only count + process what this device will ACTUALLY sync. A remote change this device doesn't
   // accept (surface off / plugin not allowlisted) would be skipped by reconcileOne anyway; excluding
-  // it here keeps "pending" honest (no phantom count) and surfaces it as DECLINED instead.
+  // it here keeps "pending" honest (no phantom count). The DECLINED notice is NOT fired from the delta —
+  // a delta sees only the CHANGED declined subset, so firing here churns the "N plugins not synced" notice
+  // (a different subset each poll). The FULL pass (reconcileAll) has the complete set + fires it once.
   const changed = changedAll.filter((p) => accepts(d, p)); // the delta IS the pending set (accepted-only)
-  const declined = changedAll.filter((p) => !accepts(d, p) && remote.has(p));
-  if (declined.length) d.onDeclined?.(declined);
   let pending = changed.length; d.onProgress?.(pending);
   await isolatedPass(d, changed, failed,
     async (p) => {

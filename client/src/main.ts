@@ -1049,19 +1049,21 @@ export default class NewLiveSyncPlugin extends Plugin {
 
   // Files present on the server that this device is set NOT to sync (a config surface is off, or a
   // community plugin isn't in the allowlist). These are NOT pending work — they'll never transfer until
-  // the user opts in — so we report them separately (answering "what's it trying to process?" and "how
-  // do I sync a plugin to this vault?"). Logged only when the set CHANGES, so a poll can't spam it.
+  // the user opts in — so we report them ONCE (answering "how do I sync a plugin to this vault?"), not the
+  // full list. Fired only from the FULL pass (the delta sees a churning subset), and de-duped on the stable
+  // PLUGIN SET (not the volatile file list), so a poll / reconnect can't re-log it (owner: "just one, please").
   private declinedSig = "";
   private noteDeclined(paths: string[]): void {
-    const sig = paths.slice().sort().join("|");
-    if (sig === this.declinedSig) return;
-    this.declinedSig = sig;
     const plugins = new Set<string>(); let files = 0;
     for (const p of paths) { const id = pluginIdOf(p); if (id) plugins.add(id); else files++; }
+    const sig = [...plugins].sort().join("|") + (files ? "#cfg" : ""); // stable across passes → one notice per distinct declined set
+    if (sig === this.declinedSig) return;
+    this.declinedSig = sig;
     const parts: string[] = [];
-    if (plugins.size) parts.push(`${plugins.size} community plugin${plugins.size === 1 ? "" : "s"} (${[...plugins].slice(0, 6).join(", ")}${plugins.size > 6 ? "…" : ""})`);
+    if (plugins.size) parts.push(`${plugins.size} community plugin${plugins.size === 1 ? "" : "s"}`);
     if (files) parts.push(`${files} config file${files === 1 ? "" : "s"}`);
-    this.log(`${parts.join(" and ")} on the server ${paths.length === 1 ? "is" : "are"} NOT in this device's sync selection — turn them on in Settings → Obsidian configuration (tick the plugins under “Synced community plugins”) to sync them here. These are not counted as pending.`, false);
+    const one = plugins.size + files === 1;
+    this.log(`${parts.join(" and ")} on the server ${one ? "isn't" : "aren't"} synced to this device — enable ${one ? "it" : "them"} in Settings → SelfSync → Obsidian configuration (under “Synced community plugins”). Not counted as pending.`, false);
   }
 
   // A config path reconciled cleanly — drop any stale pending entry so the count reflects reality
