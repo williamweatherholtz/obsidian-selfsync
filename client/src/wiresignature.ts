@@ -12,8 +12,10 @@
 //
 // DIRECTIONAL classification: a hash tells you THAT the contract changed, never WHETHER it breaks — and
 // breaking-ness is asymmetric, so the client (which alone knows what it SENDS vs RECEIVES) classifies:
-//   - a RESPONSE type (the client reads it): breaking if a field it reads is REMOVED or RETYPED; a new
-//     field (any) is additive — the client ignores what it doesn't read.
+//   - a RESPONSE type (the client reads it): breaking if a REQUIRED field it reads is removed, or any read
+//     field is RETYPED, or a required field becomes optional; a new field (any) is additive — the client
+//     ignores what it doesn't read — and an OPTIONAL field it reads that the server lacks is NON-breaking (a
+//     newer client added it / an older server omits it → read undefined-safe; issueOptionalResponseFieldGates).
 //   - a REQUEST type (the client sends it): breaking if the server now REQUIRES a field the client doesn't
 //     send, or a sent field is RETYPED; a dropped field is harmless (the server ignores unknown fields —
 //     no deny_unknown_fields anywhere), a new optional field is additive.
@@ -91,6 +93,7 @@ export function isNonGatingEndpoint(entry: string): boolean {
 export interface Delta {
   breaking: boolean;
   reason: string; // human, actionable — names the specific endpoint/field + direction
+  older?: "server" | "plugin"; // which side is likely OUT OF DATE: the server LACKS something we need → "server"; the server DEMANDS/omits something newer → "plugin". Omitted when ambiguous (a retype).
 }
 
 // A field lookup by name.
@@ -107,7 +110,8 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
   // Semantic epoch (F3): a change means the server declared a shape-identical but semantically breaking
   // change (e.g. a chunk-hash algorithm change) that a structural diff cannot see — refuse.
   if (embedded.api_version !== server.api_version) {
-    deltas.push({ breaking: true, reason: `the server's protocol epoch changed (v${embedded.api_version} → v${server.api_version}) — a semantic change this plugin can't verify` });
+    // A higher server epoch ⇒ the server is newer ⇒ the PLUGIN is older; a lower one ⇒ the server is older.
+    deltas.push({ breaking: true, older: server.api_version > embedded.api_version ? "plugin" : "server", reason: `the server's protocol epoch changed (v${embedded.api_version} → v${server.api_version}) — a semantic change this plugin can't verify` });
   }
 
   // Endpoints the client relies on for CORE sync that the server no longer exposes → breaking. Share-management
@@ -118,7 +122,7 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
   for (const e of embedded.endpoints) {
     if (isNonGatingEndpoint(e)) continue;
     if (!serverEndpoints.has(e)) {
-      deltas.push({ breaking: true, reason: `the server no longer exposes "${e}", which this plugin needs` });
+      deltas.push({ breaking: true, older: "server", reason: `the server no longer exposes "${e}", which this plugin needs` });
     }
   }
 
@@ -126,7 +130,7 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
     if (NON_GATING_TYPES.has(typeName)) continue; // share-metadata: drift-detected + runtime-validated, never gates core sync
     const sFields = server.types[typeName];
     if (!sFields) {
-      deltas.push({ breaking: true, reason: `the server no longer defines "${typeName}", which this plugin expects` });
+      deltas.push({ breaking: true, older: "server", reason: `the server no longer defines "${typeName}", which this plugin expects` });
       continue;
     }
     const role: TypeRole = TYPE_ROLES[typeName] ?? "response";
@@ -140,11 +144,16 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
       for (const [name, ef] of eMap) {
         const sf = sMap.get(name);
         if (!sf) {
-          deltas.push({ breaking: true, reason: `the server dropped "${typeName}.${name}", which this plugin reads` });
+          // A field the client reads that the server doesn't provide. Breaking ONLY if the client REQUIRES it.
+          // An OPTIONAL field is read undefined-safe, so its absence degrades gracefully — and critically, a
+          // NEWER client that ADDED an optional response field would otherwise falsely flag an OLDER (or mid-
+          // redeploy) server as having "dropped" it, hard-blocking sync over an additive change (issueOptional-
+          // ResponseFieldGates: a 1.29 client's optional Deletion provenance blocked sync against a pre-1.29 server).
+          if (ef.required) deltas.push({ breaking: true, older: "server", reason: `the server dropped "${typeName}.${name}", which this plugin requires` });
         } else if (sf.type !== ef.type) {
-          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin reads` });
+          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin reads` }); // retype: ambiguous which side is older
         } else if (ef.required && !sf.required) {
-          deltas.push({ breaking: true, reason: `the server may now omit "${typeName}.${name}", which this plugin requires` });
+          deltas.push({ breaking: true, older: "plugin", reason: `the server may now omit "${typeName}.${name}", which this plugin requires` });
         }
       }
     } else {
@@ -153,9 +162,9 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
       for (const [name, sf] of sMap) {
         const ef = eMap.get(name);
         if (sf.required && (!ef || !ef.required)) {
-          deltas.push({ breaking: true, reason: `the server now requires "${typeName}.${name}", which this plugin does not send` });
+          deltas.push({ breaking: true, older: "plugin", reason: `the server now requires "${typeName}.${name}", which this plugin does not send` });
         } else if (ef && sf.type !== ef.type) {
-          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin sends` });
+          deltas.push({ breaking: true, reason: `"${typeName}.${name}" changed type on the server (${ef.type} → ${sf.type}), which this plugin sends` }); // retype: ambiguous
         }
       }
     }
@@ -163,12 +172,19 @@ export function diffSignature(embedded: Signature, server: Signature): Delta[] {
   return deltas;
 }
 
-export type SignatureVerdict = { ok: true } | { ok: false; reasons: string[] };
+export type OlderSide = "server" | "plugin" | "either";
+export type SignatureVerdict = { ok: true } | { ok: false; reasons: string[]; older: OlderSide };
 
 // Compatible iff the diff finds no BREAKING delta. Additive-only changes (and identical contracts) pass.
+// On incompatibility, also report which side is likely OUT OF DATE: unanimous directional hints → that side;
+// mixed or any ambiguous (a retype) → "either" (so we never point the user at the wrong side confidently).
 export function signatureVerdict(embedded: Signature, server: Signature): SignatureVerdict {
-  const breaking = diffSignature(embedded, server).filter((d) => d.breaking).map((d) => d.reason);
-  return breaking.length === 0 ? { ok: true } : { ok: false, reasons: breaking };
+  const breaking = diffSignature(embedded, server).filter((d) => d.breaking);
+  if (breaking.length === 0) return { ok: true };
+  const older: OlderSide = breaking.every((d) => d.older === "server") ? "server"
+    : breaking.every((d) => d.older === "plugin") ? "plugin"
+    : "either";
+  return { ok: false, reasons: breaking.map((d) => d.reason), older };
 }
 
 // The cheap connect-time gate over the server's advertised schemaHash. `verifiedHash` is a hash we already
@@ -224,7 +240,14 @@ export const FAIL_CLOSED_MESSAGE =
 // hash (a mid-upgrade window or a stale cache in front of /schema — F1). Refuse until it settles.
 export const UNVERIFIED_MESSAGE =
   "This plugin couldn't verify your server's sync-protocol signature (the server may be mid-upgrade, or a cache is serving a stale copy). Not syncing until it settles (your notes are untouched).";
-export function incompatibleMessage(reasons: string[]): string {
+export function incompatibleMessage(reasons: string[], older: OlderSide = "either"): string {
   const shown = reasons.slice(0, 3).join("; ") + (reasons.length > 3 ? `; +${reasons.length - 3} more` : "");
-  return `This plugin and your server have incompatible sync protocols — ${shown}. Update whichever is older. Not syncing until they match (your notes are untouched).`;
+  // "server lacks something" MOST often means the server is behind — but a NEWER server that removed a
+  // deprecated field looks identical, so hedge (and cover the "I just updated the server" case) rather than
+  // confidently misdirect. "server demands something new" (a higher epoch / a newly-required field) unambiguously
+  // means the plugin is behind.
+  const which = older === "server" ? "Your server is missing something this plugin uses — likely the server needs updating (redeploy the server image); if you JUST updated the server, update the plugin instead."
+    : older === "plugin" ? "The server expects something newer than this plugin — update the plugin."
+    : "Update whichever is older.";
+  return `This plugin and your server have incompatible sync protocols — ${shown}. ${which} Not syncing until they match (your notes are untouched).`;
 }

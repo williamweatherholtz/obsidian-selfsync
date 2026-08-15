@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
-  Signature, EMBEDDED_SIGNATURE, TYPE_ROLES, hashCheck, diffSignature, signatureVerdict,
+  Signature, EMBEDDED_SIGNATURE, TYPE_ROLES, NON_GATING_TYPES, hashCheck, diffSignature, signatureVerdict,
   validateSignature, validateSchemaResponse, incompatibleMessage, FAIL_CLOSED_MESSAGE,
 } from "../src/wiresignature";
 import clientArtifact from "../src/wire-signature.json";
@@ -89,6 +89,45 @@ describe("signatureVerdict / diffSignature — directional classification", () =
     const v = signatureVerdict(base, s);
     expect(v.ok).toBe(false);
     if (!v.ok) expect(v.reasons.join()).toMatch(/may now omit "StatusResponse\.status"/);
+  });
+
+  it("RESPONSE: an OPTIONAL field the client reads that the server LACKS → NON-breaking (a newer client / older server; issueOptionalResponseFieldGates)", () => {
+    const s = clone(base); s.types.StatusResponse = s.types.StatusResponse.filter((f) => f.name !== "detail"); // `detail` is optional
+    expect(signatureVerdict(base, s)).toEqual({ ok: true }); // degrades gracefully — never gate core sync over an additive optional field
+  });
+  it("directional hint: server LACKS a required field → 'server' older; server DEMANDS a new field → 'plugin' older; a retype → 'either'", () => {
+    const dropped = clone(base); dropped.types.StatusResponse = dropped.types.StatusResponse.filter((f) => f.name !== "status");
+    const v1 = signatureVerdict(base, dropped);
+    expect(v1.ok).toBe(false);
+    if (!v1.ok) { expect(v1.older).toBe("server"); expect(incompatibleMessage(v1.reasons, v1.older)).toMatch(/server is missing something|server needs updating/); }
+    const demands = clone(base); demands.types.CommitRequest.push({ name: "newthing", type: "string", required: true }); // client doesn't send it
+    const v2 = signatureVerdict(base, demands);
+    expect(v2.ok).toBe(false);
+    if (!v2.ok) { expect(v2.older).toBe("plugin"); expect(incompatibleMessage(v2.reasons, v2.older)).toMatch(/update the plugin/); }
+    const retyped = clone(base); retyped.types.StatusResponse[0].type = "integer";
+    const v3 = signatureVerdict(base, retyped);
+    expect(v3.ok).toBe(false);
+    if (!v3.ok) { expect(v3.older).toBe("either"); expect(incompatibleMessage(v3.reasons, v3.older)).toMatch(/Update whichever is older/); }
+  });
+
+  it("GUARD: every OPTIONAL field in a GATING response type is KNOWN undefined-safe — a new one forces a conscious review (issueOptionalResponseFieldGates)", () => {
+    // The relaxed gate treats a required:false response field the server LACKS as non-breaking, ASSUMING its
+    // client consumer reads it undefined-safe. That invariant is enforced here (critique Finding 1): adding a new
+    // optional response field to a GATING type FAILS this test until you confirm its consumer handles undefined.
+    const UNDEFINED_SAFE = new Set([
+      "ChangesResponse.history_floor",      // undefined → genesis; D0019 keep-and-push, never deletes
+      "Deletion.author", "Deletion.device_id", "Deletion.device_name",   // undefined → unknown author → conservative notify
+      "FileMeta.author", "FileMeta.device_id", "FileMeta.device_name",   // same as Deletion
+      "LoginResponse.must_change_password", // undefined → falsy → no forced change (acceptable degradation)
+      "StatusResponse.api_version",         // cosmetic epoch label (the wire gate carries the real epoch)
+      "StatusResponse.schema_hash",         // undefined → the wire gate fails CLOSED (never silently trusted)
+    ]);
+    const stray: string[] = [];
+    for (const [t, fields] of Object.entries(EMBEDDED_SIGNATURE.types)) {
+      if (TYPE_ROLES[t] !== "response" || NON_GATING_TYPES.has(t)) continue; // NON_GATING types are skipped by the diff entirely
+      for (const f of fields) if (!f.required && !UNDEFINED_SAFE.has(`${t}.${f.name}`)) stray.push(`${t}.${f.name}`);
+    }
+    expect(stray, `optional response field(s) not confirmed undefined-safe (add to the allowlist after checking the consumer): ${stray.join(", ")}`).toEqual([]);
   });
 
   it("SEMANTIC EPOCH: a change in api_version → breaking (F3, a shape-identical semantic bump)", () => {

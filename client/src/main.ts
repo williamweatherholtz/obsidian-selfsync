@@ -1984,7 +1984,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (sr.hash !== serverHash) return { ok: false, message: UNVERIFIED_MESSAGE, detail: `wire signature hash skew (/schema ${sr.hash} vs /status ${serverHash})` };
     const verdict = signatureVerdict(EMBEDDED_SIGNATURE, sr.signature);
     if (verdict.ok) { this.verifiedWireHash = serverHash; return { ok: true }; }
-    return { ok: false, message: incompatibleMessage(verdict.reasons), detail: `incompatible wire contract: ${verdict.reasons.join("; ")}` };
+    return { ok: false, message: incompatibleMessage(verdict.reasons, verdict.older), detail: `incompatible wire contract (${verdict.older} likely older): ${verdict.reasons.join("; ")}` };
   }
 
   // Phase 2: apply the vault-switch RESOLUTION for this connect (force a safe merge-switch on a FOREIGN base
