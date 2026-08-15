@@ -49,9 +49,12 @@ async fn scoped(
     let (st2, o2, v2) = (st.clone(), owner.clone(), vault.clone());
     let h = tokio::task::spawn_blocking(move || st2.vault(&o2, &v2))
         .await.map_err(|e| AppError::Internal(format!("vault open join failed: {e}")))?
-        // vault_exists already confirmed the dir + safe names, so reaching here with an Err is an
-        // UNEXPECTED open failure (IO / SQLite), not "not found" — surface it as 500 with the cause.
-        .map_err(|e| AppError::Internal(format!("vault open failed: {e}")))?;
+        // vault_exists already confirmed the dir + safe names, so reaching here with an Err is an UNEXPECTED
+        // open failure (IO / SQLite), not "not found". vault_open_error surfaces a schema DOWNGRADE (an older
+        // binary opening a newer index after a rollback) DISTINCTLY as a 503 with a clear body, and anything
+        // else as a generic 500 (issueSchemaRollbackOpaque500) — /status routes through here too, so a rolled-
+        // back server self-diagnoses on the client instead of an opaque "internal error".
+        .map_err(crate::error::vault_open_error)?;
     Ok((owner, vault, h))
 }
 
