@@ -472,6 +472,17 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  it("clearHeldPaths subtracts ONLY the applied paths — a held path a reconcile added mid-resolve survives (concurrency critique)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const m = new Map<string, string[]>([["primary", ["A", "B"]]]); // B was added by a reconcile while the resolver's task was queued
+    anyp.clearHeldPaths(m, "primary", ["A"]);   // the resolver applied only A
+    expect(m.get("primary")).toEqual(["B"]);    // B survives (would be WIPED by a blanket delete(scope))
+    anyp.clearHeldPaths(m, "primary", ["B"]);   // now B resolved too
+    expect(m.has("primary")).toBe(false);       // empty → scope entry removed
+    p.onunload();
+  });
+
   it("runMountExclusive serializes overlapping mount work — a held-review resolver can't interleave with an in-flight pass (issueMountHeldResolverSerialization)", async () => {
     const { p } = await bootPlugin();
     const anyp = p as any;
@@ -1020,7 +1031,17 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     ]);
     p.flushConfigDeletions();
     expect(__notices.some((m) => /alice/i.test(m) && /removed 1 synced config/.test(m))).toBe(true);
-    expect(__notices.some((m) => /removed 2 /.test(m))).toBe(false); // NOT folded into "2"
+    expect(__notices.some((m) => /removed 2 /.test(m))).toBe(false); // NOT folded into "2" (own device excluded)
+    // TWO PEERS in one pass → ONE notice covering BOTH sources (data-safety LOW-1: don't drop the second peer).
+    __notices.length = 0;
+    anyp.pendingConfigDelete = new Map([
+      [".obsidian/snippets/x.css", { author: "alice", deviceId: "dev-Z" }],
+      [".obsidian/app.json", { author: "bob", deviceId: "dev-Q" }],
+    ]);
+    p.flushConfigDeletions();
+    expect(__notices.length).toBe(1);
+    expect(__notices[0]).toMatch(/2 synced config files removed by/);
+    expect(__notices[0]).toMatch(/alice/i); expect(__notices[0]).toMatch(/bob/i); // both named
     // ALL your own → completely silent.
     __notices.length = 0;
     anyp.pendingConfigDelete = new Map([[".obsidian/app.json", { author: "will", deviceId: anyp.deviceId() }]]);

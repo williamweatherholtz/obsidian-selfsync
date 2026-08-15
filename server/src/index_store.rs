@@ -134,30 +134,33 @@ impl SqliteIndex {
         // Create the fold index here (moved out of SCHEMA) — now that the column is guaranteed to
         // exist on both a fresh and a just-healed DB. Idempotent on an already-indexed DB.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_fold ON files(fold)", []).map_err(io)?;
-        // v2 (change provenance): add the last-writer columns to a pre-v2 `files` table. No backfill —
-        // existing rows keep '' (unknown author), which is the honest state for a file whose committing
-        // device predates provenance. Probing one column is enough (all three are added together).
-        let has_author: i64 = conn
-            .query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name='author_user'", [], |r| r.get(0))
-            .map_err(io)?;
-        if has_author == 0 {
-            conn.execute("ALTER TABLE files ADD COLUMN author_user TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-            conn.execute("ALTER TABLE files ADD COLUMN author_device_id TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-            conn.execute("ALTER TABLE files ADD COLUMN author_device_name TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-        }
-        // v3 (deletion provenance): add the same last-writer columns to a pre-v3 `deletions` table. No backfill —
-        // existing tombstones keep '' (unknown author), the honest state for a deletion recorded before provenance
-        // (or preserved through a rebuild-from-disk that can't recover authorship). Probe one column (all three added together).
-        let has_del_author: i64 = conn
-            .query_row("SELECT COUNT(*) FROM pragma_table_info('deletions') WHERE name='author_user'", [], |r| r.get(0))
-            .map_err(io)?;
-        if has_del_author == 0 {
-            conn.execute("ALTER TABLE deletions ADD COLUMN author_user TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-            conn.execute("ALTER TABLE deletions ADD COLUMN author_device_id TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-            conn.execute("ALTER TABLE deletions ADD COLUMN author_device_name TEXT NOT NULL DEFAULT ''", []).map_err(io)?;
-        }
+        // v2 (change provenance) on `files`, v3 (deletion provenance) on `deletions`: add the three last-writer
+        // columns. PER-COLUMN + idempotent (see ensure_provenance_columns) — NOT a single-column probe gating a
+        // block of three: a crash between the three ALTERs (a rolling redeploy SIGKILL, OOM, power loss on
+        // consumer hardware) would else leave author_user present + the others missing, the probe permanently
+        // satisfied, and every commit/delete 500 forever with no self-heal (critique F1). No backfill — a pre-
+        // provenance row/tombstone keeps '' (honest unknown author).
+        Self::ensure_provenance_columns(conn, "files")?;
+        Self::ensure_provenance_columns(conn, "deletions")?;
         if v != Self::CURRENT_SCHEMA {
             conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
+        }
+        Ok(())
+    }
+
+    // Idempotently add the three provenance columns to `table`, one at a time. Each is guarded by its OWN
+    // pragma_table_info probe, so a partially-migrated table (author_user present, the others missing — from a
+    // crash between ALTERs on an older binary, or a killed migration) SELF-HEALS on the next open: the present
+    // column is skipped, the missing ones are added. `table` is a hardcoded literal ("files"/"deletions"), never
+    // user input, so the format! interpolation carries no injection risk.
+    fn ensure_provenance_columns(conn: &Connection, table: &str) -> std::io::Result<()> {
+        for col in ["author_user", "author_device_id", "author_device_name"] {
+            let has: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'"), [], |r| r.get(0))
+                .map_err(io)?;
+            if has == 0 {
+                conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []).map_err(io)?;
+            }
         }
         Ok(())
     }
@@ -521,6 +524,31 @@ mod tests {
         s.delete("x.md", 5, "alice", "dev-9", "Phone").unwrap();
         let dx = s.changes(3).unwrap().deletes.into_iter().find(|d| d.path == "x.md").unwrap();
         assert_eq!((dx.author.as_deref(), dx.device_id.as_deref(), dx.device_name.as_deref()), (Some("alice"), Some("dev-9"), Some("Phone")));
+    }
+
+    // F1 (critique): a PARTIALLY-migrated provenance table — author_user present, the other two columns MISSING,
+    // schema_version already stamped to CURRENT (the bricked state an old single-column-probe block left after a
+    // crash between its ALTERs) — must SELF-HEAL on the next open. The old code skipped the whole block (probe
+    // satisfied) so delete() 500'd forever with 'no such column: author_device_id'.
+    #[test]
+    fn migrate_self_heals_a_partial_provenance_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL, author_user TEXT NOT NULL DEFAULT '', author_device_id TEXT NOT NULL DEFAULT '', author_device_name TEXT NOT NULL DEFAULT '');\n\
+                 CREATE TABLE deletions (path TEXT NOT NULL, version INTEGER NOT NULL, author_user TEXT NOT NULL DEFAULT '');\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',3),('version',3),('history_floor',1);", // v==CURRENT yet deletions is only partly migrated
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap(); // migrate() runs every open → re-adds the two missing columns
+        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None }).unwrap();
+        // The delete INSERT references all five columns — it would '500: no such column' on the bricked DB.
+        s.delete("x.md", 5, "alice", "dev-9", "Phone").unwrap();
+        let d = s.changes(3).unwrap().deletes.into_iter().find(|d| d.path == "x.md").unwrap();
+        assert_eq!((d.author.as_deref(), d.device_id.as_deref(), d.device_name.as_deref()), (Some("alice"), Some("dev-9"), Some("Phone")));
     }
 
     // CRITIQUE R+1 (issueFoldBackfillAsciiOnly): healing a pre-fold DB must backfill fold with the SAME

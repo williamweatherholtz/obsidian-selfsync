@@ -1483,14 +1483,18 @@ export default class NewLiveSyncPlugin extends Plugin {
     const self = this.selfIdentity(); const mode = this.settings.configChangeNotify;
     const notifying = entries.filter(([, prov]) => shouldNotifyConfigChange(prov, self, mode)); // drop your OWN removals
     if (!notifying.length) { this.log(`applied ${entries.length} synced config deletion(s)`); return; } // all your own → silent
-    // Name the source, then count ONLY that source's removals — a single pass can mix sources (two peers, or a
-    // peer + your own device), so folding the whole batch under one name would MIS-attribute + over-count (critique).
-    const label = changeSourceLabel(notifying[0][1], self);
-    const mine = notifying.filter(([, p]) => changeSourceLabel(p, self) === label);
-    const n = mine.length;
-    // Restart hint only when a plugin/snippet/theme was removed (a plain data.json/appearance.json needs none).
-    const needsRestart = mine.some(([p]) => p.includes("/plugins/") || p.includes("/snippets/") || p.includes("/themes/"));
-    new Notice(`SelfSync: ${label} removed ${n} synced config file${n === 1 ? "" : "s"}${needsRestart ? " — restart Obsidian if a plugin or snippet doesn't fully clear" : ""}.`);
+    // Count per SOURCE — a single pass can mix sources (two peers, or a peer + your own device). ONE notice
+    // covering ALL notifying sources: attributing the whole batch to one name would mis-count, but dropping the
+    // others entirely under-reports (data-safety critique LOW-1). Restart hint if ANY removal was a plugin/snippet/theme.
+    const bySource = new Map<string, number>();
+    for (const [, prov] of notifying) { const l = changeSourceLabel(prov, self); bySource.set(l, (bySource.get(l) ?? 0) + 1); }
+    const total = notifying.length;
+    const needsRestart = notifying.some(([p]) => p.includes("/plugins/") || p.includes("/snippets/") || p.includes("/themes/"));
+    const restart = needsRestart ? " — restart Obsidian if a plugin or snippet doesn't fully clear" : "";
+    const msg = bySource.size === 1
+      ? `${[...bySource.keys()][0]} removed ${total} synced config file${total === 1 ? "" : "s"}`
+      : `${total} synced config files removed by ${[...bySource].map(([l, n]) => `${l} (${n})`).join(", ")}`;
+    new Notice(`SelfSync: ${msg}${restart}.`);
   }
 
   // A synced change to community-plugin CODE. TWO ORTHOGONAL concerns:
@@ -2325,6 +2329,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     const s = this.mountScopes.find((x) => x.runtime.key === scope);
     if (s) this.mountStateStore[scope] = s.runtime.toPersist();
   }
+  // Clear ONLY the paths a resolver just applied from a held-review set — NOT the whole scope. A reconcile that
+  // ran while the resolver's task was queued may have ADDED new held paths (setPendingBulk authoritative); a
+  // blanket delete(scope) would silently wipe those from the review (they'd only re-surface on the next full
+  // scan), a trust defect for a data-safety gate (concurrency critique MEDIUM). Subtract the snapshot instead.
+  private clearHeldPaths(map: Map<string, string[]>, scope: string, applied: readonly string[]): void {
+    const app = new Set(applied);
+    const rest = (map.get(scope) ?? []).filter((p) => !app.has(p));
+    if (rest.length) map.set(scope, rest); else map.delete(scope);
+  }
   // Accept = perform the held deletions (remove local + drop base → gone everywhere, matching the tombstone).
   async acceptBulkDeletions(scope: string): Promise<void> {
     const paths = this.pendingBulkDeletes.get(scope);
@@ -2332,7 +2345,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     // Serialise a MOUNT resolver against the poll pass + re-resolve deps inside the lock (issueMountHeldResolverSerialization).
     const ok = await this.runScopeExclusive(scope, (d) => applyHeldDeletions(d, paths));
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; } // R11-F7: scope not live (e.g. mid-reconnect)
-    this.pendingBulkDeletes.delete(scope);
+    this.clearHeldPaths(this.pendingBulkDeletes, scope, paths); // subtract only what we applied (concurrency critique)
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
     this.log(`applied ${paths.length} held deletion${paths.length === 1 ? "" : "s"} for ${scope === "primary" ? "this vault" : "a mount"}`);
@@ -2346,7 +2359,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!paths?.length) return;
     const ok = await this.runScopeExclusive(scope, async (d) => { keepHeldDeletions(d, paths); }); // serialise + fresh deps (issueMountHeldResolverSerialization)
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    this.pendingBulkDeletes.delete(scope);
+    this.clearHeldPaths(this.pendingBulkDeletes, scope, paths); // subtract only what we kept (concurrency critique)
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
     if (scope === "primary") { this.lastFullScanAt = 0; this.engine.enqueue({ kind: "remote" }); } // force a full pass → re-push the base-less files
@@ -2381,7 +2394,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!paths?.length) return;
     const ok = await this.runScopeExclusive(scope, (d) => applyHeldPushes(d, paths)); // mount-only; serialise + fresh deps (issueMountHeldResolverSerialization)
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    this.pendingBulkPushes.delete(scope);
+    this.clearHeldPaths(this.pendingBulkPushes, scope, paths); // subtract only what we pushed (concurrency critique)
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
     this.log(`pushed ${paths.length} local file${paths.length === 1 ? "" : "s"} to the shared source for a mount`);
@@ -2393,7 +2406,7 @@ export default class NewLiveSyncPlugin extends Plugin {
     if (!paths?.length) return;
     const ok = await this.runScopeExclusive(scope, (d) => keepHeldPushes(d, paths)); // serialise + fresh deps (issueMountHeldResolverSerialization)
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
-    this.pendingBulkPushes.delete(scope);
+    this.clearHeldPaths(this.pendingBulkPushes, scope, paths); // subtract only what we kept (concurrency critique)
     this.refreshMountPersist(scope);
     await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
     this.log(`kept ${paths.length} local file${paths.length === 1 ? "" : "s"} local-only (not added to the shared source)`);
