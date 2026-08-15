@@ -28,6 +28,7 @@ export type EngineEvent =
   | { kind: "connect" }                             // (re)establish: token, health, initial reconcile, WS+poll
   | { kind: "remote" }                              // a remote change (WS poke or poll tick) → reconcile all
   | { kind: "path"; path: string; size: number }    // a local file change → reconcile just that path
+  | { kind: "task"; run: () => Promise<void> }      // run a base-mutating job SERIALLY with reconciles (a held-review resolver — issuePrimaryHeldResolverSerialization)
   | { kind: "rews" }                                // re-establish ONLY the WS socket (no reconcile)
   | { kind: "disconnect" }                          // user disconnect → off, stop timers (stays signed in)
   | { kind: "unload" };                             // plugin teardown
@@ -148,7 +149,11 @@ export class SyncEngine {
     this.link = linkNext(this.link, { kind: LinkEventKind.Failed, cls });
     this.setState("disconnected");
     this.fx.onError(where, e);
-    this.queue = this.queue.filter((q) => q.kind === "disconnect" || q.kind === "unload");
+    // Drop pending reconcile work (connect's reconcileAll subsumes it) but PRESERVE a queued `task`: it is a
+    // held-review resolver's LOCAL base mutation (no network), so it must still run after a link failure — else
+    // its awaiting promise would hang forever + the user's accept/keep would silently no-op (issuePrimaryHeld-
+    // ResolverSerialization HIGH critique). disconnect/unload are preserved as before.
+    this.queue = this.queue.filter((q) => q.kind === "disconnect" || q.kind === "unload" || q.kind === "task");
     this.fx.scheduleRecovery(recoveryFor(cls));
   }
 
@@ -182,7 +187,10 @@ export class SyncEngine {
         // F2: reset the health machine — a user-initiated disconnect is not a failure, so getLastIssue/
         // isVaultGone (which read LinkState directly) must not keep reporting the stale blocked reason
         // (e.g. 'this vault no longer exists') after the user has already disconnected.
-        this.link = LINK_OK; this.queue = []; this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
+        // PRESERVE a queued `task` (a held-review resolver's LOCAL base mutation): teardown only stops the sync
+        // timers/WS, not the vault adapter, so the resolver still completes + its promise settles (pump drains it
+        // after this returns) — else it would hang like the failWith case (issuePrimaryHeldResolverSerialization).
+        this.link = LINK_OK; this.queue = this.queue.filter((q) => q.kind === "task"); this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
       case "connect": {
         // A transient backoff RETRY (link=retrying) keeps showing the down state so the light doesn't flash
         // connecting↔disconnected every attempt; a fresh connect, a self-heal re-probe, or a user reconnect
@@ -210,6 +218,12 @@ export class SyncEngine {
         if (!this.isConnected()) return;   // a local edit while disconnected is caught by connect()'s reconcileAll
         this.setState("reconciling");
         try { await this.fx.reconcilePath(ev.path, ev.size); } catch (e) { this.failWith("path", e); }
+        return;
+      case "task":
+        // A held-review resolver's base mutation, run SERIALLY with reconciles so it can't interleave with an
+        // in-flight pass (issuePrimaryHeldResolverSerialization). Local work — runs regardless of link state, and
+        // a failure is ISOLATED (the job self-isolates per-file; never take the engine offline over a resolver).
+        try { await ev.run(); } catch (e) { this.fx.onError("task", e); }
         return;
     }
   }

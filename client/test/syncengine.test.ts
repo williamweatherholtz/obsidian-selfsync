@@ -75,6 +75,60 @@ describe("SyncEngine — serial run-to-completion", () => {
     expect(h.e.getState()).toBe("disconnected");                   // failed → retrying — never a false "Synced (polling)"
   });
 
+  // A 'task' (a held-review resolver's base mutation) is run-to-completion serialised with reconciles, so a
+  // settings-UI button can't interleave with an in-flight primary pass (issuePrimaryHeldResolverSerialization).
+  it("a 'task' waits behind an in-flight reconcile — never overlapping it — then runs", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick();     // → idle
+    const g = h.block("reconcileAll");                  // hold a reconcile in-flight
+    h.e.enqueue({ kind: "remote" }); await tick();      // reconcileAll starts + blocks
+    let ran = false;
+    h.e.enqueue({ kind: "task", run: async () => { ran = true; } });
+    await tick();
+    expect(ran).toBe(false);                            // BLOCKED behind the in-flight reconcile (no overlap)
+    g.resolve(); await tick();
+    expect(ran).toBe(true);                             // runs once the reconcile settles
+    expect(h.e.getState()).toBe("idle");
+  });
+
+  it("a queued 'task' SURVIVES a preceding reconcile FAILURE and still runs — no hang, no silent no-op (HIGH critique)", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick();     // → idle
+    const g = h.block("reconcileAll");                  // hold a reconcile in-flight
+    h.e.enqueue({ kind: "remote" }); await tick();      // reconcileAll starts + blocks
+    let ran = false;
+    h.e.enqueue({ kind: "task", run: async () => { ran = true; } });
+    await tick();
+    expect(ran).toBe(false);                            // queued behind the in-flight reconcile
+    g.reject(new Error("server dropped")); await tick();// the reconcile FAILS → failWith drops reconcile work…
+    expect(h.e.getState()).toBe("disconnected");        // …engine went offline…
+    expect(ran).toBe(true);                             // …but the task was PRESERVED + ran (the resolver never hangs)
+  });
+
+  it("a queued 'task' SURVIVES a user DISCONNECT and still runs (disconnect drops reconcile work, keeps the resolver)", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick();
+    const g = h.block("reconcileAll");
+    h.e.enqueue({ kind: "remote" }); await tick();      // a reconcile in flight
+    let ran = false;
+    h.e.enqueue({ kind: "disconnect" });                // user disconnects (queued behind the reconcile)…
+    h.e.enqueue({ kind: "task", run: async () => { ran = true; } }); // …then clicks a review resolver
+    await tick();
+    expect(ran).toBe(false);
+    g.resolve(); await tick();                          // reconcile finishes → disconnect processes → task preserved
+    expect(h.e.getState()).toBe("off");
+    expect(ran).toBe(true);                             // the resolver's task ran (no hang)
+  });
+
+  it("a throwing 'task' is ISOLATED — logged, engine stays connected (a resolver never takes the link offline)", async () => {
+    const h = harness();
+    h.e.enqueue({ kind: "connect" }); await tick();
+    h.e.enqueue({ kind: "task", run: async () => { throw new Error("boom"); } });
+    await tick();
+    expect(h.errors).toContain("task");                 // logged via onError
+    expect(h.e.getState()).toBe("idle");                // NOT disconnected
+  });
+
   it("beginReconcile escalates idle→reconciling only when connected (a no-op poll can't blip it)", async () => {
     const h = harness();
     h.e.beginReconcile();

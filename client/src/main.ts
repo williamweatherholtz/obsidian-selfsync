@@ -365,23 +365,38 @@ export default class NewLiveSyncPlugin extends Plugin {
     try { await prev.catch(() => {}); return await fn(); }
     finally { release(); }
   }
-  // Run a held-review resolver's base mutation for one scope, correctly serialised. A MOUNT scope goes through
-  // runMountExclusive (vs the poll pass) AND re-resolves its deps INSIDE the lock — a rebuild while we waited may
-  // have recreated the scope with a fresh BaseStore, so a deps captured before the wait would mutate an orphaned
-  // base (Finding-4 critique). The primary scope mutates this.base directly: its RECONCILE passes serialise
-  // against each other via the engine queue, but this resolver is a non-enqueued UI callback, so it is NOT fully
-  // serialised against an in-flight primary pass — a pre-existing, narrow, bounded race tracked as
-  // issuePrimaryHeldResolverSerialization (the primary analogue of the mount fix; a distinct mechanism — the
-  // engine event queue, not this mutex). Returns false if the scope isn't live (caller surfaces the reconnecting
-  // notice). NOTE (Finding-3, accepted): a MOUNT resolver now waits behind the in-flight pass — bounded by
-  // REQUEST_TIMEOUT_MS per request, so a never-settling wait isn't reachable via the real HttpTransport (issueMountHeldResolverSerialization).
+  // Run a held-review resolver's base mutation for one scope, correctly serialised against that scope's reconcile
+  // passes so a settings-UI button can't interleave with an in-flight pass touching the same base. A MOUNT scope
+  // goes through runMountExclusive (vs the poll pass) AND re-resolves its deps INSIDE the lock — a rebuild while
+  // we waited may have recreated the scope with a fresh BaseStore, so a deps captured before the wait would
+  // mutate an orphaned base (Finding-4 critique). The PRIMARY scope joins the ENGINE's run-to-completion queue
+  // (enqueuePrimaryTask), which already serialises its reconcile passes (issuePrimaryHeldResolverSerialization).
+  // Returns false if the scope isn't live (caller surfaces the reconnecting notice). NOTE (Finding-3, accepted):
+  // a MOUNT resolver now waits behind the in-flight pass — bounded by REQUEST_TIMEOUT_MS per request, so a
+  // never-settling wait isn't reachable via the real HttpTransport (issueMountHeldResolverSerialization).
   private async runScopeExclusive(scope: string, fn: (d: ReconcileDeps) => Promise<void>): Promise<boolean> {
-    if (scope === "primary") { const d = this.depsForScope(scope); if (!d) return false; await fn(d); return true; }
+    // PRIMARY: push the base mutation through the engine's run-to-completion queue so it can't interleave with an
+    // in-flight primary reconcile pass (issuePrimaryHeldResolverSerialization — the primary analogue of the mount
+    // mutex; the primary has no boolean guard, its passes ARE serialised by the engine, so we join that queue).
+    // The task runs even while disconnected (it's LOCAL base work, synced on reconnect) — the only state that
+    // can't accept it is teardown (the queue is being cleared), so bail there → the caller's reconnecting notice.
+    if (scope === "primary") {
+      if (this.unloading) return false;
+      return this.enqueuePrimaryTask(async () => { const d = this.depsForScope(scope); if (!d) return false; await fn(d); return true; });
+    }
     return this.runMountExclusive(async () => {
       const d = this.depsForScope(scope); // fresh AFTER acquiring the lock (the scope may have been rebuilt while we waited)
       if (!d) return false;
       await fn(d);
       return true;
+    });
+  }
+  // Run a base-mutating job SERIALLY with the primary reconcile passes via the engine's queue (a {kind:"task"}
+  // event, run-to-completion). Resolves with the job's result once the engine runs it. If the engine is tearing
+  // down (unloading), the event is swallowed and this never resolves — acceptable (the settings UI is closing).
+  private enqueuePrimaryTask<T>(run: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.engine.enqueue({ kind: "task", run: async () => { try { resolve(await run()); } catch (e) { reject(e); } } });
     });
   }
   private mountScopesToken = "";     // the session token the current mount transports were built with (R1-F2 staleness)
