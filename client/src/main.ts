@@ -1937,6 +1937,15 @@ export default class NewLiveSyncPlugin extends Plugin {
     let health;
     try { health = await this.api.status(); }
     catch (e) {
+      // A 503 from /status means the server can't OPEN the vault — a schema-downgrade (an operator rolled the
+      // server image BACK), or a poisoned lock. Its plain-text body is already a clear, actionable operator
+      // message, so surface THAT as a synthetic degraded state (like the corrupt-index case below) — doConnect
+      // preserves a synthetic lastIssue verbatim, so the operator sees the real reason instead of the generic
+      // "Can't reach the server (…). Retrying…" wrapper (the server DID respond). Retrying{Slow} self-heals on redeploy.
+      if (e instanceof ConnError && e.info.status === 503) {
+        this.lastIssue = e.message; // the server's plain-text body (errText)
+        throw new ConnError(e.message, { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.VaultStatus });
+      }
       if (!this.isAuthError(e)) throw e;
       this.log("token rejected — re-logging in");
       this.settings.authToken = undefined;

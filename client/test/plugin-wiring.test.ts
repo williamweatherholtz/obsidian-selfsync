@@ -37,6 +37,7 @@ function spyApi() {
   let failStatusAuthTimes = 0;                 // number of leading status() calls that 401
   let failChangesAuthTimes = 0;                // number of leading changes() calls that 401 (a MID-SESSION token expiry on the poll path)
   let failStatus404 = false;                   // vault-gone: the status probe 404s (typed ConnError, endpoint=vaultStatus)
+  let status503Body: string | undefined;       // the status probe 503s with this plain-text body (server can't open the vault — e.g. a schema-downgrade rollback)
   let statusHealth = "ready";                  // server vault health reported by status() ("error" => degraded/reindex-needed)
   // D0042: a real current server advertises schemaHash + serves /schema; the client fails CLOSED on an absent
   // hash and refuses on a breaking signature diff. Default to a compatible pair (own embedded signature).
@@ -50,6 +51,7 @@ function spyApi() {
     __failChangesWith: (msg: string) => void;
     __failChangesAuth: (n: number) => void;
     __failStatus404: () => void;
+    __setStatus503: (b: string | undefined) => void;
     __setStatusHealth: (s: string) => void;
     __setSchemaHash: (v: string | undefined) => void;
     __setSchema: (s: Signature) => void;
@@ -66,6 +68,7 @@ function spyApi() {
     __failChangesAuth: (n: number) => { failChangesAuthTimes = n; },
     __failStatus404: () => { failStatus404 = true; },
     __setStatusHealth: (s: string) => { statusHealth = s; },
+    __setStatus503: (b: string | undefined) => { status503Body = b; },
     __setSchemaHash: (v) => { statusSchemaHash = v; },
     __setSchema: (s) => { schemaSig = s; },
     __setSchemaBodyHash: (v) => { schemaBodyHash = v; },
@@ -73,6 +76,7 @@ function spyApi() {
       rec("status", []);
       if (failStatusAuthTimes > 0) { failStatusAuthTimes--; throw new Error("status: HTTP 401"); }
       if (failStatus404) throw new ConnError("not found", { status: 404, endpoint: Endpoint.VaultStatus, wasLogin: false }); // vault gone (status probe)
+      if (status503Body) throw new ConnError(status503Body, { status: 503, endpoint: Endpoint.VaultStatus, wasLogin: false }); // server can't open the vault (rollback / poisoned lock) — body is the operator message
       return { status: statusHealth, detail: "", version: 0, apiVersion: statusApiVersion, schemaHash: statusSchemaHash };
     },
     async schema() { rec("schema", []); return { hash: schemaBodyHash ?? statusSchemaHash ?? "sha256:test-compat", signature: schemaSig }; },
@@ -883,6 +887,19 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     api.__setStatusHealth("error");                     // status() not-ready → doConnect throws ServerDegraded synthetic
     await p.reconnect(); await flush();
     expect(p.getLastIssue() ?? "").toMatch(/reindex/i); // the actionable message survived (not clobbered)
+    p.onunload();
+  });
+
+  // A 503 from /status (server can't open the vault — a schema-downgrade rollback / poisoned lock) surfaces the
+  // server's CLEAR plain-text body verbatim, not the generic "Can't reach the server (…). Retrying…" wrapper
+  // (the server DID respond) — critique follow-up to issueSchemaRollbackOpaque500.
+  it("a 503 from /status surfaces the server's clear body, not the generic 'can't reach' wrapper", async () => {
+    const { p, api } = await bootPlugin();
+    api.__setStatus503("this server is OLDER than the version that last wrote this vault's data — re-deploy the newer server image. Your data is intact.");
+    await p.reconnect(); await flush();
+    const issue = p.getLastIssue() ?? "";
+    expect(issue).toMatch(/re-deploy the newer server image/); // the server's operator-facing message
+    expect(issue).not.toMatch(/Can't reach the server/);        // NOT the generic transient wrapper
     p.onunload();
   });
 

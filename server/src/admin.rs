@@ -77,10 +77,31 @@ pub struct VaultShares {
 fn vault_health(st: &AppState, owner: &str, vault: &str) -> String {
     match st.vault(owner, vault) {
         Ok(h) => match crate::error::rlock(&h.vault) {
-            Ok(v) => if v.is_corrupt() { "error".into() } else { "ready".into() },
-            Err(_) => "error".into(),
-        },
-        Err(_) => "missing".into(),
+            Ok(v) => if v.is_corrupt() { "error" } else { "ready" },
+            Err(_) => "error",
+        }.to_string(),
+        Err(e) => open_err_health(&e).to_string(),
+    }
+}
+
+// Classify a vault-OPEN error into an admin health status. A schema DOWNGRADE (ErrorKind::Unsupported — this
+// server is OLDER than the one that last wrote the index, i.e. an operator rolled the image back) is NOT a
+// missing vault: the data is intact, just unopenable by this binary. Report it DISTINCTLY as "incompatible" so
+// the admin view doesn't mislabel it "missing" (and never nudges "reindex", which would destroy tombstones —
+// the exact thing the downgrade guard prevents) — issueAdminHealthMislabelsRollback.
+fn open_err_health(e: &std::io::Error) -> &'static str {
+    if e.kind() == std::io::ErrorKind::Unsupported { "incompatible" } else { "missing" }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::open_err_health;
+    #[test]
+    fn rolled_back_vault_is_incompatible_not_missing() {
+        assert_eq!(open_err_health(&std::io::Error::new(std::io::ErrorKind::Unsupported, "schema v3 > v2")), "incompatible");
+        // A genuine absence / other IO error stays "missing" (its remedy is different — not "your server is old").
+        assert_eq!(open_err_health(&std::io::Error::from(std::io::ErrorKind::NotFound)), "missing");
+        assert_eq!(open_err_health(&std::io::Error::other("db locked")), "missing");
     }
 }
 
