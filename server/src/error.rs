@@ -59,11 +59,18 @@ impl IntoResponse for AppError {
 // message can carry an absolute server path, so it must NOT be surfaced (SEC-6).
 pub fn vault_open_error(e: std::io::Error) -> AppError {
     if e.kind() == std::io::ErrorKind::Unsupported {
-        AppError::Unavailable("this server is OLDER than the version that last wrote this vault's data — its storage/protocol format is newer than this server understands. Update (re-deploy) the server to the newer image. Your data is intact; the server refuses to open a newer index to avoid corrupting it.".into())
+        // Kept comfortably UNDER the client's 300-char plain-text-body cap (transport.ts errText) so it always
+        // surfaces to the operator rather than falling back to an opaque "HTTP 503" — vault_open_error_message_
+        // fits_client_body_cap pins this. Path-free (SEC-6).
+        AppError::Unavailable(SCHEMA_DOWNGRADE_MSG.into())
     } else {
         AppError::Internal(format!("vault open failed: {e}"))
     }
 }
+// The operator-facing body for a schema-downgrade (rollback) 503. A `const` so the test can length-check it
+// against the client's body cap; short + path-free (SEC-6).
+pub const SCHEMA_DOWNGRADE_MSG: &str =
+    "this server is OLDER than the version that last wrote this vault's data — re-deploy the newer server image. Your data is intact; the server won't open a newer index, to avoid corrupting it.";
 
 // Lock a mutex on the request path, mapping a POISONED lock to 503 rather than
 // panicking (which would cascade) or resuming on possibly-corrupt state. A poison
@@ -99,10 +106,15 @@ mod tests {
     async fn vault_open_error_maps_schema_downgrade_to_503_and_others_to_500() {
         let downgrade = std::io::Error::new(std::io::ErrorKind::Unsupported, "schema v3 > v2; refusing to open");
         match vault_open_error(downgrade) {
-            AppError::Unavailable(m) => { assert!(m.contains("Update (re-deploy) the server"), "clear operator message: {m}"); assert!(!m.contains("schema v3 > v2"), "does not echo the raw internal text"); }
+            AppError::Unavailable(m) => { assert!(m.contains("re-deploy the newer server image"), "clear operator message: {m}"); assert!(!m.contains("schema v3 > v2"), "does not echo the raw internal text"); }
             other => panic!("expected Unavailable(503), got {other:?}"),
         }
         assert_eq!(status_of(vault_open_error(std::io::Error::new(std::io::ErrorKind::Unsupported, "x"))).await, StatusCode::SERVICE_UNAVAILABLE);
+        // CROSS-LANGUAGE COUPLING (critique MEDIUM): the client (transport.ts errText) only surfaces a server
+        // error body when its .length <= 300, else it shows an opaque "HTTP 503". Pin the message WELL under
+        // that cap (UTF-16 code units; all BMP here, so chars().count() == the client's .length) so a future
+        // reword can't silently push it over and re-hide the rollback diagnosis.
+        assert!(SCHEMA_DOWNGRADE_MSG.chars().count() <= 260, "schema-downgrade body must stay under the client's 300-char errText cap (with headroom): {}", SCHEMA_DOWNGRADE_MSG.chars().count());
         // A generic IO failure stays a 500 (its raw message may carry a server path → not surfaced).
         assert_eq!(status_of(vault_open_error(std::io::Error::other("/abs/server/path/db locked"))).await, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(vault_open_error(std::io::Error::other("boom")), AppError::Internal(_)));
