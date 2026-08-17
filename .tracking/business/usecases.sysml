@@ -259,6 +259,22 @@ package ProjectUseCases {
         :>> extensions = "Neither side needs to have bumped any version number for this to work — the identical contract IS the compatibility proof. | If a change SNEAKS a wire alteration into a 'bugfix', the CI drift gate catches it before release (it is no longer a no-op signature), so this case only ever covers genuinely contract-preserving fixes.";
     }
 
+    // ---- composition recipe (nComposeRecipe, 2026-08-17): opt-in, reviewed replication of a composition ----
+    use case ucExportCompositionRecipe : UseCase {
+        :>> id = "c0f1a5cc-b210-4a10-9b20-a1b2c3d402b0"; :>> title = "Share my composition as a portable recipe";
+        :>> createdAt = "2026-08-17"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user who has composed a vault from several mounted sources wants to hand the LAYOUT (which folders come from which vaults) to someone else, without hand-walking them through each mount and without exposing any credential.";
+        :>> mainSuccess = "From the Composed vaults section the user clicks Copy recipe; the plugin serializes the ACTIVE (valid, in-effect) mounts to a portable selfsync-recipe:// string — mount specs only (source owner/vault/subfolder, local folder, direction) — resolving each own-vault source to the user's account so it is unambiguous for a different reader, and copies it to the clipboard to send out-of-band.";
+        :>> extensions = "The recipe carries NO token/password/login — only the mount specs + the server address (for a cross-server sanity check). | An own-vault source (owner blank) is absolutized to the exporter's account so it can't resolve to the reader's own same-named vault. | Copy is offered only when there is an active composition to share; an all-invalid/empty mount set offers nothing. | Not signed in -> the export is refused with guidance (a recipe needs the account to name owned vaults).";
+    }
+    use case ucImportCompositionRecipe : UseCase {
+        :>> id = "c0f1a5cc-b211-4a10-9b20-a1b2c3d402b1"; :>> title = "Review and apply a composition recipe someone sent me";
+        :>> createdAt = "2026-08-17"; :>> createdBy = "wweatherholtz";
+        :>> description = "A user receives a composition recipe and wants to reproduce that layout on their own device — but only for sources they can actually access, into folders they choose, without any of the sharer's config or credentials being pushed onto them.";
+        :>> mainSuccess = "The user clicks Import recipe, pastes the string, and sees a per-mount REVIEW: each source is checked against their OWN grants and marked accessible or not; for the accessible ones they pick the local folder and a direction that is fail-closed (Sync offered only where their grant is read-write, otherwise read-only Pull); they tick the ones they want and apply, and those become their OWN mounts. Nothing is auto-applied.";
+        :>> extensions = "A source the reader holds no grant for is shown as 'no access — ask them to share it', never silently added. | A source that resolves to the reader's CURRENT primary vault is blocked (can't mount a vault into itself). | An identical mount already present is marked as already-here and skipped. | Direction is clamped fail-closed on apply: Sync can never land on a source the reader can't write, regardless of what the recipe asked. | Two accepted mounts that collide/nest, or a chosen folder that overlaps an existing mount, are caught by the same mount validation before apply. | A malformed/empty/wrong-scheme string is refused with a clear message. | A recipe made for a DIFFERENT server warns that its sources likely don't exist here. | Offline (grants unknown) -> foreign sources read as no-access (safe), never a false 'ready'.";
+    }
+
     // ---- traceability: each use case serves a Persona (#DependsOn) and realizes a Need (#DependsOn) ----
     #DependsOn dependency from ucFirstRunSetup to selfHoster;
     #DependsOn dependency from ucFirstRunSetup to n1GuidedSetup;
@@ -336,4 +352,9 @@ package ProjectUseCases {
     #DependsOn dependency from ucIncompatibleServerRefused to nProtocolCompat;
     #DependsOn dependency from ucBugfixStillSyncs to selfHoster;
     #DependsOn dependency from ucBugfixStillSyncs to nProtocolCompat;
+    // Composition recipe (nComposeRecipe, 2026-08-17): export serves the sharer, import serves the recipient.
+    #DependsOn dependency from ucExportCompositionRecipe to collaborator;
+    #DependsOn dependency from ucExportCompositionRecipe to nComposeRecipe;
+    #DependsOn dependency from ucImportCompositionRecipe to collaborator;
+    #DependsOn dependency from ucImportCompositionRecipe to nComposeRecipe;
 }

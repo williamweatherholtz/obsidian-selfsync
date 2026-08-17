@@ -322,6 +322,13 @@ package ProjectBusiness {
         :>> statement = "On a vault shared with OTHER people, I want to choose per config/plugin whether it is SHARED (everyone who uses the vault gets it — e.g. dataview, which the notes rely on) or PERSONAL (synced across MY devices only, never imposed on peers — e.g. my theme/appearance). Today a shared vault is ONE store everyone reads, so 'synced' necessarily means 'everyone'; a personal scope requires the server to store config per (vault, user) as a personal overlay on the shared vault. SPIKE: a real server feature — needs its own brainstorm/design before any build (owner confirmed they do share vaults, so this is genuinely in scope).";
         :>> priority = Priority::could;
     }
+    requirement nComposeRecipe : Need {
+        :>> id = "c0f1a5cc-e20c-4a10-9b20-a1b2c3d4020c";
+        :>> title = "Replicate a composition via an opt-in, reviewed recipe — without a sharer pushing config or credentials";
+        :>> source = NeedSource::customer;
+        :>> statement = "When I share a vault, I want the person I share it with to be able to reproduce the WAY I assembled it (which folders come from which vaults) without hand-configuring every mount — but a composition is a per-device choice, colocated with credentials, and references sources the reader may not have access to, so a share must NEVER auto-push my mount config. Instead I can COPY my composition as a portable recipe (mount specs only — never a token, password, or server login) and send it; the reader PASTES it and REVIEWS each mount, applying only the ones they choose, into their OWN local folders, with direction fail-closed (Sync only where their own grant permits, otherwise read-only Pull), and a source they lack access to is shown with guidance rather than silently grabbed. Opt-in on both ends: the sharer chooses to export, the reader chooses to apply.";
+        :>> priority = Priority::could;
+    }
     requirement nComposedVaults : Need {
         :>> id = "c0f1a5cc-e20a-4a10-9b20-a1b2c3d4020a";
         :>> title = "Compose a shared DATA-ONLY part of one vault into another (directional nested vaults)";
@@ -372,6 +379,10 @@ package ProjectBusiness {
     // capability off the Brief. Both pinned for a later brainstorm.
     #DependsOn dependency from nPerUserConfigScope to nVaultSharing;
     #DependsOn dependency from nComposedVaults to selfsyncBrief;
+    // The recipe capability (2026-08-17) is an opt-in replication path for a composition — it decomposes both
+    // the composed-vaults Need (what is replicated) and the sharing Need (the without-pushing-config posture).
+    #DependsOn dependency from nComposeRecipe to nComposedVaults;
+    #DependsOn dependency from nComposeRecipe to nVaultSharing;
     // Also root the two pre-existing cross-cutting Needs that had no Brief lineage edge.
     #DependsOn dependency from nxMobile to selfsyncBrief;
     #DependsOn dependency from nxSecurity to selfsyncBrief;

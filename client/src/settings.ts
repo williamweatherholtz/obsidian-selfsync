@@ -18,6 +18,8 @@ import { pushPreviewModal } from "./pushpreviewmodal";
 import { Mount, parseMounts } from "./mounts";
 import { mountKey } from "./mountengine";
 import { MountEditModal, mountRowLabel, mountStateLabel } from "./mountsettings";
+import { RecipeImportModal } from "./recipeui";
+import { encodeCompositionRecipe } from "./composition-recipe";
 import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
@@ -562,8 +564,38 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     }
     if (!mounts.length) body.createEl("p", { text: "No mounts yet.", attr: { style: "font-size:12px;opacity:.6;margin:0 0 8px;" } });
 
-    new Setting(body).addButton((b) => this.iconBtn(b, "plus", "Add a mount").setCta()
-      .onClick(() => new MountEditModal(this.app, this.plugin, () => this.display()).open()));
+    // Actions: add one mount by hand, IMPORT a composition recipe someone shared, or COPY this composition as a
+    // recipe to share (nComposeRecipe). Copy is offered only when there's an active layout to share; the recipe
+    // carries mount specs only — never credentials — and the reader reviews before anything is applied.
+    const actions = new Setting(body)
+      .addButton((b) => this.iconBtn(b, "plus", "Add a mount").setCta()
+        .onClick(() => new MountEditModal(this.app, this.plugin, () => this.display()).open()))
+      .addButton((b) => this.iconBtn(b, "download", "Import recipe")
+        .onClick(() => new RecipeImportModal(this.app, this.plugin, () => this.display()).open()));
+    const activeForRecipe = this.plugin.activeMounts();
+    if (activeForRecipe.length) actions.addButton((b) => this.iconBtn(b, "copy", "Copy recipe")
+      .setTooltip("Copy this composition as a recipe to share — folder layout, vault names and paths only, never your login or file contents")
+      .onClick(async () => {
+        // A recipe embeds vault NAMES and folder paths, and for sources shared to you by OTHERS it embeds THEIR
+        // account name + vault + path — a privacy disclosure of non-participating third parties (critique S1). If
+        // any such source is present, get explicit, itemized consent before copying; own-only recipes copy directly.
+        const foreign = activeForRecipe.filter((m) => m.source.owner !== "");
+        if (foreign.length) {
+          const list = foreign.map((m) => `• ${m.source.owner}/${m.source.vaultId}${m.source.sourcePath ? "/" + m.source.sourcePath : ""}`).join("\n");
+          const ok = await confirmModal(this.app, {
+            title: "Share these shared-vault names in the recipe?",
+            body: `This recipe includes folders from vaults other people shared with you. Their account names, vault names, and folder paths will be embedded in the copied text (no logins and no file contents):\n\n${list}\n\nOnly send it to people you're willing to reveal these names to.`,
+            confirmText: "Copy recipe",
+          });
+          if (!ok) return;
+        }
+        try {
+          const recipe = encodeCompositionRecipe(activeForRecipe, s.serverUrl ?? "", s.username);
+          await navigator.clipboard?.writeText(recipe);
+          const excluded = (s.mounts?.length ?? 0) - activeForRecipe.length;
+          new Notice(`SelfSync: composition recipe copied — share it to add the same layout (folder/vault names and paths, never your login)${excluded > 0 ? `. ${excluded} inactive mount(s) not included` : ""}`);
+        } catch (e) { new Notice(`SelfSync: ${e instanceof Error ? e.message : String(e)}`); }
+      }));
   }
 
   // Remove-mount flow: a NON-DESTRUCTIVE unmount (D0039 default) — confirm, then the local files stay as

@@ -45,6 +45,11 @@ function underOrEqual(pathSegs: readonly string[], prefixSegs: readonly string[]
 }
 function segsEqual(a: readonly string[], b: readonly string[]): boolean { return a.length === b.length && underOrEqual(a, b); }
 
+// Canonical IDENTITY form of a folder (NFC + case-fold per segment) — the SAME basis validateMounts uses for
+// overlap. Exported so callers (composition-recipe's duplicate/self checks) compare mount points + source paths
+// the way the overlap rules do, instead of a raw === that misses a case/Unicode variant of the same folder.
+export function canonFolder(p: string): string { return segsOf(p).map(canonSeg).join("/"); }
+
 // Is `localPath` the mount point itself or under it? The primary reconcile scope must EXCLUDE exactly these,
 // so a mounted file never double-syncs to the primary server vault (the load-bearing boundary invariant).
 export function claimsLocal(mount: Mount, localPath: string): boolean {
