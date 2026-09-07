@@ -159,8 +159,13 @@ export class NoteConflictModal extends Modal {
     c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once — changes are shown below:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
-    const theirs = await this.plugin.readTextOrEmpty(original); // captured to guard "keep mine" against a stale preview
-    const mine = await this.plugin.readTextOrEmpty(copy);
+    // Both sides IN PARALLEL: these are the only two reads between opening the modal and it becoming
+    // usable, so on slow storage (antivirus on every open, or a cloud-synced vault hydrating
+    // placeholders) doing them one after the other doubled the wait for no reason.
+    const [theirs, mine] = await Promise.all([
+      this.plugin.readTextOrEmpty(original), // captured to guard "keep mine" against a stale preview
+      this.plugin.readTextOrEmpty(copy),
+    ]);
     // Diff on CONTENT IDENTITY, masking the frontmatter timestamp keys the user told SelfSync to
     // ignore — the same basis the sync engine and the stale-preview guard use. Rendering raw text
     // meant an ignored `updated:` bump drew a red/green changed line, so the modal contradicted the
