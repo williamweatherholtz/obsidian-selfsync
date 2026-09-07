@@ -8,6 +8,13 @@ export function isTextExt(path: string): boolean {
   return TEXT_EXT.some((e) => lower.endsWith(e));
 }
 
+// UTF-8 decode that REFUSES invalid input instead of substituting replacement characters, so binary
+// content can never be compared as text (two DIFFERENT binaries can decode equal under a lossy
+// decode). Returns null rather than throwing so callers can simply skip the file.
+export function strictDecode(bytes: Uint8Array): string | null {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
+}
+
 export function isMergeable(path: string, bytes: Uint8Array): boolean {
   if (!isTextExt(path)) return false;
   try {

@@ -1,16 +1,10 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { lcsPairs, isTextExt } from "./merge";
+import { lcsPairs } from "./merge";
 import { normalizedContent } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
 
 // A single line of a unified diff: shared context, or a line only on one side.
 type DiffLine = { sign: " " | "-" | "+"; text: string };
-
-// UTF-8 decode that REFUSES invalid input instead of substituting replacement characters, so a binary
-// attachment can never be compared as text. Returns null rather than throwing so callers can skip it.
-function strictDecode(bytes: Uint8Array): string | null {
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
-}
 
 // ---- invisible differences (issueConflictDiffInvisibleChars) ----
 // Field report: the diff showed `- tagNames:` and `+ tagNames:` — two VISUALLY IDENTICAL lines — so
@@ -124,56 +118,28 @@ export class NoteConflictModal extends Modal {
   private async run() {
     try {
       await this.render();          // the user is looking at real content after ~2 reads, not ~2N
-      await this.autoDismissCosmetic();
     } catch (e: any) {
       const c = this.contentEl; c.empty();
       c.createEl("p", { text: `Couldn't load conflicts: ${e?.message ?? e}` }).setAttribute("style", "font-size:13px;");
       new Setting(c).addButton((b) => b.setButtonText("Close").setCta().onClick(() => this.close()));
+      return;
     }
+    // The sweep is BACKGROUND work and is caught SEPARATELY: it runs after the modal is already
+    // drawn, so letting its failure fall into the catch above would wipe a perfectly good rendered
+    // conflict and replace it with an error — losing the very UI the user is waiting on for a
+    // failure in an optimisation they did not ask for. Log it and leave the modal alone.
+    try {
+      await this.autoDismissCosmetic();
+    } catch { /* the list is still correct; the modal simply didn't auto-clear anything */ }
   }
 
-  // Clear conflicts whose two sides are the SAME CONTENT (line-endings and the frontmatter timestamp
-  // keys the user chose to ignore) — a batch of false conflicts from an older client, without one tap
-  // per file. Three things keep it cheap: the extension gate is checked BEFORE any read (a `.png`
-  // conflict costs zero IO), each side is decoded ONCE instead of three times, and the reads run with
-  // bounded concurrency instead of strictly serially.
+  // Clear already-converged conflicts, then redraw if the list shrank. The sweep itself lives on the
+  // PLUGIN (dismissCosmeticConflicts) because it is not a UI concern: a plugin load runs it too, so a
+  // refresh auto-resolves what it safely can instead of leaving false conflicts in the count until
+  // someone opens this modal (issueCosmeticConflictsNotSweptOnLoad). Passing open_ as the continue
+  // predicate stops the background work the moment the modal closes.
   private async autoDismissCosmetic() {
-    const conflicts = this.plugin.listNoteConflicts();
-    // Free filter first: isMergeable's extension check needs no bytes at all.
-    const candidates = conflicts.filter((c) => isTextExt(c.copy) && isTextExt(c.original));
-    if (candidates.length === 0) return;
-
-    let dismissed = 0;
-    const CONCURRENCY = 8;
-    let next = 0;
-    const worker = async () => {
-      for (;;) {
-        const i = next++;
-        if (i >= candidates.length || !this.open_) return;
-        const { copy, original } = candidates[i];
-        // Per-entry isolation: a STALE entry (the copy or note already removed → "File does not
-        // exist") must be skipped, never abort the whole modal. Resolving a vanished copy is treated
-        // as already-done — the derived list drops it on the next render.
-        try {
-          const [mineB, theirsB] = await Promise.all([
-            this.plugin.readBytesOrNull(copy),
-            this.plugin.readBytesOrNull(original),
-          ]);
-          if (!mineB || !theirsB) continue;
-          // Decode ONCE per side, fatally — a binary attachment or invalid UTF-8 throws here and falls
-          // through to the modal. Never lossy-decode a binary to compare it: two DIFFERENT binaries can
-          // decode equal and we would silently delete this device's only copy (critique F1).
-          const mineT = strictDecode(mineB);
-          const theirsT = strictDecode(theirsB);
-          if (mineT === null || theirsT === null) continue;
-          const pats = this.plugin.ignorePatternsForPath(original);
-          if (normalizedContent(mineT, pats) !== normalizedContent(theirsT, pats)) continue;
-          await this.plugin.resolveNoteConflict(copy, original, "theirs", theirsT);
-          dismissed++;
-        } catch { /* stale/missing entry — skip; it's effectively resolved */ }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, worker));
+    const dismissed = await this.plugin.dismissCosmeticConflicts(() => this.open_);
     if (dismissed > 0 && this.open_) await this.render(); // the list shrank — redraw the frontier
   }
 
@@ -204,6 +170,11 @@ export class NoteConflictModal extends Modal {
     this.renderDiff(c, theirs, mine, this.plugin.ignorePatternsForPath(original));
 
     new Setting(c)
+      // Copy FIRST: reaching for the text should never require committing to a side. It puts both
+      // versions verbatim plus the marked-up diff on the clipboard, so the note can be repaired by
+      // hand in an editor — including on mobile, where selecting text inside a modal is painful
+      // (issueConflictDiffNotCopyable).
+      .addButton((b) => b.setButtonText("Copy both versions").onClick(() => void this.copyDetails(copy, original, theirs, mine)))
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
       .addButton((b) => b.setButtonText("Keep the other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
       // No CTA (highlighted default) here: this is an unbiased, irreversible either-side choice, and a
@@ -237,7 +208,10 @@ export class NoteConflictModal extends Modal {
       }).setAttribute("style", "font-size:12px;opacity:.85;margin:6px 0 2px;");
     }
     const pre = c.createEl("pre");
-    pre.setAttribute("style", "max-height:340px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;line-height:1.35;");
+    // user-select:text so the diff can be SELECTED and copied — the log modal's pre already does this.
+    // Without it the text is unselectable in the modal, so a user who wants to fix the note by hand
+    // has no way to get at it (issueConflictDiffNotCopyable).
+    pre.setAttribute("style", "max-height:340px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;line-height:1.35;user-select:text;cursor:text;");
     const shown = lines.slice(0, 400);
     for (const l of shown) {
       const color = l.sign === "+" ? "var(--color-green)" : l.sign === "-" ? "var(--color-red)" : "var(--text-muted)";
@@ -251,6 +225,40 @@ export class NoteConflictModal extends Modal {
     if (lines.length > shown.length) pre.createEl("div", { text: `… (${lines.length - shown.length} more lines)` }).setAttribute("style", "opacity:.6;");
   }
 
+  // Put the whole conflict on the clipboard as plain text: both versions VERBATIM (not the
+  // normalized/masked forms the diff renders, because the point is to repair the real file) plus the
+  // marked-up diff for orientation. Deliberately not truncated — a user asking for the text to fix it
+  // explicitly wants all of it.
+  private async copyDetails(copy: string, original: string, theirs: string, mine: string) {
+    const lines = unifiedLineDiff(
+      normalizedContent(theirs, this.plugin.ignorePatternsForPath(original)),
+      normalizedContent(mine, this.plugin.ignorePatternsForPath(original)),
+    );
+    const diff = lines.map((l) => `${l.sign} ${l.sign === " " ? l.text : revealInvisible(l.text)}`).join("\n");
+    const report = [
+      `SelfSync conflict: ${original}`,
+      `  other device's version: ${original}`,
+      `  this device's version:  ${copy}`,
+      "",
+      "--- DIFF (- other device, + this device; · trailing space, → tab, ⍽ non-breaking space, ∅ zero-width) ---",
+      diff,
+      "",
+      `--- OTHER DEVICE'S VERSION (${original}) ---`,
+      theirs,
+      "",
+      `--- THIS DEVICE'S VERSION (${copy}) ---`,
+      mine,
+      "",
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(report);
+      new Notice("SelfSync: conflict copied — both versions and the diff");
+    } catch {
+      // Clipboard can be unavailable (permissions, or an older mobile webview). Say so rather than
+      // failing silently, and leave the modal untouched so selecting the text by hand still works.
+      new Notice("SelfSync: couldn't reach the clipboard — select the diff text and copy it manually");
+    }
+  }
   private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther: string) {
     if (this.busy) return; // a second tap while the first apply is still in flight
     this.busy = true;

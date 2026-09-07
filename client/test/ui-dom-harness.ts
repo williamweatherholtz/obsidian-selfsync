@@ -85,6 +85,9 @@ export function fakePlugin(over: any = {}) {
     // Raw bytes for the modal's cosmetic-conflict auto-dismiss pass. Default null = "unreadable", so
     // the auto-dismiss is a no-op and tests see the normal adjudication UI unless they opt in.
     readBytesOrNull: vi.fn(async () => null as Uint8Array | null),
+    // The plugin-level converged-conflict sweep (also run once per plugin load). Default 0 = nothing
+    // auto-cleared, so tests see the normal adjudication UI unless they opt in.
+    dismissCosmeticConflicts: vi.fn(async () => 0),
     // No timestamp-key masking by default (feature off); a test overrides it to assert the diff
     // ignores timestamp-only frontmatter differences (issueConflictDiffShowsIgnoredTimestamps).
     ignorePatternsForPath: vi.fn((_p: string) => [] as readonly string[]),

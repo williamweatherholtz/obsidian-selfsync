@@ -7,10 +7,11 @@ import { ConnError, Endpoint } from "../src/connstate";
 import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
 import { TFile } from "obsidian";
 import { mountKey as mountKeyOf } from "../src/mountengine";
+import { isConflictCopy } from "../src/base"; // fixture-name sanity for the conflict-sweep tests
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
 // In-memory VaultIo (enough for reconcile to run).
-function memIo(seed: Record<string, string> = {}): VaultIo {
+function memIo(seed: Record<string, string> = {}): VaultIo & { files: Map<string, Uint8Array> } {
   const files = new Map<string, Uint8Array>();
   for (const [k, v] of Object.entries(seed)) files.set(k, new TextEncoder().encode(v));
   return {
@@ -18,6 +19,7 @@ function memIo(seed: Record<string, string> = {}): VaultIo {
     async read(p) { const b = files.get(p); if (!b) throw new Error("ENOENT " + p); return b; },
     async write(p, b) { files.set(p, b.slice()); },
     async remove(p) { files.delete(p); },
+    files, // exposed so the vault stub can project the file list (see makeApp/bootPlugin)
   };
 }
 
@@ -106,7 +108,7 @@ function spyApi() {
 // A test plugin that injects the in-memory io + spy api + stubbed auth (no Obsidian, no server).
 class TestPlugin extends SelfSyncPlugin {
   api_ = spyApi();
-  io_ = memIo();
+  io_: VaultIo & { files: Map<string, Uint8Array> } = memIo();
   loginCount = 0;
   protected buildIo() { return this.io_; }
   protected buildApi() { return this.api_; }
@@ -122,6 +124,9 @@ function makeApp() {
     vault: {
       on: (name: string, cb: Function) => { (events[name] ??= []).push(cb); return {}; },
       getAbstractFileByPath: (p: string) => { const f = new TFile(); f.path = p; return f; },
+      // Projected from the plugin's in-memory io by bootPlugin (below), so listNoteConflicts — which
+      // DERIVES the conflict set from the vault file list — sees the files a test actually wrote.
+      getFiles: () => [] as { path: string }[],
       adapter: {},
     },
     workspace: {
@@ -138,6 +143,8 @@ function makeApp() {
 async function bootPlugin(configured = true, opts: { preOnload?: (p: TestPlugin) => void; settings?: Record<string, unknown> } = {}) {
   const { app, fire } = makeApp();
   const p = new TestPlugin(app, { id: "obsidian-selfsync", dir: ".obsidian/plugins/obsidian-selfsync" } as any);
+  // Make the vault index reflect the in-memory io, so conflict DERIVATION works for real in tests.
+  app.vault.getFiles = () => [...p.io_.files.keys()].map((path) => { const f = new TFile(); f.path = path; return f; });
   // Pre-seed configured settings via loadData so onLayoutReady connects instead of opening setup.
   (p as any)._data = configured ? { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "default", ...(opts.settings ?? {}) } } : {};
   opts.preOnload?.(p); // configure the spy api before onload triggers the connect
@@ -810,6 +817,75 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     expect(said).toMatch(/couldn't read/i);
     expect(said).not.toMatch(/changed since/i); // must NOT blame a change that did not happen
     expect(dec(await orig("note (conflict).md"))).toBe("MINE"); // copy kept for re-review
+    p.onunload();
+  });
+
+  // Sanity FIRST: these fixtures must use the real conflict-copy naming scheme, or every test below
+  // derives ZERO conflicts and passes vacuously. (It did, twice, before this guard existed.)
+  it("the fixture names really are recognised as conflict copies", () => {
+    expect(isConflictCopy("same (conflict deviceA 20260907120000).md")).toBe(true);
+    expect(isConflictCopy("img (conflict deviceA 20260907120004).png")).toBe(true);
+    expect(isConflictCopy("same (conflict).md")).toBe(false); // the shape the earlier tests used
+  });
+
+  // ---- dismissCosmeticConflicts (issueCosmeticConflictsNotSweptOnLoad) ----
+  // A note conflict is DERIVED from a conflict-copy FILE on disk, which makes the state impossible to
+  // stale — but also means a conflict that has since CONVERGED never clears itself. Nothing
+  // re-examined existing copies: not on load, not in reconcile. The only sweep ran when the modal was
+  // OPENED, so a false conflict sat in the count until someone looked at it and then vanished, which
+  // reads exactly like a stale flag even though it never was. A plugin load now sweeps too.
+
+  it("clears a conflict whose two sides have CONVERGED, and keeps one that genuinely differs", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("same.md", enc("identical\n"));
+    await p.io_.write("same (conflict deviceA 20260907120000).md", enc("identical\n"));
+    await p.io_.write("diff.md", enc("theirs\n"));
+    await p.io_.write("diff (conflict deviceA 20260907120001).md", enc("mine\n"));
+    expect(await p.dismissCosmeticConflicts()).toBe(1);
+    await expect(p.io_.read("same (conflict deviceA 20260907120000).md")).rejects.toThrow(); // converged copy removed
+    expect(dec(await p.io_.read("same.md"))).toBe("identical\n");     // note untouched
+    expect(dec(await p.io_.read("diff (conflict deviceA 20260907120001).md"))).toBe("mine\n"); // real conflict KEPT
+    p.onunload();
+  });
+
+  it("treats an EOL-only and an ignored-timestamp-only difference as converged", async () => {
+    const { p } = await bootPlugin();
+    p.settings.ignoreTimestampChanges = true;
+    p.settings.ignoredTimestampKeys = ["updated"];
+    await p.io_.write("eol.md", enc("a\r\nb\r\n"));
+    await p.io_.write("eol (conflict deviceA 20260907120002).md", enc("a\nb\n"));
+    await p.io_.write("ts.md", enc("---\nupdated: 2026-09-07T10:00:00Z\n---\nbody\n"));
+    await p.io_.write("ts (conflict deviceA 20260907120003).md", enc("---\nupdated: 2026-09-07T11:22:33Z\n---\nbody\n"));
+    expect(await p.dismissCosmeticConflicts()).toBe(2);
+    p.onunload();
+  });
+
+  it("NEVER compares a binary pair as text, and spends ZERO reads finding that out", async () => {
+    const { p } = await bootPlugin();
+    // two DIFFERENT binaries that would decode equal under a lossy decode (critique F1)
+    await p.io_.write("img.png", new Uint8Array([0xff, 0xfe, 0x01]));
+    await p.io_.write("img (conflict deviceA 20260907120004).png", new Uint8Array([0xff, 0xfe, 0x02]));
+    let reads = 0;
+    const realRead = p.io_.read.bind(p.io_);
+    p.io_.read = async (path: string) => { reads++; return realRead(path); };
+    expect(await p.dismissCosmeticConflicts()).toBe(0); // not dismissed
+    expect(reads).toBe(0);                              // extension gate ran BEFORE any IO
+    expect(dec(await realRead("img (conflict deviceA 20260907120004).png").then((b: Uint8Array) => b))).toBeDefined();
+    p.onunload();
+  });
+
+  it("a stale entry mid-sweep is skipped, not allowed to abort the rest", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("gone.md", enc("x\n"));
+    await p.io_.write("gone (conflict deviceA 20260907120005).md", enc("x\n"));
+    await p.io_.write("ok.md", enc("y\n"));
+    await p.io_.write("ok (conflict deviceA 20260907120006).md", enc("y\n"));
+    const realRead = p.io_.read.bind(p.io_);
+    p.io_.read = async (path: string) => {
+      if (path === "gone (conflict deviceA 20260907120005).md") throw new Error("File does not exist");
+      return realRead(path);
+    };
+    expect(await p.dismissCosmeticConflicts()).toBe(1); // the healthy one still cleared
     p.onunload();
   });
 

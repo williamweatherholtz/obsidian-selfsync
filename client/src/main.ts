@@ -24,6 +24,7 @@ import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectd
 import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, UNVERIFIED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { normalizedContent } from "./frontmatter"; // content identity for the conflict stale-preview guard
+import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
@@ -574,6 +575,14 @@ export default class SelfSyncPlugin extends Plugin {
     this.log("plugin loaded");
     this.app.workspace.onLayoutReady(() => {
       this.applyEditorStatus();
+      // Sweep already-converged conflicts ONCE per load, so a plugin refresh auto-resolves everything
+      // it safely can instead of leaving false conflicts in the count until someone opens the modal
+      // (issueCosmeticConflictsNotSweptOnLoad). Runs after layout-ready because listNoteConflicts
+      // reads the vault file index. Fire-and-forget and failure-tolerant: it must never delay or
+      // break load, and every entry is isolated internally.
+      void this.dismissCosmeticConflicts(() => !this.unloading)
+        .then((n) => { if (n > 0) this.log(`cleared ${n} conflict${n > 1 ? "s" : ""} that had converged`, true); })
+        .catch(() => { /* best effort — the modal sweeps again on open */ });
       if (!this.settings.vaultId || !this.settings.serverUrl || !this.settings.username) this.openSetup();
       else void this.reconnect();
     });
@@ -659,6 +668,48 @@ export default class SelfSyncPlugin extends Plugin {
     // an orphan copy (already resolved) or a user file that merely LOOKS like a copy; don't flag it,
     // and never offer a real note (whose "copy" doesn't exist) as a deletable version (critique F5).
     return deriveNoteConflicts(paths).filter((c) => present.has(c.original));
+  }
+  // Clear every conflict whose two sides are the SAME CONTENT (line endings, and the frontmatter
+  // timestamp keys the user chose to ignore). Returns how many went.
+  //
+  // WHY THIS EXISTS AT PLUGIN LEVEL, not just in the modal: a note conflict is DERIVED from a file on
+  // disk — it IS the conflict-copy file — which makes the state honest and impossible to stale, but
+  // also means a conflict that has since CONVERGED does not clear itself. Nothing re-examined existing
+  // copies anywhere: not on load, not during reconcile. The only sweep ran when the modal was OPENED,
+  // so a false conflict sat in the count indefinitely until the user happened to look at it, and then
+  // vanished — which reads exactly like the count was a stale flag even though it never was
+  // (issueCosmeticConflictsNotSweptOnLoad). Now a plugin load sweeps too, so a refresh really does
+  // auto-resolve everything it safely can.
+  //
+  // Deleting the copy is safe BY CONSTRUCTION here: it only happens when content identity says the two
+  // sides are the same, so nothing the user wrote is lost. Binary and invalid-UTF-8 files are excluded
+  // before any comparison (a lossy decode can make two DIFFERENT binaries look equal — critique F1).
+  async dismissCosmeticConflicts(shouldContinue: () => boolean = () => true): Promise<number> {
+    // Free filter first: the extension check needs no bytes, so a binary attachment costs zero IO.
+    const candidates = this.listNoteConflicts().filter((c) => isTextExt(c.copy) && isTextExt(c.original));
+    if (candidates.length === 0) return 0;
+    let dismissed = 0;
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= candidates.length || !shouldContinue()) return;
+        const { copy, original } = candidates[i];
+        // Per-entry isolation: a STALE entry (copy or note already removed) is skipped, never allowed
+        // to abort the sweep — it is effectively resolved, and the derived list drops it.
+        try {
+          const [mineB, theirsB] = await Promise.all([this.readBytesOrNull(copy), this.readBytesOrNull(original)]);
+          if (!mineB || !theirsB) continue;
+          const mineT = strictDecode(mineB), theirsT = strictDecode(theirsB);
+          if (mineT === null || theirsT === null) continue; // binary / invalid UTF-8 → never compared as text
+          const pats = this.ignorePatternsForPath(original);
+          if (normalizedContent(mineT, pats) !== normalizedContent(theirsT, pats)) continue;
+          if (await this.resolveNoteConflict(copy, original, "theirs", theirsT)) dismissed++;
+        } catch { /* stale/missing entry — skip */ }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, worker));
+    return dismissed;
   }
   openNoteConflicts() { new NoteConflictModal(this.app, this).open(); }
   openRedeem() { new RedeemShareLinkModal(this.app, this).open(); }
