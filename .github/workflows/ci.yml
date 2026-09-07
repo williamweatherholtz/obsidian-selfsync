@@ -42,6 +42,20 @@ jobs:
         working-directory: server
         run: cargo clippy --all-targets --locked -- -D warnings
 
+  # D0047 guard (issueVersionRecordDrift): client/package.json silently stopped tracking the version
+  # after 1.22.0 while manifest.json advanced to 1.30.0 — eight releases of undetected drift, caused
+  # by a no-op `replace` inside a swallowing try/catch in bump-version.mjs. That writer is fixed, but
+  # a careful writer is not a control; this makes record agreement a checked assertion every run.
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Assert manifest.json / versions.json / client/package.json agree
+        run: node scripts/check-version-sync.mjs
+
   cargo-audit:
     runs-on: ubuntu-latest
     steps:

@@ -1,4 +1,14 @@
 // =====================================================================
+// SUPERSEDED IN PART BY D0046 (2026-09-07) — THE PROVENANCE FRAMING ONLY, not the decision itself.
+// This record's `title` and `context` describe the project as "the obsidian-livesync rebuild" and
+// "a fork of vrtmrz/obsidian-livesync being rebuilt", which was TRUE when written (2026-07-02):
+// the work had started inside a fork. It is no longer true of this repository. SelfSync is an
+// independent implementation — no shared code, dependencies or storage format — and the fork's
+// history was unmoored on 2026-09-07 (see D0046). The recorded strings below are deliberately left
+// UNCHANGED: they are the attestation of what was decided then, and rewriting them would falsify
+// the record. Read them as historical, and D0046 as the current provenance. The decision to adopt
+// the engine, and its acceptance, stand in full.
+// =====================================================================
 // D0001 — adopt the SysML work-tracking engine into this project (the obsidian-livesync rebuild) as its
 // management system, and bring the engine's process/workflow definitions under version control. Importing
 // the engine wholesale adds every .engine/processes/*.sysml + .engine/workflows/*.sysml file, which the

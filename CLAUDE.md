@@ -41,7 +41,7 @@ source changed since it was verified — re-verify at HEAD to clear it. For REPR
 declared in `.engine/contracts/reverify.toml` and, on green, stamps a fresh judged-at-HEAD
 `TestResult` per drift task (honest — never fabricated; judgment methods stay manual).
 Views are formally DECLARED (D0056/D0057, `.engine/views/viewpoint-registry.sysml`) and the
-Rust tooling computes them: `keel orphans` renders the orphans viewpoint (needs/requirements/
+Rust tooling computes them: `keel show orphans` renders the orphans viewpoint (needs/requirements/
 tasks/issues missing required edges); `keel view <name>`, `audit`, `attestation-coverage`,
 `governing-version`, `reprocess-candidates`, `suspect`, `concern-coverage` (D0057/issue035 — which
 declared viewpoint concerns are served vs planned), `dispositions` (D0092 — which ≥Medium findings
@@ -93,13 +93,13 @@ viewpoint-registry stays the concern-coverage index.)
    the §2 invariants are constraints stated in prose + enforced by guards. A **requirement** is a
    constraint elevated to a verified stakeholder contract (Need/SystemRequirement + satisfy/verify).
    An **indicator** is a *monitored* measure with no enforced threshold — a first-class `Indicator`
-   item (D0089) that informs by DIRECTION (goal), viewed via `keel indicators [--trend]`. The
+   item (D0089) that informs by DIRECTION (goal), viewed via `keel show indicators [--trend]`. The
    indicator set is the CANONICAL monitored-measure watchlist (D0090); a single shared computation
    (`metric_value`) feeds both the indicators and the reports, so each scalar metric is computed once,
    and reports *render* the indicators (+ point-in-time structure) rather than re-defining the metrics.
    Datapoints accumulate in a `Measurement` BANK: pulled/manual observations via `record-measurement`,
    and computed readings via `keel snapshot-indicators` (a recorded *observation*, not a cache —
-   D0091, a controlled compute-don't-store exception). `keel indicators` is bank-first + emits the
+   D0091, a controlled compute-don't-store exception). `keel show indicators` is bank-first + emits the
    full series. Its data
    arrives by a measurement METHOD: `computed` (objective, repo-derived — series via the report/trend
    engine, no stored datapoints), `pulled` (objective, external API/scraper — recorded `Measurement`
@@ -197,7 +197,7 @@ it even though it produces no action. Never a document blob.
 An **`Issue` must be TRIAGED** (issue-resolution process/skill, D0077/D0078): give it a
 `#Resolves` edge from a resolving **action** (create one if none) or a mooting **Decision** —
 `#Resolves dependency from <resolver> to <issueNNN>;`. Resolution is then COMPUTED (resolved
-iff the resolver is done/accepted; `keel open-issues` / `orient` open_issues), never a prose
+iff the resolver is done/accepted; `keel show open-issues` / `orient` open_issues), never a prose
 "RESOLVED" note; `keel guard issues` fails on an untriaged Issue. When a Decision moots an
 Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`) — not prose.
 
@@ -214,11 +214,11 @@ Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`
   (`.engine/contracts/critique-policy.toml`, D0097 — default Core-3: Need/SystemRequirement →
   completeness/correctness/testability, Decision → completeness/correctness/feasibility); the
   lens vocabulary itself (`CritiqueLens`) is the generic requirement-quality canon in schema/core.
-  `keel critique-policy` shows the active policy; `keel critique-coverage` + `guard critique` read it. A
+  `keel show critique-policy` shows the active policy; `keel show critique-coverage` + `guard critique` read it. A
   disposition is itself a TYPED recorded judgment (D0092): a `method=confirmation` verification
   carrying `disposition : DispositionKind` (`act`/`acceptRisk`/`dismiss`), `#Dispositions`-linked
   to the finding, written via `keel apply-review` — never prose. ACCEPT-RISK/DISMISS close the
-  finding; ACT also needs a `#Resolves` resolver. `keel dispositions` + `assured` read the verdict.
+  finding; ACT also needs a `#Resolves` resolver. `keel show dispositions` + `assured` read the verdict.
 - **Sprint ceremony is autonomous; the human gate is the per-sitting review (D0049).**
   Per-sprint closeOut (`method=inspect`) and retro (`method=analysis`) are AI-recorded with
   NO human sign-off — a sprint closes when its DoD passes, and the retro autonomously turns
@@ -277,11 +277,21 @@ The six workflows (see the spec for detail):
   (doc-sync→doc-sync, architectural-critique→architectural-critique) or a consuming ceremony skill
   (DoR→sprint-planning, DoD→sprint-closeout, agile-workflow→sprint-*). A process with no deploying
   skill is an orphan. Cement recurring process work in skills (generalizes D0040).
-- **Corrections become permanent guards (D0047):** a defect or correction found mid-work that
+- **Corrections become permanent guards (engine D0047):** a defect or correction found mid-work that
   reveals a *recurrable* process gap MUST be (1) logged as a tracked `Issue` and (2) given a
   permanent automated guard (validator / pre-commit check / lint) — never patched silently.
   Trivial one-off edits (typos, wording) are exempt; the test is *"could this class recur?"*
   Manual vigilance is not a control (the Sprint 14 → 16 repeat proved it).
+- **No latent technical debt — fix it or track it, never leave it (project D0047, owner directive
+  2026-09-07):** anything found wrong along the way gets resolved in ONE of exactly two ways, and
+  silence is not one of them. **Trivial** (a stale name, a wrong version string, a typo'd doc claim
+  — no design judgment, no behavior change) ⇒ **fix it immediately, in the current commit.**
+  **Non-trivial** (needs design, has blast radius, or is someone else's call) ⇒ **file a tracked
+  `Issue` in `.tracking/issues.sysml` with its `#Resolves` resolver** (§3c), so it is carried by the
+  model and not by memory. Never report a defect and move on; never defer a LOW because it is small.
+  Applies to whatever the current task happens to surface — an unrelated find is still a find. Where
+  the defect class could **recur**, the corrections-become-guards rule above also applies, so the
+  fix carries an automated guard too.
 - **Bulk migrations follow the migration process (run the `migration` skill, D0067):** any change
   that edits the same field/shape across many instances/files (rename/split/drop/add) goes through
   the gated expand/migrate/contract lifecycle — a committed transform script, a dry-run that
@@ -305,6 +315,12 @@ The six workflows (see the spec for detail):
   `main`; the `post-commit` hook pushes every commit. No long-lived feature branches: everything
   is pushed and merged to `main` only. (This overrides the generic "branch off the default branch
   first" default — per explicit standing instruction, 2026-06-11.)
+  **The hooks live in `.githooks/` and are NOT active in a fresh clone** — git only runs them once
+  `core.hooksPath` points there, so a new checkout MUST run `git config core.hooksPath .githooks`
+  (the `pre-commit` keel gate and the `post-commit` push both depend on it). This bit once: a
+  machine-global `core.hooksPath` pointing at a non-existent directory meant NO hook ran in this
+  repo at all — neither the push nor the `keel validate`/`guard` gate — while this file asserted the
+  push hook was running (issueHooksNotInstalled). Verify with `git config --get core.hooksPath`.
 - **The meta-process is frozen:** do not use Change Request to modify the
   Change Request workflow itself — that goes through a plain Decision + human edit, out of band.
 - **There is NO prose state/handoff document — the model is the only tracker (Decision 0018).**
@@ -323,15 +339,22 @@ A change is not done until it parses with zero `ERROR:`. **The Rust toolchain is
 canonical validator for `.tracking/` (D0048) — fast, no JVM:**
 
 ```
-.\target\release\keel.exe validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
-.\target\release\keel.exe guard                                                               # ALL fourteen forward guards (no kernel) — 13 hard-blocking (exit≠0 on any violation) + decision-requirement-link (warning-only)
-.\target\release\keel.exe guard <name>                                                        # one guard: actors | acceptance-events | sprint-coverage | ceremony | charter | process-change | issues | viewpoint-renderer | manifest-coverage | critic-independence | process-skill | requirement-rootedness | decision-rationale (D0103) | decision-requirement-link (warning-only, D0102)  (+ runnable burndown/diagnostics, NOT enforced: assured, critique, critique-rigor, defect-guard-coverage)
-.\target\release\keel.exe reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
+keel validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
+keel guard                                                               # ALL fourteen forward guards (no kernel) — 13 hard-blocking (exit≠0 on any violation) + decision-requirement-link (warning-only)
+keel guard <name>                                                        # one guard: actors | acceptance-events | sprint-coverage | ceremony | charter | process-change | issues | viewpoint-renderer | manifest-coverage | critic-independence | process-skill | requirement-rootedness | decision-rationale (D0103) | decision-requirement-link (warning-only, D0102)  (+ runnable burndown/diagnostics, NOT enforced: assured, critique, critique-rigor, defect-guard-coverage)
+keel reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
 ```
+**Use the `keel` on PATH — never a sibling checkout's build.** `keel --version` must match the
+binary the `.githooks/pre-commit` gate runs (it invokes plain `keel`), or you validate against a
+different guard set than the gate enforces. This bit once: the commands above used to be written as
+a local Windows release-build path that does NOT exist in this repo (there is no Rust toolchain here),
+so a 6-week-stale sibling checkout's build was used instead and reported ALL PASS, while the real gate
+had four failures (issueEngineVintageGateDrift). Check `keel --version` before trusting a green run.
+
 **Honest-state gates, not self-assurance gates (D0098).** A commit gate enforces only that the recorded
 model is TRUTHFUL / well-formed / traceable — never that the work is COMPLETE. Completeness (coverage,
 critique-coverage, readiness) is a NON-BLOCKING burndown surfaced in `orient` + run on demand
-(`keel assured`/`keel critique-coverage`); incomplete implementation flagged AS incomplete is honest
+(`keel assured`/`keel show critique-coverage`); incomplete implementation flagged AS incomplete is honest
 state, never a commit blocker (don't fake a pass, don't block recording true state).
 The thirteen hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098): `keel guard` (actors
 D0037, acceptance-events D0066, sprint-coverage D0064/issue020, ceremony D0047/issue010+011, charter
@@ -343,7 +366,7 @@ honesty], process-skill D0059/issue036 [no inert process — every `.engine/proc
 by a deploying skill's purpose], requirement-rootedness D0098/D0099/issue047 [a `#Capability`-marked
 user-facing feature must carry a `#DerivedFrom`→Need edge; UNMARKED decision-driven work is exempt —
 the engine is legitimately decision-driven, D0064; the full charter-source balance is the non-blocking
-`keel rootedness` burndown], decision-rationale D0103 [every Decision must carry a SUBSTANTIVE context +
+`keel show rootedness` burndown], decision-rationale D0103 [every Decision must carry a SUBSTANTIVE context +
 rationale — the why — not a blank/trivial field; guarantees the decision-record's basis for future
 improvement + reevaluation]). A FOURTEENTH guard, `decision-requirement-link` (D0102/issue052), RUNS in
 `keel guard` every commit but is WARNING-level (visible, never blocks): it flags an accepted Decision
@@ -370,6 +393,16 @@ this repo — do not look for a conda/JVM validation step; there isn't one.
 ---
 
 ## 6. Environment notes
+
+- **Bind this machine's actor before doing anything, or the gate fails opaquely.** keel 0.3.1 refuses
+  to attribute a write without a bound actor ("a defaulted actor silently falsifies provenance"), and
+  edits to items owned by someone else become `guard:ownership` violations. One command, once per
+  machine: `keel actor set wweatherholtz` (`keel actor show` to check). It writes `.keel/actor`, which
+  is machine-local and **gitignored — never commit it**; committing it would bind every clone to one
+  machine's identity. READ THE FAILURE PROPERLY: `keel guard`'s last line reports the WARNING count
+  ("19 warning(s) ... NOT blocking") while the exit code reflects VIOLATIONS listed further up, so a
+  `tail -1` looks like warnings are blocking the commit when the real cause is a `FAIL` line above.
+  Grep the whole output for `FAIL`, or run `keel gate --workspace`, which names the cause directly.
 
 - Windows + PowerShell. Use PowerShell syntax (`$null`, `$env:VAR`, backtick line-continuation).
 - **Use absolute paths in shell commands; don't rely on cwd (issue013).** The Bash and

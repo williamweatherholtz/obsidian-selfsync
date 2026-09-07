@@ -72,7 +72,7 @@ package EngineViewpoints {
         :>> concernText = "Which monitored measures (Indicators) inform our needs/decisions, and which way are they trending — improving, degrading, or flat — by their goal (D0089)?";
         :>> audience = "maintainer / lead / program";
         :>> sources = "Indicator items + their measurement method (computed series via the report/trend engine; pulled/manual series from recorded Measurement datapoints, #Measures edges); direction-aware status by goal (D0088 measure spectrum)";
-        :>> renderer = "keel indicators [--trend] (+ keel record-measurement for pulled/manual datapoints, D0089)";
+        :>> renderer = "keel show indicators (+ keel record-measurement for pulled/manual datapoints, D0089)";
     }
     part safetyVP : Viewpoint {
         :>> id = "61728394-0a5b-4c6d-4619-405162738413";
@@ -99,7 +99,7 @@ package EngineViewpoints {
         :>> concernText = "What was decided, by whom, when, and why (incl. alternatives)?";
         :>> audience = "lead / auditor / future maintainer";
         :>> sources = ".engine/decisions/*.sysml Decision items (context/decisionText/consequences; alternatives via decisionAnalysis/issue016)";
-        :>> renderer = "keel decisions (+ the decisions TOML view: keel view decisions)";
+        :>> renderer = "keel show decisions (+ the decisions TOML view: keel view decisions)";
     }
     part baselinesVP : Viewpoint {
         :>> id = "61728394-0a5b-4c6d-7619-405162738416";
@@ -117,7 +117,7 @@ package EngineViewpoints {
         :>> concernText = "Which done items have stale evidence (model OR deliverable-source drift) and need re-verification?";
         :>> audience = "maintainer / QA";
         :>> sources = "git-ancestry of judgedAgainst vs upstream change over satisfy/:> edges; deliverable-manifest source drift (D0050); unresolved failing critiques (D0086)";
-        :>> renderer = "keel suspect";
+        :>> renderer = "keel show suspect";
     }
     part orphansVP : Viewpoint {
         :>> id = "61728394-0a5b-4c6d-9619-405162738418";
@@ -126,7 +126,7 @@ package EngineViewpoints {
         :>> concernText = "Which model elements are orphaned / dangling — a Need with no satisfying Requirement, a Requirement with no satisfy or verify edge, a task with no DoD, an Issue with no relatedTask, a Decision referenced by nothing — i.e. broken or missing required traceability?";
         :>> audience = "maintainer / auditor / reviewer";
         :>> sources = "all items + typed edges; flag any element missing a REQUIRED incoming/outgoing edge for its kind (Need->Requirement satisfy; Requirement->Test verify; task->DoD; Issue->relatedTask)";
-        :>> renderer = "keel orphans";
+        :>> renderer = "keel show orphans";
     }
 
     part attestationCoverageVP : Viewpoint {
@@ -136,7 +136,7 @@ package EngineViewpoints {
         :>> concernText = "Which items lack an attestation their governing process requires? Currently: every status=accepted Decision must carry a passing acceptance event (dNNNNAccept confirmation TestResult, D0066).";
         :>> audience = "maintainer / auditor / reviewer";
         :>> sources = "all decisions; flag any status=accepted Decision with no passing dNNNNAcceptR1 TestResult (extensible to other process-required attestations)";
-        :>> renderer = "keel attestation-coverage";
+        :>> renderer = "keel show attestation-coverage";
     }
 
     part governingVersionVP : Viewpoint {
@@ -166,7 +166,7 @@ package EngineViewpoints {
         :>> concernText = "Is every chartered capability rooted in a driving Need — and what is the charter-source balance (need-rooted vs legitimate decision-driven evolution vs orphan)? (D0098/D0099/issue047)";
         :>> audience = "maintainer / reviewer / auditor";
         :>> sources = "delivery Story #CharteredBy chains -> Need (direct / via satisfy'd SystemRequirement / via a Decision #DerivedFrom a Need); the #Capability marker + its #DerivedFrom->Need link (the hard-gate set)";
-        :>> renderer = "keel rootedness (+ the requirement-rootedness guard for the #Capability hard gate)";
+        :>> renderer = "keel show rootedness (+ the requirement-rootedness guard for the #Capability hard gate)";
     }
     part tierSatisfactionVP : Viewpoint {
         :>> id = "63940516-2c7d-4e8f-a098-516273849698";
@@ -175,7 +175,7 @@ package EngineViewpoints {
         :>> concernText = "Is each tier cleanly + comprehensively satisfied by its downstream items — are Needs decomposed into SystemRequirements and SystemRequirements verified by Tests? Thin downstream satisfaction is a leading indicator of insufficient implementation (D0098/issue047).";
         :>> audience = "maintainer / reviewer / systems engineer";
         :>> sources = "satisfy edges (Need->SystemRequirement) + verify edges (Test->SystemRequirement); per-tier structural-satisfaction fraction + the gap set";
-        :>> renderer = "keel tier-satisfaction (+ the orient burndown block)";
+        :>> renderer = "keel show tier-satisfaction (+ the orient burndown block)";
     }
     part critiquePolicyVP : Viewpoint {
         :>> id = "63940516-2c7d-4e8f-a097-516273849697";
@@ -184,7 +184,7 @@ package EngineViewpoints {
         :>> concernText = "Which antagonistic critique lenses are REQUIRED per assurance-element type, and is that policy the built-in default or a project override (D0097)?";
         :>> audience = "maintainer / reviewer / auditor";
         :>> sources = "the declared .engine/contracts/critique-policy.toml ([lenses] type -> required CritiqueLens list); the built-in Core-3 default when the file is absent; the CritiqueLens canon (schema/core)";
-        :>> renderer = "keel critique-policy";
+        :>> renderer = "keel show critique-policy";
     }
     part concernCoverageVP : Viewpoint {
         :>> id = "63940516-2c7d-4e8f-a071-516273849632";
@@ -193,6 +193,6 @@ package EngineViewpoints {
         :>> concernText = "Which declared stakeholder concerns (Viewpoints) are SERVED by a working computed renderer, and which are still unserved (renderer planned/unbuilt) — i.e. the registry's own coverage of the concerns it declares (D0057/issue035)?";
         :>> audience = "maintainer / reviewer / auditor";
         :>> sources = "this viewpoint registry: each Viewpoint's renderer classified served (names a keel command) vs unserved (planned), with a coverage %";
-        :>> renderer = "keel concern-coverage";
+        :>> renderer = "keel show concern-coverage";
     }
 }

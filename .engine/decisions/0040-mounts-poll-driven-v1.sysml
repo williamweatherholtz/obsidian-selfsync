@@ -25,7 +25,7 @@ package ProjectDecision0040 {
     // (D0051). Owner ratification is the pending composed-vaults sitting review, not an AI-stamped sign-off.
     verification d0040Analysis : Test {
         :>> id = "c2f3a4b5-6d7e-4f80-b192-3c4d5e6f7081";
-        :>> method = VerificationMethod::analysis;
+        :>> method = VerificationMethod::analyze;
         :>> procedureText = "Recorded as a within-epic implementation refinement of the owner-accepted D0039 (capture-the-decision, §2.4), PROPOSED (AI-made under the owner's 'proceed until finished' authorization; implemented, awaiting owner ratification). The deviation from D0039's literal 'own subscription' to poll-driven-on-the-primary-cycle is analyzed against correctness (unaffected — a mount reconciles on the poll cadence as the primary's safety-net poll does) and risk (piggybacking avoids replicating the singleton ws/timer/engine lifecycle per mount, the engine map's multi-scope blocker set). Deliverable-domain design choice; the owner's on-device review of the composed-vaults sitting is the human ratification gate.";
     }
     part d0040AnalysisR1 : TestResult {

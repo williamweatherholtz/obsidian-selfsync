@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Run the new-livesync sync server the real way — via Docker Compose.
+    Run the SelfSync sync server the real way — via Docker Compose.
 
 .DESCRIPTION
     Thin wrapper around deploy/docker-compose.noproxy.yml (the local-friendly compose

@@ -41,3 +41,6 @@ src/apps/cli/dist/*
 _testdata/**
 utils/bench/splitResults.csv
 .eslintcache
+# keel machine-local actor binding (`keel actor set`) — per-machine identity, never shared.
+# Committing it would bind every clone to this machine's actor and falsify provenance.
+.keel/

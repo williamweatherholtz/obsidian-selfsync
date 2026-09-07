@@ -1,0 +1,23 @@
+#!/bin/sh
+# Push every commit to origin/main (CLAUDE.md §4: main is canonical, no long-lived branches).
+# Enable: git config core.hooksPath .githooks   |   bypass once: SKIP_PUSH=1 git commit ...
+#
+# Deliberately NON-FATAL: post-commit runs AFTER the commit is written, so a failed push must
+# never look like a failed commit. It reports loudly and leaves the commit local for a manual
+# `git push`, rather than exiting non-zero and implying the commit did not land.
+[ "$SKIP_PUSH" = "1" ] && { echo 'post-commit: SKIP_PUSH=1 — not pushing'; exit 0; }
+
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$branch" != "main" ]; then
+  echo "post-commit: on '$branch', not main — not pushing (main is the canonical branch)"
+  exit 0
+fi
+
+echo 'post-commit: git push origin main'
+if git push origin main; then
+  echo 'post-commit: pushed'
+else
+  echo 'post-commit: PUSH FAILED — the commit is committed locally but NOT on origin.' >&2
+  echo 'post-commit: run `git push origin main` once the cause is fixed.' >&2
+fi
+exit 0

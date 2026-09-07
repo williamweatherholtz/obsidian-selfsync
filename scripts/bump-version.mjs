@@ -32,17 +32,27 @@ else { console.error(`unknown bump level: ${arg} (expected major|minor|patch|X.Y
 const old = manifest.version;
 if (next === old) { console.error(`refusing to bump to the same version (${next})`); process.exit(1); }
 
-manifest.version = next;
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+// PREPARE every edit BEFORE writing anything, so a failure on one record can't leave the others
+// bumped. client/package.json used to be updated inside a bare try/catch wrapped around a
+// `replace` whose non-match is a silent no-op — so a bump could report success while leaving that
+// record behind. It did exactly that: package.json tracked to 1.22.0 and then silently stopped
+// while manifest.json went on to 1.30.0. A version record that can drift unnoticed is not a
+// record, so a non-match is now a hard failure and nothing is written (issueVersionRecordDrift).
+const pkgRaw = readFileSync(pkgPath, "utf8");
+const pkgNext = pkgRaw.replace(/("version"\s*:\s*")\d+\.\d+\.\d+(")/, `$1${next}$2`);
+if (pkgNext === pkgRaw) {
+  console.error(`client/package.json: no "version": "X.Y.Z" field matched — refusing to bump.`);
+  console.error(`Nothing was written. Fix client/package.json (or this script's pattern), then re-run.`);
+  process.exit(1);
+}
 
 const versions = JSON.parse(readFileSync(versionsPath, "utf8"));
 versions[next] = manifest.minAppVersion; // map new version -> its min Obsidian version
-writeFileSync(versionsPath, JSON.stringify(versions, null, 2) + "\n");
+manifest.version = next;
 
-// Only touch package.json's version string so its formatting is otherwise untouched.
-try {
-  const raw = readFileSync(pkgPath, "utf8");
-  writeFileSync(pkgPath, raw.replace(/("version"\s*:\s*")\d+\.\d+\.\d+(")/, `$1${next}$2`));
-} catch { /* client/package.json is optional / not shipped in the plugin */ }
+// All three records validated — now write them together.
+writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+writeFileSync(versionsPath, JSON.stringify(versions, null, 2) + "\n");
+writeFileSync(pkgPath, pkgNext);
 
 console.log(`${old} -> ${next}`);
