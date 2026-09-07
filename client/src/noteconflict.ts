@@ -11,6 +11,37 @@ type DiffLine = { sign: " " | "-" | "+"; text: string };
 function strictDecode(bytes: Uint8Array): string | null {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
 }
+
+// ---- invisible differences (issueConflictDiffInvisibleChars) ----
+// Field report: the diff showed `- tagNames:` and `+ tagNames:` — two VISUALLY IDENTICAL lines — so
+// there was nothing to choose between. Line endings were never the cause (unifiedLineDiff normalizes
+// CRLF, lone CR and trailing blank lines to nothing). The real causes are characters you cannot see:
+// a trailing space or tab, a non-breaking space, a zero-width char.
+//
+// These are deliberately NOT ignored. In Markdown two trailing spaces are a HARD LINE BREAK, a tab is
+// not four spaces inside a code block, and U+00A0 is not U+0020 — treating them as equal would hide a
+// real edit and could silently discard the user's version. So the diff REVEALS them instead: the
+// difference stays visible AND becomes explicable.
+export function revealInvisible(text: string): string {
+  return text
+    .replace(/\t/g, "→")                        // tab
+    .replace(/ /g, "⍽")                    // non-breaking space (renders exactly like a space)
+    .replace(/[​-‍﻿]/g, "∅")     // zero-width space / joiners / BOM
+    .replace(/ +$/, (run) => "·".repeat(run.length)); // TRAILING spaces only — marking interior
+                                                      // spaces would be noise on every line
+}
+
+// True when the diff HAS changes and every one of them is invisible-only: the set of changed lines is
+// identical once invisible characters are folded away. Drives the explanatory hint, so the user is
+// told "the only differences here are invisible" rather than left staring at two identical lines.
+export function invisibleOnlyDifference(lines: DiffLine[]): boolean {
+  const fold = (s: string) =>
+    s.replace(/[\t ]/g, " ").replace(/[​-‍﻿]/g, "").replace(/\s+$/, "").normalize("NFC");
+  const minus = lines.filter((l) => l.sign === "-").map((l) => fold(l.text)).sort();
+  const plus = lines.filter((l) => l.sign === "+").map((l) => fold(l.text)).sort();
+  if (minus.length === 0 && plus.length === 0) return false; // nothing changed at all
+  return minus.length === plus.length && minus.every((v, i) => v === plus[i]);
+}
 // Unified line diff of `theirs` (the other/server version, left) vs `mine` (this device, right).
 // EOL-normalized so line-ending differences don't show as noise. Exported for tests.
 // lcsPairs is an O(n·m) DP over a NESTED number matrix. Running it on whole notes with no bound froze
@@ -195,13 +226,26 @@ export class NoteConflictModal extends Modal {
       }).setAttribute("style", "font-size:12px;opacity:.8;");
       return;
     }
+    // When the two sides differ ONLY in characters you cannot see, say so up front. Without this the
+    // user is asked to choose between two lines that look byte-identical and has no way to tell them
+    // apart — the reported "- tagNames: / + tagNames:" case (issueConflictDiffInvisibleChars).
+    if (invisibleOnlyDifference(lines)) {
+      c.createEl("p", {
+        text: "These versions look identical — they differ only in characters you can't see. "
+          + "Below: · trailing space, → tab, ⍽ non-breaking space, ∅ zero-width character. "
+          + "They are kept as real differences because in Markdown a trailing double space is a line break.",
+      }).setAttribute("style", "font-size:12px;opacity:.85;margin:6px 0 2px;");
+    }
     const pre = c.createEl("pre");
     pre.setAttribute("style", "max-height:340px;overflow:auto;background:var(--background-secondary);padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;margin:2px 0 0;line-height:1.35;");
     const shown = lines.slice(0, 400);
     for (const l of shown) {
       const color = l.sign === "+" ? "var(--color-green)" : l.sign === "-" ? "var(--color-red)" : "var(--text-muted)";
       const bg = l.sign === "+" ? "rgba(0,180,0,.10)" : l.sign === "-" ? "rgba(220,0,0,.10)" : "transparent";
-      const row = pre.createEl("div", { text: `${l.sign} ${l.text}` });
+      // Reveal invisibles on CHANGED lines only. Marking them in unchanged context too would put
+      // dots and arrows down the whole note for no decision-making benefit.
+      const text = l.sign === " " ? l.text : revealInvisible(l.text);
+      const row = pre.createEl("div", { text: `${l.sign} ${text}` });
       row.setAttribute("style", `color:${color};background:${bg};`);
     }
     if (lines.length > shown.length) pre.createEl("div", { text: `… (${lines.length - shown.length} more lines)` }).setAttribute("style", "opacity:.6;");

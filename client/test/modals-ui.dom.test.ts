@@ -174,6 +174,47 @@ describe("NoteConflictModal (adjudication)", () => {
     expect(m.contentEl.querySelectorAll("pre div").length).toBe(0); // no changed rows drawn
   });
 
+  // issueConflictDiffInvisibleChars: two visually identical lines were shown as -/+ with no way to
+  // tell them apart. They stay REAL differences (a Markdown trailing double space is a hard break),
+  // so the modal explains them instead of hiding them.
+  it("an invisible-only difference is explained, and the invisible characters are marked", async () => {
+    const plugin = seed();
+    let n = 0;
+    plugin.readTextOrEmpty = async () =>
+      n++ === 0 ? "tagNames: \nbody" : "tagNames:\nbody"; // theirs has a TRAILING SPACE
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(m.contentEl.textContent).toMatch(/look identical/i);
+    const rows = Array.from(m.contentEl.querySelectorAll("pre div")).map((d) => d.textContent ?? "");
+    expect(rows.some((r) => r === "- tagNames:·")).toBe(true);  // trailing space revealed
+    expect(rows.some((r) => r === "+ tagNames:")).toBe(true);
+  });
+
+  it("a non-breaking space is marked so it is distinguishable from a plain space", async () => {
+    const plugin = seed();
+    let n = 0;
+    plugin.readTextOrEmpty = async () =>
+      n++ === 0 ? "tag: a\nbody" : "tag: a\nbody";
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const rows = Array.from(m.contentEl.querySelectorAll("pre div")).map((d) => d.textContent ?? "");
+    expect(rows.some((r) => r === "- tag:⍽a")).toBe(true);
+    expect(rows.some((r) => r === "+ tag: a")).toBe(true);
+  });
+
+  it("ordinary changed lines are NOT marked up — no dots down a normal diff", async () => {
+    const plugin = seed();
+    let n = 0;
+    plugin.readTextOrEmpty = async () => (n++ === 0 ? "their body\nx" : "my body\nx");
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(m.contentEl.textContent).not.toMatch(/look identical/i);
+    const rows = Array.from(m.contentEl.querySelectorAll("pre div")).map((d) => d.textContent ?? "");
+    expect(rows).toContain("- their body");
+    expect(rows).toContain("+ my body");
+    expect(rows.join("")).not.toContain("·");
+  });
+
   it("a REAL body difference still renders changed rows", async () => {
     const plugin = seed();
     plugin.ignorePatternsForPath = () => ["updated"];
