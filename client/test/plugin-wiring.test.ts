@@ -860,6 +860,32 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  it("REFUSES to auto-resolve when one side has an ignored timestamp line the other lacks", async () => {
+    const { p } = await bootPlugin();
+    p.settings.ignoreTimestampChanges = true;
+    p.settings.ignoredTimestampKeys = ["created", "updated"];
+    // Identity DROPS ignored timestamp lines, so these two are "identical" by content identity — but
+    // the copy carries a `created:` the note does not. Auto-resolving keeps the note and deletes the
+    // copy, which would destroy that line. This is the exact shape of a real reported conflict.
+    await p.io_.write("keep.md", enc("---\nicon: package\n---\nbody\n"));
+    await p.io_.write("keep (conflict deviceA 20260907130000).md",
+      enc("---\nicon: package\ncreated: 2026-04-01T14:54\n---\nbody\n"));
+    expect(await p.dismissCosmeticConflicts()).toBe(0); // left for the human, who can now SEE the line
+    expect(dec(await p.io_.read("keep (conflict deviceA 20260907130000).md"))).toContain("created:");
+    p.onunload();
+  });
+
+  it("still auto-resolves when BOTH sides carry the same ignored keys with different values", async () => {
+    const { p } = await bootPlugin();
+    p.settings.ignoreTimestampChanges = true;
+    p.settings.ignoredTimestampKeys = ["updated"];
+    await p.io_.write("both.md", enc("---\nupdated: 2026-01-01T00:00\n---\nbody\n"));
+    await p.io_.write("both (conflict deviceA 20260907130001).md",
+      enc("---\nupdated: 2026-09-07T12:34\n---\nbody\n"));
+    expect(await p.dismissCosmeticConflicts()).toBe(1); // nothing is lost — the key exists either way
+    p.onunload();
+  });
+
   it("NEVER compares a binary pair as text, and spends ZERO reads finding that out", async () => {
     const { p } = await bootPlugin();
     // two DIFFERENT binaries that would decode equal under a lossy decode (critique F1)

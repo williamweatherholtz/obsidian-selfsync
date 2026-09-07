@@ -23,7 +23,7 @@ import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, plug
 import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, UNVERIFIED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
-import { normalizedContent } from "./frontmatter"; // content identity for the conflict stale-preview guard
+import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; // content identity + ignored-key presence for the conflict paths
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -704,6 +704,13 @@ export default class SelfSyncPlugin extends Plugin {
           if (mineT === null || theirsT === null) continue; // binary / invalid UTF-8 → never compared as text
           const pats = this.ignorePatternsForPath(original);
           if (normalizedContent(mineT, pats) !== normalizedContent(theirsT, pats)) continue;
+          // Content identity DROPS ignored timestamp lines, so two sides can be "identical" while one
+          // still HAS a `created:`/`updated:` line the other lacks. Auto-resolving keeps the note and
+          // deletes the copy — which would silently destroy that line. Never sweep in that case: an
+          // automatic action must lose nothing at all, and a real conflict of this owner's showed
+          // exactly this shape (created:/updated: on the Windows copy only). The user still gets the
+          // choice in the modal, where the diff now shows those lines explicitly.
+          if (ignoredTimestampKeysPresent(mineT, pats) !== ignoredTimestampKeysPresent(theirsT, pats)) continue;
           if (await this.resolveNoteConflict(copy, original, "theirs", theirsT)) dismissed++;
         } catch { /* stale/missing entry — skip */ }
       }

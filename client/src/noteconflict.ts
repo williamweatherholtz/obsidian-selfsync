@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { lcsPairs } from "./merge";
-import { normalizedContent } from "./frontmatter";
+import { maskedForDisplay } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
 
 // A single line of a unified diff: shared context, or a line only on one side.
@@ -187,7 +187,10 @@ export class NoteConflictModal extends Modal {
   private renderDiff(c: HTMLElement, theirs: string, mine: string, ignorePatterns: readonly string[] = []) {
     c.createEl("div", { text: "− the other version    + this device's" })
       .setAttribute("style", "font-size:11px;opacity:.7;margin:4px 0 2px;");
-    const lines = unifiedLineDiff(normalizedContent(theirs, ignorePatterns), normalizedContent(mine, ignorePatterns));
+    // maskedForDisplay, NOT normalizedContent: the latter DELETES an ignored timestamp line, which
+    // hides the fact that one side has it and the other does not — so the user could not see that
+    // their `created:`/`updated:` lines would be lost (issueConflictDiffHidesIgnoredLineLoss).
+    const lines = unifiedLineDiff(maskedForDisplay(theirs, ignorePatterns), maskedForDisplay(mine, ignorePatterns));
     const changed = lines.filter((l) => l.sign !== " ").length;
     if (changed === 0) {
       c.createEl("p", {
@@ -230,10 +233,8 @@ export class NoteConflictModal extends Modal {
   // marked-up diff for orientation. Deliberately not truncated — a user asking for the text to fix it
   // explicitly wants all of it.
   private async copyDetails(copy: string, original: string, theirs: string, mine: string) {
-    const lines = unifiedLineDiff(
-      normalizedContent(theirs, this.plugin.ignorePatternsForPath(original)),
-      normalizedContent(mine, this.plugin.ignorePatternsForPath(original)),
-    );
+    const pats = this.plugin.ignorePatternsForPath(original);
+    const lines = unifiedLineDiff(maskedForDisplay(theirs, pats), maskedForDisplay(mine, pats));
     const diff = lines.map((l) => `${l.sign} ${l.sign === " " ? l.text : revealInvisible(l.text)}`).join("\n");
     const report = [
       `SelfSync conflict: ${original}`,

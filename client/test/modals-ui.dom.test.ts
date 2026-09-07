@@ -206,8 +206,15 @@ describe("NoteConflictModal (adjudication)", () => {
     const rows = Array.from(m.contentEl.querySelectorAll("pre div")).map((d) => d.textContent ?? "");
     expect(rows.some((r) => r.startsWith("- their body"))).toBe(true);
     expect(rows.some((r) => r.startsWith("+ my body"))).toBe(true);
-    // the ignored key is masked out entirely, so it is neither a change NOR shown as context
-    expect(rows.some((r) => r.includes("updated:"))).toBe(false);
+    // The ignored key is shown as CONTEXT with its value masked — NOT removed. Removing the line
+    // (the earlier behaviour, which this assertion used to encode) hid the case where only one side
+    // HAS the line, so the user could not see that keeping the other version would delete it
+    // (issueConflictDiffHidesIgnoredLineLoss). Present-but-neutralised is the honest form.
+    const updatedRows = rows.filter((r) => r.includes("updated:"));
+    expect(updatedRows.length).toBe(1);
+    expect(updatedRows[0].startsWith("  ")).toBe(true);      // context, not a +/- change
+    expect(updatedRows[0]).not.toContain("2026-09-07T10");   // the noisy value is masked away
+    expect(updatedRows[0]).not.toContain("2026-09-07T11");
   });
 
   it("'Open both to merge' resolves 'manual'", async () => {
