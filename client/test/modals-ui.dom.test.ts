@@ -119,6 +119,33 @@ describe("NoteConflictModal (adjudication)", () => {
     release(); await flush();
   });
 
+  // The defect that actually explains a multi-SECOND open on SMALL notes: the cost scaled with the
+  // NUMBER of conflicts, not the size of any note. run() read every pair before painting — 2N
+  // sequential reads — so the wait was N x (2 x per-read latency), and note length was irrelevant.
+  // This pins the shape of the fix: reads-before-first-paint must be O(1) in N.
+  it("reads before the first paint are O(1) in the number of conflicts", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      copy: `n${i} (conflict).md`,
+      original: `n${i}.md`,
+    }));
+    const plugin = fakePlugin({ settings: { noteConflicts: many } });
+    plugin.readTextOrEmpty = async () => "a\nb\nc";
+    let m: NoteConflictModal;
+    let readsBeforePaint = 0;
+    // Causal, not flush-order dependent: count the sweep reads that happen while the modal body
+    // still has no conflict content. (A flush() drains every microtask, so "reads before the test
+    // set a flag" would measure the test harness, not the modal.)
+    plugin.readBytesOrNull = async () => {
+      if (!/to resolve/.test(m.contentEl.textContent ?? "")) readsBeforePaint++;
+      return null;
+    };
+    m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(m.contentEl.textContent).toContain("to resolve"); // real content is on screen
+    // 200 conflicts used to mean 400 reads before anything appeared; the diff itself is ~3ms here.
+    expect(readsBeforePaint).toBeLessThanOrEqual(2);
+  });
+
   it("a binary conflict costs ZERO reads — the extension gate runs before any IO", async () => {
     const plugin = fakePlugin({
       settings: { noteConflicts: [{ copy: "img (conflict).png", original: "img.png" }] },

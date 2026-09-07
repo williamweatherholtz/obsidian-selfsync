@@ -970,8 +970,21 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           pullB.setTooltip(clean ? "Already in sync — nothing to pull" : "Pull the server's copy to this device");
         };
         const cachedClean = this.pluginCleanCache.get(id);
-        if (cachedClean !== undefined) applyClean(cachedClean); // instant (no flicker) on a re-render
-        void this.plugin.pluginSyncClean(id).then((clean) => { this.pluginCleanCache.set(id, clean); applyClean(clean); });
+        if (cachedClean !== undefined) {
+          applyClean(cachedClean); // instant, and NO re-walk — see below
+        } else {
+          // Walk the plugin folder ONLY when the answer isn't cached. pluginSyncClean runs
+          // walkConfigTree — a recursive adapter.list/stat over .obsidian/plugins/<id> — and this
+          // fired for EVERY synced plugin on EVERY render, unconditionally, even when the cached
+          // answer was already applied a line earlier. Any re-render therefore cost one filesystem
+          // walk per synced plugin, which on Windows (AV) or a cloud-synced vault is seconds — and
+          // resolveNoteConflict triggers a re-render, so a single conflict click paid for all of it
+          // (issueSettingsRepaintWalksEveryPluginFolder). The cache is already invalidated where it
+          // matters: deleted per-plugin after a push/pull changes convergence, and cleared wholesale
+          // on hide(), so re-opening the tab re-checks. Staleness within one tab session errs safe —
+          // a button left live is a guarded no-op, never a wrong action.
+          void this.plugin.pluginSyncClean(id).then((clean) => { this.pluginCleanCache.set(id, clean); applyClean(clean); });
+        }
       }
       // NB: no per-plugin "Remove from server" button (issuePluginRemoveButtonClutter) — it took a whole
       // button per row for a RARE need. Removing a plugin's files from the server is an owner/admin task,

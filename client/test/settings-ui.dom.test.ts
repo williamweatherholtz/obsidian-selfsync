@@ -284,6 +284,24 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.pullPlugin).toHaveBeenCalledWith("dataview");
   });
 
+  // issueSettingsRepaintWalksEveryPluginFolder: pluginSyncClean runs walkConfigTree (a recursive
+  // adapter.list/stat over the plugin folder) and it fired for EVERY synced plugin on EVERY render,
+  // unconditionally — even when the cached answer had just been applied. resolveNoteConflict triggers
+  // a settings re-render, so ONE conflict click paid for a filesystem walk per synced plugin, which
+  // on Windows (AV) or a cloud-synced vault is seconds. Note length was irrelevant to that cost.
+  it("a re-render does NOT re-walk plugin folders once convergence is cached", async () => {
+    const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ["dataview", "templater"] } } });
+    p.app.plugins.manifests = { dataview: { id: "dataview", name: "Dataview" }, templater: { id: "templater", name: "Templater" } };
+    p.pluginSyncClean = vi.fn(async () => true);
+    const tab = renderTab(p);
+    await flush(); // first render: one walk per synced plugin, and the answers cache
+    const afterFirst = p.pluginSyncClean.mock.calls.length;
+    expect(afterFirst).toBe(2);
+    tab.display(); await flush(); // a re-render (what resolveNoteConflict triggers)
+    tab.display(); await flush();
+    expect(p.pluginSyncClean.mock.calls.length).toBe(afterFirst); // zero extra walks
+  });
+
   it("DISABLES Push/Pull and blocks the click when in sync (owner-directed: no real action → no button)", async () => {
     const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ["dataview"] } } });
     p.app.plugins.manifests = { dataview: { id: "dataview", name: "Dataview" } };
