@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest, ExtraButtonComponent, ButtonComponent, setIcon } from "obsidian";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 import { addExcluded, removeExcluded, matchFolders } from "./excludedFolders";
 
 // Folder-path autocomplete for the excluded-folders input: a thin adapter over the pure matchFolders,
@@ -34,7 +34,7 @@ function sameKeySet(a: readonly string[], b: readonly string[]): boolean {
   return [...norm(a)].every((x) => bs.has(x));
 }
 
-export interface NewLiveSyncSettings {
+export interface SelfSyncSettings {
   serverUrl: string;
   username: string;
   password: string;
@@ -109,7 +109,7 @@ export interface NewLiveSyncSettings {
   ignoredTimestampKeys: string[];
   excludedFolders: string[]; // folders where timestamp-only diffs are NOT ignored (they sync raw; EOL/BOM still normalized)
 }
-export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
+export const DEFAULT_SETTINGS: SelfSyncSettings = {
   // First-run defaults are BLANK — a fresh install is "not configured" (see the `configured`
   // check below), which routes to the setup wizard where the user enters their own server URL
   // and account. Never ship a baked-in server address or (worse) a guessable credential.
@@ -144,14 +144,14 @@ export const DEFAULT_SETTINGS: NewLiveSyncSettings = {
 };
 
 // Parse an untrusted persisted settings object (the `settings` sub-object of data.json) into a fully-
-// hardened NewLiveSyncSettings — parse-don't-validate at the persistence boundary (issuePatternUntagged
+// hardened SelfSyncSettings — parse-don't-validate at the persistence boundary (issuePatternUntagged
 // ShouldAdopt). Every field is defaulted from DEFAULT_SETTINGS, and each nested collection is rebuilt as a
 // FRESH instance with its own type guard, so a corrupt / partial / hand-edited / hostile data.json can
 // never leave a field aliasing a module constant (a shared-mutable bug) or holding the wrong type. The
 // loader (loadSettings) then owns only the read + the separate BaseStore; the settings SHAPE is defined
 // and defended here, right next to DEFAULT_SETTINGS, so the two can't drift.
-export function parseSettings(raw: unknown): NewLiveSyncSettings {
-  const s = (raw && typeof raw === "object" ? raw : {}) as Partial<NewLiveSyncSettings> & { configSync?: Partial<ConfigSyncSelection> };
+export function parseSettings(raw: unknown): SelfSyncSettings {
+  const s = (raw && typeof raw === "object" ? raw : {}) as Partial<SelfSyncSettings> & { configSync?: Partial<ConfigSyncSelection> };
   const out = Object.assign({}, DEFAULT_SETTINGS, s);
   // Fresh, fully-defaulted configSync (never share the module constant; backfill categories added since
   // this vault last saved), each nested collection its own fresh instance so in-place mutation can't reach
@@ -201,8 +201,8 @@ export function parseSettings(raw: unknown): NewLiveSyncSettings {
   return out;
 }
 
-export class NewLiveSyncSettingTab extends PluginSettingTab {
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app, plugin); }
+export class SelfSyncSettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app, plugin); }
   // issueMountSharedDirectionToggle: the set of SHARED sources ("owner/vaultId") the user holds a read-WRITE
   // grant on — so the in-row Pull<->Sync direction toggle can be offered for them too (not only own vaults).
   // undefined = not yet fetched; loaded lazily once per tab lifetime (the grant set changes rarely). A shared
@@ -278,7 +278,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
-  private lastSyncedAgo(s: NewLiveSyncSettings): string {
+  private lastSyncedAgo(s: SelfSyncSettings): string {
     if (!s.lastSyncedAt) return "—";
     const mins = Math.round((Date.now() - s.lastSyncedAt) / 60000);
     if (mins <= 0) return "just now";
@@ -361,7 +361,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // Static (server/account/vault change on reconfigure/switch/sign-out, which re-render the whole tab),
   // so it lives OUTSIDE the live Status hero. The manage row is deliberately not named "Connection"
   // (the group already is — an earlier group-and-row name collision).
-  private renderConnection(c: HTMLElement, s: NewLiveSyncSettings): void {
+  private renderConnection(c: HTMLElement, s: SelfSyncSettings): void {
     const g = new SettingGroup(c).setHeading("Connection");
     // Server + the connection-management actions live together (owner): "Setup" re-opens setup to change
     // the server connection (clearer than the old "Reconfigure"); "Disconnect" stops syncing but keeps
@@ -400,7 +400,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
   // What syncs — the opt-in .obsidian config surface (notes/attachments always sync, so no no-op
   // "always synced" row). Community-plugin code is a further opt-in, its own card below.
-  private renderWhatSyncs(c: HTMLElement, s: NewLiveSyncSettings): void {
+  private renderWhatSyncs(c: HTMLElement, s: SelfSyncSettings): void {
     const cs = s.configSync;
     const ro = !!s.vaultReadOnly;
     const g = new SettingGroup(c).setHeading("What syncs");
@@ -510,7 +510,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // Composed vaults (D0039) — bring folders from other vaults into this one, data-only. Collapsed by default
   // (advanced). Lists current mounts with their live state + a remove action, and an "Add a mount" button.
   // Only INVALID/overlapping/self-referential mounts are inactive; the rest keep syncing (R10-F3).
-  private renderComposedVaults(c: HTMLElement, s: NewLiveSyncSettings): void {
+  private renderComposedVaults(c: HTMLElement, s: SelfSyncSettings): void {
     const mounts = s.mounts ?? [];
     // Keep the section discoverable but out of the way: default-collapsed, and auto-open only if mounts exist.
     const body = this.collapsible(c, "Composed vaults", this.mountsExpanded ?? mounts.length > 0, (v) => { this.mountsExpanded = v; });
@@ -657,7 +657,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   }
 
   // Advanced — collapsed by default (rarely touched, so it stays out of the common view; one tap opens it).
-  private renderAdvanced(c: HTMLElement, s: NewLiveSyncSettings): void {
+  private renderAdvanced(c: HTMLElement, s: SelfSyncSettings): void {
     const body = this.collapsible(c, "Advanced", this.advancedExpanded ?? false, (v) => { this.advancedExpanded = v; });
     new Setting(body).setName("Show sync status in the editor")
       .setDesc("Show a sync-status icon in the open note's header.")
@@ -752,7 +752,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // Timestamp-ignore controls, in a DEFAULT-COLLAPSED section (rarely touched — owner). Identity-only:
   // nothing here ever edits a note. Each list is a validated add / little-X-remove row (no free-text blob,
   // no huge Remove button); the list is easily restorable, so no scary warning. Re-render on change.
-  private renderIgnoreTimestamps(c: HTMLElement, s: NewLiveSyncSettings): void {
+  private renderIgnoreTimestamps(c: HTMLElement, s: SelfSyncSettings): void {
     const body = this.collapsible(c, "Timestamp changes", this.timestampExpanded ?? false, (v) => { this.timestampExpanded = v; });
     new Setting(body).setName("Ignore timestamp-only changes")
       .setDesc("Don't treat a note that differs only in a date field (created, updated, …) as a change or conflict. SelfSync never edits these fields.")
@@ -810,7 +810,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
     }
   }
 
-  private copyDebugInfo(s: NewLiveSyncSettings): void {
+  private copyDebugInfo(s: SelfSyncSettings): void {
     let host = s.serverUrl;
     try { host = new URL(s.serverUrl).host; } catch { /* keep raw */ }
     const info = [
@@ -831,7 +831,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
   // A newly-installed plugin is NOT shared until you add it here — so installing something on one
   // device never auto-pushes it (overwriting the others) before you decide to. The SelfSync-never-
   // syncs reassurance is shown once, above.
-  private renderPluginChecklist(c: HTMLElement, cs: NewLiveSyncSettings["configSync"]): void {
+  private renderPluginChecklist(c: HTMLElement, cs: SelfSyncSettings["configSync"]): void {
     const selfId = this.plugin.selfFolderId();
     const manifests = ((this.app as any).plugins?.manifests ?? {}) as Record<string, { id: string; name: string }>;
     const installed = new Set(Object.keys(manifests).filter((id) => id !== selfId));
@@ -912,7 +912,7 @@ export class NewLiveSyncSettingTab extends PluginSettingTab {
 
   // Render a collapsible list of plugin rows (toggle + first-contact direction). Shared by the "Synced"
   // and "Available from the sync" groups so the row logic lives in one place.
-  private renderPluginRows(c: HTMLElement, ids: string[], cs: NewLiveSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string, pendingAuthors?: Map<string, string>): void {
+  private renderPluginRows(c: HTMLElement, ids: string[], cs: SelfSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string, pendingAuthors?: Map<string, string>): void {
     if (!ids.length) return;
     const body = this.collapsible(c, summaryLabel, this.pluginsExpanded ?? ids.length <= 8, (v) => { this.pluginsExpanded = v; });
     // issueGreyedNoteWrongSection: explain the greyed Push/Pull RIGHT here with the rows that carry the buttons,

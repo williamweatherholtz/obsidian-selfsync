@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 import { groupConfigConflicts, ConflictGroup } from "./configsync";
 
 // Adjudicate divergent `.obsidian/` config across devices. Config sync never auto-deletes and
@@ -8,7 +8,7 @@ import { groupConfigConflicts, ConflictGroup } from "./configsync";
 // labelled by what it is (not a raw filename). Resolving updates the list, which is grouped +
 // self-clearing, so the count can't go stale.
 export class ConfigConflictModal extends Modal {
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Config differences"); void this.render(); }
   onClose() { this.contentEl.empty(); }

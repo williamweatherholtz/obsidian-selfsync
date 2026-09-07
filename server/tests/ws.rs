@@ -10,8 +10,8 @@
 // map are public), which is both cheaper and a stronger assertion than opening 512 sockets.
 
 use futures_util::StreamExt;
-use new_livesync_server::state::MAX_WS_PER_USER;
-use new_livesync_server::{app, AppState};
+use selfsync_server::state::MAX_WS_PER_USER;
+use selfsync_server::{app, AppState};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
@@ -314,7 +314,7 @@ async fn revoking_the_session_tears_down_the_live_socket() {
 // Upload a chunk + commit a file to admin/vault so a change is broadcast on that vault's channel
 // (the same VaultHandle.tx the WS subscribed to), waking any subscribed socket's recv loop.
 async fn commit_a_change(base: &str, token: &str) {
-    use new_livesync_server::hash::sha256_hex;
+    use selfsync_server::hash::sha256_hex;
     let c = reqwest::Client::new();
     let body = b"ws-revoke-poke".to_vec();
     let h = sha256_hex(&body);

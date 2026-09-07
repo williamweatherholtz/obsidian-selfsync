@@ -7,11 +7,11 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // so the Sign-out wiring test still fires. (Its own behaviour is covered by inspection, not this stub.)
 vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
 vi.mock("../src/pushpreviewmodal", () => ({ pushPreviewModal: vi.fn(async () => true) }));
-import { NewLiveSyncSettingTab } from "../src/settings";
+import { SelfSyncSettingTab } from "../src/settings";
 import { fakePlugin, toggleByName, buttonByText, flipToggle, rowByName, inputByPlaceholder, typeInto, flush } from "./ui-dom-harness";
 
 function renderTab(plugin: any) {
-  const tab = new NewLiveSyncSettingTab(plugin.app, plugin);
+  const tab = new SelfSyncSettingTab(plugin.app, plugin);
   // PluginSettingTab.containerEl is a real (happy-dom) element from the stub; render into it.
   tab.display();
   return tab;

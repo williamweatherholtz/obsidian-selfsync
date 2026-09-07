@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 import type { SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 
 // Self-service password change (R14 sec#2). Verifies the current password server-side, sets the new
@@ -11,7 +11,7 @@ export class ChangePasswordModal extends Modal {
   private confirm = "";
   private busy = false;
 
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Change password"); this.render(); }
   onClose() { this.contentEl.empty(); }
@@ -56,7 +56,7 @@ export class ShareManageModal extends Modal {
   private loading = true;
   private error = "";
 
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Share this vault"); this.render(); void this.load(); }
   onClose() { this.contentEl.empty(); }
@@ -149,7 +149,7 @@ export class ShareManageModal extends Modal {
 export class RedeemShareLinkModal extends Modal {
   private link = "";
   private busy = false;
-  constructor(app: App, private plugin: NewLiveSyncPlugin, prefill = "") { super(app); this.link = prefill.trim(); }
+  constructor(app: App, private plugin: SelfSyncPlugin, prefill = "") { super(app); this.link = prefill.trim(); }
   onOpen() { this.titleEl.setText("Redeem a share link"); this.render(); }
   onClose() { this.contentEl.empty(); }
 

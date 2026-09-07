@@ -2,7 +2,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
 import { RedeemShareLinkModal } from "./accountui";
 import { confirmModal } from "./confirm";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
 import type { SharedVaultRef } from "./transport";
 
@@ -21,7 +21,7 @@ export class SwitchVaultModal extends Modal {
   private targetReadOnly = false; // that share is read-only
   private forkName = "";         // name for a Fork of the current vault
 
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Switch remote vault"); this.render(); void this.load(); }
   onClose() { this.contentEl.empty(); }

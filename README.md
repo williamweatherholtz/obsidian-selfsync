@@ -129,6 +129,16 @@ address.
 conflict handling, multi-tenant isolation, config and plugin sync, and sharing. There is no
 client-side end-to-end encryption yet; it is tracked and deferred — see the trust model.
 
+## Prior art
+
+SelfSync is an **independent implementation**, not a fork or derivative of any existing plugin.
+It shares no code, no dependencies, and no storage format with
+[obsidian-livesync](https://github.com/vrtmrz/obsidian-livesync) — that project is credited here
+as the prior art that framed the problem, and its operational cost (a CouchDB to run, its
+conflict merge behind sponsorship) is what motivated building a different answer: a single Rust
+binary with its own content-addressed store. The comparison in [The idea](#the-idea) is a
+comparison, not a lineage.
+
 ## License
 
 [MIT](LICENSE) © William Weatherholtz.

@@ -41,10 +41,10 @@ user can complete, by:
 
 ## 2. Two surfaces, one truth
 
-All configuration lives in the already-persisted `NewLiveSyncSettings` object (already excluded from
+All configuration lives in the already-persisted `SelfSyncSettings` object (already excluded from
 sync by M6). Two surfaces render it:
 
-- **Settings tab** (`NewLiveSyncSettingTab`) — the always-visible, scannable reference.
+- **Settings tab** (`SelfSyncSettingTab`) — the always-visible, scannable reference.
 - **Setup wizard** (`SetupWizardModal`) — a focused, auto-opening first-run flow that writes the same
   fields, then closes and triggers a reconnect.
 
@@ -195,7 +195,7 @@ is already auth-agnostic, so no redraw is needed.
 | `client/src/main.ts` | **extend** | Token persistence + silent password re-login + re-auth prompt; `lastSynced` stamp; connection-string generate; `disconnect()`; auto-open wizard on first run. |
 | `client/src/transport.ts` | **extend** | `testConnection()` → `GET /health` (already exists). |
 | `client/src/syncstate.ts` | reuse | `light()` remains the single color source for the status card. |
-| `client/src/settings.ts` (`NewLiveSyncSettings`) | **extend** | Add `authToken?: string`, `lastSyncedAt?: number`. `deviceName` default becomes hostname-derived. |
+| `client/src/settings.ts` (`SelfSyncSettings`) | **extend** | Add `authToken?: string`, `lastSyncedAt?: number`. `deviceName` default becomes hostname-derived. |
 | `client/src/onboarding.ts` | **remove** | Superseded by `setupwizard.ts`. |
 
 **Data flow:** wizard writes `settings` (server, username, vaultId) + stores token → `saveSettings`

@@ -6,7 +6,7 @@ import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, P
 import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, applyHeldDeletions, keepHeldDeletions, applyHeldPushes, keepHeldPushes } from "./reconcile";
-import { DEFAULT_SETTINGS, NewLiveSyncSettings, NewLiveSyncSettingTab, parseSettings } from "./settings";
+import { DEFAULT_SETTINGS, SelfSyncSettings, SelfSyncSettingTab, parseSettings } from "./settings";
 import { SetupWizardModal } from "./setupwizard";
 import { ConfigConflictModal } from "./configconflict";
 import { NoteConflictModal } from "./noteconflict";
@@ -122,7 +122,7 @@ class ObsidianVaultIo implements VaultIo {
   // A mount io is DATA-ONLY and must NOT apply the primary's mount-point exclusion (that boundary is
   // primary-only — applying it here would drop the mount's OWN files, silently no-op'ing every mount write and
   // then delete-remote'ing the source, the A1 defect). Scoping to the mount subtree is MountedIo's job.
-  constructor(private plugin: NewLiveSyncPlugin, private forMount = false) {
+  constructor(private plugin: SelfSyncPlugin, private forMount = false) {
     if (Platform.isDesktop && (window as unknown as { require?: unknown }).require) {
       this.appendWrite = (path: string) => this.openAppend(path);
     }
@@ -310,7 +310,7 @@ class ObsidianVaultIo implements VaultIo {
 
 /** A scrollable, copyable view of the recent sync log. */
 class LogModal extends Modal {
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
   onOpen() {
     this.titleEl.setText("SelfSync — sync log");
     const pre = this.contentEl.createEl("pre", { text: this.plugin.getLogText() });
@@ -337,8 +337,8 @@ export type ApiClient = SyncApi & {
   schema(): Promise<SchemaResponse>; // D0042: the server's wire-contract signature + its hash (GET /schema)
 };
 
-export default class NewLiveSyncPlugin extends Plugin {
-  settings!: NewLiveSyncSettings;
+export default class SelfSyncPlugin extends Plugin {
+  settings!: SelfSyncSettings;
   private api?: ApiClient;
   private ws?: WebSocket;
   private io!: VaultIo; // set in onload via buildIo() (injectable for tests)
@@ -518,7 +518,7 @@ export default class NewLiveSyncPlugin extends Plugin {
       classify: (e) => classifyConnectError(toConnErrorInfo(e, this.hasStoredPassword())),
       scheduleRecovery: (rec) => this.scheduleRecovery(rec),
     });
-    this.addSettingTab(new NewLiveSyncSettingTab(this.app, this));
+    this.addSettingTab(new SelfSyncSettingTab(this.app, this));
 
     // ONE state indicator per platform — two would be redundant (the anti-pattern we're
     // avoiding): the quiet status-bar item on desktop (click → log), the ribbon icon on

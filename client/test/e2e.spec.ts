@@ -20,7 +20,7 @@ import { shouldSync, DEFAULT_CONFIG_SYNC, ConfigSyncSelection } from "../src/con
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverBin = path.resolve(
-  here, "../../server/target/debug/new-livesync-server" + (process.platform === "win32" ? ".exe" : "")
+  here, "../../server/target/debug/selfsync-server" + (process.platform === "win32" ? ".exe" : "")
 );
 const externalUrl = process.env.SYNC_SERVER_URL;
 const canRun = !!externalUrl || existsSync(serverBin);

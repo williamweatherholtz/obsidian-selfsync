@@ -4,7 +4,7 @@
 // drift-gate is generated FROM the ENDPOINTS const, so it can't catch the const diverging from the real axum
 // routes; this test cross-checks it. A missing route returns 404 (unrouted); a present one returns anything
 // else (401/400/405/426/200/…), so `status != 404` proves existence without needing auth or a valid body.
-use new_livesync_server::{app, wire_signature, AppState};
+use selfsync_server::{app, wire_signature, AppState};
 
 async fn serve(router: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

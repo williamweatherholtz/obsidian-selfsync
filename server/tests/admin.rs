@@ -1,5 +1,5 @@
 // HTTP tests for the /api/admin/* management API (Phase 1, slice 4).
-use new_livesync_server::{app, public_app, AppState};
+use selfsync_server::{app, public_app, AppState};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -388,7 +388,7 @@ async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
     let er = c.post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap();
     assert_eq!(er.status().as_u16(), 200);
     let secret = er.json::<Value>().await.unwrap()["secret"].as_str().unwrap().to_string();
-    let confirm_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let confirm_code = selfsync_server::totp::code_at(&secret, now()).unwrap();
     let cr = c.post(format!("{base}/api/mfa/confirm")).bearer_auth(&t).json(&json!({"code": confirm_code})).send().await.unwrap();
     assert_eq!(cr.status().as_u16(), 200);
     let recovery = cr.json::<Value>().await.unwrap()["recovery_codes"][0].as_str().unwrap().to_string();
@@ -396,7 +396,7 @@ async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
     assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
         .send().await.unwrap().status().as_u16(), 401);
     // Password + a valid TOTP code -> 200.
-    let login_code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let login_code = selfsync_server::totp::code_at(&secret, now()).unwrap();
     let ok = c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": login_code})).send().await.unwrap();
     assert_eq!(ok.status().as_u16(), 200);
     let tok = ok.json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
@@ -408,7 +408,7 @@ async fn mfa_totp_full_lifecycle(/* IA.3.5.3 */) {
     // Disable requires a current code; after disabling, password alone logs in again. Use a NEXT-window
     // code (now+30) — the login above consumed this window's step, and the replay guard rejects a reused
     // step; a fresh-step code is still within the +1 skew window the server accepts.
-    let disable_code = new_livesync_server::totp::code_at(&secret, now() + 30).unwrap();
+    let disable_code = selfsync_server::totp::code_at(&secret, now() + 30).unwrap();
     assert_eq!(send(&base, "POST", "/api/mfa/disable", &tok, json!({"code": disable_code})).await, 200);
     assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw"}))
         .send().await.unwrap().status().as_u16(), 200, "MFA disabled -> password alone works");
@@ -425,9 +425,9 @@ async fn totp_code_cannot_be_replayed_within_its_window() {
     let t = login(&base, "bob").await;
     let secret = c.post(format!("{base}/api/mfa/enroll")).bearer_auth(&t).send().await.unwrap()
         .json::<Value>().await.unwrap()["secret"].as_str().unwrap().to_string();
-    let confirm = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let confirm = selfsync_server::totp::code_at(&secret, now()).unwrap();
     assert_eq!(c.post(format!("{base}/api/mfa/confirm")).bearer_auth(&t).json(&json!({"code": confirm})).send().await.unwrap().status().as_u16(), 200);
-    let code = new_livesync_server::totp::code_at(&secret, now()).unwrap();
+    let code = selfsync_server::totp::code_at(&secret, now()).unwrap();
     // First use of a fresh code → 200.
     assert_eq!(c.post(format!("{base}/api/login")).json(&json!({"username":"bob","password":"pw","totp": code.clone()}))
         .send().await.unwrap().status().as_u16(), 200);
@@ -561,7 +561,7 @@ async fn require_admin_mfa_blocks_admin_until_totp_enrolled() {
     assert_eq!(es, 200);
     let secret = ev["secret"].as_str().unwrap().to_string();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let code = new_livesync_server::totp::code_at(&secret, now).unwrap();
+    let code = selfsync_server::totp::code_at(&secret, now).unwrap();
     assert_eq!(post_json(&base, "/api/mfa/confirm", &admin, serde_json::json!({ "code": code })).await.0, 200);
     assert_eq!(get(&base, "/api/admin/users", &admin).await.0, 200, "after enrolling MFA the admin can act");
 }

@@ -4,7 +4,7 @@ import { parseSetupLink } from "./connstr";
 import { isShareLink, parseShareLink } from "./sharelink";
 import { isInviteLink, parseInviteLink } from "./invitelink";
 import { WizardState, canLogIn, canFinish, isValidVaultName, sanitizeVaultName, wizardCredentials } from "./wizardsteps";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 
 // Guided first-run setup, all in ONE pane: Server → Account → Vault, revealed progressively.
 // "Test" checks reachability (green ✓); "Log in" authenticates and loads the vault list; "Start
@@ -18,7 +18,7 @@ export class SetupWizardModal extends Modal {
   // and the goal is to sign in + redeem it, not pick/create a vault. See finishRedeem().
   private pendingShareLink = "";
 
-  constructor(app: App, private plugin: NewLiveSyncPlugin, opts: { shareLink?: string } = {}) {
+  constructor(app: App, private plugin: SelfSyncPlugin, opts: { shareLink?: string } = {}) {
     super(app);
     const st = plugin.settings;
     this.pendingShareLink = opts.shareLink ?? "";

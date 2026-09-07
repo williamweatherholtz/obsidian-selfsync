@@ -60,7 +60,7 @@ The second critique's HIGH+MED items were fixed; these LOW ones remain (bounded,
 
 ## B8 — BRAT-installable distribution (release pipeline)  ✅ DONE (2026-07-04)
 **Resolved 2026-07-04:** the plugin now installs via BRAT from `williamweatherholtz/obsidian-selfsync`.
-Set up: a root-level `manifest.json` (canonical; `id` new-livesync, name "SelfSync", version 0.1.0) +
+Set up: a root-level `manifest.json` (canonical; `id` new-livesync at the time — renamed to `selfsync` later; name "SelfSync", version 0.1.0) +
 `versions.json` for BRAT to read the version; a `.github/workflows/release.yml` that builds `client/`
 and publishes a GitHub release (assets `main.js` + `manifest.json` + `versions.json`) on a version-tag
 push; and an initial `0.1.0` release. The 385 leftover vrtmrz-fork tags (up to 0.25.79, no releases)

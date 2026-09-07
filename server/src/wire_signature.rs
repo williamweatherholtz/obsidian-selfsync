@@ -344,7 +344,7 @@ mod tests {
 
     // DRIFT GATE (D0042, srContractDriftGate): the committed artifact MUST match the signature derived
     // from the live types. A wire-type change that isn't reflected in wire-signature.json fails CI here.
-    // Regenerate intentionally with: UPDATE_WIRE_SIGNATURE=1 cargo test -p new-livesync-server wire_signature
+    // Regenerate intentionally with: UPDATE_WIRE_SIGNATURE=1 cargo test -p selfsync-server wire_signature
     #[test]
     fn committed_artifact_matches_generated() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/wire-signature.json");

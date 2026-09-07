@@ -1,5 +1,5 @@
 // HTTP tests for the registration policy + single-use invite tokens (Phase 1, slice 3).
-use new_livesync_server::{app, registration::Mode, AppState};
+use selfsync_server::{app, registration::Mode, AppState};
 use tempfile::tempdir;
 
 async fn spawn() -> (String, AppState) {

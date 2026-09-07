@@ -41,14 +41,14 @@ This is the **same flow on desktop and mobile** — no manual file-copying, no p
 1. In Obsidian: Settings → Community plugins → Browse → install **"BRAT"** → enable it.
 2. BRAT → **Add beta plugin** → enter the repo `williamweatherholtz/obsidian-selfsync` → Add.
    BRAT downloads the release assets and installs SelfSync.
-3. Settings → Community plugins → enable **SelfSync** (`new-livesync`).
+3. Settings → Community plugins → enable **SelfSync** (`selfsync`).
 4. To update later: BRAT → "Check for updates" (or it auto-updates on launch).
 
 > **How this works (B8, done):** the repo publishes a GitHub **release** (via
 > `.github/workflows/release.yml`, which auto-fires when a bumped `manifest.json` lands on main — D0035)
 > with `main.js` + `manifest.json` + `versions.json` attached, and a root-level `manifest.json` BRAT reads for the version. For local dev,
 > `scripts/e2e.ps1` stages Vault A/B by copying the freshly-built `main.js` + root `manifest.json` into
-> `<vault>/.obsidian/plugins/new-livesync/` — a dev shortcut, **not** the user install path.
+> `<vault>/.obsidian/plugins/selfsync/` — a dev shortcut, **not** the user install path.
 
 > Note: SelfSync never syncs its own plugin folder (its per-device server/login stay local), so SelfSync
 > can't distribute *itself* device-to-device — which is exactly why BRAT (or the store) is the install
@@ -104,7 +104,7 @@ auto-opens.
 |---|----------|-------|----------|
 | D19 | **Off by default** | Fresh setup, don't touch "What syncs" | Only notes/attachments sync; `.obsidian/` is not synced |
 | D20 | **Enable config sync** | What syncs → expand → toggle "Sync Obsidian settings" on | On next reconnect, `app.json`/`core-plugins.json`/`hotkeys.json` + community plugin folders propagate to the other vault |
-| D21 | **SelfSync's own config NEVER syncs** | With config sync ON, change SelfSync's own server URL on Vault A | Vault B's SelfSync server URL is **unchanged** (its `.obsidian/plugins/new-livesync/` folder is never synced) — this is the critical safety check |
+| D21 | **SelfSync's own config NEVER syncs** | With config sync ON, change SelfSync's own server URL on Vault A | Vault B's SelfSync server URL is **unchanged** (its `.obsidian/plugins/selfsync/` folder is never synced) — this is the critical safety check |
 | D22 | **Theming opt-out holds** | Leave Appearance/Themes/Snippets off (default); change a theme on A | Vault B's appearance is **unchanged** until you explicitly enable that category |
 | D23 | **Per-plugin exclude** | Uncheck one plugin in the per-plugin checklist | That plugin's folder stops propagating; others still do |
 | D24 | **Live reload is non-fatal** | After a synced plugin's config lands on B | Either the plugin reloads live, or a "…will apply after you reload Obsidian" notice — never a crash |

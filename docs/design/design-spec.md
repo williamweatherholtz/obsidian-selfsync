@@ -1,4 +1,4 @@
-# Design Spec — Self-Hosted Obsidian Sync ("new-livesync", working name)
+# Design Spec — SelfSync: Self-Hosted Obsidian Sync
 
 > Design specification for the v1 system. Derived from `requirements.md` (decisions D1–D11), the as-built baseline (`../architecture/`), the sync-architecture research, and the official-Sync benchmark (`../architecture/91-benchmark-obsidian-sync.md`). This says *what we build and how it fits together*; the implementation plan follows separately.
 >
@@ -15,7 +15,7 @@
 └─────────────────────────┘                                  └───────────────┬────────────────┘
                                                                     plain HTTP/WS :8080
                                                               ┌────────────────▼────────────────┐
-                                                              │  new-livesync server (Rust)      │
+                                                              │  SelfSync server (Rust)            │
                                                               │  axum + tokio, single binary     │
                                                               │  ├─ auth (argon2id, tokens)      │
                                                               │  ├─ sync engine (versioned)      │
@@ -140,8 +140,8 @@ Reference `docker-compose.yml` (the user's real proxy can replace Caddy — just
 
 ```yaml
 services:
-  new-livesync:
-    image: ghcr.io/<org>/new-livesync:latest
+  selfsync:
+    image: ghcr.io/williamweatherholtz/obsidian-selfsync-server:latest
     environment:
       DATA_ROOT: /data
       BIND_ADDR: 0.0.0.0:8080
@@ -156,14 +156,14 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
-    depends_on: [new-livesync]
+    depends_on: [selfsync]
 volumes: { caddy_data: {} }
 ```
 
 `Caddyfile` (automatic HTTPS; WS upgrade is transparent in Caddy):
 ```
 sync.example.com {
-    reverse_proxy new-livesync:8080
+    reverse_proxy selfsync:8080
 }
 ```
 

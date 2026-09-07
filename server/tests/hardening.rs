@@ -7,8 +7,8 @@
 // boot, and the AppError->HTTP status mapping. Every active test asserts a SPECIFIC status/body
 // outcome (never a `!= 403` tautology). Harness copied from tests/admin.rs + tests/sync.rs.
 
-use new_livesync_server::hash::sha256_hex;
-use new_livesync_server::{app, AppState};
+use selfsync_server::hash::sha256_hex;
+use selfsync_server::{app, AppState};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -138,8 +138,8 @@ async fn chunks_missing_over_cap_is_rejected_400() {
 // ---------------------------------------------------------------------------------------------
 #[tokio::test]
 async fn corrupt_vault_503_on_sync_but_status_reports_error() {
-    use new_livesync_server::protocol::CommitRequest;
-    use new_livesync_server::vault::Vault;
+    use selfsync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
 
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
@@ -222,10 +222,10 @@ async fn vault_cap_rejects_the_hundred_and_first_400() {
 // ---------------------------------------------------------------------------------------------
 #[test]
 fn corrupt_json_stores_fail_loud_not_silent_reset() {
-    use new_livesync_server::admins::AdminStore;
-    use new_livesync_server::config::Config;
-    use new_livesync_server::shares::ShareStore;
-    use new_livesync_server::users::UserStore;
+    use selfsync_server::admins::AdminStore;
+    use selfsync_server::config::Config;
+    use selfsync_server::shares::ShareStore;
+    use selfsync_server::users::UserStore;
 
     // Store-level: each corrupt file is a loud Err, never an empty-default open.
     let d = tempdir().unwrap();

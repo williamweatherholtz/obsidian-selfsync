@@ -1003,30 +1003,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "new-livesync-server"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "axum",
- "blake3",
- "env_logger",
- "futures-util",
- "log",
- "reqwest",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.23.1",
- "tower-http 0.5.2",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1453,6 +1429,30 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "selfsync-server"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "blake3",
+ "env_logger",
+ "futures-util",
+ "log",
+ "reqwest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.23.1",
+ "tower-http 0.5.2",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

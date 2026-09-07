@@ -13,7 +13,7 @@ import type { ChildProcess } from "node:child_process";
 const clientDir = path.resolve(__dirname, "../.."); // client/
 const repoRoot = path.resolve(clientDir, "..");
 const serverBin = path.join(
-  repoRoot, "server", "target", "debug", "new-livesync-server" + (process.platform === "win32" ? ".exe" : ""),
+  repoRoot, "server", "target", "debug", "selfsync-server" + (process.platform === "win32" ? ".exe" : ""),
 );
 
 export interface RunningServer { url: string; close: () => void; dataRoot: string; }

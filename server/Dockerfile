@@ -1,4 +1,4 @@
-# Single self-hostable binary — the new-livesync sync server.
+# Single self-hostable binary — the SelfSync sync server.
 # Multi-stage: compile with the Rust toolchain, ship a slim runtime image.
 FROM rust:1-slim AS build
 WORKDIR /app
@@ -10,7 +10,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/target/release/new-livesync-server /usr/local/bin/new-livesync-server
+COPY --from=build /app/target/release/selfsync-server /usr/local/bin/selfsync-server
 ENV DATA_ROOT=/data \
     BIND_ADDR=0.0.0.0:8080
 # SYNC_USER / SYNC_PASSWORD are deliberately NOT baked into the image: a password in an ENV instruction
@@ -27,4 +27,4 @@ EXPOSE 8080
 VOLUME ["/data"]
 HEALTHCHECK --interval=3s --timeout=2s --start-period=2s --retries=10 \
   CMD curl -fsS http://127.0.0.1:8080/health || exit 1
-CMD ["new-livesync-server"]
+CMD ["selfsync-server"]

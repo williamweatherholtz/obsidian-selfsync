@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { lcsPairs, isMergeable } from "./merge";
 import { sameIgnoringEol } from "./reconcile";
-import type NewLiveSyncPlugin from "./main";
+import type SelfSyncPlugin from "./main";
 
 // A single line of a unified diff: shared context, or a line only on one side.
 type DiffLine = { sign: " " | "-" | "+"; text: string };
@@ -33,7 +33,7 @@ export function unifiedLineDiff(theirs: string, mine: string): DiffLine[] {
 // A copy that differs from the note ONLY by line endings / trailing newline is auto-dismissed (kept
 // the note's version) — it was never a real conflict (issueFalseEolConflict), so the user isn't asked.
 export class NoteConflictModal extends Modal {
-  constructor(app: App, private plugin: NewLiveSyncPlugin) { super(app); }
+  constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
   onOpen() { this.titleEl.setText("Resolve conflicts"); void this.run(); }
   onClose() { this.contentEl.empty(); }

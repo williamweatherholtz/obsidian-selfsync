@@ -15,7 +15,7 @@ import { shouldSync, ConfigSyncSelection } from "../src/configsync";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const serverBin = path.resolve(
-  here, "../../server/target/debug/new-livesync-server" + (process.platform === "win32" ? ".exe" : "")
+  here, "../../server/target/debug/selfsync-server" + (process.platform === "win32" ? ".exe" : "")
 );
 export const externalUrl = process.env.SYNC_SERVER_URL;
 export const canRun = !!externalUrl || existsSync(serverBin);

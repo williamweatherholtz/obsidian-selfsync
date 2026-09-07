@@ -14,7 +14,7 @@ export function makeApp(): any {
   };
 }
 
-// A fake NewLiveSyncPlugin: real `settings`, spy action methods, canned reads. Cast `as any` at the
+// A fake SelfSyncPlugin: real `settings`, spy action methods, canned reads. Cast `as any` at the
 // call site (it stands in for the concrete plugin type). Override any member via `over`.
 export function fakePlugin(over: any = {}) {
   const settings = {

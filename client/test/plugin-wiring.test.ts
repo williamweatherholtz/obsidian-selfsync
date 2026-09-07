@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 // "obsidian" is aliased to test/obsidian-stub.ts (see vitest.config.ts).
-import NewLiveSyncPlugin, { ApiClient } from "../src/main";
+import SelfSyncPlugin, { ApiClient } from "../src/main";
 import { VaultIo, SyncApi } from "../src/sync";
 import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { ConnError, Endpoint } from "../src/connstate";
@@ -104,7 +104,7 @@ function spyApi() {
 }
 
 // A test plugin that injects the in-memory io + spy api + stubbed auth (no Obsidian, no server).
-class TestPlugin extends NewLiveSyncPlugin {
+class TestPlugin extends SelfSyncPlugin {
   api_ = spyApi();
   io_ = memIo();
   loginCount = 0;

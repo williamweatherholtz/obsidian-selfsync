@@ -1,7 +1,7 @@
 // HTTP-level authorization tests for vault sharing (Phase 1, slice 2). Spawns the real
 // app and drives it with reqwest: a grantee can reach a shared vault via the owner-
 // qualified routes per their permission; a non-grantee cannot; the owner always can.
-use new_livesync_server::{app, shares::Perm, AppState};
+use selfsync_server::{app, shares::Perm, AppState};
 use tempfile::tempdir;
 
 async fn spawn() -> (String, AppState) {

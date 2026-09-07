@@ -1,6 +1,6 @@
 # Design Requirements & Use Cases — Self-Hosted Obsidian Sync
 
-> Working name: **new-livesync** (TBD). Forward-looking design requirements for an open-source, self-hosted **drop-in replacement for Obsidian's official Sync**: an Obsidian plugin + a single **Rust** server shipped as a **Docker image**. Optimized for flawless **desktop↔mobile** sync of one user's vaults, dead-simple to run on your own hardware. Baseline/critique in `../architecture/` (esp. `90-critique-and-direction.md`, `91-benchmark-obsidian-sync.md`).
+> Name: **SelfSync** (was working-named "new-livesync"). Forward-looking design requirements for an open-source, self-hosted **drop-in replacement for Obsidian's official Sync**: an Obsidian plugin + a single **Rust** server shipped as a **Docker image**. Optimized for flawless **desktop↔mobile** sync of one user's vaults, dead-simple to run on your own hardware. Baseline/critique in `../architecture/` (esp. `90-critique-and-direction.md`, `91-benchmark-obsidian-sync.md`).
 
 ## Threat model (DECIDED 2026-07-02)
 

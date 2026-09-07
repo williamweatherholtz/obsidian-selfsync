@@ -11,7 +11,7 @@ import * as path from "node:path";
 // from process.cwd() rather than import.meta.url (which isn't available under the CJS loader).
 export const serverBin = path.resolve(
   process.cwd(),
-  "../server/target/debug/new-livesync-server" + (process.platform === "win32" ? ".exe" : ""),
+  "../server/target/debug/selfsync-server" + (process.platform === "win32" ? ".exe" : ""),
 );
 export const canRun = existsSync(serverBin);
 

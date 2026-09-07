@@ -1,4 +1,4 @@
-use new_livesync_server::{admin_app, app, public_app, AppState};
+use selfsync_server::{admin_app, app, public_app, AppState};
 
 async fn serve(router: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -52,7 +52,7 @@ async fn health_ok() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "ok");
     // The version handshake: /health advertises the protocol version the client checks on connect.
-    assert_eq!(body["apiVersion"], new_livesync_server::protocol::API_VERSION);
+    assert_eq!(body["apiVersion"], selfsync_server::protocol::API_VERSION);
 }
 
 // AC.3.1.9 (system-use / consent banner): the operator's authorized-use notice is surfaced pre-auth
@@ -61,7 +61,7 @@ async fn health_ok() {
 // unauthenticated /health payload (no token presented).
 #[tokio::test]
 async fn health_exposes_the_login_banner_preauth() {
-    use new_livesync_server::config::Config;
+    use selfsync_server::config::Config;
     let dir = tempfile::tempdir().unwrap();
     let banner = "AUTHORIZED USE ONLY. Activity may be monitored.";
     let cfg = Config {
@@ -88,7 +88,7 @@ async fn health_exposes_the_login_banner_preauth() {
 
 #[test]
 fn filemeta_roundtrips_json() {
-    use new_livesync_server::protocol::FileMeta;
+    use selfsync_server::protocol::FileMeta;
     let m = FileMeta { path: "a/b.md".into(), hash: "h".into(), size: 3, mtime: 42, version: 1, chunks: vec![], ..Default::default() };
     let s = serde_json::to_string(&m).unwrap();
     let back: FileMeta = serde_json::from_str(&s).unwrap();
@@ -97,7 +97,7 @@ fn filemeta_roundtrips_json() {
 
 #[test]
 fn config_defaults_and_env() {
-    use new_livesync_server::config::Config;
+    use selfsync_server::config::Config;
     // Process-global env is shared across the whole test binary, and cargo runs tests on multiple
     // threads — so an unguarded set_var/remove_var here races any other test that reads env (UB
     // against libc getenv, and a false pass/fail if BIND_ADDR/SYNC_USER interleave). Serialize every
@@ -122,7 +122,7 @@ fn config_defaults_and_env() {
 
 #[test]
 fn safe_rel_path_rejects_traversal() {
-    use new_livesync_server::vault::safe_rel_path;
+    use selfsync_server::vault::safe_rel_path;
     assert!(safe_rel_path("../x").is_none());
     assert!(safe_rel_path("/etc/passwd").is_none());
     assert!(safe_rel_path("a/../../b").is_none());
@@ -139,7 +139,7 @@ async fn login_issues_token_and_rejects_bad_creds() {
     let base = spawn().await; // default creds admin/admin (see AppState::for_test)
     let ok = login(&base, "admin", "admin").await;
     assert_eq!(ok.status(), 200);
-    let token: new_livesync_server::protocol::LoginResponse = ok.json().await.unwrap();
+    let token: selfsync_server::protocol::LoginResponse = ok.json().await.unwrap();
     assert!(!token.token.is_empty());
     let bad = login(&base, "admin", "nope").await;
     assert_eq!(bad.status(), 401);
@@ -147,15 +147,15 @@ async fn login_issues_token_and_rejects_bad_creds() {
 
 #[test]
 fn sha256_hex_known_vector() {
-    use new_livesync_server::hash::sha256_hex;
+    use selfsync_server::hash::sha256_hex;
     // SHA-256("abc")
     assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 }
 
 #[test]
 fn chunkstore_put_get_verify_remove() {
-    use new_livesync_server::chunkstore::ContentStore;
-    use new_livesync_server::hash::sha256_hex;
+    use selfsync_server::chunkstore::ContentStore;
+    use selfsync_server::hash::sha256_hex;
     let dir = tempfile::tempdir().unwrap();
     let cs = ContentStore::open(dir.path()).unwrap();
     let data = b"chunk-bytes";
@@ -172,7 +172,7 @@ fn chunkstore_put_get_verify_remove() {
 
 #[test]
 fn chunkstore_rejects_malicious_hash() {
-    use new_livesync_server::chunkstore::ContentStore;
+    use selfsync_server::chunkstore::ContentStore;
     let dir = tempfile::tempdir().unwrap();
     let cs = ContentStore::open(dir.path()).unwrap();
     // path-traversal attempt and a non-hex/short hash must be safely rejected, no panic, no escape
@@ -186,7 +186,7 @@ fn chunkstore_rejects_malicious_hash() {
 
 #[test]
 fn commit_request_roundtrips() {
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::protocol::CommitRequest;
     let c = CommitRequest { path:"a.md".into(), hash:"h".into(), size:3, mtime:1, chunks:vec!["c1".into(),"c2".into()], expected_version: None, device_id: None, device_name: None };
     let s = serde_json::to_string(&c).unwrap();
     assert_eq!(serde_json::from_str::<CommitRequest>(&s).unwrap(), c);
@@ -194,9 +194,9 @@ fn commit_request_roundtrips() {
 
 #[test]
 fn vault_commit_dedup_delete_gc() {
-    use new_livesync_server::vault::Vault;
-    use new_livesync_server::hash::sha256_hex;
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
+    use selfsync_server::hash::sha256_hex;
+    use selfsync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let mut v = Vault::open(dir.path()).unwrap();
     // two chunks
@@ -227,9 +227,9 @@ fn vault_commit_dedup_delete_gc() {
 
 #[test]
 fn delete_defers_chunk_gc_so_a_concurrent_rename_commit_survives() { // research #3 rename-safety
-    use new_livesync_server::vault::Vault;
-    use new_livesync_server::hash::sha256_hex;
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
+    use selfsync_server::hash::sha256_hex;
+    use selfsync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let mut v = Vault::open(dir.path()).unwrap();
     let c = b"shared body".to_vec(); let h = sha256_hex(&c);
@@ -247,8 +247,8 @@ fn delete_defers_chunk_gc_so_a_concurrent_rename_commit_survives() { // research
 
 #[test]
 fn vault_commit_rejects_missing_chunk() {
-    use new_livesync_server::vault::Vault;
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
+    use selfsync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let mut v = Vault::open(dir.path()).unwrap();
     let r = v.commit(CommitRequest{ path:"x.md".into(), hash:"h".into(), size:1, mtime:0, chunks: vec!["missinghash".into()], expected_version: None, device_id: None, device_name: None }, "");
@@ -257,9 +257,9 @@ fn vault_commit_rejects_missing_chunk() {
 
 #[test]
 fn vault_index_persists_across_reopen() {
-    use new_livesync_server::vault::Vault;
-    use new_livesync_server::hash::sha256_hex;
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
+    use selfsync_server::hash::sha256_hex;
+    use selfsync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let (h, body);
     { let mut v = Vault::open(dir.path()).unwrap();
@@ -276,9 +276,9 @@ fn vault_index_persists_across_reopen() {
 
 #[test]
 fn vault_recommit_same_path_keeps_shared_chunks() {
-    use new_livesync_server::vault::Vault;
-    use new_livesync_server::hash::sha256_hex;
-    use new_livesync_server::protocol::CommitRequest;
+    use selfsync_server::vault::Vault;
+    use selfsync_server::hash::sha256_hex;
+    use selfsync_server::protocol::CommitRequest;
     let dir = tempfile::tempdir().unwrap();
     let mut v = Vault::open(dir.path()).unwrap();
     let c1 = b"AAAA".to_vec(); let h1 = sha256_hex(&c1);
@@ -307,33 +307,33 @@ fn vault_recommit_same_path_keeps_shared_chunks() {
 
 #[tokio::test]
 async fn chunk_upload_commit_and_pull_roundtrip() {
-    use new_livesync_server::hash::sha256_hex;
+    use selfsync_server::hash::sha256_hex;
     let base = spawn().await;
-    let tok = { let r: new_livesync_server::protocol::LoginResponse = login(&base,"admin","admin").await.json().await.unwrap(); r.token };
+    let tok = { let r: selfsync_server::protocol::LoginResponse = login(&base,"admin","admin").await.json().await.unwrap(); r.token };
     let c = reqwest::Client::new();
     let body = b"hello chunk world".to_vec();
     let h = sha256_hex(&body); // single chunk (small)
     // missing?
-    let miss: new_livesync_server::protocol::MissingResponse = c.post(format!("{base}/api/v/default/chunks/missing"))
+    let miss: selfsync_server::protocol::MissingResponse = c.post(format!("{base}/api/v/default/chunks/missing"))
         .bearer_auth(&tok).json(&serde_json::json!({"hashes":[h]})).send().await.unwrap().json().await.unwrap();
     assert_eq!(miss.missing, vec![h.clone()]);
     // upload chunk
     let up = c.put(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).body(body.clone()).send().await.unwrap();
     assert_eq!(up.status(), 200);
     // commit
-    let meta: new_livesync_server::protocol::FileMeta = c.post(format!("{base}/api/v/default/commit"))
+    let meta: selfsync_server::protocol::FileMeta = c.post(format!("{base}/api/v/default/commit"))
         .bearer_auth(&tok).json(&serde_json::json!({"path":"n.md","hash":h,"size":body.len(),"mtime":1,"chunks":[h]}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(meta.chunks, vec![h.clone()]);
     // changes shows it with chunks
-    let ch: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
+    let ch: selfsync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(ch.upserts.iter().any(|m| m.path=="n.md" && m.chunks==vec![h.clone()]));
     // download the chunk back
     let got = c.get(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).send().await.unwrap().bytes().await.unwrap();
     assert_eq!(&got[..], &body[..]);
     // single-path metadata endpoint: present file -> its FileMeta; absent -> 404
-    let one: new_livesync_server::protocol::FileMeta = c.get(format!("{base}/api/v/default/meta?path=n.md"))
+    let one: selfsync_server::protocol::FileMeta = c.get(format!("{base}/api/v/default/meta?path=n.md"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert_eq!(one.path, "n.md");
     assert_eq!(one.chunks, vec![h.clone()]);
@@ -352,7 +352,7 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
     for _ in 0..12 {
         let (c, base, tok, h) = (c.clone(), base.clone(), tok.clone(), h.clone());
         reads.push(tokio::spawn(async move {
-            let chg: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
+            let chg: selfsync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
                 .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
             let blob = c.get(format!("{base}/api/v/default/chunk/{h}")).bearer_auth(&tok).send().await.unwrap();
             (chg.upserts.len(), blob.status().as_u16())
@@ -367,7 +367,7 @@ async fn chunk_upload_commit_and_pull_roundtrip() {
 
 #[test]
 fn vault_open_locks_on_corrupt_index_not_blank_reset() {
-    use new_livesync_server::vault::Vault;
+    use selfsync_server::vault::Vault;
     let dir = tempfile::tempdir().unwrap();
     // a genuinely-absent index starts fresh (first run), not corrupt
     {
@@ -390,7 +390,7 @@ fn vault_open_locks_on_corrupt_index_not_blank_reset() {
 
 #[test]
 fn userstore_register_verify_persist() {
-    use new_livesync_server::users::{UserStore, safe_name};
+    use selfsync_server::users::{UserStore, safe_name};
     assert!(safe_name("will"));
     assert!(safe_name("will+tag@example.com")); // email-style incl. plus-addressing
     assert!(!safe_name("../etc"));
@@ -418,9 +418,9 @@ fn userstore_register_verify_persist() {
 
 #[tokio::test]
 async fn vaults_are_isolated_and_listable() {
-    use new_livesync_server::hash::sha256_hex;
+    use selfsync_server::hash::sha256_hex;
     let base = spawn().await; // admin/admin seeded, with a `default` vault
-    let tok = { let r: new_livesync_server::protocol::LoginResponse =
+    let tok = { let r: selfsync_server::protocol::LoginResponse =
         login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
     let c = reqwest::Client::new();
     // create a second vault
@@ -428,7 +428,7 @@ async fn vaults_are_isolated_and_listable() {
         .json(&serde_json::json!({"name":"work"})).send().await.unwrap();
     assert_eq!(mk.status(), 200);
     // list shows both
-    let list: new_livesync_server::protocol::VaultListResponse = c.get(format!("{base}/api/vaults"))
+    let list: selfsync_server::protocol::VaultListResponse = c.get(format!("{base}/api/vaults"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(list.vaults.contains(&"default".to_string()));
     assert!(list.vaults.contains(&"work".to_string()));
@@ -438,17 +438,17 @@ async fn vaults_are_isolated_and_listable() {
     c.post(format!("{base}/api/v/work/commit")).bearer_auth(&tok)
         .json(&serde_json::json!({"path":"w.md","hash":h,"size":body.len(),"mtime":1,"chunks":[h]})).send().await.unwrap();
     // it appears in `work` but NOT in `default` (isolation)
-    let inwork: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/work/changes?since=0"))
+    let inwork: selfsync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/work/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(inwork.upserts.iter().any(|m| m.path=="w.md"));
-    let indefault: new_livesync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
+    let indefault: selfsync_server::protocol::ChangesResponse = c.get(format!("{base}/api/v/default/changes?since=0"))
         .bearer_auth(&tok).send().await.unwrap().json().await.unwrap();
     assert!(!indefault.upserts.iter().any(|m| m.path=="w.md"));
 }
 
 #[tokio::test]
 async fn vault_with_orphaned_files_auto_reindexes_on_first_access() {
-    use new_livesync_server::protocol::{StatusResponse, ChangesResponse};
+    use selfsync_server::protocol::{StatusResponse, ChangesResponse};
     // D0022: a vault "broken" (NOT the bootstrap "default", so it isn't opened until first request)
     // with a materialized file but NO index (a restore, or the SQLite format change) AUTO-REPAIRS on
     // first access — status is ready and changes advertises the file, with no manual reindex.
@@ -464,7 +464,7 @@ async fn vault_with_orphaned_files_auto_reindexes_on_first_access() {
     tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap(); });
     let base = format!("http://{addr}");
 
-    let tok = { let r: new_livesync_server::protocol::LoginResponse =
+    let tok = { let r: selfsync_server::protocol::LoginResponse =
         login(&base, "admin", "admin").await.json().await.unwrap(); r.token };
     let c = reqwest::Client::new();
 
