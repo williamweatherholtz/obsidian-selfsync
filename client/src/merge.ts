@@ -1,8 +1,15 @@
 const TEXT_EXT = [".md", ".markdown", ".txt", ".canvas"];
 
-export function isMergeable(path: string, bytes: Uint8Array): boolean {
+// The extension half of isMergeable, on its own: it needs NO bytes, so a caller deciding whether a
+// file is even worth reading can gate on it first (the conflict modal's auto-dismiss sweep does, so a
+// binary attachment costs zero IO). Kept here so the text-extension list has exactly one home.
+export function isTextExt(path: string): boolean {
   const lower = path.toLowerCase();
-  if (!TEXT_EXT.some((e) => lower.endsWith(e))) return false;
+  return TEXT_EXT.some((e) => lower.endsWith(e));
+}
+
+export function isMergeable(path: string, bytes: Uint8Array): boolean {
+  if (!isTextExt(path)) return false;
   try {
     new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return true;

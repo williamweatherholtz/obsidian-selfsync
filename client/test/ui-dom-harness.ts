@@ -82,6 +82,12 @@ export function fakePlugin(over: any = {}) {
     addMount: vi.fn(async () => {}),
     removeMount: vi.fn(async () => {}),
     readTextOrEmpty: vi.fn(async () => "content"),
+    // Raw bytes for the modal's cosmetic-conflict auto-dismiss pass. Default null = "unreadable", so
+    // the auto-dismiss is a no-op and tests see the normal adjudication UI unless they opt in.
+    readBytesOrNull: vi.fn(async () => null as Uint8Array | null),
+    // No timestamp-key masking by default (feature off); a test overrides it to assert the diff
+    // ignores timestamp-only frontmatter differences (issueConflictDiffShowsIgnoredTimestamps).
+    ignorePatternsForPath: vi.fn((_p: string) => [] as readonly string[]),
     resolveNoteConflict: vi.fn(async () => true),
     openConfigConflicts: vi.fn(),
     openNoteConflicts: vi.fn(),

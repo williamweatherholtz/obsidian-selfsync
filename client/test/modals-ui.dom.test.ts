@@ -83,6 +83,87 @@ describe("NoteConflictModal (adjudication)", () => {
     expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "theirs", expect.anything());
   });
 
+  // issueConflictModalSerialScan: the cosmetic-auto-dismiss sweep used to run BEFORE the first
+  // render — 2N sequential reads behind a "Checking conflicts…" placeholder — so the modal took
+  // ~2N round-trips to show anything even though it only ever displays ONE conflict.
+  it("renders the first conflict WITHOUT waiting for the cosmetic sweep", async () => {
+    const plugin = seed();
+    let sweepReads = 0;
+    // the sweep can never finish; the modal must still show real content
+    plugin.readBytesOrNull = async () => { sweepReads++; return await new Promise<null>(() => {}); };
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(m.contentEl.textContent).toContain("to resolve");
+    expect(buttonByText(m.contentEl, "Keep this device's")).toBeTruthy();
+    expect(sweepReads).toBeGreaterThan(0); // the sweep did start — it just isn't blocking the paint
+  });
+
+  // issueConflictModalDoubleApply: render() was fired unawaited and nothing blocked re-entry, so a
+  // double-tap on an IRREVERSIBLE either-side choice could apply twice.
+  it("a double-tap applies ONCE", async () => {
+    const plugin = seed();
+    let release: () => void = () => {};
+    plugin.resolveNoteConflict = vi.fn(async () => {
+      await new Promise<void>((r) => { release = r; });
+      return true;
+    });
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const btn = buttonByText(m.contentEl, "Keep this device's")!;
+    btn.click();
+    await flush();
+    btn.click();          // second tap while the first apply is still in flight
+    btn.click();          // and a third
+    await flush();
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledTimes(1);
+    release(); await flush();
+  });
+
+  it("a binary conflict costs ZERO reads — the extension gate runs before any IO", async () => {
+    const plugin = fakePlugin({
+      settings: { noteConflicts: [{ copy: "img (conflict).png", original: "img.png" }] },
+    });
+    let reads = 0;
+    plugin.readBytesOrNull = async () => { reads++; return null; };
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush(); await flush();
+    expect(reads).toBe(0); // never lossy-decode a binary, and never even read it to find out
+  });
+
+  // issueConflictDiffShowsIgnoredTimestamps: the diff rendered RAW text, so a frontmatter key the
+  // user told SelfSync to IGNORE (and which the sync engine treats as no change at all) still showed
+  // up as a red/green changed line — the modal contradicting the setting.
+  it("a timestamp-only difference under an IGNORED key renders as no changes", async () => {
+    const plugin = seed();
+    plugin.ignorePatternsForPath = () => ["updated"];
+    let n = 0;
+    plugin.readTextOrEmpty = async () =>
+      n++ === 0
+        ? "---\nupdated: 2026-09-07T10:00:00Z\ntitle: t\n---\nbody"
+        : "---\nupdated: 2026-09-07T11:22:33Z\ntitle: t\n---\nbody";
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(m.contentEl.textContent).toMatch(/identical apart from/i);
+    expect(m.contentEl.querySelectorAll("pre div").length).toBe(0); // no changed rows drawn
+  });
+
+  it("a REAL body difference still renders changed rows", async () => {
+    const plugin = seed();
+    plugin.ignorePatternsForPath = () => ["updated"];
+    let n = 0;
+    plugin.readTextOrEmpty = async () =>
+      n++ === 0
+        ? "---\nupdated: 2026-09-07T10:00:00Z\n---\ntheir body"
+        : "---\nupdated: 2026-09-07T11:22:33Z\n---\nmy body";
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const rows = Array.from(m.contentEl.querySelectorAll("pre div")).map((d) => d.textContent ?? "");
+    expect(rows.some((r) => r.startsWith("- their body"))).toBe(true);
+    expect(rows.some((r) => r.startsWith("+ my body"))).toBe(true);
+    // the ignored key is masked out entirely, so it is neither a change NOR shown as context
+    expect(rows.some((r) => r.includes("updated:"))).toBe(false);
+  });
+
   it("'Open both to merge' resolves 'manual'", async () => {
     const plugin = seed();
     const m = new NoteConflictModal(plugin.app, plugin as any);

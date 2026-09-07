@@ -755,6 +755,64 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     p.onunload();
   });
 
+  // ---- stale-preview guard must not FALSE-POSITIVE (issueStalePreviewFalsePositive) ----
+  // The guard compared RAW decoded text via readTextOrEmpty, which returns "" on ANY read failure.
+  // So a transient lock, and any cosmetic rewrite the modal never showed the user, both read as
+  // "that file changed since you opened this" and refused the apply — the reported symptom.
+
+  it("an EOL-only rewrite of the original does NOT block 'mine' (the diff showed no change)", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("a\r\nb\r\n")); // rewritten CRLF while the modal sat open
+    await p.io_.write("note (conflict).md", enc("MINE"));
+    // the modal previewed the LF form; content identity is EOL-agnostic, so this must still apply
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine", "a\nb")).toBe(true);
+    expect(dec(await p.io_.read("note.md"))).toBe("MINE");
+    p.onunload();
+  });
+
+  it("a timestamp-only frontmatter bump under an IGNORED key does NOT block 'mine'", async () => {
+    const { p } = await bootPlugin();
+    p.settings.ignoreTimestampChanges = true;
+    p.settings.ignoredTimestampKeys = ["updated"];
+    const previewed = "---\nupdated: 2026-09-07T10:00:00Z\ntitle: t\n---\nbody\n";
+    // another plugin re-stamped `updated` between preview and apply — a change the user never saw
+    await p.io_.write("note.md", enc("---\nupdated: 2026-09-07T11:22:33Z\ntitle: t\n---\nbody\n"));
+    await p.io_.write("note (conflict).md", enc("MINE"));
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine", previewed)).toBe(true);
+    expect(dec(await p.io_.read("note.md"))).toBe("MINE");
+    p.onunload();
+  });
+
+  it("a REAL body change under an ignored key still blocks 'mine'", async () => {
+    const { p } = await bootPlugin();
+    p.settings.ignoreTimestampChanges = true;
+    p.settings.ignoredTimestampKeys = ["updated"];
+    const previewed = "---\nupdated: 2026-09-07T10:00:00Z\n---\nbody\n";
+    await p.io_.write("note.md", enc("---\nupdated: 2026-09-07T11:22:33Z\n---\nDIFFERENT BODY\n"));
+    await p.io_.write("note (conflict).md", enc("MINE"));
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine", previewed)).toBe(false);
+    expect(dec(await p.io_.read("note.md"))).toContain("DIFFERENT BODY"); // not clobbered
+    p.onunload();
+  });
+
+  it("a READ FAILURE refuses but is reported as unreadable, not as 'the file changed'", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("SAME"));
+    await p.io_.write("note (conflict).md", enc("MINE"));
+    const orig = p.io_.read.bind(p.io_);
+    p.io_.read = async (path: string) => {
+      if (path === "note.md") throw new Error("EBUSY: file locked");
+      return orig(path);
+    };
+    __notices.length = 0;
+    expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine", "SAME")).toBe(false);
+    const said = __notices.join(" ");
+    expect(said).toMatch(/couldn't read/i);
+    expect(said).not.toMatch(/changed since/i); // must NOT blame a change that did not happen
+    expect(dec(await orig("note (conflict).md"))).toBe("MINE"); // copy kept for re-review
+    p.onunload();
+  });
+
   it("switchToVault records the one-time transition (vaultId/owner/readOnly/pendingSwitch) and reconnects", async () => {
     const { p, api } = await bootPlugin();
     const before = api.__calls.status?.length ?? 0;

@@ -23,6 +23,8 @@ import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, plug
 import { vaultKeyMismatch, switchAlreadyApplied, resumeAction } from "./connectdecisions"; // pure connect-effect decisions (functional-decoupling D0036)
 import { EMBEDDED_SIGNATURE, SchemaResponse, hashCheck, signatureVerdict, FAIL_CLOSED_MESSAGE, UNVERIFIED_MESSAGE, incompatibleMessage } from "./wiresignature"; // D0042 wire-contract compatibility
 import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
+import { normalizedContent } from "./frontmatter"; // content identity for the conflict stale-preview guard
+import { isExcluded } from "./excludedFolders";
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, nudgeTarget } from "./mounts";
@@ -587,7 +589,24 @@ export default class SelfSyncPlugin extends Plugin {
     // idempotent across reloads: unload leaves nothing behind, so the next load shows exactly one.
     for (const el of this.editorActionEls) el.remove();
     this.editorActionEls.clear();
+    if (this.uiRefreshTimer !== undefined) { window.clearTimeout(this.uiRefreshTimer); this.uiRefreshTimer = undefined; }
     this.log("plugin unloaded");
+  }
+
+  // Coalesced settings/status repaint. resolveNoteConflict is called once PER FILE by the conflict
+  // modal's cosmetic sweep, and each call used to force a FULL settings-tab re-render — which itself
+  // re-derives the conflict list from vault.getFiles() over the whole vault — plus a status repaint.
+  // Clearing a batch of 200 false conflicts therefore did 200 full repaints of a tab that only needs
+  // the final state (issueConflictResolveRepaintsPerFile). One trailing repaint is enough; the UI is
+  // still current within a frame or two, and nothing reads these callbacks for correctness.
+  private uiRefreshTimer?: number;
+  private requestUiRefresh(): void {
+    if (this.unloading || this.uiRefreshTimer !== undefined) return;
+    this.uiRefreshTimer = window.setTimeout(() => {
+      this.uiRefreshTimer = undefined;
+      if (this.unloading) return;
+      this.settingsRefresh?.(); this.statusListener?.();
+    }, 50);
   }
 
   // ---- logging + status ----
@@ -665,6 +684,30 @@ export default class SelfSyncPlugin extends Plugin {
   // Returns false (without touching anything) if `original` changed since the modal previewed it —
   // so "keep mine" can't silently overwrite a newer version that a poll pulled in while the modal sat
   // open (critique R9-M2). previewedOther is the "other version" text the modal showed.
+  // Is the `original` still what the modal showed? Judged on CONTENT IDENTITY (EOL/BOM-normalized,
+  // ignored timestamp keys masked) — the same basis the sync engine uses — NOT on raw bytes.
+  // Raw comparison produced two false refusals (issueStalePreviewFalsePositive): the modal's own diff
+  // normalizes EOL, so a CRLF rewrite could block an apply over a difference the user was never shown;
+  // and a `modified:`/`updated:` bump by another plugin (or an engine re-write on the 4s poll while the
+  // modal sat open) read as a real edit. A read FAILURE is its own verdict rather than a change —
+  // readTextOrEmpty returns "" on error, so a transient Windows lock looked exactly like a rewrite.
+  private async previewStillCurrent(original: string, previewedOther: string): Promise<"match" | "changed" | "unreadable"> {
+    const bytes = await this.readBytesOrNull(original);
+    if (!bytes) return "unreadable";
+    const pats = this.ignorePatternsForPath(original);
+    return normalizedContent(new TextDecoder().decode(bytes), pats) === normalizedContent(previewedOther, pats)
+      ? "match"
+      : "changed";
+  }
+  // Say which of the two actually happened — "it changed" when the file moved on, and an honest
+  // "couldn't read it" otherwise, so a locked file never gets reported as someone else's edit.
+  private noticePreviewStale(verdict: "changed" | "unreadable", original: string): void {
+    new Notice(
+      verdict === "unreadable"
+        ? `SelfSync: couldn't read ${original} just now (it may be locked) — try again`
+        : "SelfSync: that file changed since you opened this — review it again",
+    );
+  }
   async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual", previewedOther?: string): Promise<boolean> {
     if (choice === "manual") {
       await this.app.workspace.openLinkText(original, "", false);
@@ -672,8 +715,9 @@ export default class SelfSyncPlugin extends Plugin {
       return true;
     }
     if (choice === "mine") {
-      if (previewedOther !== undefined && (await this.readTextOrEmpty(original)) !== previewedOther) {
-        new Notice("SelfSync: that file changed since you opened this — review it again");
+      const pre1 = previewedOther === undefined ? "match" : await this.previewStillCurrent(original, previewedOther);
+      if (pre1 !== "match") {
+        this.noticePreviewStale(pre1, original);
         return false; // don't clobber the newer version; the modal re-renders with the new content
       }
       // Idempotent: if the copy is already gone (resolved elsewhere / on another device), there's
@@ -684,8 +728,9 @@ export default class SelfSyncPlugin extends Plugin {
       // both yield to the event loop, and the modal runs OUTSIDE the engine queue, so a reconcile
       // could have pulled a newer `original` in the gap — don't clobber it (critique F3; narrows the
       // window to this no-await span).
-      if (previewedOther !== undefined && (await this.readTextOrEmpty(original)) !== previewedOther) {
-        new Notice("SelfSync: that file changed since you opened this — review it again");
+      const pre2 = previewedOther === undefined ? "match" : await this.previewStillCurrent(original, previewedOther);
+      if (pre2 !== "match") {
+        this.noticePreviewStale(pre2, original);
         return false;
       }
       await this.io.write(original, bytes);
@@ -694,7 +739,7 @@ export default class SelfSyncPlugin extends Plugin {
     await this.io.remove(copy); // io.remove is a no-op if the file is already gone (idempotent)
     this.engine.enqueue({ kind: "path", path: copy, size: 0 });
     // No cache to clear — the conflict was DERIVED from the copy file; deleting it clears the conflict.
-    this.settingsRefresh?.(); this.statusListener?.();
+    this.requestUiRefresh(); // coalesced: a batch sweep must not repaint the settings tab per file
     return true;
   }
 
@@ -1763,6 +1808,17 @@ export default class SelfSyncPlugin extends Plugin {
   // normalization in content identity stays on regardless). SelfSync never WRITES these keys.
   ignorePatterns(): string[] {
     return this.settings.ignoreTimestampChanges ? this.settings.ignoredTimestampKeys : [];
+  }
+  // The ignore patterns that apply to ONE path, using the SAME gating reconcile's ignorePatternsFor
+  // uses (feature on, `.md`, not `.obsidian/` config — a `created:` in a config stays significant —
+  // and not an excluded folder). Exists so the conflict UI can judge "did this file change?" by the
+  // same content identity the sync engine does; comparing raw bytes there made a cosmetic rewrite
+  // look like a real edit (issueStalePreviewFalsePositive).
+  ignorePatternsForPath(path: string): readonly string[] {
+    const pats = this.ignorePatterns();
+    if (pats.length === 0) return [];
+    if (!path.endsWith(".md") || path.startsWith(".obsidian/") || isExcluded(path, this.settings.excludedFolders ?? [])) return [];
+    return pats;
   }
   // All vault folder paths, for the excluded-folders autocomplete.
   getAllFolders(): string[] {
