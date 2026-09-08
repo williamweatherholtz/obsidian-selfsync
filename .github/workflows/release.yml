@@ -46,7 +46,7 @@ jobs:
         if: steps.v.outputs.released == 'false'
         working-directory: client
         run: |
-          npm install
+          npm ci
           npm run build
 
       - name: Publish release with plugin assets

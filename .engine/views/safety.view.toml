@@ -1,0 +1,24 @@
+# Safety — this DELIVERABLE's STPA (D0016), answering the viewpoint's concern directly: every
+# SafetyRequirement and the Test(s) that #Verify it. Seed the 25 SRs, walk the verify edges both ways.
+#
+# Declared because the `safety` viewpoint's previous renderer, `keel show control-structure`, computes the
+# ENGINE's own workflow control structure in keel 0.3.1 - not this project's model. LIMIT (keel 0.3.1): the
+# view engine traverses only the engine's edge kinds (verify, satisfy, dependency, supersede, ...); a
+# PROJECT-declared marker (#Causes, #LeadsTo, #Inverts, #Mitigates, #RealizedBy, ...) is not a traversable
+# kind, so the UCA -> Hazard -> Loss chain cannot be rendered by a TOML view yet - carried upstream
+# (sysmlv2-ai-toolkit #67). Until then this view is the verification lens; the full STPA graph is in
+# .tracking/safety/*.sysml and `keel diagram`.
+name = "safety"
+concern = "Are safety-relevant losses/hazards/UCAs identified and constrained, and is each constraint verified?"
+audience = "safety engineer"
+
+[select]
+type = "SafetyRequirement"
+
+[traverse]
+edges = ["verify"]
+direction = "both"
+depth = 1
+
+[project]
+types = ["SafetyRequirement", "Test"]

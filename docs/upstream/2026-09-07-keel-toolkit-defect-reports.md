@@ -1,5 +1,7 @@
 # Upstream defect reports for the keel toolkit (sysmlv2-ai-toolkit), found from obsidian-selfsync on 2026-09-07 with keel 0.3.1
 
+FILED 2026-09-07 as GitHub issues on williamweatherholtz/sysmlv2-ai-toolkit: #60 (nested dependency skipped), #61 (migrate dry-run), #62 (unattested disposition closes a finding), #63 (add-task outside the def + record-issue numbering), #64 (sprint-closure comment exemption), #65 (stale docs), #66 (D0017 suspicion propagation, feature), #67 (TOML views cannot traverse project-declared marker edges, feature).
+
 ## 1. keel-parser skips a `dependency` statement nested inside an `action def` body — silently
 
 **Observed.** `.tracking/delivery/delivery.sysml` had 74 `#Covers dependency from <sittingReview> to <task>;`

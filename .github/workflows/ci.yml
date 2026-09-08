@@ -75,7 +75,7 @@ jobs:
           node-version: "22"
       - name: Install client dependencies
         working-directory: client
-        run: npm install
+        run: npm ci
       - name: Audit npm dependencies (production, high+)
         working-directory: client
         # Fail only on high/critical production advisories — dev-only advisories are noise for a
@@ -100,7 +100,7 @@ jobs:
         env:
           SELFSYNC_REQUIRE_E2E: "1" # a missing binary is now a hard failure, not a silent skip
         run: |
-          npm install
+          npm ci
           npm run test:cov
       # The Playwright e2e layers (e2e-obsidian, e2e-admin) are outside the main tsconfig's include, so
       # they were never typechecked — a type error only surfaced when the slow, install-gated suite

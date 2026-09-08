@@ -28,10 +28,10 @@ import { chromium, type Browser, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection, type AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { enablePlugin, isPluginEnabled } from "./rendererFunctions";
 
@@ -315,6 +315,42 @@ export async function waitForVaultReady(page: Page): Promise<void> {
     if (!acted) break;
   }
   await page.waitForSelector(".workspace-ribbon", { timeout: 60_000 });
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Version gate — the installed Obsidian must be one the plugin claims to support
+// ---------------------------------------------------------------------------------------------------
+
+/** The running Obsidian's version, read from its renderer user agent (`... obsidian/1.5.8 ...`), or null. */
+export async function installedObsidianVersion(page: Page): Promise<string | null> {
+  const ua = await page.evaluate(() => navigator.userAgent);
+  return /obsidian\/(\d+\.\d+\.\d+)/i.exec(ua)?.[1] ?? null;
+}
+
+/** manifest.json's minAppVersion — the floor the plugin declares, which BRAT and Obsidian enforce. */
+export function manifestMinAppVersion(): string {
+  const manifest = JSON.parse(readFileSync(resolve(__dirname, "..", "..", "..", "manifest.json"), "utf8")) as { minAppVersion?: string };
+  return manifest.minAppVersion ?? "0.0.0";
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) { const d = (pa[i] ?? 0) - (pb[i] ?? 0); if (d) return d; }
+  return 0;
+}
+
+/**
+ * True when the installed Obsidian is OLDER than manifest.json's minAppVersion. A spec that proceeds on
+ * such an install is not demonstrating the shipped plugin: Obsidian itself refuses to enable the plugin
+ * below minAppVersion, and APIs the plugin uses (e.g. SettingGroup) may not exist, so a green run there
+ * would be a false assurance and a red one would be noise. Specs skip loudly instead
+ * (issueE2eObsidianBelowMinAppVersion). Unknown version (no UA match) => not below, run proceeds.
+ */
+export async function obsidianBelowMinAppVersion(page: Page): Promise<false | string> {
+  const installed = await installedObsidianVersion(page);
+  if (!installed) return false;
+  const min = manifestMinAppVersion();
+  return compareVersions(installed, min) < 0 ? `installed Obsidian ${installed} is below manifest minAppVersion ${min}` : false;
 }
 
 // ---------------------------------------------------------------------------------------------------

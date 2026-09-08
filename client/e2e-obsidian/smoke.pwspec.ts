@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE } from "./helpers/obsidianDriver";
+import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, obsidianBelowMinAppVersion, OBSIDIAN_EXECUTABLE } from "./helpers/obsidianDriver";
 import { isPluginEnabled, isPluginLoaded } from "./helpers/rendererFunctions";
 import { startServer, createVault, stageVault, serverHasFile, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
 
@@ -31,6 +31,7 @@ test("the real plugin loads inside Obsidian and registers its UI", async () => {
   try {
     const page = await getMainWindow(app);
     await waitForVaultReady(page);
+    test.skip(!!(await obsidianBelowMinAppVersion(page)), (await obsidianBelowMinAppVersion(page)) || "");
 
     // The plugin auto-enabled (community-plugins.json) AND its instance actually CONSTRUCTED — i.e.
     // onload() ran without throwing. This is the whole point: it exercises the real ObsidianVaultIo +

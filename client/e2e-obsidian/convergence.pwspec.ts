@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE,
   createNote, modifyNote, readNote, pluginStatus, type ObsidianHandle,
+  obsidianBelowMinAppVersion,
 } from "./helpers/obsidianDriver";
 import { isPluginLoaded } from "./helpers/rendererFunctions";
 import { startServer, createVault, stageVault, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
@@ -40,7 +41,9 @@ test("a note created on device A converges to device B, and a change on B flows 
   const pageA = await getMainWindow(appA);
   const pageB = await getMainWindow(appB);
   await waitForVaultReady(pageA);
+  test.skip(!!(await obsidianBelowMinAppVersion(pageA)), (await obsidianBelowMinAppVersion(pageA)) || "");
   await waitForVaultReady(pageB);
+  test.skip(!!(await obsidianBelowMinAppVersion(pageB)), (await obsidianBelowMinAppVersion(pageB)) || "");
 
   // Both plugins constructed and reached a NON-error status (connected, not stuck offline).
   await expect.poll(() => pageA.evaluate(isPluginLoaded, "selfsync"), { timeout: 30_000 }).toBe(true);

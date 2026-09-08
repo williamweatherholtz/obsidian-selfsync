@@ -29,4 +29,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from dodBackfillStamp to issueHistoricalDoDsUnstamped;
+
+    #ProcessDefect part issueE2eObsidianBelowMinAppVersion : Issue {
+        :>> id = "f661d25a-2a19-4aed-8a73-ce262035986d";
+        :>> title = "real-Obsidian e2e ran green on Obsidian 1.5.8, below the plugin's minAppVersion 1.11.0 - a green run outside the supported envelope proves nothing";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Found 2026-09-07 while trying to automate l3GuiPass (the manual GUI pass) as a real-Obsidian Playwright demonstration. The machine's Obsidian is 1.5.8 (Electron 28 / Chrome 120); manifest.json declares minAppVersion 1.11.0, and client/src/settings.ts imports SettingGroup from the obsidian API, which 1.5.8 does not provide. The e2e-obsidian suite (smoke, configsync, convergence) nevertheless ran GREEN on 1.5.8 this sitting, because those specs only load the plugin and sync files - they never open the settings tab. So the layer that exists to prove the real glue works was proving it on an Obsidian no user of this plugin can run (Obsidian refuses to enable a plugin below minAppVersion), and the first spec to touch the settings UI would have failed for a reason unrelated to the plugin. Hazard class: a test environment silently outside the supported envelope - green means nothing, red means noise. FIX (e2eObsidianVersionGate): obsidianDriver reads the running version from the renderer user agent and every spec skips loudly, naming installed vs. minimum, when the install is below the floor. The operator-facing consequence is honest: on this machine the real-Obsidian layer now SKIPS until Obsidian is updated to >= 1.11.0 - which is also what l3GuiPass needs before it can be demonstrated. discoveredInField = false. Severity Medium (assurance defect, no data at risk).";
+        :>> discoveredInField = false;
+        :>> relatedTask = "e2eObsidianVersionGate";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from e2eObsidianVersionGate to issueE2eObsidianBelowMinAppVersion;
 }

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE, type ObsidianHandle } from "./helpers/obsidianDriver";
+import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, obsidianBelowMinAppVersion, OBSIDIAN_EXECUTABLE, type ObsidianHandle } from "./helpers/obsidianDriver";
 import { startServer, createVault, stageVault, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
 
 // Two-device CONFIG sync through real Obsidian: with the community surface on, a community plugin
@@ -41,8 +41,12 @@ test("a plugin enabled on device A propagates to device B, and B's own enabled p
 
   appA = await launchObsidian(A.appDataDir, A.vaultDir, 19222);
   appB = await launchObsidian(B.appDataDir, B.vaultDir, 19223);
-  await waitForVaultReady(await getMainWindow(appA));
-  await waitForVaultReady(await getMainWindow(appB));
+  const pageA = await getMainWindow(appA);
+  const pageB = await getMainWindow(appB);
+  await waitForVaultReady(pageA);
+  await waitForVaultReady(pageB);
+  test.skip(!!(await obsidianBelowMinAppVersion(pageA)), (await obsidianBelowMinAppVersion(pageA)) || "");
+  test.skip(!!(await obsidianBelowMinAppVersion(pageB)), (await obsidianBelowMinAppVersion(pageB)) || "");
 
   const bManifest = path.join(B.vaultDir, ".obsidian", "plugins", "testplugin", "manifest.json");
   const bList = path.join(B.vaultDir, ".obsidian", "community-plugins.json");

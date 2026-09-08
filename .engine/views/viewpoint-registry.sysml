@@ -88,7 +88,7 @@ package EngineViewpoints {
         :>> concernText = "Are safety-relevant losses/hazards/UCAs identified and constrained, and is each constraint verified?";
         :>> audience = "safety engineer";
         :>> sources = "STPA losses/hazards/UCAs/constraints (EngineSafety); safety-kind requirements; verify edges to their Tests";
-        :>> renderer = "keel show control-structure (STPA step 2, computed; losses/hazards from engine-safety.sysml via hazardsByProcess)";
+        :>> renderer = "keel view safety (this deliverable's STPA: every SafetyRequirement + the Tests that #Verify it - .engine/views/safety.view.toml; the UCA->Hazard->Loss chain lives in .tracking/safety/*.sysml and `keel diagram` until the view engine can traverse project markers, sysmlv2-ai-toolkit #67)";
         :>> surface = "assurance";
     }
     part requirementsVP : Viewpoint {
