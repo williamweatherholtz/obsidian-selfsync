@@ -7,7 +7,7 @@
 // `sysmlv2 orient --html`. This is the engine declaring itself DONE-AS-A-PRODUCT.
 // Accepted 2026-06-22 by wweatherholtz (review dialogue: "Accept as drafted").
 // =====================================================================
-package Decision0093 {
+package ReferenceDecision0093 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

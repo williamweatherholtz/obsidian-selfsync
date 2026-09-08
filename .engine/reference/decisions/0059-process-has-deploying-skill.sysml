@@ -4,7 +4,7 @@
 // Accepted 2026-06-17 by wweatherholtz ("processes should have downstream AI skills that
 // run as a means of deployment ... use skills to cement processes").
 // =====================================================================
-package Decision0059 {
+package ReferenceDecision0059 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

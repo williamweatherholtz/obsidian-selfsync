@@ -7,7 +7,7 @@
 // threshold, so it was surfaced to the human, who accepted partial migration + CONTRACT of the 5.
 // Accepted 2026-07-03 by wweatherholtz (explicit choice "Accept partial migration + CONTRACT the 5").
 // =====================================================================
-package Decision0107 {
+package ReferenceDecision0107 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

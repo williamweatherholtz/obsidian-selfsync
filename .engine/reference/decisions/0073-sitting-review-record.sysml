@@ -4,7 +4,7 @@
 // attestation. Resolves issue023 (the human gate had no auditable artifact).
 // Accepted 2026-06-18 by wweatherholtz ("issue023 - yes confirmed").
 // =====================================================================
-package Decision0073 {
+package ReferenceDecision0073 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -6,7 +6,7 @@
 // issue017. Accepted 2026-06-16 by wweatherholtz (challenge: "defend that what we're
 // making isn't modeling a system, just tracking work").
 // =====================================================================
-package Decision0055 {
+package ReferenceDecision0055 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -12,7 +12,7 @@ description: |
   conversational replies that change nothing. CLAUDE.md §3 is the source of truth — this skill
   is the always-on checklist, fired every turn by a UserPromptSubmit hook (D0064).
 metadata:
-  version: 0.2.0
+  version: 0.6.0
   domain: [process-discipline, request-routing, work-tracking, MBSE, SysMLv2]
   writePolicy: read-only
   engine: keel-ai-toolkit
@@ -23,9 +23,8 @@ metadata:
 The engine tracks the *work of building things*. Every substantive request must be
 routed through the discipline **before** acting. CLAUDE.md §3 is the source of truth;
 this skill is the per-request checklist that makes the route-first step visible and
-mandatory, so nothing slips past silently. It is invoked at the start of every request by
-convention (D0064). NOTE: the automatic `UserPromptSubmit` triage hook is NOT built yet — it is
-tracked as sprint30/issue020, so until then this checklist binds by convention, not by a hook.
+mandatory, so nothing slips past silently. It is fired every turn by a `UserPromptSubmit`
+hook (`keel hook user-prompt`, in the binary; D0064).
 
 ## The checklist (do this first, every time)
 
@@ -39,10 +38,19 @@ tracked as sprint30/issue020, so until then this checklist binds by convention, 
    | VIEW       | asks for a computed answer (status, trace, stale set, a doc)  | §3d   |
    | ORIENT     | asks where things stand / what is next                        | §3f   |
 
-2. **State the routes out loud** in the first line of your response — e.g. `RECORD → §3c`.
-   A request often spans categories: **split it** and name each route. **Flag anything that
-   does not cleanly map** to a category rather than forcing it into one — say so and ask.
-   Routing *every* part (not just the first) is mandatory (D0064).
+2. **Emit a visible `Parsed:` block** at the START of every response (D0106) — an enumerated
+   decomposition, one line per part, each **labelled by kind** with its route, e.g.:
+
+   > **Parsed:** 1. `TRIVIAL` — rename process X to Y. 2. `CHANGE` — add test A to block ii of Y → §3a. 3. `RECORD` — file the field defect → §3c.
+
+   Routing *every* part (not just the first) is mandatory. **No action untied to a process.**
+   When a non-trivial part maps to **no existing process, DEFINE the process** (a process
+   definition is the AI's creative output — not an ad-hoc action); it runs through the discipline
+   like any CHANGE. Do **not** silently force-fit or free-form — define, then execute. The
+   **`TRIVIAL`** label is the ONLY fast-path, and it must still appear in the parse (visible, never
+   silent). **Human sign-off is an explicit process STEP** — a declared `method=confirmation` gate
+   whose passing `TestResult` carries the attestation (D0016/D0066); **never inferred** from a
+   general instruction.
 
 3. **If you cannot classify confidently, ask** — do not default to EXECUTE. Engine work
    (building the engine's own runtime/tooling) is not a separate route: route it by *what it
@@ -93,6 +101,29 @@ tracked as sprint30/issue020, so until then this checklist binds by convention, 
    (a process violation, a skill gap, a schema gap), record it immediately as an
    `Issue` in `.tracking/issues.sysml` rather than letting it slip to memory. It
    will be triaged at retro. Use `relatedTask` to point to the relevant backlog action.
+
+8a. **Multi-thread coordination (D0108).** When more than one AI thread edits this model, before touching
+   an item you did NOT create: do **not** edit its fields. Only the OWNER-OF-RECORD (the item's `createdBy`)
+   edits an item in place. A non-owner may only **ADD** new items + typed edges that reference it
+   (`#DependsOn`/`#Resolves`/`supersede`), **supersede** a Decision (author a new one, D0070) rather than
+   overwrite it, and treat shared files (`issues.sysml`, `backlog.sysml`) as append-or-rebase (never
+   force-overwrite; `git fetch` before a shared-region edit). Conflicting conclusions across threads →
+   record an `Issue` and let the HUMAN adjudicate; neither thread silently wins.
+
+8. **Analysis / design → a chartered research spike (issue055/D0068).** If a request triggers
+   *substantial* analysis, diagnosis, or architectural design (a multi-step investigation, a
+   design exploration, a decision that reframes others) — NOT a quick computed answer — do **not**
+   run it as free-form conversation. Route it as a **`WorkKind::research` spike**, chartered to an
+   **`Issue`** or a **`status=proposed` `Decision`** (the charter guard already permits both — it
+   checks edge existence, not target type). Its **DoD = a design artifact (e.g. a proposal doc) +
+   a recorded `proposed` Decision** capturing the direction. This exists because upstream analysis
+   *precedes* the Decision it produces, so it has no accepted charter source — and left un-routed it
+   leaks into chat, uncaptured (the issue054 defect, recursed into the engine's own process). Quick
+   VIEW/ORIENT answers stay conversational; sustained design gets a spike. The artifact side of this
+   is now a declared control: `researchSpikeCharterRule` (D0111/issue055, warning-level in `keel rules`)
+   flags a `WorkKind::research` spike that charters to something other than a legitimate governing source
+   (Decision/Need/SystemRequirement/Issue). The "did this analysis skip the spike?" judgment stays with
+   you — a commit gate cannot see a conversation — but a spike that DOES exist must be well-formed.
 
 ## Why this exists
 

@@ -5,7 +5,7 @@
 // Accepted 2026-06-16 by wweatherholtz ("why would they need confirmation? do we
 // not have real tests for these programmatic items?").
 // =====================================================================
-package Decision0051 {
+package ReferenceDecision0051 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -1,9 +1,8 @@
 # SysML v2 Syntax Notes (confirmed against the pilot implementation)
 
 Validated empirically against `jupyter-sysml-kernel` 0.59.0 (OMG pilot
-implementation, OpenJDK 25) when these notes were written; that kernel harness
-has since been retired (D0048/D0074/M4 — `keel` is the validator now), but the
-syntax facts below still hold. Treat them as ground truth for authoring `.sysml`.
+implementation, OpenJDK 25) via the harness in `.engine/tools/validate/`.
+These supersede guesses; treat them as ground truth for authoring `.sysml`.
 
 ## Works ✅
 
@@ -18,6 +17,61 @@ syntax facts below still hold. Treat them as ground truth for authoring `.sysml`
   (the idiomatic v2 replacement for v1 `deriveReqt`/`refine`/`trace`).
 - `:>>` redefinition; `[*]` and `[0..1]` multiplicity.
 - `ref name : Type[0..1];` — reference (non-compositional) features.
+### KERNEL-VERIFIED base constructs (`_spike_base_algebra.py`, 2026-08-14)
+
+**Read this before inventing a marker (D0139 base-first).** These verdicts come from the KERNEL, the only
+conformance oracle. Do **not** substitute `keel check`: the rust authority is PERMISSIVE and accepts
+constructs real SysML v2 rejects — that error put an invalid migration target into an accepted Decision
+(issue097). Re-run the spike to re-measure; never assert from the rust parser alone.
+
+**VALID — reach for these first:**
+
+| Construct | Form | Used today |
+|---|---|---|
+| satisfy | `satisfy r by p;` | ✅ 263× |
+| allocate | `allocate a to b;` | ✅ 69× |
+| dependency | `dependency a to b;` / `dependency from a to b;` | ✅ |
+| specialization | `requirement b :> a;` | ✅ — **this is the derivation form** |
+| assert constraint | `assert constraint c : Ok;` (in a part **or** at package level) | ✗ |
+| require constraint | `require constraint c : Ok;` (in a requirement) | ✗ |
+| perform action | `perform action s : Step;` | ✗ |
+| action usage | `action s : Step;` | ✗ |
+| succession | `first a then b;` | ✅ |
+| verification | `verification def V { subject s : P; objective r; }` — valid syntax, but **`objective` DECLARES a member and carries NO reference**; see below | ✗ |
+| ports | `port def Pt;` · `port p : Pt;` | declared only |
+| interface | `interface def If { end a : Pt; end b : Pt; }` | ✗ |
+| connect | `connect x.p to y.p;` | ✗ |
+| use case | `include use case u : U;` · `subject s : Sys;` | ✗ |
+| metadata prefix | `#M dependency from a to b;` · `#M part a : P;` | ✅ |
+| multi-valued ref | `ref e : C[*];` + `:>> e = (c1, c2);` | ✗ — **valid SysML v2, REJECTED by keel-parser** |
+
+**INVALID — do not use, they are v1 keywords absent from the v2 pilot grammar:**
+`refine X by Y` · `trace X to Y` · `derive X from Y` · and every standalone `verify` form
+(`verify r by v`, `verify r;` in a verification, `verify v;` in a requirement — the kernel's own message
+is *"A requirement verification must be in the objective of a verification case"*).
+
+The multi-valued `ref` row is the consequential one: it is **valid SysML v2 that our own parser rejects**,
+so the gap that made markers look unavoidable is a keel-parser defect, not a language limitation.
+
+### "Parses" ≠ "expresses the relationship" — test with an UNDECLARED name
+
+The costliest error made in this repo was treating *valid syntax* as *a working edge*. They are different
+questions and only the second usually matters. `objective r;` parses — and carries no reference at all:
+
+```
+verification def V { subject s; objective zzz; }   → PASSES (nothing named zzz exists anywhere)
+part p : NoSuchTypeAnywhere                        → FAILS
+satisfy r by zzz3                                  → FAILS  "Couldn't resolve reference to Element"
+```
+
+The controls prove the kernel *does* resolve references, so `objective` and `subject` simply declare
+nested members. Migrating `#Verify` onto that shape would have deleted all 456 verification links while
+both toolchains reported clean (issue098, D0140).
+
+**The discriminator is one kernel cell: give the construct a name that is declared nowhere.** Passes ⇒ it
+declares, and is not an edge. Fails ⇒ it resolves a reference, and is. Run this before claiming any
+construct can replace any edge. Forms that DO resolve: `objective :>> r` and `objective :> r` — both
+require a **requirement-typed** target.
 - Metadata application: the **prefix** form `#MarkerName <element>` (including a `#Marker` on a
   `dependency`, a `first..then` succession, or a `part`) is portable — it validates in BOTH the
   rust authority (D0048) and the kernel. The **member** form `<element> { @MarkerName; }` parses
@@ -40,7 +94,12 @@ syntax facts below still hold. Treat them as ground truth for authoring `.sysml`
 - `:>` specialization from an **`abstract part def`** base (e.g. `part def Workflow :> MetaElement`).
 - **Ordered multiplicity** feature: `ref phases : Phase[*] ordered;`.
 - **Instance population of a `[*]` feature with a sequence:** `:>> phases = (a, b, c);`
-  (and a single value also works: `:>> exitGate = gateA;`).
+  — **KERNEL ONLY.** The rust authority (D0048) REJECTS it: `unexpected character '('`. This entry was
+  confirmed 2026-06-09 against the kernel alone, before the rust parser existed, and the qualification
+  was never added — so it read as portable for two months. Nothing in the repo uses it, and anything
+  gating a commit runs the rust parser, so treat the sequence form as UNAVAILABLE until keel-parser
+  supports it (issue095). A single value DOES work in both: `:>> exitGate = gateA;`, and several
+  single-valued `ref` features work where a multi-valued one would be natural.
 - Instances via `part x : T { :>> attr = v; :>> ref = other; }` (the `:>>` redefines
   inherited features; `ref` features take element references).
 - Closed sets are `enum def` types (pilot-confirmed 2026-06-10: `enum def X { a; b; }`
@@ -76,26 +135,31 @@ syntax facts below still hold. Treat them as ground truth for authoring `.sysml`
 Because qualified names fail and cross-file reopening doesn't share scope, the
 schema is restructured as **one distinct top-level package per file**, named
 `Engine<Concern>` (e.g. `EngineElement`, `EngineRequirements`, `EngineWork`,
-`EngineVerification`, `EngineWorkflow`, `EngineProcess`, `EngineRisk`,
+`EngineVerification`, `EngineWorkflow`, `EngineProcess`,
 `EngineSkills`, `EngineSafety`). Each file:
 - starts with `private import ScalarValues::*;` if it uses primitives, and
 - `private import EngineElement::*;` (etc.) for any sibling types it references.
 
-(This concatenation was how the retired kernel validators resolved imports; `keel` parses the tree
-directly, so it is no longer something you do by hand.)
+Validate by concatenating dependency-ordered files into one submission (so
+imports resolve) — see `.engine/tools/validate/`.
 
 ## How to validate
 
-Validate with `keel` — the Python kernel validators + the JVM SysML kernel were retired with the
-Rust-sole-gate move (D0048/D0074/M4); there is no conda/JVM validation step:
+Use the four-layer validators (retired legacy `validate_sysml.py` 2026-06-11):
 
-```
-keel validate [ROOT]   # parses .tracking/*.sysml
-keel guard   [ROOT]    # all forward guards; also scans .engine (engine-lint / decision-rationale / process-*)
+```powershell
+$conda = "C:\Users\WilliamWeatherholtz\miniforge3\Scripts\conda.exe"
+& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_schema.py
+& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_workflows.py
+& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_instances.py
+& $conda run -n sysml --no-capture-output python .engine\tools\validate\validate_tracking.py
 ```
 
-Both are kernel-free Rust — no `conda`, no JVM. A change is not done until `keel validate` reports
-zero `ERROR:` and `keel guard` is green.
+The kernelspec calls bare `java`, so it MUST run through `conda run -n sysml`
+(running the env python directly fails with WinError 2). Needs sandbox disabled
+(subprocess + the kernel). A cell FAILS iff the kernel emits a line containing
+`ERROR:`. NEVER pipe `conda run` output into another cmdlet — the JVM holds the
+pipe and the shell hangs.
 
 ## TestResult naming and enum conventions (updated Sprint 7, 2026-06-15)
 
@@ -132,19 +196,21 @@ Current stack (Rust parser + pilot 0.59.0 + query.py) is stable. Re-evaluate whe
 
 ## Decision file authoring (`.engine/decisions/`)
 
-Decision files are standalone SysML v2 packages. Common mistakes (the `decision-rationale` + `engine-lint` guards in `keel guard` scan the decision files now that the kernel validators are retired):
+Decision files are standalone SysML v2 packages. Common mistakes caught by the lint check in `validate_instances.py`:
 
-- **Imports**: `EngineWork::*` (for `Decision`), `EngineElement::*` (for `VerificationMethod`/`VerdictKind`), and `EngineVerification::*` (for the acceptance event's `Test`/`TestResult`). `Decision` lives in `EngineWork`, so that import is required.
+- **Imports**: `EngineWork::*` (for `Decision`), `EngineElement::*` (for `VerificationMethod`/`VerdictKind`), and `EngineVerification::*` (for the acceptance event's `Test`/`TestResult`). `Decision` lives in `EngineWork`, so that import is required; `validate_instances.py` lint-checks it.
 - **Fields**: `id`, `title`, `createdAt`, `createdBy` (inherited from `Element`) + `status : DecisionStatus`, `context : String` (the forces/situation), `decision : String` (the choice), `rationale : String` (why — incl. alternatives + criteria), `consequences : String`. Acceptance is NOT a field — it is a confirmation event (below).
 - **Template**: always copy a recent file (e.g. `0065-attribution-contract.sysml`) — do not author from scratch.
 - **Acceptance is a confirmation event (D0066), not a field.** A new accepted Decision `dNNNN` carries `verification dNNNNAccept : Test { :>> method = VerificationMethod::confirmation; ... }` (verifies `dNNNN` by naming) + `part dNNNNAcceptR1 : TestResult { :>> outcome = VerdictKind::pass; :>> judgedBy = <accepting human>; :>> judgedAt; :>> judgedAgainst; }`. `status = accepted` is the structured fact; the event carries who/when/commit. Tooling reads acceptance from the event.
+- **Status lifecycle (`DecisionStatus`): `proposed` → `accepted` | `rejected` | `superseded`** (ADR/MADR-aligned). `rejected` (D0122) is the *proposal-declined* path — a rejected proposed Decision flips `status=rejected` + gains a `dNNNNReject` confirmation event (`outcome=fail`, rationale in `procedureText`); recorded via the review-queue reject (D0121), NOT deleted. `superseded` (D0070) is the reversal-of-an-accepted-decision path (a *new* Decision supersedes; the old is kept). You reject a *proposal*; you supersede an *accepted* decision.
 - **Decision Analysis convention (D0058; ISO 42010 / NPR 7123.1 / ADR).** When a Decision chose
   between real options, capture the *trade* in `rationale`:
   `ALTERNATIVES: (A) <opt> — rejected: <why>; (B) <opt> — rejected: <why>; (C) <chosen>.
   CRITERIA: <the axes the choice was made on>.` Skip for record-only / no-alternative decisions
   (test: *was a real option rejected?*). Records the alternatives-not-chosen (ISO 42010).
-- **No cross-package references (issue021).** A Decision file is parsed standalone with only
-  `schema/core` in scope — other decisions, processes, or workflows are NOT co-loaded. So it CANNOT reference an element in another package
+- **No cross-package references (issue021).** `validate_instances.py` loads each `.engine` file
+  in kernel isolation with only `schema/core` preloaded — it does NOT co-load other decisions,
+  processes, or workflows. So a Decision file CANNOT reference an element in another package
   (e.g. `#ProspectiveChange dependency from d0049 to Delivery` with `import DeliveryWorkflow`
   fails: both the namespace and the target are unresolvable; a package is also never a valid
   `dependency` endpoint). Two ways to live within this:
@@ -167,4 +233,13 @@ Decision files are standalone SysML v2 packages. Common mistakes (the `decision-
 - `%export` is a silent no-op; multi-valued sequences render as opaque
   `OperatorExpression`; `succession` renders readably (earlier/laterOccurrence).
 - Native `elementId` REGENERATES every parse — never use it as durable identity.
+- **Reserved words can't be identifiers (enum literals / attribute names).** SysML v2 reserves the
+  relationship keywords `satisfy` / `verify` / `allocate` / `dependency` / `supersede` and the
+  requirement keyword `subject` (also `specializes`, `in`/`out`) — using them as an `enum def`
+  literal or `attribute` name yields "no viable alternative at input" (D0105 `rules.sysml` hit this;
+  fix: `Edge`-suffix the literals, `subject` → `subjectType`).
+- **`String` needs `private import ScalarValues::*;`** — it is NOT re-exported by `EngineElement`
+  (element.sysml imports ScalarValues itself). Without it: "Couldn't resolve reference to Type 'String'".
+- **A new `schema/core/*.sysml` file must be registered in `_schema_files.SCHEMA_ORDER`** (after the
+  files it imports) or `validate_schema.py` hard-fails (exit 2) before the kernel even runs.
 

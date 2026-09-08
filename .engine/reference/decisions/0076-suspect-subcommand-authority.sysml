@@ -6,7 +6,7 @@
 // incomplete one (retired at M4). Accepted 2026-06-19 by wweatherholtz (M2.2c suspect-semantics
 // question: "suspect = orient's answer (13)").
 // =====================================================================
-package Decision0076 {
+package ReferenceDecision0076 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

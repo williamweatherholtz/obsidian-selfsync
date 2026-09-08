@@ -7,7 +7,7 @@
 // Accepted 2026-06-23 by wweatherholtz (ACT disposition on issue045: "supersede d0003 to the
 // commit-gate model").
 // =====================================================================
-package Decision0096 {
+package ReferenceDecision0096 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

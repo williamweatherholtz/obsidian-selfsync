@@ -11,7 +11,7 @@
 // stamps; no content-hash; work->process by convention) is RESTATED in D0070. status flipped
 // to superseded (the formal record); D0070 names this Decision.
 // =====================================================================
-package Decision0069 {
+package ReferenceDecision0069 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

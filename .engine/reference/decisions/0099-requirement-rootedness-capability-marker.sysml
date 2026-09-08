@@ -7,7 +7,7 @@
 // driving Need (`#DerivedFrom`->Need) — that is the real traceability lie when omitted (the serve
 // class, issue046). Unmarked decision-driven work is exempt. Accepted 2026-06-24 by wweatherholtz.
 // =====================================================================
-package Decision0099 {
+package ReferenceDecision0099 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -1,0 +1,64 @@
+# Control ARMING (issue240 follow-on, D0217) — for each declared control, whether the fact that it can
+# actually FIRE is machine-checkable, and by which probe.
+#
+# WHY THIS FILE EXISTS. `keel show controls` (D0195) computes the two-way hazard/control diff from typed
+# EDGES, so it answers "is a control DECLARED against this hazard" and cannot answer "can that control
+# fire". During issue240 `core.hooksPath` was set to a null device, the pre-commit gate could not run at
+# all, and `controls` reported `uncoveredHazards: []` — truthfully, on the question it was asking, and
+# misleadingly on the question a reader has. DECLARED is not ARMED, and the surface must say which one
+# it means (N-C2 / srAuthorityAnswerStatesItsBasis).
+#
+# The association is DATA a project edits, not Rust (the D0184 rule-owners precedent): a downstream
+# project has different controls and must be able to declare its own probes without a fork.
+#
+# `probe` names a check the binary implements. Only these exist today:
+#   commit-gate-armed  — git can reach `.githooks/pre-commit` (gitx::commit_gate_armed)
+#
+# A control with NO entry is UNDECLARED — deliberately, so silence reads as a gap rather than as
+# consent (the process-enforcement.toml convention).
+
+[ctlCommitGate]
+checkable = true
+probe = "commit-gate-armed"
+
+[ctlPrePushBehind]
+checkable = false
+provenBy = "keel-cli/tests/hook_and_push_controls_actually_fire.rs"
+reason = "Not establishable by this view - but PROVEN BY TEST (D0253/D0256): a two-clone fixture attempts a REAL push through the REAL hook. The old reason said this 'can only be established by attempting a push, which a read-only view must not do' - true of the view, false of a test, and the first run of that test found TWO things reasoning had not: (1) the hook refused every fresh project's BOOTSTRAP push, because fetching main from a remote that has no main yet fails and the fail-loud clause conflated that with unreachability (issue306, fixed with D0256); (2) a PLAIN behind push never reaches this hook at all - git's own client-side fast-forward check refuses it first - so the hook's actual added value is the FORCED push, the D0129 history-rewrite class, and that is what the probe now exercises."
+
+[ctlBranchProtection]
+checkable = false
+reason = "A remote configuration, readable only by an authenticated API call to GitHub. A view that silently performs network I/O is a view you stop running (the orient sync precedent), and an unauthenticated read would fail open. Established by probe and recorded at sprint 401 instead."
+
+[ctlAuditHistory]
+checkable = false
+reason = "Runs in CI over pushed ranges. Its arming is a workflow file naming it, which the enforcement-surface keystone now locks (D0209 clause 2), and its FIRING leaves a run record on infra this binary cannot read. Checking that a local checkout contains a workflow file would assert reachability it cannot observe."
+
+[ctlReleaseGateJob]
+checkable = false
+reason = "Same as ctlAuditHistory: a CI job, proven both ways at sprint 409, whose arming is not observable from a working tree."
+
+[ctlWriteLock]
+checkable = false
+provenBy = "keel-cli/tests/write_lock_actually_serialises.rs"
+reason = "Not checkable BY THIS VIEW, which must not spawn processes - but the property IS verified, by test. The previous reason here was wrong and is recorded rather than quietly replaced: it argued that because no configuration can disarm the lock, there is nothing to probe. That rules out being DISARMED; it says nothing about whether the lock SERIALISES, which is the property the control exists for. issue184/issue185 are the counter-example - four concurrent writers once landed two issues with all four exiting 0, and on that day it was equally true that no configuration could disarm it. Six concurrent OS processes now contend for the real lock in the real write path and every write must land or fail loudly; the forbidden outcome is a writer exiting 0 having lost its write."
+
+[ctlPreWriteTiers]
+checkable = false
+provenBy = "keel-cli/tests/hook_and_push_controls_actually_fire.rs"
+reason = "Whether the HARNESS honours the hook remains a harness property no repo check can assert (issue248) - but what the hook DOES when invoked is provable, and now proven: under a strict fixture, a protected surface DENIES naming its sanctioned path, an ordinary .tracking write is ASK tier 2, and the control plane is ASK (D0179/K7). The probe also corrected the prober: its first draft assumed an ordinary write passes silently, and the control is stricter than the person testing it believed."
+
+[ctlFireLedger]
+checkable = false
+provenBy = "keel-cli/tests/hook_and_push_controls_actually_fire.rs"
+reason = "Machine-local by design, so a VIEW probe would misread a fresh clone's empty ledger as a gap - that half of the old reason stands. But a test controls its own fixture: two hook fires in a fresh project leave exactly two parseable lines carrying the firing session, so the single instrumentation path the hooks-actually-fired checks read is demonstrated to record what fires."
+
+[ctlReverify]
+checkable = false
+provenBy = "keel-cli/tests/hook_and_push_controls_actually_fire.rs"
+reason = "The old reason ('armed whenever the binary exists, nothing to check') was the ctlWriteLock error again: existence rules out ABSENCE, not misbehaviour, and the property that matters is that a fresh pass is stamped ONLY after a real green (D0101). Proven against a manufactured drift-suspect task: a RED gate stamps nothing, and the SAME tree stamps exactly one fresh result on green - the green half is what keeps the red assertion from passing vacuously, which the probe's own first draft did."
+
+[ctlLaunchDirtyRefusal]
+checkable = false
+provenBy = "keel-cli/tests/launcher_controls_actually_fire.rs"
+reason = "Not establishable by this view - a read-only view must not spawn a launch. PROVEN BY TEST (D0253 clause A) and declared proven-at-birth rather than retrofitted (D0254). The probe builds a throwaway git repository, confirms a CLEAN tree prepares (a control that refuses everything is stuck, not armed), then dirties the tree and asserts the refusal fires naming the reason. Before D0254 this control was IMPLEMENTED, load-bearing and absent from the control map entirely, which is the third failure class: an undeclared control cannot appear as a gap, so its omission made the coverage view read cleaner rather than worse."

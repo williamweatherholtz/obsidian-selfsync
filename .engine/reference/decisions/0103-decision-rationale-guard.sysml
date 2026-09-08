@@ -10,7 +10,7 @@
 // Decision->Decision supersession uses the status field, D0070. #Supersede stays.)
 // Accepted 2026-06-25 by wweatherholtz (chose 'Add non-empty-rationale guard').
 // =====================================================================
-package Decision0103 {
+package ReferenceDecision0103 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

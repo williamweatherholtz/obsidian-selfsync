@@ -7,7 +7,7 @@
 // Accepted 2026-06-17 by wweatherholtz (pre-authorized via D0063 expand/migrate/contract;
 // "continue to the end iteratively" — contract is self-evidencing, no separate gate).
 // =====================================================================
-package Decision0065 {
+package ReferenceDecision0065 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

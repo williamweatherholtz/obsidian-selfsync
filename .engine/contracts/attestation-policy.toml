@@ -1,0 +1,94 @@
+# attestation-policy — who may make each kind of attestation (D0146/D0129 srDcAuthorityFromRegistry).
+#
+# WHY DECLARED RATHER THAN HARDCODED. srDcAuthorityFromRegistry requires the acting actor's recorded
+# KIND AND ROLE to be checked "against the declared policy for that class". A policy compiled into
+# the binary is not declared — a project could not see it, could not tighten it, and could not tell
+# which of its own actors satisfy it. This file is the policy; `keel guard attestation-authority`
+# reads it. Same precedent as `.engine/contracts/critique-policy.toml` (D0097).
+#
+# ABSENT FILE = the built-in floor, never "no policy". A missing contract must not silently disable
+# an authority check (the issue090 lesson: absence is a legitimate state, and it means the DEFAULT,
+# not the empty set). With this file deleted, human-only still holds for both classes below.
+#
+# `kinds`  — the ActorKind values permitted. Empty is not allowed; a class with no permitted kind
+#            could never be satisfied.
+# `roles`  — the roles permitted. EMPTY MEANS ANY ROLE, including an actor with none recorded, which
+#            is what keeps this forward-only (issue068): actors enrolled before D0146 carry no role
+#            and must not be retro-failed. Naming roles here starts constraining immediately.
+
+[decisionAcceptance]
+# Accepting a Decision. Human-only under D0106 — an AI cannot supply a human's sign-off, and
+# `confirmation-authenticity` enforces the kind half independently of this file. The JUDGE is always
+# the human; the line below delegates only the RECORDING.
+kinds = ["human"]
+roles = ["supervisor"]
+#
+# RECORDING DELEGATED TO THE AI BY THE HUMAN (D0192 OPTION A), 2026-08-22, verbatim: "option A is
+# fine. this hasn't been a real issue to date." An agent may record the human's acceptance when the
+# record quotes their words verbatim, names them as judge, and cites this delegation — the
+# `confirmation-authenticity` guard's `delegatedAcceptanceSubstanceRule` checks the quote is actually
+# there (forward-only from the acceptance date). STATED LIMIT (D0192): a fabricated quote defeats the
+# check; the protections are the human reading their own queue and the audit trail.
+#
+# TO WITHDRAW (D0290): record a Decision that #Supersedes d0192 (and d0289, which rides on it) and delete the
+# line below IN THE SAME COMMIT. The Decision is the record; the deleted line is the mechanism. Recording then
+# requires the human's own gesture again (deck, console, TTY-checked CLI).
+delegatedRecording = "d0192"
+#
+# STANDING CONSENT (D0207), 2026-08-23, verbatim: "issues raised are automatically accepted. they
+# can be customizedly changed post-fact." A NON-FORK proposed Decision is accepted AT RECORD TIME by
+# `keel record decision` (D0291; the GitHub channel that did this at issue creation is disconnected -
+# the human did not want the notifications): the note carries the AUTO-ACCEPTED token and quotes the
+# standing words; the judge is the single decider declared in github-actors.toml, and with none or
+# several declared the Decision stays proposed. Override = a superseding Decision (D0290) or the
+# human's quoted word (D0289). Forks are excluded - accepting means choosing - and the
+# judgment-request-quality guard prices the ask. TO WITHDRAW (D0290): a Decision that #Supersedes
+# d0207, and the line below deleted in the same commit; decisions return to individually-judged acceptance.
+standingConsent = "d0207"
+
+[findingDisposition]
+# Dispositioning a finding at or above the Medium threshold (D0092). D0080 permits an AI to disposition
+# a LOW finding — that threshold lives in the guard, not here, because it is a property of the FINDING
+# rather than of the actor.
+#
+# DELEGATED TO THE AI BY THE HUMAN (D0165), 2026-08-20, verbatim: "auto accept issues by your
+# authority." This is the ONE class where their sign-off is no longer required, and it is a genuine
+# WEAKENING: they no longer see every Medium-and-above finding before it is dispositioned. Recorded here
+# rather than exempted in code so the check keeps running at full strength against a policy the project
+# chose, and so a reader of this contract sees the delegation instead of discovering it in a guard.
+#
+# An AI-recorded disposition is recorded AS AI-recorded: judgedBy names the AI actor and its
+# procedureText cites D0165, so nothing claims a human judged it. `keel show dispositions` reports the judge
+# on every row — that is the audit trail this trades for throughput.
+#
+# TO WITHDRAW (D0290): a Decision that #Supersedes d0165, and in the same commit restore `kinds = ["human"]`,
+# `roles = ["supervisor"]`. One line, no code, no rebuild; the guard then reports every AI-judged disposition
+# above the threshold as a violation, which is correct for a project that takes the delegation back.
+kinds = ["human", "ai"]
+roles = ["supervisor", "contributor"]
+
+[confirmationRecord]
+# Flipping a method=confirmation result (a DoD checkbox, a launch approval) as a HUMAN's judgment.
+# The JUDGE is always the human; kinds/roles bind the judge exactly as decisionAcceptance does.
+kinds = ["human"]
+roles = ["supervisor"]
+#
+# RECORDING DELEGATED TO THE AI BY THE HUMAN (D0198 OPTION A), 2026-08-23, chosen by deck tap
+# (uid 3eeb62cd, note OPTION A). An agent may flip a confirmation result on the human's behalf when a
+# COMPANION attestation record (<test>Attest<N>, method=confirmation) quotes their words verbatim -
+# the quote-receipt that gives the flip the evidence shape acceptance events always had. The
+# `confirmation-authenticity` guard's `delegatedConfirmationSubstanceRule` demands the receipt
+# (forward-only from the acceptance date). STATED LIMIT (the D0192 family): a fabricated quote
+# defeats the check; the protections are the human's own queue and the audit trail - and tap-to-sign
+# (D0201), if adopted, hardens this channel too.
+#
+# TO WITHDRAW (D0290): a Decision that #Supersedes d0198, and the line below deleted in the same commit;
+# confirmation flips then require the human's own gesture.
+delegatedRecording = "d0198"
+
+[contentionAdjudication]
+# Adjudicating a contributor conflict (D0108 clause 5). Human-only: no contributor may resolve a
+# contention in favour of its own conclusion, and an AI resolving one would be doing exactly that
+# whenever it holds a side.
+kinds = ["human"]
+roles = ["supervisor"]

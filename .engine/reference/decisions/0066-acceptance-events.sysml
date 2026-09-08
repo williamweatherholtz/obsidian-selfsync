@@ -4,7 +4,7 @@
 // tooling reads acceptance UNIFORMLY (no two-format split). The status-only
 // decisions are attested now by the human's explicit directive.
 // =====================================================================
-package Decision0066 {
+package ReferenceDecision0066 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

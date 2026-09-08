@@ -7,7 +7,7 @@
 // which items to pursue next ... is there no backlog prioritization? ... we
 // should be following that").
 // =====================================================================
-package Decision0052 {
+package ReferenceDecision0052 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

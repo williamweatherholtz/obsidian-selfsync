@@ -11,7 +11,7 @@
 // Accepted 2026-06-22 by wweatherholtz (acceptance dialogue: "Accept as proposed" —
 // schema-unfreeze sign-off + the disposition-as-confirmation-verification design).
 // =====================================================================
-package Decision0092 {
+package ReferenceDecision0092 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

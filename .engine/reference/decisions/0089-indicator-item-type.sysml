@@ -8,7 +8,7 @@
 // git-only first cut (the human's correction). #ProspectiveChange (schema unfreeze + process-def keystone).
 // Accepted 2026-06-22.
 // =====================================================================
-package Decision0089 {
+package ReferenceDecision0089 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

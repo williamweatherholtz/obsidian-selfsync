@@ -8,7 +8,7 @@
 // - the tracking tool is created... hard transition to the sprint as indicated,
 // but also update claude.md to prevent process subversion").
 // =====================================================================
-package Decision0064 {
+package ReferenceDecision0064 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

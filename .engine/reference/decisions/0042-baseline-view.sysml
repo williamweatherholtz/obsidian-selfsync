@@ -2,7 +2,7 @@
 // D0042 — baselineView: Release occurrence def + computed baseline view design.
 // Sprint 14; accepted 2026-06-16 by wweatherholtz (sprint execution).
 // =====================================================================
-package Decision0042 {
+package ReferenceDecision0042 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -5,7 +5,7 @@
 // re-verify/re-critique-on-change gap; aligns computed-state.md to the real two-tier mechanism.
 // Accepted 2026-06-21.
 // =====================================================================
-package Decision0084 {
+package ReferenceDecision0084 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

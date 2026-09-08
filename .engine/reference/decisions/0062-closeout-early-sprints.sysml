@@ -12,7 +12,7 @@
 // by my superseding directive" + "close out retros by the same directive";
 // reframed as a waiver after research+critique this sitting).
 // =====================================================================
-package Decision0062 {
+package ReferenceDecision0062 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

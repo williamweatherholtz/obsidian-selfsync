@@ -5,7 +5,7 @@
 // Decision for an Issue; supersede for a Need/Requirement). Issue-scoped (human-accepted scope).
 // #ProspectiveChange: introduces a process-def (keystone co-commit, D0070). Accepted 2026-06-20.
 // =====================================================================
-package Decision0078 {
+package ReferenceDecision0078 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

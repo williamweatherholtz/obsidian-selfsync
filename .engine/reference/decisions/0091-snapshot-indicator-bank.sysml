@@ -6,7 +6,7 @@
 // (burndown velocity, etc.) alongside the pulled/manual observations. A controlled exception to
 // compute-don't-store — surfaced + critiqued below. Accepted 2026-06-22.
 // =====================================================================
-package Decision0091 {
+package ReferenceDecision0091 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

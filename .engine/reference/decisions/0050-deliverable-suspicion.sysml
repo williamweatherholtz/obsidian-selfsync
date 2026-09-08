@@ -4,7 +4,7 @@
 // Closes issue006 (the hole that let the toolchain rot silently). W4 of D0046.
 // Accepted 2026-06-16 by wweatherholtz (W4 accepted in D0046; "yes proceed").
 // =====================================================================
-package Decision0050 {
+package ReferenceDecision0050 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -4,7 +4,7 @@
 // heavier analysis). Split the metric honestly: parse/validate under 500ms (the 'instant' bar, MET at
 // ~110ms); full orient-with-suspicion under 1.5s (MET at ~0.85s after orientPerf). Accepted 2026-06-21.
 // =====================================================================
-package Decision0083 {
+package ReferenceDecision0083 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

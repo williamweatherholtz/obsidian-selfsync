@@ -9,7 +9,7 @@
 // attestation (D0016/D0066) — never ad-hoc, never inferred. Reframes D0064 (triage-first). status=proposed:
 // acceptance is itself an explicit sign-off gate (dogfood). Companion to D0105 (declarative controls).
 // =====================================================================
-package Decision0106 {
+package ReferenceDecision0106 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

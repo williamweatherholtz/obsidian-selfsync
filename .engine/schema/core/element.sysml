@@ -33,7 +33,6 @@ package EngineElement {
     enum def DispositionKind { act; acceptRisk; dismiss; }                      // D0092: a human's recorded verdict on a >= Medium finding (act=resolve / acceptRisk=knowingly accept / dismiss=moot)
     enum def Priority { must; should; could; wont; }                            // MoSCoW
     enum def RequirementKind { functional; nonFunctional; safety; security; interfaceReq; }
-    enum def RiskLevel { high; medium; low; }
     enum def Owner { human; ai; either; }
     enum def Cadence { continuous; eventDriven; perItem; perSprint; perStory; adHoc; }
     enum def WritePolicy { readOnly; prOnly; direct; }
@@ -63,6 +62,17 @@ package EngineElement {
         attribute createdAt : Timestamp;
         attribute createdBy : String[0..1];  // actor id of the creator (a ProjectActors part name)
     }
+    // A PROCEDURE IS BEHAVIOUR (D0143). `Process`/`ProcessStep` were `part def` with their behaviour in
+    // strings and their sequence in an `order : Integer`, because `action` and `output` are RESERVED
+    // WORDS and the fields were renamed around them (process.sysml:5-6) rather than the constructs those
+    // words belong to being used. Retyping them to `action def` needs this fourth base for the same
+    // cross-metaclass reason as the three above.
+    abstract action def TrackedAction {
+        attribute id : Uuid;
+        attribute title : String;
+        attribute createdAt : Timestamp;
+        attribute createdBy : String[0..1];  // actor id of the creator (a ProjectActors part name)
+    }
     abstract verification def TrackedVerification {
         attribute id : Uuid;
         attribute title : String;
@@ -76,11 +86,16 @@ package EngineElement {
         attribute name : String;
         attribute email : String[0..1];
         attribute kind : ActorKind;
+        // D0146 (accepted 2026-08-15): the FUNCTION this actor fills while doing tracked work —
+        // contributor, supervisor, integrator, reviewer, or a role the project declares. The
+        // actor-enrollment process requires it recorded as model data ("not tribal knowledge") and
+        // had nowhere to put it (issue110). A free String rather than an enum, deliberately: the
+        // process explicitly permits a project-declared role, and a closed vocabulary in FROZEN core
+        // would force every project with its own role names through a schema sign-off to use them.
+        // Optional so every actor recorded before this stays valid without migration.
+        attribute role : String[0..1];
     }
     part def Person :> Actor {
         :>> kind = ActorKind::human;
-    }
-    part def Role {
-        attribute name : String;          // a function filled while doing tracked work
     }
 }

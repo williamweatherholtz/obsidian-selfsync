@@ -5,7 +5,7 @@
 // our core invariants are industry best-practice; adoption FRICTION is the #1 risk;
 // named gaps routed to issues015-017. Accepted 2026-06-16 by wweatherholtz (research).
 // =====================================================================
-package Decision0054 {
+package ReferenceDecision0054 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

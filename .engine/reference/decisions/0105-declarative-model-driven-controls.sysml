@@ -9,7 +9,7 @@
 // this CAPTURES the direction the human endorsed in analysis; ACCEPTANCE awaits the Change-Request +
 // schema/core human sign-off (a `Rule` type is a frozen-core addition). Drives issue054 + issue055.
 // =====================================================================
-package Decision0105 {
+package ReferenceDecision0105 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

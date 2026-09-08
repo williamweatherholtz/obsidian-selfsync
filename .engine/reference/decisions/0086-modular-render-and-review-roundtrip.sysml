@@ -7,7 +7,7 @@
 // #ProspectiveChange: introduces process-defs + changes what `suspect` means (keystone, D0070).
 // Accepted 2026-06-21.
 // =====================================================================
-package Decision0086 {
+package ReferenceDecision0086 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

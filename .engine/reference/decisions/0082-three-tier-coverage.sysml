@@ -4,7 +4,7 @@
 // claim). Reserves "verified" for objective evidence; stops conflating satisfy/charter-dod with it.
 // Accepted 2026-06-21.
 // =====================================================================
-package Decision0082 {
+package ReferenceDecision0082 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

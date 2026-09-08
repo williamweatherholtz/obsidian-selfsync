@@ -4,7 +4,7 @@
 // Decision SELF-DEMONSTRATES the convention in its own decisionText.
 // Accepted 2026-06-16 by wweatherholtz (issue016; autonomous flow).
 // =====================================================================
-package Decision0058 {
+package ReferenceDecision0058 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

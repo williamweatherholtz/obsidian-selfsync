@@ -6,7 +6,7 @@
 // COMPUTED (no stored metric history — trends recompute from git); never authored, never committed.
 // #ProspectiveChange: introduces a process-def + new computed views (keystone, D0070). Accepted 2026-06-21.
 // =====================================================================
-package Decision0087 {
+package ReferenceDecision0087 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

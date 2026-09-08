@@ -4,7 +4,7 @@
 // schema after. Accepted (schema unfreeze) 2026-06-16 by wweatherholtz ("agreed on all
 // points. proceed and unfreeze").
 // =====================================================================
-package Decision0057 {
+package ReferenceDecision0057 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

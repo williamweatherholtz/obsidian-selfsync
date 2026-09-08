@@ -2,7 +2,7 @@
 // D0043 — validator-auto-discover: shared schema order + decision lint.
 // Sprint 14 retro; accepted 2026-06-16 by wweatherholtz.
 // =====================================================================
-package Decision0043 {
+package ReferenceDecision0043 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -4,7 +4,7 @@
 // governing decision landed; pre-decision elements are grandfathered. Wires guard critique +
 // guard assured HARD (now safe — they pass vacuously). Accepted 2026-06-20.
 // =====================================================================
-package Decision0081 {
+package ReferenceDecision0081 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

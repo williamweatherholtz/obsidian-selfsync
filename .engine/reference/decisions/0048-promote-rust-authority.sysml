@@ -4,7 +4,7 @@
 // demoted to secondary (deep-check / cross-reference). Ends the JVM leak.
 // Accepted 2026-06-16 by wweatherholtz ("yes promote rust ... just do so now").
 // =====================================================================
-package Decision0048 {
+package ReferenceDecision0048 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

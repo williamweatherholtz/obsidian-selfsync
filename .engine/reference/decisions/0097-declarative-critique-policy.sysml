@@ -10,7 +10,7 @@
 // Accepted 2026-06-24 by wweatherholtz ("implement as described. minimal friction since we're shipping
 // a great default").
 // =====================================================================
-package Decision0097 {
+package ReferenceDecision0097 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

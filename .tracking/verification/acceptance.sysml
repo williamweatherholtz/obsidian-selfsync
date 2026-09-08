@@ -216,6 +216,16 @@ package ProjectAcceptance {
     #Verify dependency from acEmbeddedTimestamp to srEmbeddedTimestamp;
     #Verify dependency from acNormalizedIdentity to srNormalizedIdentity;
     #Verify dependency from acTimestampConflictResolve to srTimestampConflictResolve;
+
+    // ---- D0042 wire-compatibility #Verify edges (Test -> SystemRequirement) ----
+    // The two D0042 sprint DoDs (delivery.sysml) passed and NAME these four SRs in their procedure text,
+    // but until 2026-09-07 no typed edge reached the requirements, so tier-satisfaction counted the
+    // protocol-compat SRs as unverified while the work that verifies them was green (verification-trace
+    // warning, issue082 class). Typed here; the DoDs' recorded verdicts are unchanged.
+    #Verify dependency from wireSignatureServerDoD to srWireSignature;
+    #Verify dependency from wireSignatureServerDoD to srContractDriftGate;
+    #Verify dependency from wireCompatClientDoD to srCompatVerdict;
+    #Verify dependency from wireCompatClientDoD to srCompatFailClosed;
     #Verify dependency from acDriveFsTimes to srDriveFsTimes;
     #Verify dependency from acExcludedFolders to srExcludedFolders;
 

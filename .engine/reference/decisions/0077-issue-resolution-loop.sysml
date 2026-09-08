@@ -6,7 +6,7 @@
 // "RESOLVED" convention. Accepted 2026-06-20 by wweatherholtz (issue-resolution design dialogue;
 // schema/core §2.5 sign-off for the #Resolves edge given there).
 // =====================================================================
-package Decision0077 {
+package ReferenceDecision0077 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

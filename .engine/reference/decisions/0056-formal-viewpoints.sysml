@@ -5,7 +5,7 @@
 // gold-plating). Direction accepted; the frozen-schema execution awaits sign-off.
 // Recorded 2026-06-16 by wweatherholtz (research/critique; "dig in, don't placate").
 // =====================================================================
-package Decision0056 {
+package ReferenceDecision0056 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

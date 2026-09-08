@@ -3,7 +3,7 @@
 // lineage edge + a computed governing-version, NOT per-artifact process stamps.
 // Resolves issue002. Decomposes the work into 3 ordered increments.
 // =====================================================================
-package Decision0068 {
+package ReferenceDecision0068 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

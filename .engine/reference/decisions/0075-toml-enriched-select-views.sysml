@@ -5,7 +5,7 @@
 // Stress-tested against 12 real use cases before commit. Accepted 2026-06-18/19 by wweatherholtz
 // ("maybe toml is better" + "i like it. clean and concise, without becoming a sledgehammer").
 // =====================================================================
-package Decision0075 {
+package ReferenceDecision0075 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

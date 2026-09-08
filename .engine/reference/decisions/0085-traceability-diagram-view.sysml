@@ -4,7 +4,7 @@
 // 'traceability' viewpoint, emitted by `sysmlv2 diagram`, deployed by the diagram skill.
 // #ProspectiveChange: introduces a process-def (keystone co-commit, D0070). Accepted 2026-06-21.
 // =====================================================================
-package Decision0085 {
+package ReferenceDecision0085 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -8,7 +8,7 @@
 // D0100). The refinement clears the contextual false-positives + keeps genuine governance, moving the
 // guard toward hard-gate-able precision (D0102's stated promotion path). Accepted 2026-06-29 by wweatherholtz.
 // =====================================================================
-package Decision0104 {
+package ReferenceDecision0104 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

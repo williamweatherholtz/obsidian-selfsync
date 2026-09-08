@@ -3,7 +3,7 @@
 // Supersedes D0038 on the cap only; estimation guidelines unchanged.
 // Accepted 2026-06-16 by wweatherholtz.
 // =====================================================================
-package Decision0044 {
+package ReferenceDecision0044 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

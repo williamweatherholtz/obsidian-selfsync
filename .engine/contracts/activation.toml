@@ -1,0 +1,24 @@
+# Process activation (D0138) — which processes THIS project has adopted.
+#
+# What activating a process does: turns on its whole unit (skill + declared rules + guards), as defined
+# by the engine from each process's own `assert constraint` declarations. Deactivating one stops its guards running,
+# and `keel guard` then REPORTS each as NOT ACTIVE rather than skipping it silently.
+#
+# DELETE THIS FILE to return to "everything is active", which is also the behaviour when no file
+# exists — so an existing project that never declares one is unaffected.
+#
+# CORE guards (identity, provenance, vocabulary, rootedness, well-formedness) are in no unit and CANNOT
+# be deactivated here. Activation exists to stop enforcing procedures you have not adopted; it is not a
+# switch that makes truthfulness optional.
+#
+# Edit by hand, or use `keel activate <process>` / `keel deactivate <process>`.
+
+[processes]
+# The Decision that charters this set (D0225). `keel onboard` reads it: a set without a charter is a
+# collection of switches nobody can account for. Absent is not a violation - an undeclared project
+# runs everything by default (D0138/D0164) - it just means onboarding has not been run.
+charteredBy = "d0226"
+active = ["actor-enrollment", "agile-workflow", "decision-authoring", "deploy", "distributed-collaboration", "doc-sync", "element-critique", "issue-resolution", "knowledge-graph-memory", "render"]
+
+[viewpoints]
+active = ["acceptancesPendingVP", "archCouplingVP", "archCoverageVP", "archCriticalityVP", "archDriftVP", "archElementsVP", "archStpaInputsVP", "attestationCoverageVP", "authorityQueueVP", "baselinesVP", "concernCoverageVP", "critiquePolicyVP", "decisionsVP", "diagramVP", "findingsAwaitingDispositionVP", "governingVersionVP", "indicatorsVP", "orientVP", "orphansVP", "renderVP", "reportVP", "reprocessVP", "requirementsVP", "rootednessVP", "safetyVP", "sittingReviewVP", "suspectVP", "tierSatisfactionVP", "traceabilityVP", "verificationExaminedVP", "verificationExercisedVP", "whatsNextVP"]

@@ -8,7 +8,7 @@
 // name) + completeness checks become NON-BLOCKING computed burndown views surfaced in orient.
 // Accepted 2026-06-24 by wweatherholtz ("accepted").
 // =====================================================================
-package Decision0098 {
+package ReferenceDecision0098 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

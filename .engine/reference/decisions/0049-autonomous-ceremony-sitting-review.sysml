@@ -7,7 +7,7 @@
 // end of a sprint ... sitting retro doesn't really need my input ... make a skill
 // to identify avoidable issues for the previous sprint, and make items").
 // =====================================================================
-package Decision0049 {
+package ReferenceDecision0049 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -8,7 +8,7 @@
 // Accepted 2026-06-17 by wweatherholtz ("context really should be rationale ...
 // reframe the work then kick off").
 // =====================================================================
-package Decision0061 {
+package ReferenceDecision0061 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

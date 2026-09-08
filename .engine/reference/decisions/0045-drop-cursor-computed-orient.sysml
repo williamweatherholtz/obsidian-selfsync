@@ -3,7 +3,7 @@
 // pointer; orient computes sprint ceremony status from delivery file TestResults.
 // Accepted 2026-06-16 by wweatherholtz.
 // =====================================================================
-package Decision0045 {
+package ReferenceDecision0045 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

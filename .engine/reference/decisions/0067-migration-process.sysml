@@ -2,7 +2,7 @@
 // D0067 — migration-process: a research-grounded, gated process for safe bulk
 // migrations of authored model data + schema, deployed by the `migration` skill (D0059).
 // =====================================================================
-package Decision0067 {
+package ReferenceDecision0067 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -5,7 +5,7 @@
 // (assurance-coverage -> critique mechanism -> critique coverage -> assurance-readiness gate)
 // + the severity taxonomy. Accepted 2026-06-20 by wweatherholtz (MBSE-analysis quality-lens dialogue).
 // =====================================================================
-package Decision0079 {
+package ReferenceDecision0079 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

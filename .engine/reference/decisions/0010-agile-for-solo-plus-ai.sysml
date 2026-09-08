@@ -1,4 +1,4 @@
-package Decision0010 {
+package ReferenceDecision0010 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

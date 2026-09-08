@@ -287,7 +287,8 @@ The six workflows (see the spec for detail):
   silence is not one of them. **Trivial** (a stale name, a wrong version string, a typo'd doc claim
   — no design judgment, no behavior change) ⇒ **fix it immediately, in the current commit.**
   **Non-trivial** (needs design, has blast radius, or is someone else's call) ⇒ **file a tracked
-  `Issue` in `.tracking/issues.sysml` with its `#Resolves` resolver** (§3c), so it is carried by the
+  `Issue` via `keel record issue ... --resolver <item>` (it lands in `.tracking/issues-<actor>.sysml`;
+  the older `.tracking/issues.sysml` remains valid) with its `#Resolves` resolver** (§3c), so it is carried by the
   model and not by memory. Never report a defect and move on; never defer a LOW because it is small.
   Applies to whatever the current task happens to surface — an unrelated find is still a find. Where
   the defect class could **recur**, the corrections-become-guards rule above also applies, so the
@@ -340,8 +341,8 @@ canonical validator for `.tracking/` (D0048) — fast, no JVM:**
 
 ```
 keel validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
-keel guard                                                               # ALL fourteen forward guards (no kernel) — 13 hard-blocking (exit≠0 on any violation) + decision-requirement-link (warning-only)
-keel guard <name>                                                        # one guard: actors | acceptance-events | sprint-coverage | ceremony | charter | process-change | issues | viewpoint-renderer | manifest-coverage | critic-independence | process-skill | requirement-rootedness | decision-rationale (D0103) | decision-requirement-link (warning-only, D0102)  (+ runnable burndown/diagnostics, NOT enforced: assured, critique, critique-rigor, defect-guard-coverage)
+keel guard                                                               # EVERY enforced honest-state guard (no kernel; exit≠0 on any violation). Inventory: `keel version` + .engine/docs/guards.md — keel 0.3.1 runs ~60 checks, far more than the original 14 named below
+keel guard <name>                                                        # one guard by name — the names and what each enforces are in .engine/docs/guards.md (e.g. actors | process-change | issues | ownership | parser-coverage | evidence-cited | duplicate-identity | base-first-justification ...); read the FAIL/WARN lines, not the exit code alone
 keel reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
 ```
 **Use the `keel` on PATH — never a sibling checkout's build.** `keel --version` must match the
@@ -356,7 +357,7 @@ model is TRUTHFUL / well-formed / traceable — never that the work is COMPLETE.
 critique-coverage, readiness) is a NON-BLOCKING burndown surfaced in `orient` + run on demand
 (`keel assured`/`keel show critique-coverage`); incomplete implementation flagged AS incomplete is honest
 state, never a commit blocker (don't fake a pass, don't block recording true state).
-The thirteen hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098): `keel guard` (actors
+The hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098). The CURRENT inventory is `.engine/docs/guards.md` (engine-shipped, resynced with the binary — D0050); the fourteen described next are the ORIGINAL set, still enforced, kept here for their rationale: `keel guard` (actors
 D0037, acceptance-events D0066, sprint-coverage D0064/issue020, ceremony D0047/issue010+011, charter
 D0068, process-change D0070 keystone, issues D0077/D0078 [every recorded problem accounted for],
 viewpoint-renderer D0056/issue034 [renderers must name a real `keel` command, no retired query.py/

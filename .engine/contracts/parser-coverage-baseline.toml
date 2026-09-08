@@ -1,0 +1,20 @@
+# parser-coverage ratchet baseline (issue231, process-value panel formal-methods lens).
+#
+# The parser is the TCB of every guard and view: a statement class it skips is invisible to the
+# whole enforcement stack (incident lineage: issue102, issue109, issue119, the bare-dependency
+# skip). The guard warns at ANY skipped count; with this file present it goes RED when the count
+# EXCEEDS the baseline below - new invisibility is a violation, legacy invisibility stays a
+# visible warning (the D0132 all-or-nothing lesson).
+#
+# RAISING this number is a deliberate, visible act done in the same commit as whatever made it
+# necessary, with the reason here. LOWERING it is the ratchet working: do it whenever the guard
+# says the live count dropped below baseline.
+#
+# Current census: 7 succession statements (`first X then Y` forms the parser reads for ordering
+# but records as skipped in workflow files) - the known, bounded legacy set.
+# SelfSync, 2026-09-07 (engine resync onto keel 0.3.1): the first census here read 81 = these 7 plus the
+# project's 74 `#Covers dependency` edges, which sat INSIDE `action def SelfSyncDelivery` and were
+# skipped as nested statements - sitting-coverage saw 0 covered sprints. Hoisting them to package
+# level made them parse (74 AST edges) and brought the count back to the engine's 7
+# (issueNestedCoversEdgesSkipped). The baseline stays at the stock value: any NEW skip goes red.
+skipped = 7

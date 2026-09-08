@@ -12,7 +12,7 @@
 // Accepted 2026-06-23 by wweatherholtz ("Accept, tweak something" -> interaction-history + Keel naming
 // folded -> "that was the tweak. proceed").
 // =====================================================================
-package Decision0094 {
+package ReferenceDecision0094 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

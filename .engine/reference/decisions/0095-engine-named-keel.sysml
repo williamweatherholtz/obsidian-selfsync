@@ -7,7 +7,7 @@
 // (engineRename, D0067) — captured now per section-2.4 (record decisions even when they cause no action).
 // Accepted 2026-06-23 by wweatherholtz (chose "Keel" from the naming brainstorm; "that was the tweak. proceed").
 // =====================================================================
-package Decision0095 {
+package ReferenceDecision0095 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

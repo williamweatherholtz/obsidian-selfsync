@@ -9,7 +9,7 @@
 // are the second (runtime payload-bearing flows = deliverable architecture, out of engine scope, D0054).
 // Accepted 2026-06-24 by wweatherholtz.
 // =====================================================================
-package Decision0100 {
+package ReferenceDecision0100 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

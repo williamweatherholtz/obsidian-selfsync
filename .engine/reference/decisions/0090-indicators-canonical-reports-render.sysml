@@ -4,7 +4,7 @@
 // RENDER the indicators (grouped by concern) + add point-in-time structure. The trended report
 // metrics ARE indicators (D0089), never requirements (D0088). Accepted 2026-06-22.
 // =====================================================================
-package Decision0090 {
+package ReferenceDecision0090 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

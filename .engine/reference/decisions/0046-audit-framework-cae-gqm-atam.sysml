@@ -4,7 +4,7 @@
 // improvement workstreams surfaced by the 2026-06-16 process step-back.
 // Accepted 2026-06-16 by wweatherholtz (AskUserQuestion disposition).
 // =====================================================================
-package Decision0046 {
+package ReferenceDecision0046 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

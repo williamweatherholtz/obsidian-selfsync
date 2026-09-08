@@ -4,7 +4,7 @@
 // Deferred behind a proper replan; schema/core stays frozen. Accepted 2026-06-16
 // by wweatherholtz (signed off the unfreeze; this records the scope finding + defer).
 // =====================================================================
-package Decision0053 {
+package ReferenceDecision0053 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

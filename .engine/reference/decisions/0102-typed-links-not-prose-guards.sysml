@@ -9,7 +9,7 @@
 // TYPED link from a finding Issue to its source critique (#DependsOn), so the disposition is traceable.
 // Accepted 2026-06-25 by wweatherholtz (chose 'Warning first' + 'Yes — fix it too').
 // =====================================================================
-package Decision0102 {
+package ReferenceDecision0102 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -5,7 +5,7 @@
 // Accepted 2026-06-16 by wweatherholtz (directive: "corrections … should be
 // logged as a bug and the processes should be improved permanently").
 // =====================================================================
-package Decision0047 {
+package ReferenceDecision0047 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

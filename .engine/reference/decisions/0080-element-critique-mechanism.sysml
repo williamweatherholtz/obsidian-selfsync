@@ -5,7 +5,7 @@
 // lens/critiquedBy/severity attributes) — human-accepted per the schema-freeze rule.
 // #ProspectiveChange: introduces a process-def (keystone co-commit, D0070). Accepted 2026-06-20.
 // =====================================================================
-package Decision0080 {
+package ReferenceDecision0080 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

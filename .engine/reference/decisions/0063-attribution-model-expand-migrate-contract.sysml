@@ -11,7 +11,7 @@
 // shown that a rename cannot be committed without migrating all 389 authoredBy +
 // 85 decisionText occurrences at once; pre-commit validate_instances would block it).
 // =====================================================================
-package Decision0063 {
+package ReferenceDecision0063 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

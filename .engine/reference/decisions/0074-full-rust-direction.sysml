@@ -6,7 +6,7 @@
 // Accepted 2026-06-18 by wweatherholtz ("we go full rust eventually ... stronger performance and
 // compatibility guarantees, and fails more loudly ... rust with strong guarantees, please").
 // =====================================================================
-package Decision0074 {
+package ReferenceDecision0074 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

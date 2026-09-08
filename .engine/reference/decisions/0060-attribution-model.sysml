@@ -5,7 +5,7 @@
 // Records the design converged 2026-06-16/17; execution = attributionModel migration
 // (pre-authorized breaking change, queued). Accepted 2026-06-17 by wweatherholtz.
 // =====================================================================
-package Decision0060 {
+package ReferenceDecision0060 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

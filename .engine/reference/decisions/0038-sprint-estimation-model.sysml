@@ -1,4 +1,4 @@
-package Decision0038 {
+package ReferenceDecision0038 {
     private import EngineWork::*;
 
     part d0038 : Decision {

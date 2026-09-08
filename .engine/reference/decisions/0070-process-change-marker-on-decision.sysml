@@ -9,7 +9,7 @@
 // "i want the truth stored in the data, not separate metadata files floating around";
 // "i'm fine with a hard lock on processes without explicit change confirmation, including typos").
 // =====================================================================
-package Decision0070 {
+package ReferenceDecision0070 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

@@ -15,7 +15,7 @@
 // frozen-Viewpoint-schema change; prior framing: "Arcadia is a program, not a viewpoint schema";
 // "point to starting items, then filter downstream").
 // =====================================================================
-package Decision0071 {
+package ReferenceDecision0071 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

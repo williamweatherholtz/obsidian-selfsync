@@ -8,7 +8,7 @@
 // toil (D0054). CHANGE: a new subcommand + a reverify-command contract; alters re-verify automation (not a
 // guard/gate definition). Accepted 2026-06-24 by wweatherholtz (chose "Build autoReverify first (CHANGE)").
 // =====================================================================
-package Decision0101 {
+package ReferenceDecision0101 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

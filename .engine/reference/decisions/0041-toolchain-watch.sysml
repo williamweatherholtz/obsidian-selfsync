@@ -2,7 +2,7 @@
 // D0041 — toolchainWatch: SysML v2 toolchain feature adoption decision.
 // Sprint 14; accepted 2026-06-16 by wweatherholtz (sprint execution).
 // =====================================================================
-package Decision0041 {
+package ReferenceDecision0041 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

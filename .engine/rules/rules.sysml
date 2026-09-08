@@ -118,4 +118,60 @@ package EngineRuleSet {
         :>> exemptions = "";
     }
     #JustifiedBy dependency from confirmationAuthenticityRule to d0106;
+
+    // D0192 OPTION A (the delegation clause, srK06aDelegatedRecording): an acceptance recorded under
+    // the declared recording delegation must EVIDENCE its channel - quote the human's conversational
+    // words verbatim (a single-quoted span) or cite a human surface gesture (deck/console). Forward-only
+    // from D0192's acceptance date (issue068): earlier events are grandfathered. GATING - the
+    // `confirmation-authenticity` guard sources this rule alongside confirmationAuthenticityRule.
+    // STATED LIMIT (from D0192 itself): an agent that fabricates a quote defeats this check; the
+    // protections behind it are the human reading their own queue and the audit trail.
+    part delegatedAcceptanceSubstanceRule : ElementRule {
+        :>> id = "f20caebc-aef4-4487-83d4-b4a1be0d8900";
+        :>> title = "A delegated acceptance record must quote the human's words (or cite their gesture)";
+        :>> subjectType = "Decision";
+        :>> predicate = "acceptQuotesDelegatedWords(2026-08-22)";
+        :>> severity = RuleSeverity::blocking;
+        :>> onViolation = ViolationKind::block;
+        :>> appliesWhen = "whereStatus(accepted)";
+        :>> exemptions = "";
+    }
+    #JustifiedBy dependency from delegatedAcceptanceSubstanceRule to d0192;
+
+    // D0198 OPTION A (quote receipts): a human-judged confirmation FLIP recorded on/after the
+    // delegation date must carry its evidence - its own text quotes the human's words or cites
+    // their gesture, OR a companion <test>Attest<N> record does. Acceptance events keep their own
+    // rule; companion records are the evidence, not subjects. Forward-only (issue068). GATING via
+    // the confirmation-authenticity guard. STATED LIMIT: a fabricated quote defeats it (D0192 family).
+    part delegatedConfirmationSubstanceRule : ElementRule {
+        :>> id = "7e348a2e-92f7-4bb0-a1c4-6d84f0b5c9e1";
+        :>> title = "A delegated confirmation flip carries its quote receipt";
+        :>> subjectType = "Test";
+        :>> predicate = "confirmationQuotesOrAttested(2026-08-23)";
+        :>> severity = RuleSeverity::blocking;
+        :>> onViolation = ViolationKind::block;
+        :>> appliesWhen = "all";
+        :>> exemptions = "";
+    }
+    #JustifiedBy dependency from delegatedConfirmationSubstanceRule to d0198;
+
+    // issue055 (the enforceable slice of research-spike routing): a WorkKind::research Story must charter
+    // to a LEGITIMATE governing source — its originating Decision/Need/SystemRequirement, or (as a spike)
+    // an Issue/proposed-Decision (the union the charter guard sanctions, D0068/issue055) — never an
+    // arbitrary element (a Story, a TestResult, ...). Converts issue055's triage-item-8 CONVENTION into a
+    // declared control on the structurally-visible side — the "did analysis skip the spike?" judgment
+    // stays reminder-enforced (a commit gate cannot see a conversation). WARNING first (the D0102
+    // decision-requirement-link precedent — visible, non-gating; promote once proven low-noise). Uses the
+    // whereKind scope + charterTargetType predicate (both added this sprint).
+    part researchSpikeCharterRule : ElementRule {
+        :>> id = "d0105r008-0008-4008-9008-516273841008";
+        :>> title = "A research spike must charter to a legitimate governing source (Decision/Need/SystemRequirement/Issue)";
+        :>> subjectType = "Story";
+        :>> predicate = "charterTargetType(Issue,Decision,Need,SystemRequirement)";
+        :>> severity = RuleSeverity::warning;
+        :>> onViolation = ViolationKind::warn;
+        :>> appliesWhen = "whereKind(research)";
+        :>> exemptions = "";
+    }
+    #JustifiedBy dependency from researchSpikeCharterRule to d0111;
 }

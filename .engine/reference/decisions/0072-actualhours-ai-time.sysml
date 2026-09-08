@@ -5,7 +5,7 @@
 // Accepted 2026-06-18 by wweatherholtz ("keep actual hours, just record time used by AI ...
 // differentiate AI vs human time later in analysis").
 // =====================================================================
-package Decision0072 {
+package ReferenceDecision0072 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;

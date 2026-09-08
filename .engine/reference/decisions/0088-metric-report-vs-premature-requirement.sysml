@@ -5,7 +5,7 @@
 // when a justified boundary emerges. Reframes friction (issue029/D0054) as a first-class CONCERN
 // monitored as an indicator, not a premature requirement. Avoids the Goodhart trap. Accepted 2026-06-22.
 // =====================================================================
-package Decision0088 {
+package ReferenceDecision0088 {
     private import EngineElement::*;
     private import EngineWork::*;
     private import EngineVerification::*;
