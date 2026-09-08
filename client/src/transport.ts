@@ -1,5 +1,5 @@
 import { requestUrl, RequestUrlResponse, RequestUrlParam } from "obsidian";
-import { asNum, asOptNum, asOptStr, asStr, ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
+import { asNum, asOptNum, asOptStr, asStr, ChangesResponse, CLIENT_API_VERSION, CommitConflictError, CommitRejectedError, CommitRequest, FileMeta, StatusResponse, validateChanges, validateFileMeta, validateStatus } from "./protocol";
 import { SyncApi } from "./sync";
 import { isInsecureRemote } from "./connstr";
 import { ConnError, Endpoint } from "./connstate";
@@ -342,7 +342,7 @@ export class HttpTransport implements SyncApi {
   async fileMeta(path: string): Promise<FileMeta | null> {
     const r = await httpReq({ url: this.v(`/meta?path=${encodeURIComponent(path)}`), method: "GET", headers: this.auth(), throw: false });
     if (r.status === 404) return null;
-    if (r.status !== 200) throw new Error(`meta: HTTP ${r.status}`);
+    if (r.status !== 200) throw new Error(errText(r, `meta: HTTP ${r.status}`));
     return validateFileMeta(r.json);
   }
   async missing(hashes: string[]): Promise<string[]> {
@@ -355,12 +355,12 @@ export class HttpTransport implements SyncApi {
   }
   async getChunk(hash: string): Promise<Uint8Array> {
     const r = await httpReq({ url: this.v(`/chunk/${hash}`), method: "GET", headers: this.auth(), throw: false });
-    if (r.status !== 200) throw new Error(`getChunk: HTTP ${r.status}`);
+    if (r.status !== 200) throw new Error(errText(r, `getChunk: HTTP ${r.status}`));
     return new Uint8Array(r.arrayBuffer);
   }
   async putChunk(hash: string, bytes: Uint8Array): Promise<void> {
     const r = await httpReq({ url: this.v(`/chunk/${hash}`), method: "PUT", headers: this.auth(), body: this.toArrayBuffer(bytes), throw: false });
-    if (r.status !== 200) throw new Error(`putChunk: HTTP ${r.status}`);
+    if (r.status !== 200) throw new Error(errText(r, `putChunk: HTTP ${r.status}`));
   }
   async commit(req: CommitRequest): Promise<FileMeta> {
     // Wire the optional CAS base version as snake_case `expected_version` (omitted when unset,
@@ -388,7 +388,11 @@ export class HttpTransport implements SyncApi {
     // a CAS conflict) so the event path doesn't flap OFFLINE on a routine re-upload: the next
     // reconcile's pushFile recomputes missing() and re-uploads the gap, then commits. (R11-#4)
     if (r.status === 404) throw new CommitConflictError(`commit for '${req.path}' referenced a missing chunk (will re-upload)`);
-    if (r.status !== 200) throw new Error(`commit: HTTP ${r.status}`);
+    // Any other 4xx is the server REJECTING this content (bad path, size, hash) — the body is its
+    // client-actionable reason (the server returns validation failures verbatim). A bare "HTTP 400"
+    // left the user with nothing to act on, and reconcile with no way to know the retry was futile.
+    if (r.status >= 400 && r.status < 500) throw new CommitRejectedError(errText(r, `commit: HTTP ${r.status}`), r.status);
+    if (r.status !== 200) throw new Error(errText(r, `commit: HTTP ${r.status}`));
     return validateFileMeta(r.json);
   }
   async deleteFile(path: string, expectedVersion?: number): Promise<void> {
@@ -406,7 +410,7 @@ export class HttpTransport implements SyncApi {
     // 409 = the server advanced past our base (a concurrent edit). Signal it as a conflict — like commit —
     // so reconcile converges via edit-wins-pull on the next pass instead of losing the edit or looping.
     if (r.status === 409) throw new CommitConflictError(`delete conflict on '${path}' (server version advanced)`);
-    if (r.status !== 200 && r.status !== 404) throw new Error(`deleteFile: HTTP ${r.status}`);
+    if (r.status !== 200 && r.status !== 404) throw new Error(errText(r, `deleteFile: HTTP ${r.status}`));
   }
 
   connectWs(onChanged: () => void): WebSocket | null {

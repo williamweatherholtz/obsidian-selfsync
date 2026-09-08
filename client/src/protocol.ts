@@ -49,6 +49,15 @@ export class CommitConflictError extends Error {
   constructor(message = "commit conflict: server version advanced") { super(message); this.name = "CommitConflictError"; }
 }
 
+// The server REJECTED this commit for what it is (4xx that is not a CAS race or a swept chunk): a path it
+// won't accept, an over-limit size, a hash/size mismatch. Retrying the SAME content is pointless — and
+// on a vault with hundreds of such files it turned every reconcile pass into minutes of re-uploads
+// (owner report 2026-09-07: "it's much slower now"; the log showed ~500 `commit: HTTP 400` per pass).
+// reconcile holds the (path, content) pair until the file changes; the message is the server's own text.
+export class CommitRejectedError extends Error {
+  constructor(message: string, readonly status: number) { super(message); this.name = "CommitRejectedError"; }
+}
+
 // PROTO-3: validate the SHAPE of every server response the client acts on before trusting it.
 // A malformed/hostile response (chunks not string[], deletes not an array, version missing)
 // otherwise reaches reconcile and could drive spurious local deletes or a corrupt rebuild.

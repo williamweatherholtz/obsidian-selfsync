@@ -16,7 +16,7 @@ import { encodeSetupLink } from "./connstr";
 import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant } from "./sharelink";
 import { Phase, light, isWsStale, effectivePhase } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
-import { FileMeta } from "./protocol";
+import { CommitRejectedError, FileMeta } from "./protocol";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, isJunkFile, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
@@ -599,6 +599,7 @@ export default class SelfSyncPlugin extends Plugin {
     for (const el of this.editorActionEls) el.remove();
     this.editorActionEls.clear();
     if (this.uiRefreshTimer !== undefined) { window.clearTimeout(this.uiRefreshTimer); this.uiRefreshTimer = undefined; }
+    if (this.heldPushTimer !== undefined) { window.clearTimeout(this.heldPushTimer); this.heldPushTimer = undefined; }
     this.log("plugin unloaded");
   }
 
@@ -609,6 +610,20 @@ export default class SelfSyncPlugin extends Plugin {
   // the final state (issueConflictResolveRepaintsPerFile). One trailing repaint is enough; the UI is
   // still current within a frame or two, and nothing reads these callbacks for correctness.
   private uiRefreshTimer?: number;
+  // Pushes the server refused (path → refused content hash), held until the file changes or the plugin
+  // reloads (reconcile.rejectedPushes). The held count is logged ONCE per burst, not once per file.
+  private rejectedPushes = new Map<string, string>();
+  private heldPushes = 0;
+  private heldPushTimer?: number;
+  private notePushHeld(): void {
+    this.heldPushes++;
+    if (this.heldPushTimer !== undefined) return;
+    this.heldPushTimer = window.setTimeout(() => {
+      this.heldPushTimer = undefined;
+      const n = this.heldPushes; this.heldPushes = 0;
+      if (n > 0 && !this.unloading) this.log(`${n} file${n > 1 ? "s" : ""} the server refused earlier ${n > 1 ? "were" : "was"} not re-sent (unchanged since) — see the earlier "couldn't sync" lines for the server's reason; a file is retried once it changes, or after a plugin reload`);
+    }, 2_000);
+  }
   private requestUiRefresh(): void {
     if (this.unloading || this.uiRefreshTimer !== undefined) return;
     this.uiRefreshTimer = window.setTimeout(() => {
@@ -1927,7 +1942,11 @@ export default class SelfSyncPlugin extends Plugin {
       onRemoteConfig: (p, meta) => this.recordIncomingConfig(p, meta), // record who/which-device for the source-driven reload notice
       onRemoteConfigDelete: (p, prov) => this.recordIncomingConfigDelete(p, prov), // record who deleted a synced config file (issueDeletionProvenanceUnnotified)
 
-      onFileError: (p, e) => this.log(`couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
+      onFileError: (p, e) => this.log(e instanceof CommitRejectedError
+        ? `couldn't sync '${p}': the server refused it — ${e.message} — not retried until the file changes`
+        : `couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
+      rejectedPushes: this.rejectedPushes,
+      onPushHeld: () => this.notePushHeld(),
       onDeclined: (paths) => this.noteDeclined(paths),
       onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
       onBaseChanged: () => { void this.persist(); },

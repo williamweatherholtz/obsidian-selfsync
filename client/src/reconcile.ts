@@ -2,7 +2,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFile
 import { sha256hex } from "./chunker";
 import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
 import { isMergeable, merge3 } from "./merge";
-import { ChangesResponse, CommitConflictError, Deletion, FileMeta } from "./protocol";
+import { ChangesResponse, CommitConflictError, CommitRejectedError, Deletion, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
 import { isExcluded } from "./excludedFolders";
 import { normalizedHash, neutralizeTimestamps, restoreTimestamps } from "./frontmatter";
@@ -344,6 +344,13 @@ export interface ReconcileDeps {
   // One file failed to reconcile. Logged and skipped — a single file must never abort the
   // whole sync (a filtered conflict-copy push once threw here and killed every file's sync).
   onFileError?: (path: string, err: unknown) => void;
+  // Pushes the server REJECTED (CommitRejectedError: bad path / size / hash — not a race), keyed by path
+  // to the local content hash that was refused. While the file's content is unchanged the push is HELD
+  // (onPushHeld) instead of re-chunked, re-uploaded and re-refused on every pass: with ~500 such files a
+  // no-op reconcile took minutes and starved the UI (owner report 2026-09-07). Owned by the caller so it
+  // spans passes and resets on plugin reload; an edit changes the hash and the push is tried again.
+  rejectedPushes?: Map<string, string>;
+  onPushHeld?: (path: string) => void;
   // Remote files present on the server that this device is set NOT to sync (a config surface is off, or
   // a community plugin isn't in the allowlist). Reported so the UI can tell the user WHAT is waiting and
   // how to adopt it — otherwise these look like "stuck" pending work that never transfers.
@@ -1270,7 +1277,12 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // timestamp-only change was already recognized in-sync by the content-identity override above and never
       // reaches here). CAS on the remote version we saw (0 for a local-only create); a concurrent commit that
       // advanced the server 409s → per-file skip → next reconcile merges.
-      const { hash: h, bytes } = await pushFile(d, path, eff.version);
+      if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      let pushed: { hash: string; bytes: Uint8Array };
+      try { pushed = await pushFile(d, path, eff.version); }
+      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
+      d.rejectedPushes?.delete(path);
+      const { hash: h, bytes } = pushed;
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
       if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint
       return;
@@ -1283,7 +1295,12 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // RESTORE to the server, never destroy local data. onKeptAbsent is observational (D0019). CAS base = 0
       // (expected-absent): a peer that created it meanwhile 409s → next reconcile merges, no lost update.
       d.onKeptAbsent?.(path);
-      const { hash: rh, bytes: rb } = await pushFile(d, path, 0);
+      if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      let restored: { hash: string; bytes: Uint8Array };
+      try { restored = await pushFile(d, path, 0); }
+      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
+      d.rejectedPushes?.delete(path);
+      const { hash: rh, bytes: rb } = restored;
       setBase(d, path, rb, rh);
       return;
     }

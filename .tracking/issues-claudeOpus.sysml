@@ -53,4 +53,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from conflictDiffSideLegend to issueConflictDiffSidesUnlabeled;
+
+    part issueRejectedPushRetriedEveryPass : Issue {
+        :>> id = "df1034a6-0d81-4b71-a39d-c9986a249f6a";
+        :>> title = "Server-refused pushes (commit: HTTP 400) were re-sent on every pass with the reason thrown away - ~500 futile uploads per reconcile made the UI crawl";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner field report 2026-09-07: 'it's much slower now' - opening the Resolve-conflicts modal, clicking anything. The debug log showed why: the connect pass was PUSHING several hundred files under the PARA roots (4 Archive/**, 3 Resources/**, 2 Areas/**, 99 Utilities/**) - notes, PDFs, images alike - and the server answered 'commit: HTTP 400' for every one; 'checked 750/1835 files' arrived at +118.8s and the pass was still running at +165s, on a vault whose no-op rescan the perf harness completes in ~150 ms. Two client defects made this what it was. (1) transport.commit threw a bare 'commit: HTTP 400', discarding the server's body - which is the client-actionable reason (the server returns validation failures verbatim) - so neither the user nor the code could see WHY. (2) reconcile treated a 400 like any transient per-file error: the next pass re-read, re-chunked, queried missing chunks, re-uploaded and re-committed the identical content, and was refused again - for every file, every pass, forever. The reconcile loop runs on the renderer's main thread with the modal and settings tab, hence 'clicking anything' is slow. FIX (rejectedPushHold): a typed CommitRejectedError carrying the server text; a (path -> refused hash) memo so an unchanged rejected file is HELD (one summary log line per burst) until it is edited or the plugin reloads; 409/404 stay retryable. ROOT CAUSE OF THE REFUSALS IS STILL OPEN and will be named by 1.30.9's log. Leading hypothesis from the evidence: every rejected path sits under a top-level folder whose CAPITALISATION may differ between this Windows vault and the server's index keys - the server's commit guard refuses 'a path differing only in case already exists' - i.e. a case-only folder rename on a case-insensitive filesystem, which decide() sees as a local-only-new file (push) plus a remote file that a presence re-probe says is still present (no delete), so the two never converge. If confirmed, the fix is case-aware path identity on case-insensitive filesystems (a follow-up issue with its own resolver). discoveredInField = true. Severity High: the sync loop was doing hundreds of futile uploads per pass and the UI was unusable while it ran.";
+        :>> discoveredInField = true;
+        :>> relatedTask = "rejectedPushHold";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from rejectedPushHold to issueRejectedPushRetriedEveryPass;
 }

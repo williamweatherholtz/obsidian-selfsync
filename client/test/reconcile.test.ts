@@ -3,7 +3,7 @@ import { decide, sameIgnoringEol, isConnectionError, reconcileAll, reconcileDelt
 import { BaseStore, conflictCopyName, originalOfConflictCopy, isConflictCopy, deriveNoteConflicts } from "../src/base";
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
-import { ChangesResponse, CommitConflictError, CommitRequest, FileMeta } from "../src/protocol";
+import { ChangesResponse, CommitConflictError, CommitRejectedError, CommitRequest, FileMeta } from "../src/protocol";
 import { isSafeVaultPath } from "../src/pathsafe";
 
 const H = (h: string) => ({ hash: h });
@@ -1911,5 +1911,63 @@ describe("community-plugins.json is union-merged — a shorter synced list never
     await reconcileAll(d);
     const localNow = JSON.parse(new TextDecoder().decode(io.m.get(CP)!)) as string[];
     expect([...localNow].sort()).toEqual(["a", "b"]);         // 'b' adopted
+  });
+});
+
+// Owner report 2026-09-07 ("it's much slower now"): a vault with ~500 files the server refused (commit: HTTP
+// 400) re-chunked, re-uploaded and re-refused EVERY one on EVERY pass — a no-op reconcile took minutes and
+// starved the UI. A refusal is about the content (bad path / size / hash), so the same content must not be
+// re-sent; an edit (new hash) or a plugin reload (fresh memo) tries again.
+describe("a server-REJECTED push is held while the file is unchanged (issueRejectedPushRetriedEveryPass)", () => {
+  const setup = () => {
+    const srv = fakeServer(); const io = fakeIo({ "4 Archive/plans.md": "# plans\n", "ok.md": "fine\n" });
+    let attempts = 0; let reject = true;
+    const realCommit = srv.api.commit.bind(srv.api);
+    srv.api.commit = async (r: CommitRequest) => {
+      if (r.path === "4 Archive/plans.md") { attempts++; if (reject) throw new CommitRejectedError("a path differing only in case already exists", 400); }
+      return realCommit(r);
+    };
+    const errors: string[] = []; const held: string[] = [];
+    const d = deps(srv.api, io, {
+      rejectedPushes: new Map(), onPushHeld: (p) => held.push(p), onFileError: (p, e) => errors.push(`${p}: ${(e as Error).message}`),
+    });
+    return { srv, io, d, errors, held, attempts: () => attempts, accept: () => { reject = false; } };
+  };
+
+  it("first pass: refused once, the server's reason is what the log gets; second pass: HELD, not re-sent", async () => {
+    const s = setup();
+    await reconcileAll(s.d);
+    expect(s.attempts()).toBe(1);
+    expect(s.errors).toEqual(["4 Archive/plans.md: a path differing only in case already exists"]);
+    expect(s.srv.files.has("ok.md")).toBe(true); // the refusal is isolated — other files still sync
+    await reconcileAll(s.d);
+    await reconcileAll(s.d);
+    expect(s.attempts()).toBe(1); // NOT re-sent
+    expect(s.held).toEqual(["4 Archive/plans.md", "4 Archive/plans.md"]);
+    expect(s.errors).toHaveLength(1); // and not re-logged as an error either
+  });
+
+  it("an EDIT (new content hash) is tried again; a success clears the hold", async () => {
+    const s = setup();
+    await reconcileAll(s.d);
+    s.io.m.set("4 Archive/plans.md", enc("# plans\nmore\n"));
+    await reconcileAll(s.d);
+    expect(s.attempts()).toBe(2); // new content → retried (and refused again)
+    s.accept();
+    s.io.m.set("4 Archive/plans.md", enc("# plans\nmore\nfixed\n"));
+    await reconcileAll(s.d);
+    expect(s.attempts()).toBe(3);
+    expect(s.srv.files.has("4 Archive/plans.md")).toBe(true);
+    expect(s.d.rejectedPushes!.size).toBe(0); // success clears the memo
+  });
+
+  it("a CAS conflict (409) is NOT a rejection — it stays retryable every pass", async () => {
+    const srv = fakeServer(); const io = fakeIo({ "n.md": "x\n" });
+    let attempts = 0;
+    srv.api.commit = async () => { attempts++; throw new CommitConflictError("commit conflict"); };
+    const d = deps(srv.api, io, { rejectedPushes: new Map() });
+    await reconcileAll(d); await reconcileAll(d);
+    expect(attempts).toBe(2);
+    expect(d.rejectedPushes!.size).toBe(0);
   });
 });

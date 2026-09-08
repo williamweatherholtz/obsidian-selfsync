@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { HttpTransport } from "../src/transport";
-import { CommitConflictError } from "../src/protocol";
+import { CommitConflictError, CommitRejectedError } from "../src/protocol";
 
 // transport.ts is the client's HTTP layer: error/status mapping, the
 // 30 s timeout race, plain-text error surfacing, and login's mustChange gate. It was the biggest
@@ -56,6 +56,19 @@ describe("commit() status→error mapping", () => {
     req.mockResolvedValue(res(404));
     await expect(t().commit({ path: "a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] }))
       .rejects.toBeInstanceOf(CommitConflictError);
+  });
+  it("maps a 400 to CommitRejectedError carrying the SERVER's reason, not a bare status", async () => {
+    req.mockResolvedValue(res(400, { text: "a path differing only in case already exists" }));
+    const err = await t().commit({ path: "4 Archive/a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] }).catch((e) => e);
+    expect(err).toBeInstanceOf(CommitRejectedError);
+    expect(err.status).toBe(400);
+    expect(err.message).toBe("a path differing only in case already exists");
+  });
+  it("maps a 400 with an EMPTY body to CommitRejectedError with the status as the message", async () => {
+    req.mockResolvedValue(res(400));
+    const err = await t().commit({ path: "a.md", hash: "h", size: 3, mtime: 1, chunks: ["h"] }).catch((e) => e);
+    expect(err).toBeInstanceOf(CommitRejectedError);
+    expect(err.message).toBe("commit: HTTP 400");
   });
   it("maps other non-200 to a generic Error, NOT a CommitConflictError", async () => {
     req.mockResolvedValue(res(500));
