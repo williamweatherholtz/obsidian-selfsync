@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { mountBusyGate, type BusyGate } from "./busygate";
+import { gateButtons, type BusyGate } from "./busygate";
 import type { ButtonComponent } from "obsidian";
 import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
 import { RedeemShareLinkModal } from "./accountui";
@@ -31,9 +31,9 @@ export class SwitchVaultModal extends Modal {
   onClose() { this.gate?.dispose(); this.gate = undefined; this.contentEl.empty(); }
   // Every button that changes which vault this device syncs (or moves data) is gated on the plugin's busy state.
   private gated(b: ButtonComponent): ButtonComponent { this.commitButtons.push(b); return b; }
-  private mountGate(c: HTMLElement): void {
+  private mountGate(_c: HTMLElement): void {
     this.gate?.dispose(); this.commitButtons = [];
-    this.gate = mountBusyGate(this.plugin, c, () => this.commitButtons, "Switching vaults");
+    this.gate = gateButtons(this.plugin, () => this.commitButtons);
   }
 
   private async load() {

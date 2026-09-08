@@ -1,4 +1,5 @@
 import { App, PluginSettingTab, Setting, SettingGroup, Notice, Platform, AbstractInputSuggest, ExtraButtonComponent, ButtonComponent, setIcon } from "obsidian";
+import { gateButtons, type BusyGate } from "./busygate";
 import type SelfSyncPlugin from "./main";
 import { addExcluded, removeExcluded, matchFolders } from "./excludedFolders";
 
@@ -218,6 +219,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     } catch { /* leave shared sources non-writable — the safe default */ }
   }
   private statusGroup?: SettingGroup;
+  private conflictGate?: BusyGate; // the Conflicts "Resolve" buttons read "Analyzing files…" while a pass runs (busygate.ts)
   private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
   // Per-plugin "already in sync" cache (id → converged?) for the Push/Pull grey-out: applied instantly on a
   // re-render (no flicker) and refreshed async each render; an entry is dropped after a push/pull. Cleared on
@@ -275,7 +277,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     return this.containerEl;
   }
 
-  hide(): void { this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
+  hide(): void { this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
   private lastSyncedAgo(s: SelfSyncSettings): string {
@@ -472,16 +474,19 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     const pendingPushes = this.plugin.pendingBulkPushReview(); // F2: local-only-new files held before mass-pushing to a shared source
     if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length && !pendingPushes.length) return;
     const g = new SettingGroup(c).setHeading("Conflicts");
+    this.conflictGate?.dispose();
+    const resolveButtons: ButtonComponent[] = [];
     if (noteConflicts.length) {
       g.addSetting((st) => st.setName(`${noteConflicts.length} file${noteConflicts.length > 1 ? "s" : ""} need review`).setClass("mod-warning")
         .setDesc("Concurrent edits that couldn't merge automatically.")
-        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openNoteConflicts())));
+        .addButton((b) => { resolveButtons.push(b); b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openNoteConflicts()); }));
     }
     if (configGroups.length) {
       g.addSetting((st) => st.setName(`${configGroups.length} config differences`).setClass("mod-warning")
         .setDesc("Choose which version to keep.")
-        .addButton((b) => b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts())));
+        .addButton((b) => { resolveButtons.push(b); b.setButtonText("Resolve").setCta().onClick(() => this.plugin.openConfigConflicts()); }));
     }
+    this.conflictGate = gateButtons(this.plugin, () => resolveButtons);
     // D0041: a large INCOMING deletion batch held for your OK. Delete them (apply — gone everywhere) or Keep
     // them (re-sync them back). One row per scope (this vault / a mount).
     for (const pd of pendingDeletes) {

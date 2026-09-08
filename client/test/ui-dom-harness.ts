@@ -77,7 +77,7 @@ export function fakePlugin(over: any = {}) {
     activeMounts: () => settings.mounts ?? [],       // by default every configured mount is "active" in tests
     lightPhase: () => "idle",
     // Busy-state projection + change subscription (busygate.ts): tests flip `busy` and call fireBusy().
-    busy: { busy: false, reason: "" },
+    busy: { busy: false, label: "", reason: "" },
     busyState: () => p.busy,
     _busyListeners: new Set<() => void>(),
     onBusyChange: (fn: () => void) => { p._busyListeners.add(fn); return () => { p._busyListeners.delete(fn); }; },

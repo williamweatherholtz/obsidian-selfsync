@@ -1,5 +1,5 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
-import { mountBusyGate, type BusyGate } from "./busygate";
+import { gateButtons, type BusyGate } from "./busygate";
 import { lcsPairs } from "./merge";
 import { maskedForDisplay } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
@@ -106,8 +106,8 @@ export class NoteConflictModal extends Modal {
   // a half-applied first and acting on a copy that was already gone
   // (issueConflictModalDoubleApply). One flag blocks the re-entry and greys the buttons.
   private busy = false;
-  // Busy gate: while the plugin is connecting / checking files, the two irreversible keep-buttons are disabled
-  // and the banner says why (busygate.ts). Copy / Open-both stay live - they commit nothing.
+  // Busy gate: while the plugin is connecting / checking files, the two irreversible keep-buttons are disabled and
+  // read "Analyzing files…" (busygate.ts — show, don't tell). Copy / Open-both stay live - they commit nothing.
   private gate?: BusyGate;
   private keepButtons: ButtonComponent[] = [];
 
@@ -159,7 +159,7 @@ export class NoteConflictModal extends Modal {
     }
     const { copy, original } = conflicts[0];
     this.gate?.dispose(); this.keepButtons = [];
-    this.gate = mountBusyGate(this.plugin, c, () => this.keepButtons, "Resolving");
+    this.gate = gateButtons(this.plugin, () => this.keepButtons);
     c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once. − lines are the other device's version, + lines are this device's:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 

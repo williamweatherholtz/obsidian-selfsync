@@ -1,5 +1,5 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
-import { mountBusyGate, type BusyGate } from "./busygate";
+import { gateButtons, type BusyGate } from "./busygate";
 import type SelfSyncPlugin from "./main";
 import { groupConfigConflicts, ConflictGroup } from "./configsync";
 
@@ -25,7 +25,7 @@ export class ConfigConflictModal extends Modal {
       return;
     }
     this.gate?.dispose(); this.sideButtons = [];
-    this.gate = mountBusyGate(this.plugin, c, () => this.sideButtons, "Resolving"); // busy banner + disabled side buttons while a pass runs
+    this.gate = gateButtons(this.plugin, () => this.sideButtons); // side buttons read "Analyzing files…" + disabled while a pass runs
     c.createEl("p", {
       text: "These settings and plugins differ across your devices. Nothing was deleted or overwritten — for each, keep this device's version or take the server's (your other device's) version.",
     }).setAttribute("style", "font-size:13px;margin-bottom:12px;opacity:.85;");

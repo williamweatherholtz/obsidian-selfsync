@@ -325,3 +325,24 @@ describe("settings tab renders and wires its controls", () => {
     expect(toggleByName(containerEl, "Community plugins")?.checked).toBe(true);
   });
 });
+
+// Show-don't-tell busy state on the settings tab's own entry point (owner, 2026-09-07): while a pass runs the
+// Conflicts "Resolve" button is disabled and reads "Analyzing files…"; it is "Resolve" again when settled.
+describe("Conflicts 'Resolve' button wears the busy state (busygate.ts)", () => {
+  it("disabled + 'Analyzing files…' while busy, back to 'Resolve' when the plugin settles", async () => {
+    const p = fakePlugin({ settings: { noteConflicts: [{ copy: "n (conflict).md", original: "n.md" }] } });
+    p.busy = { busy: true, label: "Analyzing files…", reason: "SelfSync is checking your files for changes" };
+    const tab = renderTab(p); await flush();
+    const btn = buttonByText(tab.containerEl, "Analyzing files…") as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(true);
+    expect(btn!.title).toBe("SelfSync is checking your files for changes");
+    expect(buttonByText(tab.containerEl, "Resolve")).toBeFalsy();
+    p.busy = { busy: false, label: "", reason: "" }; p.fireBusy();
+    const resolve = buttonByText(tab.containerEl, "Resolve") as HTMLButtonElement | null;
+    expect(resolve).toBeTruthy();
+    expect(resolve!.disabled).toBe(false);
+    tab.hide();
+    p.busy = { busy: true, label: "Analyzing files…", reason: "x" }; p.fireBusy(); // unsubscribed on hide: no throw
+  });
+});

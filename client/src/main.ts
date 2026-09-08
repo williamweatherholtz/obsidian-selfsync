@@ -1718,11 +1718,14 @@ export default class SelfSyncPlugin extends Plugin {
   // connect stage - never a stored flag. Deliberately the RAW engine phase: a `syncing` check pass with nothing
   // to transfer collapses to idle for the LIGHT (a transition, not a state) but is very much a state for a
   // modal about to read files - its reads queue behind the pass's own. Surfaces show it via busygate.ts.
-  busyState(): { busy: boolean; reason: string } {
+  busyState(): { busy: boolean; label: string; reason: string } {
     const p = this.engine.phase();
-    if (p === "connecting") return { busy: true, reason: `SelfSync is connecting${this.connectStage ? ` — ${this.connectStage}` : ""}` };
-    if (p === "syncing") return { busy: true, reason: this.syncPending > 0 ? `SelfSync is syncing — ${this.syncPending} pending` : "SelfSync is checking your files for changes" };
-    return { busy: false, reason: "" };
+    // `label` is what a gated button WEARS while busy (show, don't tell); `reason` rides its tooltip.
+    if (p === "connecting") return { busy: true, label: "Analyzing files…", reason: `SelfSync is connecting${this.connectStage ? ` — ${this.connectStage}` : ""}` };
+    if (p === "syncing") return this.syncPending > 0
+      ? { busy: true, label: "Syncing…", reason: `SelfSync is syncing — ${this.syncPending} pending` }
+      : { busy: true, label: "Analyzing files…", reason: "SelfSync is checking your files for changes" };
+    return { busy: false, label: "", reason: "" };
   }
   private busyListeners = new Set<() => void>();
   /** Subscribe to busy-state changes (fires on every status repaint + connect stage); returns the unsubscribe. */

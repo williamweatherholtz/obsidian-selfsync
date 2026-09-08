@@ -365,61 +365,62 @@ describe("SetupWizardModal", () => {
 afterEach(() => vi.restoreAllMocks());
 
 // Owner, 2026-09-07: "this state should be tracked and indicated somewhere... grey out some options until
-// actually ready, along with an indication as to why". A modal opened during a sync pass used to sit on its
-// placeholder and read as broken; now the busy state is a projection the modal subscribes to: a banner names
-// the reason and the committing buttons are disabled until the plugin reports settled.
-describe("busy-state gating (busygate.ts): banner + disabled committing buttons while a sync pass runs", () => {
+// actually ready, along with an indication as to why" — then: "show don't tell. just disable the resolve button
+// and change the text to 'analyzing files...'". The busy state is a projection the surface subscribes to; the
+// committing button itself is the indicator: disabled, wearing "Analyzing files…", its own label back when settled.
+describe("busy-state gating (busygate.ts): the committing button is disabled and reads the state while a pass runs", () => {
+  const BUSY = { busy: true, label: "Analyzing files…", reason: "SelfSync is connecting — checked 750/1420 files for changes" };
+  const SETTLED = { busy: false, label: "", reason: "" };
   const busyPlugin = (extra: Record<string, unknown> = {}) => {
     const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }], configConflicts: [".obsidian/app.json"], ...extra } });
-    plugin.busy = { busy: true, reason: "SelfSync is connecting — checking 750/1420 files for changes" };
+    plugin.busy = BUSY;
     return plugin;
   };
-  const isDisabled = (el: Element | null | undefined) => !!el && (el as HTMLButtonElement).disabled === true;
+  const disabled = (el: Element | null | undefined) => !!el && (el as HTMLButtonElement).disabled === true;
+  const buttons = (root: HTMLElement) => Array.from(root.querySelectorAll("button")) as HTMLButtonElement[];
 
-  it("NoteConflictModal: the keep-buttons are disabled with the reason shown; Copy stays live; settling re-enables them", async () => {
+  it("NoteConflictModal: both keep-buttons read 'Analyzing files…' + disabled (reason on hover); Copy stays live; settling restores their labels", async () => {
     const plugin = busyPlugin();
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    expect(m.contentEl.textContent).toContain("SelfSync is connecting — checking 750/1420 files for changes");
-    expect(m.contentEl.textContent).toContain("Resolving is paused until it finishes");
-    expect(isDisabled(buttonByText(m.contentEl, "Keep + this device's"))).toBe(true);
-    expect(isDisabled(buttonByText(m.contentEl, "Keep − other device's"))).toBe(true);
-    expect(isDisabled(buttonByText(m.contentEl, "Copy both versions"))).toBe(false);
-    // a tap on a disabled-by-state button never resolves, even if the DOM let it through
-    buttonByText(m.contentEl, "Keep + this device's")!.click(); await flush();
+    const analyzing = buttons(m.contentEl).filter((b) => b.textContent === "Analyzing files…");
+    expect(analyzing).toHaveLength(2);
+    expect(analyzing.every((b) => b.disabled && b.title === BUSY.reason)).toBe(true);
+    expect(m.contentEl.textContent).not.toContain("paused"); // no prose banner — the button is the indicator
+    expect(disabled(buttonByText(m.contentEl, "Copy both versions"))).toBe(false);
+    analyzing[0].click(); await flush();
     expect(plugin.resolveNoteConflict).not.toHaveBeenCalled();
-    // the pass finishes → the plugin notifies → buttons enable, banner gone
-    plugin.busy = { busy: false, reason: "" }; plugin.fireBusy();
-    expect(isDisabled(buttonByText(m.contentEl, "Keep + this device's"))).toBe(false);
-    expect(m.contentEl.textContent).not.toContain("Resolving is paused");
+    plugin.busy = SETTLED; plugin.fireBusy();
+    expect(disabled(buttonByText(m.contentEl, "Keep + this device's"))).toBe(false);
+    expect(disabled(buttonByText(m.contentEl, "Keep − other device's"))).toBe(false);
+    expect(buttons(m.contentEl).some((b) => b.textContent === "Analyzing files…")).toBe(false);
     m.onClose();
-    plugin.busy = { busy: true, reason: "x" }; plugin.fireBusy(); // after close the modal is unsubscribed (no throw, no work)
+    plugin.busy = BUSY; plugin.fireBusy(); // unsubscribed after close: no throw, no work
   });
 
-  it("ConfigConflictModal: side buttons disabled while busy, enabled when settled", async () => {
+  it("ConfigConflictModal: side buttons wear the state while busy, their labels when settled", async () => {
     const plugin = busyPlugin();
     const m = new ConfigConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    expect(m.contentEl.textContent).toContain("SelfSync is connecting");
-    expect(isDisabled(buttonByText(m.contentEl, "Use this device's"))).toBe(true);
-    expect(isDisabled(buttonByText(m.contentEl, "Use the server's version"))).toBe(true);
-    buttonByText(m.contentEl, "Use this device's")!.click(); await flush();
+    expect(buttons(m.contentEl).filter((b) => b.textContent === "Analyzing files…" && b.disabled)).toHaveLength(2);
+    buttons(m.contentEl).find((b) => b.textContent === "Analyzing files…")!.click(); await flush();
     expect(plugin.resolveConfigGroup).not.toHaveBeenCalled();
-    plugin.busy = { busy: false, reason: "" }; plugin.fireBusy();
-    expect(isDisabled(buttonByText(m.contentEl, "Use this device's"))).toBe(false);
+    plugin.busy = SETTLED; plugin.fireBusy();
+    expect(disabled(buttonByText(m.contentEl, "Use this device's"))).toBe(false);
+    expect(disabled(buttonByText(m.contentEl, "Use the server's version"))).toBe(false);
     m.onClose();
   });
 
-  it("SwitchVaultModal: Switch / Fork are disabled while busy and say why", async () => {
+  it("SwitchVaultModal: Switch and Fork wear the state while busy", async () => {
     const plugin = busyPlugin();
     plugin.currentVaults = vi.fn(async () => ["notes"]);
     const m = new SwitchVaultModal(plugin.app, plugin as any);
     m.onOpen(); await flush(); await flush();
-    expect(m.contentEl.textContent).toContain("Switching vaults is paused");
-    expect(isDisabled(buttonByText(m.contentEl, "Switch"))).toBe(true);
-    expect(isDisabled(buttonByText(m.contentEl, "Fork"))).toBe(true);
-    plugin.busy = { busy: false, reason: "" }; plugin.fireBusy();
-    expect(isDisabled(buttonByText(m.contentEl, "Switch"))).toBe(false);
+    expect(buttons(m.contentEl).filter((b) => b.textContent === "Analyzing files…" && b.disabled).length).toBeGreaterThanOrEqual(2);
+    expect(buttonByText(m.contentEl, "Switch")).toBeFalsy();
+    plugin.busy = SETTLED; plugin.fireBusy();
+    expect(disabled(buttonByText(m.contentEl, "Switch"))).toBe(false);
+    expect(disabled(buttonByText(m.contentEl, "Fork"))).toBe(false);
     m.onClose();
   });
 });
