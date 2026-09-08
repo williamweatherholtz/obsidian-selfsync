@@ -1,0 +1,9 @@
+{
+  // Typecheck the Playwright end-to-end layers. The main tsconfig includes only `src` + `test`, so
+  // e2e-obsidian/ and e2e-admin/ were never typechecked — Playwright transpiles them at run time and a
+  // type error surfaced only when the (slow, install-gated) suite actually ran. This makes
+  // `npx tsc -p tsconfig.e2e.json --noEmit` a cheap, always-available gate for that code.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"] },
+  "include": ["e2e-obsidian", "e2e-admin"]
+}

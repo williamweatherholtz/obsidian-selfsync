@@ -102,3 +102,9 @@ jobs:
         run: |
           npm install
           npm run test:cov
+      # The Playwright e2e layers (e2e-obsidian, e2e-admin) are outside the main tsconfig's include, so
+      # they were never typechecked — a type error only surfaced when the slow, install-gated suite
+      # actually ran. tsconfig.e2e.json makes that a cheap gate that runs everywhere, Obsidian or not.
+      - name: Typecheck the Playwright e2e layers
+        working-directory: client
+        run: npx tsc -p tsconfig.e2e.json

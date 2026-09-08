@@ -4,8 +4,8 @@ import * as path from "node:path";
 import {
   launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE,
   createNote, modifyNote, readNote, pluginStatus, type ObsidianHandle,
-} from "./helpers/obsidian";
-import { isPluginLoaded } from "./helpers/obsidianFunctions";
+} from "./helpers/obsidianDriver";
+import { isPluginLoaded } from "./helpers/rendererFunctions";
 import { startServer, createVault, stageVault, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
 
 // Two-device convergence through REAL Obsidian: launch TWO isolated Obsidian instances (distinct CDP

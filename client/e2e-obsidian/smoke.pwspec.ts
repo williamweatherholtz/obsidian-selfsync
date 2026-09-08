@@ -1,8 +1,8 @@
 import { test, expect } from "@playwright/test";
 import * as os from "node:os";
 import * as path from "node:path";
-import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE } from "./helpers/obsidian";
-import { isPluginEnabled, isPluginLoaded } from "./helpers/obsidianFunctions";
+import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE } from "./helpers/obsidianDriver";
+import { isPluginEnabled, isPluginLoaded } from "./helpers/rendererFunctions";
 import { startServer, createVault, stageVault, serverHasFile, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
 
 // Real-Obsidian smoke: launch the ACTUAL Obsidian app on a staged vault with the freshly-built plugin,

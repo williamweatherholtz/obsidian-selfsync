@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE, type ObsidianHandle } from "./helpers/obsidian";
+import { launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable, OBSIDIAN_EXECUTABLE, type ObsidianHandle } from "./helpers/obsidianDriver";
 import { startServer, createVault, stageVault, cleanup, type RunningServer, type StagedVault } from "./helpers/env";
 
 // Two-device CONFIG sync through real Obsidian: with the community surface on, a community plugin
