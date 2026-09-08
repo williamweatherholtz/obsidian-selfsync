@@ -392,8 +392,13 @@ package ProjectAcceptance {
     #Verify dependency from deleteRemoteCasGuardDoD to sr24;
     // sr25: the connect sub-phases are shown as the Connecting detail and logged with elapsed time
     #Verify dependency from connectPhaseVisibilityDoD to sr25;
-    // NOT linked - no Test with a recorded result verifies the statement yet (the STPA DoD stays open on these):
-    //   sr11: refuse reindex over an incomplete directory - the tests exist (reindex_recovers_from_store_and_force_drops_truly_lost, reindex_routes_a_bitrotted_recovered_file_to_lost_not_corruption) but their DoD, autoReindexDoD, carries no recorded result
-    //   sr16: operator repair of any vault - admin_reindex_and_prune_history_http_ok exists but its DoD, uiFunctionalAuditDoD, carries no recorded result
-    //   sr19: bound per-vault uncommitted storage - SEC#4 shipped in 0.10.32 but its DoD, round1DeferredHardeningDoD, carries no recorded result
+    // sr11: reindex refuses/routes rather than silently dropping - reindex_recovers_from_store_and_force_drops_truly_lost,
+    //       reindex_routes_a_bitrotted_recovered_file_to_lost_not_corruption (autoReindexDoD, stamped in the 2026-09-07 backfill)
+    #Verify dependency from autoReindexDoD to sr11;
+    // sr16: admin_reindex_and_prune_history_http_ok + the admin any-vault reindex/delete surface (stamped in the backfill)
+    #Verify dependency from uiFunctionalAuditDoD to sr16;
+    #Verify dependency from adminPortalEnhancementsDoD to sr16;
+    // sr19: SEC#4 runtime orphan-chunk sweep bounds uncommitted bytes (runtime_orphan_sweep_runs_on_upload_but_spares_inflight_chunks)
+    #Verify dependency from round1DeferredHardeningDoD to sr19;
+    // (sr11/sr16/sr19 were unlinkable until the dodBackfillStamp transform recorded the verdicts their DoDs had earned.)
 }
