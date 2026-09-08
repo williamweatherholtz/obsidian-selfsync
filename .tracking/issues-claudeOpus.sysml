@@ -41,4 +41,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from e2eObsidianVersionGate to issueE2eObsidianBelowMinAppVersion;
+
+    part issueConflictDiffSidesUnlabeled : Issue {
+        :>> id = "8b5562eb-44f8-4b69-aa3c-1de295f11619";
+        :>> title = "Resolve-conflicts modal: which side is − and which is + was fine print; the keep-buttons carried no sign";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner field report 2026-09-07 on the Resolve-conflicts modal: 'you say 'keep this device's' or keep the other's but you give no indication as to which one is − and which one is + in diff view. it should be concise and clear.' Cause: the only mapping from diff sign to side was an 11px, 70%-opacity legend line above the diff ('− the other version + this device's'), styled like fine print and worded differently from the buttons, while the two keep-buttons ('Keep the other device's' / 'Keep this device's') carried no sign at all - so a reader looking at red/green lines had to hunt for the mapping before an irreversible choice. Consequence: a user could keep the wrong side (data loss on the other device's edit) or stall on a conflict they could otherwise resolve in a second. Fix (conflictDiffSideLegend): the header names the mapping in words, the legend is two bold spans in the diff's own red/green with the signs, and the buttons carry the signs ('Keep − other device's' / 'Keep + this device's'). Guarded by a DOM test. discoveredInField = true. Severity Medium (a UX defect on the one irreversible control in the plugin).";
+        :>> discoveredInField = true;
+        :>> relatedTask = "conflictDiffSideLegend";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from conflictDiffSideLegend to issueConflictDiffSidesUnlabeled;
 }

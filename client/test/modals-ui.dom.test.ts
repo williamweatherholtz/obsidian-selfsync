@@ -65,11 +65,31 @@ describe("ConfigConflictModal (adjudication)", () => {
 describe("NoteConflictModal (adjudication)", () => {
   const seed = () => fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }] } });
 
-  it("'Keep this device's' resolves 'mine'", async () => {
+  // Owner report: "you say keep this device's or keep the other's but give no indication which one is −
+  // and which one is +". The legend must name both sides WITH their signs, in the diff's own colours, and
+  // each keep-button must carry the same sign, so the choice reads straight off the diff.
+  it("the diff legend and the keep-buttons both carry the − other / + this signs", async () => {
     const plugin = seed();
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    buttonByText(m.contentEl, "Keep this device's").click();
+    const text = m.contentEl.textContent ?? "";
+    expect(text).toContain("− other device's version");
+    expect(text).toContain("+ this device's version");
+    expect(text).toContain("− lines are the other device's version, + lines are this device's");
+    const spans = Array.from(m.contentEl.querySelectorAll("span")) as HTMLElement[];
+    const minus = spans.find((s) => s.textContent === "− other device's version")!;
+    const plus = spans.find((s) => s.textContent === "+ this device's version")!;
+    expect(minus.getAttribute("style")).toContain("--color-red");
+    expect(plus.getAttribute("style")).toContain("--color-green");
+    expect(buttonByText(m.contentEl, "Keep − other device's")).toBeTruthy();
+    expect(buttonByText(m.contentEl, "Keep + this device's")).toBeTruthy();
+  });
+
+  it("'Keep + this device's' resolves 'mine'", async () => {
+    const plugin = seed();
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    buttonByText(m.contentEl, "Keep + this device's").click();
     await flush();
     expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "mine", expect.anything());
   });
@@ -78,7 +98,7 @@ describe("NoteConflictModal (adjudication)", () => {
     const plugin = seed();
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    buttonByText(m.contentEl, "Keep the other device's").click();
+    buttonByText(m.contentEl, "Keep − other device's").click();
     await flush();
     expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "theirs", expect.anything());
   });
@@ -98,7 +118,7 @@ describe("NoteConflictModal (adjudication)", () => {
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
     expect(m.contentEl.textContent).toContain("to resolve");
-    expect(buttonByText(m.contentEl, "Keep this device's")).toBeTruthy();
+    expect(buttonByText(m.contentEl, "Keep + this device's")).toBeTruthy();
     expect(sweepStarted).toBe(true); // it did start — it just isn't blocking the paint
   });
 
@@ -111,7 +131,7 @@ describe("NoteConflictModal (adjudication)", () => {
     // perfectly good rendered conflict with an error body
     expect(m.contentEl.textContent).toContain("to resolve");
     expect(m.contentEl.textContent).not.toMatch(/Couldn't load conflicts/i);
-    expect(buttonByText(m.contentEl, "Keep this device's")).toBeTruthy();
+    expect(buttonByText(m.contentEl, "Keep + this device's")).toBeTruthy();
   });
 
   // issueConflictModalDoubleApply: render() was fired unawaited and nothing blocked re-entry, so a
@@ -125,7 +145,7 @@ describe("NoteConflictModal (adjudication)", () => {
     });
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
-    const btn = buttonByText(m.contentEl, "Keep this device's")!;
+    const btn = buttonByText(m.contentEl, "Keep + this device's")!;
     btn.click();
     await flush();
     btn.click();          // second tap while the first apply is still in flight

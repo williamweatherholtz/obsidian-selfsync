@@ -153,7 +153,7 @@ export class NoteConflictModal extends Modal {
       return;
     }
     const { copy, original } = conflicts[0];
-    c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once — changes are shown below:` })
+    c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once. − lines are the other device's version, + lines are this device's:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
     // Both sides IN PARALLEL: these are the only two reads between opening the modal and it becoming
@@ -176,17 +176,26 @@ export class NoteConflictModal extends Modal {
       // (issueConflictDiffNotCopyable).
       .addButton((b) => b.setButtonText("Copy both versions").onClick(() => void this.copyDetails(copy, original, theirs, mine)))
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
-      .addButton((b) => b.setButtonText("Keep the other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
+      // Each keep-button carries the diff's own sign, so the choice reads straight off the colours above.
+      .addButton((b) => b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
       // No CTA (highlighted default) here: this is an unbiased, irreversible either-side choice, and a
       // highlighted default invites a reflexive tap that discards the OTHER device's edits (capture error).
-      .addButton((b) => b.setButtonText("Keep this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)));
+      .addButton((b) => b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)));
   }
 
   // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.
   // Capped so a huge note stays responsive.
   private renderDiff(c: HTMLElement, theirs: string, mine: string, ignorePatterns: readonly string[] = []) {
-    c.createEl("div", { text: "− the other version    + this device's" })
-      .setAttribute("style", "font-size:11px;opacity:.7;margin:4px 0 2px;");
+    // The legend is the ONLY thing that tells the reader which side is which, so it is not fine print:
+    // the same red −/green + the diff rows use, and the same words the buttons use, so "Keep − other
+    // device's" can be read straight off the colours (owner report: "no indication as to which one is −
+    // and which one is +").
+    const legend = c.createEl("div");
+    legend.setAttribute("style", "font-size:12px;margin:6px 0 2px;display:flex;gap:14px;");
+    const minus = legend.createSpan({ text: "− other device's version" });
+    minus.setAttribute("style", "color:var(--color-red);font-weight:600;");
+    const plus = legend.createSpan({ text: "+ this device's version" });
+    plus.setAttribute("style", "color:var(--color-green);font-weight:600;");
     // maskedForDisplay, NOT normalizedContent: the latter DELETES an ignored timestamp line, which
     // hides the fact that one side has it and the other does not — so the user could not see that
     // their `created:`/`updated:` lines would be lost (issueConflictDiffHidesIgnoredLineLoss).
