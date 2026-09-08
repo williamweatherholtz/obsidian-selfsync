@@ -3,7 +3,7 @@ import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } 
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi, fetchFileBytes } from "./sync";
 import { sha256hex } from "./chunker";
 import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
-import { BaseStore, deriveNoteConflicts, isConflictCopy } from "./base";
+import { BaseStore, deriveNoteConflicts, isConflictCopy, keptBothName } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
 import { reconcileAll, reconcileDelta, reconcileLocalConfig, reconcilePath, switchTo, SwitchMode, ReconcileDeps, MAX_PULL_RETRIES, resolveConfigConflict, decideReconcileMode, applyHeldDeletions, keepHeldDeletions, applyHeldPushes, keepHeldPushes } from "./reconcile";
 import { DEFAULT_SETTINGS, SelfSyncSettings, SelfSyncSettingTab, parseSettings } from "./settings";
@@ -17,6 +17,7 @@ import { encodeShareLink, parseShareLink, redeemTargetError, resolveShareGrant }
 import { Phase, light, isWsStale, effectivePhase } from "./syncstate";
 import { transportTransition, TransportState, TransportEvent } from "./transportstate";
 import { CommitRejectedError, FileMeta } from "./protocol";
+import type { ResolveStep } from "./resolvefsm";
 import { SyncEngine } from "./syncengine";
 import { classifyConnectError, toConnErrorInfo, ConnError, linkPhase, Recovery, Endpoint, SyntheticKind, LinkKind, FailureKind, RecoveryKind } from "./connstate";
 import { shouldSync, pluginIdOf, configSurfaceOf, adjudicateConfigConflict, pluginFilePaths, isSelfPluginId, isJunkFile, ConfigSurface, ConfigDirection, shouldNotifyConfigChange, changeSourceLabel, ChangeProvenance, SelfIdentity } from "./configsync";
@@ -797,13 +798,35 @@ export default class SelfSyncPlugin extends Plugin {
         : "SelfSync: that file changed since you opened this — review it again",
     );
   }
-  async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual", previewedOther?: string): Promise<boolean> {
+  // `onStep` reports the REAL steps as TYPED events for the modal's resolution FSM (resolvefsm.ts): checking ->
+  // reading -> writing -> removingCopy (mine), removingCopy (theirs), keepingBoth (both). The upload itself runs
+  // in the engine afterwards; the modal's FSM watches busyState() for it to settle.
+  //   "both" (owner, 2026-09-08: "most of the time i just want to preserve data"): the conflict copy becomes an
+  //   ordinary note beside the original - "<name> (this device's version <date>).md" - so BOTH versions survive
+  //   as two synced files and nothing has to be merged in an editor. The original is untouched.
+  async resolveNoteConflict(copy: string, original: string, choice: "mine" | "theirs" | "manual" | "both", previewedOther?: string,
+                            onStep?: (step: ResolveStep) => void): Promise<boolean> {
     if (choice === "manual") {
       await this.app.workspace.openLinkText(original, "", false);
       await this.app.workspace.openLinkText(copy, "", "split");
       return true;
     }
+    if (choice === "both") {
+      onStep?.("keepingBoth");
+      if (!(await this.io.exists?.(copy) ?? true)) return true; // already resolved elsewhere
+      let kept = keptBothName(original, new Date());
+      for (let n = 1; (await this.io.exists?.(kept) ?? false) && n < 100; n++) kept = keptBothName(original, new Date(), n);
+      const bytes = await this.io.read(copy);
+      await this.io.write(kept, bytes);
+      this.engine.enqueue({ kind: "path", path: kept, size: bytes.byteLength });
+      onStep?.("removingCopy");
+      await this.io.remove(copy);
+      this.engine.enqueue({ kind: "path", path: copy, size: 0 });
+      this.requestUiRefresh();
+      return true;
+    }
     if (choice === "mine") {
+      onStep?.("checking");
       const pre1 = previewedOther === undefined ? "match" : await this.previewStillCurrent(original, previewedOther);
       if (pre1 !== "match") {
         this.noticePreviewStale(pre1, original);
@@ -812,6 +835,7 @@ export default class SelfSyncPlugin extends Plugin {
       // Idempotent: if the copy is already gone (resolved elsewhere / on another device), there's
       // nothing to promote — treat as resolved rather than throwing (the derived list drops it).
       if (!(await this.io.exists?.(copy) ?? true)) return true;
+      onStep?.("reading");
       const bytes = await this.io.read(copy);
       // Re-check the stale-preview guard IMMEDIATELY before the write: the guard above and this read
       // both yield to the event loop, and the modal runs OUTSIDE the engine queue, so a reconcile
@@ -822,9 +846,11 @@ export default class SelfSyncPlugin extends Plugin {
         this.noticePreviewStale(pre2, original);
         return false;
       }
+      onStep?.("writing");
       await this.io.write(original, bytes);
       this.engine.enqueue({ kind: "path", path: original, size: bytes.byteLength });
     }
+    onStep?.("removingCopy");
     await this.io.remove(copy); // io.remove is a no-op if the file is already gone (idempotent)
     this.engine.enqueue({ kind: "path", path: copy, size: 0 });
     // No cache to clear — the conflict was DERIVED from the copy file; deleting it clears the conflict.

@@ -1,5 +1,6 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import { gateButtons, type BusyGate } from "./busygate";
+import { resolveNext, resolveLabel, resolveInFlight, type ResolveState, type ResolveEvent } from "./resolvefsm";
 import { lcsPairs, isTextExt } from "./merge";
 import { maskedForDisplay } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
@@ -117,6 +118,13 @@ export class NoteConflictModal extends Modal {
   // read "Analyzing files…" (busygate.ts — show, don't tell). Copy / Open-both stay live - they commit nothing.
   private gate?: BusyGate;
   private keepButtons: ButtonComponent[] = [];
+  // The resolution FSM (resolvefsm.ts). `pressed` is the button whose label projects the state.
+  private rs: ResolveState = { kind: "idle" };
+  private pressed?: { button: ButtonComponent; own: string };
+  private dispatch(e: ResolveEvent): void {
+    this.rs = resolveNext(this.rs, e);
+    if (this.pressed) this.pressed.button.setButtonText(resolveLabel(this.rs, this.pressed.own));
+  }
 
   onOpen() { this.open_ = true; this.titleEl.setText("Resolve conflicts"); void this.run(); }
   onClose() { this.open_ = false; this.gate?.dispose(); this.gate = undefined; this.contentEl.empty(); }
@@ -201,12 +209,16 @@ export class NoteConflictModal extends Modal {
       // hand in an editor — including on mobile, where selecting text inside a modal is painful
       // (issueConflictDiffNotCopyable).
       .addButton((b) => b.setButtonText("Copy both versions").onClick(() => void this.copyDetails(copy, original, theirs, mine)))
-      .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
+      // Keep both (owner: "most of the time i just want to preserve data"): the copy becomes an ordinary note
+      // beside the original, both sync, nothing is merged in an editor. The safe default when unsure.
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep both").onClick(() => void this.resolve(copy, original, "both", undefined, b)); })
       // Each keep-button carries the diff's own sign, so the choice reads straight off the colours above.
-      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)); })
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs, b)); })
       // No CTA (highlighted default) here: this is an unbiased, irreversible either-side choice, and a
       // highlighted default invites a reflexive tap that discards the OTHER device's edits (capture error).
-      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)); });
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs, b)); })
+      // Last: the hand-merge path. Slow (opens both files in the editor) and rarely what is wanted.
+      .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)));
     this.gate.refresh(); // the buttons exist now - apply the current busy state to them
   }
 
@@ -225,8 +237,9 @@ export class NoteConflictModal extends Modal {
     new Setting(c)
       // No preview to go stale against (nothing was displayed but sizes), so no previewedOther: the choice
       // applies to whatever the other side holds now, which is exactly what the two lines above describe.
-      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs")); })
-      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine")); });
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep both").onClick(() => void this.resolve(copy, original, "both", undefined, b)); })
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", undefined, b)); })
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", undefined, b)); });
   }
 
   // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.
@@ -315,22 +328,55 @@ export class NoteConflictModal extends Modal {
       new Notice("SelfSync: couldn't reach the clipboard — select the diff text and copy it manually");
     }
   }
-  private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther?: string) {
-    if (this.busy) return; // a second tap while the first apply is still in flight
+  // RESOLUTION runs the FSM in resolvefsm.ts (owner, 2026-09-08: "'step by step status' is a FSM. do proper state
+  // tracking"). Events come from three sources - the plugin's typed steps (onStep), the engine (busyState), the
+  // clock (grace / cap) - and the pressed button paints resolveLabel(state). The other keep-buttons are disabled
+  // for the duration; Copy, Open-both and Close stay live; nothing is dimmed. On done the modal advances; on
+  // stale / failed it re-renders so the user reviews the new content (the notice carries the why).
+  private async resolve(copy: string, original: string, choice: "mine" | "theirs" | "both", previewedOther?: string, pressed?: ButtonComponent) {
+    if (resolveInFlight(this.rs)) return; // a second tap while one is in flight
     const bs = this.plugin.busyState();
     if (bs.busy) { new Notice(`SelfSync: ${bs.reason} — try again when it finishes`); return; } // belt to the gate's braces
-    this.busy = true;
-    // Visible feedback: the apply writes + deletes a file and enqueues sync work, so on a big vault
-    // there IS a pause. Dimming says "working" instead of leaving live-looking buttons under a
-    // tap that now does nothing.
-    this.contentEl.setAttribute("style", "opacity:.55;pointer-events:none;");
+    this.gate?.dispose(); this.gate = undefined; // the FSM drives the buttons now, not the busy gate
+    for (const b of this.keepButtons) b.setDisabled(true);
+    this.pressed = pressed ? { button: pressed, own: pressed.buttonEl.textContent ?? "" } : undefined;
+    this.dispatch({ kind: "start" });
     try {
-      // false = the file changed since we previewed it (resolveNoteConflict warned) → just re-render
-      // so the user reviews the new content; true = resolved.
-      if (await this.plugin.resolveNoteConflict(copy, original, choice, previewedOther)) new Notice(`SelfSync: resolved ${original}`);
-    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
-    finally { this.busy = false; this.contentEl.removeAttribute("style"); }
+      const ok = await this.plugin.resolveNoteConflict(copy, original, choice, previewedOther, (step) => this.dispatch({ kind: "step", step }));
+      if (!ok) { this.dispatch({ kind: "stale" }); }
+      else {
+        this.dispatch({ kind: "localDone" });
+        await this.awaitUploadSettled(8_000);
+        new Notice(`SelfSync: resolved ${original}`);
+      }
+    } catch (e: any) {
+      this.dispatch({ kind: "error", message: String(e?.message ?? e) });
+      new Notice(`SelfSync: ${e?.message ?? e}`);
+    }
+    this.dispatch({ kind: "reset" }); this.pressed = undefined;
     if (this.open_) await this.render(); // advance to the next conflict, or the done state
+  }
+
+  // Drive the FSM's `uploading` state from the engine + the clock until it leaves that state. The engine queue is
+  // asynchronous, so busy may appear a moment later (grace 600 ms); if it never does - nothing to upload, or offline
+  // (the upload happens later) - or the cap passes, the FSM completes: the modal never waits on the network.
+  private awaitUploadSettled(capMs: number): Promise<void> {
+    return new Promise<void>((done) => {
+      const start = Date.now();
+      const finish = () => { unsubscribe(); window.clearInterval(timer); done(); };
+      const tick = () => {
+        if (this.rs.kind !== "uploading") return finish();
+        const elapsed = Date.now() - start;
+        if (this.plugin.busyState().busy) this.dispatch({ kind: "engineBusy" });
+        else if (this.rs.sawBusy) this.dispatch({ kind: "engineIdle" });
+        else if (elapsed > 600) this.dispatch({ kind: "graceElapsed" });
+        if (this.rs.kind === "uploading" && elapsed > capMs) this.dispatch({ kind: "capElapsed" });
+        if (this.rs.kind !== "uploading") finish();
+      };
+      const unsubscribe = this.plugin.onBusyChange(tick);
+      const timer = window.setInterval(tick, 150);
+      tick();
+    });
   }
 
   private async merge(copy: string, original: string) {

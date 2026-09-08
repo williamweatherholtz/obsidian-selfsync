@@ -83,6 +83,21 @@ export function conflictCopyName(path: string, device: string, when: Date, tag =
   return `${dir}${stem} (conflict ${device} ${ts}${suffix})${ext}`;
 }
 
+// "Keep both" turns a conflict copy into an ORDINARY note beside the original - both versions survive as two
+// files, both sync, nothing is merged by hand. The name is deliberately NOT the conflict scheme (no 14-digit
+// timestamp), so it stops being a conflict the moment it is renamed. `n` disambiguates a second keep on the
+// same day.
+export function keptBothName(original: string, when: Date, n = 0): string {
+  const slash = original.lastIndexOf("/");
+  const dir = slash >= 0 ? original.slice(0, slash + 1) : "";
+  const name = slash >= 0 ? original.slice(slash + 1) : original;
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  const day = `${when.getUTCFullYear()}-${pad(when.getUTCMonth() + 1)}-${pad(when.getUTCDate())}`;
+  return `${dir}${stem} (this device's version ${day}${n ? ` ${n + 1}` : ""})${ext}`;
+}
+
 // Inverse of conflictCopyName: given a path, return the ORIGINAL path it's a conflict copy of, or
 // null if it isn't one. Matches the exact "<orig> (conflict <device> <14-digit ts>[-tag])" shape
 // (the 14-digit timestamp keeps a user's own "(conflict …)"-named file from false-matching). Used to

@@ -7,7 +7,7 @@ import { ConnError, Endpoint } from "../src/connstate";
 import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
 import { TFile } from "obsidian";
 import { mountKey as mountKeyOf } from "../src/mountengine";
-import { isConflictCopy } from "../src/base"; // fixture-name sanity for the conflict-sweep tests
+import { isConflictCopy, keptBothName } from "../src/base"; // fixture-name sanity for the conflict-sweep tests
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
 // In-memory VaultIo (enough for reconcile to run).
@@ -739,6 +739,21 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     expect(await p.resolveNoteConflict("note (conflict).md", "note.md", "mine")).toBe(true);
     expect(dec(await p.io_.read("note.md"))).toBe("NEW"); // original now holds this device's content
     await expect(p.io_.read("note (conflict).md")).rejects.toThrow(); // copy removed
+    p.onunload();
+  });
+
+  it("resolveNoteConflict 'both' keeps BOTH versions as two ordinary notes (the copy renamed out of the conflict scheme) and reports typed steps", async () => {
+    const { p } = await bootPlugin();
+    await p.io_.write("note.md", enc("THEIRS"));
+    await p.io_.write("note (conflict Dev 20260908120000).md", enc("MINE"));
+    const steps: string[] = [];
+    expect(await p.resolveNoteConflict("note (conflict Dev 20260908120000).md", "note.md", "both", undefined, (st: string) => steps.push(st))).toBe(true);
+    expect(dec(await p.io_.read("note.md"))).toBe("THEIRS"); // the original is untouched
+    const kept = keptBothName("note.md", new Date());
+    expect(dec(await p.io_.read(kept))).toBe("MINE"); // this device's version survives as an ordinary note
+    expect(isConflictCopy(kept)).toBe(false); // ...that is NOT a conflict any more
+    await expect(p.io_.read("note (conflict Dev 20260908120000).md")).rejects.toThrow(); // copy gone
+    expect(steps).toEqual(["keepingBoth", "removingCopy"]);
     p.onunload();
   });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { BaseStore, conflictCopyName } from "../src/base";
+import { BaseStore, conflictCopyName, keptBothName, isConflictCopy, originalOfConflictCopy } from "../src/base";
 
 describe("BaseStore", () => {
   it("round-trips entries and serializes", () => {
@@ -58,5 +58,18 @@ describe("conflictCopyName", () => {
     expect(a).not.toBe(b);                 // content tag disambiguates
     expect(a).toContain("-aaaaaa");
     expect(b).toContain("-bbbbbb");
+  });
+});
+
+describe("keptBothName (Keep both): an ordinary note beside the original, never a conflict copy", () => {
+  const when = new Date(Date.UTC(2026, 8, 8, 12, 0, 0));
+  it("names by the original's stem + this device's version + the day; disambiguates repeats", () => {
+    expect(keptBothName("a/b/note.md", when)).toBe("a/b/note (this device's version 2026-09-08).md");
+    expect(keptBothName("a/b/note.md", when, 1)).toBe("a/b/note (this device's version 2026-09-08 2).md");
+    expect(keptBothName("plain", when)).toBe("plain (this device's version 2026-09-08)");
+  });
+  it("is NOT recognised as a conflict copy, so keeping both ends the conflict", () => {
+    expect(isConflictCopy(keptBothName("note.md", when))).toBe(false);
+    expect(originalOfConflictCopy(keptBothName("x/note.md", when))).toBeNull();
   });
 });

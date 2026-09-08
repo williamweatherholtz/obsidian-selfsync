@@ -101,4 +101,28 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from conflictModalBinaryView to issueConflictModalHangsOnBinary;
+
+    part issueResolutionHadNoState : Issue {
+        :>> id = "f89a7e36-fed9-48e3-b2ff-898b245a4237";
+        :>> title = "Resolving a conflict dimmed the whole modal with no state - working, hung or done were indistinguishable, and the upload it triggers was invisible";
+        :>> createdAt = "2026-09-08";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner 2026-09-08: 'give me a state machine during resolution, like updating server... or something. can't just gray the modal on me. UX'. Pressing Keep in the Resolve-conflicts modal dimmed the whole body (opacity .55, pointer-events none) until resolveNoteConflict returned: on a large vault that is a preview re-check, a read, a write and a delete - plus an enqueued upload the modal did not wait for - with the only signal being a greyed screen. The user could not tell whether it was working, hung, or done, and the upload the resolution actually triggers was invisible entirely. Same class as issueBusyStateNotSurfaced (functions in a state the surface did not show), on the one irreversible control. FIX (resolutionStateMachine): the pressed button narrates the plugin's real steps via onStage and then 'Updating the server…' until the engine settles (bounded); the other keep-button disabled, Copy/Close live, no dimming. discoveredInField = true. Severity Medium.";
+        :>> discoveredInField = true;
+        :>> relatedTask = "resolutionStateMachine";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from resolutionStateMachine to issueResolutionHadNoState;
+
+    part issuePreserveBothRequiredEditorMerge : Issue {
+        :>> id = "f585818d-40d6-40f6-bd64-c46a77fde1d8";
+        :>> title = "Preserving both versions of a conflict required the slow editor merge - there was no one-press 'keep both'";
+        :>> createdAt = "2026-09-08";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner 2026-09-08: 'open both to merge is so incredibly slow... maybe just keep both that auto keeps both content? i don't want to open it up and merge all the time, most of the time i just want to preserve data'. The modal offered three outcomes - discard the other device's version, discard this device's version, or hand-merge in the editor - so the most common intent, 'lose nothing, decide later', was only reachable through the slowest path (opening both files as editor panes) or by leaving the conflict unresolved. FIX (keepBothResolution): 'Keep both' - one press turns the conflict copy into an ordinary note beside the original ('<name> (this device's version <date>)'), both sync, the conflict ends, nothing is merged by hand; first among the choices; 'Open both to merge' kept last. discoveredInField = true. Severity Medium (UX: the safe outcome was the expensive one).";
+        :>> discoveredInField = true;
+        :>> relatedTask = "keepBothResolution";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from keepBothResolution to issuePreserveBothRequiredEditorMerge;
 }

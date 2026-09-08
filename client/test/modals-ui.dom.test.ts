@@ -92,7 +92,7 @@ describe("NoteConflictModal (adjudication)", () => {
     m.onOpen(); await flush();
     buttonByText(m.contentEl, "Keep + this device's").click();
     await flush();
-    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "mine", expect.anything());
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "mine", expect.anything(), expect.any(Function));
   });
 
   it("'Keep the other' resolves 'theirs'", async () => {
@@ -101,7 +101,7 @@ describe("NoteConflictModal (adjudication)", () => {
     m.onOpen(); await flush();
     buttonByText(m.contentEl, "Keep − other device's").click();
     await flush();
-    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "theirs", expect.anything());
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "theirs", expect.anything(), expect.any(Function));
   });
 
   // issueConflictModalSerialScan: the cosmetic-auto-dismiss sweep used to run BEFORE the first
@@ -384,7 +384,7 @@ describe("busy-state gating (busygate.ts): the committing button is disabled and
     const m = new NoteConflictModal(plugin.app, plugin as any);
     m.onOpen(); await flush();
     const analyzing = buttons(m.contentEl).filter((b) => b.textContent === "Analyzing files…");
-    expect(analyzing).toHaveLength(2);
+    expect(analyzing).toHaveLength(3); // Keep both, Keep −, Keep +
     expect(analyzing.every((b) => b.disabled && b.title === BUSY.reason)).toBe(true);
     expect(m.contentEl.textContent).not.toContain("paused"); // no prose banner — the button is the indicator
     expect(disabled(buttonByText(m.contentEl, "Copy both versions"))).toBe(false);
@@ -444,7 +444,7 @@ describe("NoteConflictModal: a binary or oversize conflict is not read or diffed
     expect(text).toContain("+ this device's version: 195.5 MB");
     expect(buttonByText(m.contentEl, "Copy both versions")).toBeFalsy(); // nothing textual to copy
     buttonByText(m.contentEl, "Keep − other device's")!.click(); await flush();
-    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("clip (conflict dev 20260907120000).mp4", "clip.mp4", "theirs", undefined);
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("clip (conflict dev 20260907120000).mp4", "clip.mp4", "theirs", undefined, expect.any(Function));
   });
 
   it("a text conflict over 4 MB is shown the same way, with the size as the reason", async () => {
@@ -463,5 +463,70 @@ describe("NoteConflictModal: a binary or oversize conflict is not read or diffed
     m.onOpen(); await flush();
     expect(plugin.readTextOrEmpty).toHaveBeenCalledTimes(2);
     expect(buttonByText(m.contentEl, "Copy both versions")).toBeTruthy();
+  });
+});
+
+// Owner, 2026-09-08: "give me a state machine during resolution, like 'updating server…'. can't just gray the modal
+// on me". The pressed keep-button narrates the plugin's real steps, the other is disabled, Copy stays live, nothing
+// is dimmed; after the local steps it reads "Updating the server…" until the engine settles, then the next conflict.
+describe("NoteConflictModal: resolution is a visible state machine on the pressed button", () => {
+  // Keep both (owner: "most of the time i just want to preserve data"): one press, choice "both", no editor.
+  it("'Keep both' resolves with choice 'both' and narrates 'Keeping both versions…' on the pressed button", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }] } });
+    let release!: (ok: boolean) => void;
+    plugin.resolveNoteConflict = vi.fn((_c: string, _o: string, _ch: string, _p: string | undefined, onStep?: (s: string) => void) => {
+      onStep?.("keepingBoth");
+      return new Promise<boolean>((r) => { release = r; });
+    });
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const both = buttonByText(m.contentEl, "Keep both") as HTMLButtonElement;
+    both.click(); await flush();
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("note (conflict).md", "note.md", "both", undefined, expect.any(Function));
+    expect(both.textContent).toBe("Keeping both versions…");
+    release(true); await new Promise((r) => setTimeout(r, 800)); await flush();
+    expect(buttonByText(m.contentEl, "Keep both")).toBeTruthy(); // re-rendered fresh
+    m.onClose();
+  });
+
+  it("stages land on the pressed button; the other keep-button is disabled; Copy stays live; no dimming", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }] } });
+    let release!: (ok: boolean) => void;
+    plugin.resolveNoteConflict = vi.fn((_c: string, _o: string, _ch: string, _p: string | undefined, onStep?: (s: string) => void) => {
+      onStep?.("checking");
+      onStep?.("writing"); // typed FSM steps (resolvefsm.ts), projected to labels by the modal
+      return new Promise<boolean>((r) => { release = r; });
+    });
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const keepMine = buttonByText(m.contentEl, "Keep + this device's") as HTMLButtonElement;
+    keepMine.click(); await flush();
+    expect(keepMine.textContent).toBe("Writing this device's version…");
+    expect(keepMine.disabled).toBe(true);
+    expect((buttonByText(m.contentEl, "Keep − other device's") as HTMLButtonElement).disabled).toBe(true);
+    expect((buttonByText(m.contentEl, "Copy both versions") as HTMLButtonElement).disabled).toBe(false);
+    expect(m.contentEl.getAttribute("style") ?? "").not.toContain("opacity"); // no dimmed body
+    release(true); await flush();
+    expect(keepMine.textContent).toBe("Updating the server…"); // engine never reports busy here → settles after the grace
+    await new Promise((r) => setTimeout(r, 800)); await flush();
+    expect(buttonByText(m.contentEl, "Updating the server…")).toBeFalsy(); // settled → re-rendered fresh
+    expect((buttonByText(m.contentEl, "Keep + this device's") as HTMLButtonElement).disabled).toBe(false);
+    m.onClose();
+  });
+
+  it("'Updating the server…' holds while the engine is busy and releases when it settles", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }] } });
+    plugin.resolveNoteConflict = vi.fn(async () => true);
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    const keepMine = buttonByText(m.contentEl, "Keep + this device's") as HTMLButtonElement;
+    keepMine.click(); await flush();
+    plugin.busy = { busy: true, label: "Syncing…", reason: "SelfSync is syncing — 1 pending" }; plugin.fireBusy();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(keepMine.textContent).toBe("Updating the server…"); // still holding while the upload runs
+    plugin.busy = { busy: false, label: "", reason: "" }; plugin.fireBusy(); await flush(); await flush();
+    expect(buttonByText(m.contentEl, "Updating the server…")).toBeFalsy(); // released → re-rendered fresh
+    expect((buttonByText(m.contentEl, "Keep + this device's") as HTMLButtonElement).disabled).toBe(false);
+    m.onClose();
   });
 });
