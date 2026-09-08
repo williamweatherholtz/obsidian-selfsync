@@ -600,6 +600,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.editorActionEls.clear();
     if (this.uiRefreshTimer !== undefined) { window.clearTimeout(this.uiRefreshTimer); this.uiRefreshTimer = undefined; }
     if (this.heldPushTimer !== undefined) { window.clearTimeout(this.heldPushTimer); this.heldPushTimer = undefined; }
+    if (this.aliasTimer !== undefined) { window.clearTimeout(this.aliasTimer); this.aliasTimer = undefined; }
     this.log("plugin unloaded");
   }
 
@@ -615,6 +616,21 @@ export default class SelfSyncPlugin extends Plugin {
   private rejectedPushes = new Map<string, string>();
   private heldPushes = 0;
   private heldPushTimer?: number;
+  // Local paths matched to a server key by case-insensitive name this pass — logged ONCE per burst with one
+  // example, never per file (a whole re-capitalised folder is hundreds of paths).
+  private aliasedPaths = 0;
+  private aliasedExample?: string;
+  private aliasTimer?: number;
+  private notePathAliased(localPath: string, canonicalPath: string): void {
+    this.aliasedPaths++;
+    this.aliasedExample ??= `'${localPath}' is synced as '${canonicalPath}'`;
+    if (this.aliasTimer !== undefined) return;
+    this.aliasTimer = window.setTimeout(() => {
+      this.aliasTimer = undefined;
+      const n = this.aliasedPaths, ex = this.aliasedExample; this.aliasedPaths = 0; this.aliasedExample = undefined;
+      if (n > 0 && !this.unloading) this.log(`${n} local path${n > 1 ? "s differ" : " differs"} from the server's only in capitalisation — treated as the same file${n > 1 ? "s" : ""}, keeping the server's spelling (e.g. ${ex})`);
+    }, 2_000);
+  }
   private notePushHeld(): void {
     this.heldPushes++;
     if (this.heldPushTimer !== undefined) return;
@@ -1947,6 +1963,9 @@ export default class SelfSyncPlugin extends Plugin {
         : `couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       rejectedPushes: this.rejectedPushes,
       onPushHeld: () => this.notePushHeld(),
+      // Windows, macOS and iOS resolve paths case-insensitively; Linux and Android do not (issueCasePathDivergence).
+      caseInsensitivePaths: Platform.isWin || Platform.isMacOS || Platform.isIosApp,
+      onPathAliased: (p, k) => this.notePathAliased(p, k),
       onDeclined: (paths) => this.noteDeclined(paths),
       onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
       onBaseChanged: () => { void this.persist(); },

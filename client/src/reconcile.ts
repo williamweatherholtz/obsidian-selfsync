@@ -351,6 +351,18 @@ export interface ReconcileDeps {
   // spans passes and resets on plugin reload; an edit changes the hash and the push is tried again.
   rejectedPushes?: Map<string, string>;
   onPushHeld?: (path: string) => void;
+  // CASE-AWARE PATH IDENTITY (issueCasePathDivergence). On a case-insensitive filesystem (Windows, macOS, iOS)
+  // `4 Archive/x.md` and `4 archive/x.md` are ONE file, but the server's index and this base are exact-case.
+  // When a folder's capitalisation diverges (a case-only rename on one device), the local listing shows a
+  // path with no exact server/base key while a case-fold match exists: decide() then sees a brand-new local
+  // file (push -> the server refuses it: 'a path differing only in case already exists') plus a server file
+  // the presence re-probe says is still present - so the two never converge, and EDITS under the local
+  // spelling never sync. Owner's vault 2026-09-07: ~500 such files, every pass. With this flag the local
+  // spelling is ALIASED to the existing server/base key for sync identity (reads/writes go through the
+  // adapter, which resolves either spelling on such a filesystem); nothing is renamed anywhere. Off on a
+  // case-SENSITIVE filesystem (Linux, Android), where the two spellings really are two files.
+  caseInsensitivePaths?: boolean;
+  onPathAliased?: (localPath: string, canonicalPath: string) => void;
   // Remote files present on the server that this device is set NOT to sync (a config surface is off, or
   // a community plugin isn't in the allowlist). Reported so the UI can tell the user WHAT is waiting and
   // how to adopt it — otherwise these look like "stuck" pending work that never transfers.
@@ -670,7 +682,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
 // WITHOUT re-hashing the whole vault. Remote config changes arrive via the delta; a missed local
 // NOTE edit is caught by the slower whole-vault scan (doReconcileAll's forceFullScan), not here.
 export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
-  const local = await d.io.list();
+  const local = aliasLocalPaths(d, await d.io.list(), d.base.paths());
   const candidates = new Set<string>();
   for (const p of local.keys()) if (isConfig(p)) candidates.add(p);
   for (const p of d.base.paths()) if (isConfig(p)) candidates.add(p); // catch a LOCAL removal (base present, file gone)
@@ -727,6 +739,41 @@ async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Arr
 
 // Returns the ChangesResponse it fetched (version + history_floor) so the caller can run the D0019
 // reset detection on the CONNECT path too, not just the poll path.
+// Map lower-cased path -> the canonical (server/base) spelling. Built per pass; ~2k entries is microseconds.
+function foldIndex(keys: Iterable<string>): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const k of keys) { const f = k.toLowerCase(); if (!m.has(f)) m.set(f, k); }
+  return m;
+}
+
+// Re-key the LOCAL listing onto the canonical spelling wherever a local path has no exact canonical match but
+// a case-fold one (caseInsensitivePaths only). A local path that already IS a canonical key is untouched, and
+// if the listing somehow carries both spellings (impossible on such a filesystem) nothing is merged.
+function aliasLocalPaths<T>(d: ReconcileDeps, local: Map<string, T>, canonical: Iterable<string>): Map<string, T> {
+  if (!d.caseInsensitivePaths) return local;
+  const exact = new Set(canonical);
+  const fold = foldIndex(exact);
+  let out: Map<string, T> | null = null;
+  for (const [p, v] of local) {
+    if (exact.has(p)) continue;
+    const k = fold.get(p.toLowerCase());
+    if (!k || k === p || local.has(k)) continue;
+    if (!out) out = new Map(local);
+    out.delete(p); out.set(k, v);
+    d.onPathAliased?.(p, k);
+  }
+  return out ?? local;
+}
+
+// The single-path (event) form: a locally reported path adopts the base's spelling when only case differs.
+export function canonicalLocalPath(d: ReconcileDeps, path: string): string {
+  if (!d.caseInsensitivePaths || d.base.get(path)) return path;
+  const k = foldIndex(d.base.paths()).get(path.toLowerCase());
+  if (!k || k === path) return path;
+  d.onPathAliased?.(path, k);
+  return k;
+}
+
 export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   d.onStage?.("fetching changes from the server"); // the remote manifest fetch — can be the slow first hop
   const resp = await d.api.changes(0);
@@ -746,7 +793,7 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     d.onRemotePlugins([...byId].map(([id, author]) => ({ id, author })));
   }
   d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
-  const local = await d.io.list();
+  const local = aliasLocalPaths(d, await d.io.list(), [...remote.keys(), ...d.base.paths()]);
   // INCOMING bulk-delete CONFIRMATION (D0041): count the base paths this pass would delete-LOCAL (missing
   // from the server manifest, still local, accepted by this device) and HOLD the batch for the user to
   // confirm if it exceeds their chosen threshold (off / > N files / > N% of the accepted base). The accepted
@@ -929,6 +976,7 @@ export async function keepHeldPushes(d: ReconcileDeps, paths: readonly string[])
 // but now immediate. (Was delayed up to FULL_SCAN_INTERVAL_MS.)
 // @audit-hash sha256:e9a08a0dfa9d3dbf
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
+  path = canonicalLocalPath(d, path); // a case-only spelling difference is the SAME file here (see caseInsensitivePaths)
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);
   const liveSize = d.localSizeOf?.(path) ?? localSize; // refresh from the live stat; the queued hint can be coalesce-stale

@@ -65,4 +65,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from rejectedPushHold to issueRejectedPushRetriedEveryPass;
+
+    part issueCasePathDivergence : Issue {
+        :>> id = "0602d5d2-2339-4861-8665-38afba8c25bb";
+        :>> title = "Case-only folder capitalisation difference between a Windows vault and the server made every file in those folders unpushable - and edits there silently did not sync";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Confirmed 2026-09-07 from the owner's 1.30.9 log: every refused push read 'the server refused it - a path differing only in case already exists' - hundreds of files under 4 Archive/**, 3 Resources/**, 2 Areas/**, 99 Utilities/**. The server's index holds those folders in a different capitalisation than this Windows vault reports. Path identity in the client was exact-case everywhere (base keys, manifest keys, decide()), while the filesystem underneath is case-insensitive, so a case-only divergence produced: (a) the local spelling has no base/remote key -> decide() = local-only-new -> push -> the server's collision guard refuses it (correctly - it protects case-sensitive servers from two keys folding onto one file); (b) the server's spelling is 'absent' from the local listing, but the false-absence re-probe (adapter.exists, case-insensitive) says present -> no delete -> the pair never converges; (c) and the DATA hazard: an edit made under the local spelling changes a file the client can only push under a refused key - edits in those folders did not sync at all, silently, since whenever the capitalisation diverged. Performance was the visible symptom (~500 futile uploads per pass, 1.30.9 held them after the first pass); the silent non-sync of edits is the real defect. FIX (casePathAlias): on case-insensitive platforms the local spelling is aliased to the existing server/base key for sync identity, in the full pass, the config pass and the vault-event path; nothing is renamed; the server keeps its spelling; Linux/Android untouched. ROOT CAUSE of the divergence itself (which device re-capitalised the folders, and when) is not knowable from the record; the client must simply be correct under it. discoveredInField = true. Severity High: silent non-sync of edits in a whole folder tree.";
+        :>> discoveredInField = true;
+        :>> relatedTask = "casePathAlias";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from casePathAlias to issueCasePathDivergence;
 }

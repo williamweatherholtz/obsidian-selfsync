@@ -1971,3 +1971,81 @@ describe("a server-REJECTED push is held while the file is unchanged (issueRejec
     expect(d.rejectedPushes!.size).toBe(0);
   });
 });
+
+// Owner's vault 2026-09-07 (issueCasePathDivergence): the server's index holds `4 archive/...`, this Windows
+// vault lists `4 Archive/...` — ~500 files the client saw as brand-new, pushed, and had refused ('a path
+// differing only in case already exists') on every pass, while edits under the local spelling never synced.
+// On a case-insensitive filesystem the two spellings are ONE file: the local spelling is aliased to the
+// existing server/base key for sync identity, and nothing is renamed anywhere.
+describe("case-aware path identity on a case-insensitive filesystem (issueCasePathDivergence)", () => {
+  // A fakeIo whose read/write/remove/exists resolve a path by case-insensitive name (Windows/macOS/iOS) while
+  // list() reports the stored (re-capitalised) spelling — exactly the shape of the owner's vault.
+  const ciIo = (seed: Record<string, string> = {}) => {
+    const io = fakeIo(seed);
+    const find = (p: string) => { if (io.m.has(p)) return p; const f = p.toLowerCase(); for (const k of io.m.keys()) if (k.toLowerCase() === f) return k; return p; };
+    io.read = async (p) => { const b = io.m.get(find(p)); if (!b) throw new Error("ENOENT"); return b; };
+    io.write = async (p, b) => { io.m.set(find(p), b); };
+    io.remove = async (p) => { io.m.delete(find(p)); };
+    (io as VaultIo).exists = async (p: string) => io.m.has(find(p));
+    return io;
+  };
+  const OTHERS = ["a.md", "b.md", "c.md", "d.md"]; // keep the bulk-delete ratio guard out of the picture
+  const seeded = async (io: ReturnType<typeof fakeIo>, caseInsensitive: boolean) => {
+    // The server + base know "4 archive/plans.md"; the local folder is then re-capitalised to "4 Archive".
+    const srv = fakeServer();
+    await serverPutBytes(srv.api, "4 archive/plans.md", enc("# plans\n"));
+    for (const o of OTHERS) await serverPutBytes(srv.api, o, enc(`${o}\n`));
+    const aliased: string[] = []; const errors: string[] = []; let commits = 0;
+    const realCommit = srv.api.commit.bind(srv.api);
+    srv.api.commit = async (r: CommitRequest) => { commits++; return realCommit(r); };
+    const d = deps(srv.api, io, {
+      caseInsensitivePaths: caseInsensitive,
+      onPathAliased: (p, k) => aliased.push(`${p}->${k}`),
+      onFileError: (p, e) => errors.push(`${p}: ${(e as Error).message}`),
+    });
+    await reconcileAll(d); // first contact: everything pulled down under the server's spelling
+    const bytes = io.m.get("4 archive/plans.md")!;
+    io.m.delete("4 archive/plans.md"); io.m.set("4 Archive/plans.md", bytes); // the case-only rename
+    return { srv, io, d, aliased, errors, commits: () => commits };
+  };
+  const serverHashOf = (s: { srv: ReturnType<typeof fakeServer> }, k: string) => s.srv.files.get(k)?.hash;
+
+  it("full pass: the re-capitalised local path IS the server's file — nothing pushed, refused or deleted", async () => {
+    const s = await seeded(ciIo(), true); const before = s.commits();
+    await reconcileAll(s.d);
+    expect(s.commits()).toBe(before);
+    expect(s.errors).toEqual([]);
+    expect(s.aliased).toEqual(["4 Archive/plans.md->4 archive/plans.md"]);
+    expect([...s.srv.files.keys()].filter((k) => k.toLowerCase().startsWith("4 archive"))).toEqual(["4 archive/plans.md"]); // one spelling on the server
+    expect(s.io.m.has("4 Archive/plans.md")).toBe(true); // the local file is left exactly as the user has it
+  });
+
+  it("an EDIT under the local spelling syncs to the EXISTING server key — full pass and event path alike", async () => {
+    const s = await seeded(ciIo(), true);
+    const v1 = enc("# plans\nedited\n"); s.io.m.set("4 Archive/plans.md", v1);
+    await reconcileAll(s.d);
+    expect(serverHashOf(s, "4 archive/plans.md")).toBe(await sha256hex(v1));
+    const v2 = enc("# plans\nedited twice\n"); s.io.m.set("4 Archive/plans.md", v2);
+    await reconcilePath(s.d, "4 Archive/plans.md"); // the vault event names the LOCAL spelling
+    expect(serverHashOf(s, "4 archive/plans.md")).toBe(await sha256hex(v2));
+    expect(s.srv.files.has("4 Archive/plans.md")).toBe(false); // never a second key
+    expect(s.errors).toEqual([]);
+  });
+
+  it("a server tombstone for the canonical key removes the locally re-capitalised file", async () => {
+    const s = await seeded(ciIo(), true);
+    await reconcileAll(s.d); // alias established, base current
+    await s.srv.api.deleteFile("4 archive/plans.md");
+    await reconcileAll(s.d);
+    expect(s.io.m.has("4 Archive/plans.md")).toBe(false);
+    expect(s.errors).toEqual([]);
+  });
+
+  it("on a case-SENSITIVE filesystem nothing is aliased: the rename propagates as delete + create", async () => {
+    const s = await seeded(fakeIo(), false); // plain fakeIo: exact-case map, like Linux/Android
+    await reconcileAll(s.d);
+    expect(s.aliased).toEqual([]);
+    expect(s.srv.files.has("4 Archive/plans.md")).toBe(true);
+    expect(s.srv.files.has("4 archive/plans.md")).toBe(false);
+  });
+});
