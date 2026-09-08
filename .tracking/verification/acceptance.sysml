@@ -292,12 +292,17 @@ package ProjectAcceptance {
     // The (size,mtime) scan-skip has one accepted hole: an out-of-band writer that preserves BOTH size
     // and mtime is not noticed until something bumps mtime. This Test STATES the acceptRisk; its
     // TestResult is the OWNER's attestation and is appended only on their explicit word (CLAUDE.md §3c
-    // — never inferred). Until then the finding is, truthfully, undispositioned.
+    // — never inferred). Until then the finding is, truthfully, undispositioned AND still listed open.
     verification scanSkipResidualAccept : Test {
         :>> id = "aec501a9-b89f-484b-84be-a085c6c1119f";
         :>> method = VerificationMethod::confirmation;
         :>> disposition = DispositionKind::acceptRisk;
         :>> procedureText = "ACCEPT-RISK: the (size,mtime) scan-skip residual is knowingly kept. Basis: it turns each whole-vault pass from O(vault bytes) into O(changed files) - a measured battery/CPU drain on large and mobile vaults - and the destructive branch is structurally excluded and now PINNED by reconcile tests (a scan-hit is gated on the remote being present, delete-local exists only when it is absent, so a stale-stat local edit can never be deleted; the hole is exactly the stat gate, caught the moment mtime moves). Consequence when it hits: a same-size-and-same-mtime out-of-band change is LATE, not lost - picked up by the next real edit or a full re-hash. The owner attests acceptance of this residual on these terms.";
     }
-    #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
+    // The #Dispositions edge to issueScanSkipMtimePreservedBlindspot is deliberately NOT authored yet.
+    // keel 0.3.1's open-issues lens treats a finding with a #Dispositions edge as closed EVEN WHEN the
+    // disposition Test has no TestResult - i.e. an unattested acceptRisk hid this issue from the open
+    // list (verified: removing the edge made it reappear; issueUnattestedDispositionClosesFinding).
+    // Author the edge in the same change that records the owner's attestation:
+    //   #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
 }
