@@ -14,6 +14,8 @@ import { Phase } from "./syncstate"; // the display-projection alphabet (light) 
 
 // Which call failed — disambiguates the OVERLOADED 404: a vault-scope status probe 404 means the vault is
 // gone (terminal), but a chunk/meta/commit 404 is a normal/transient miss (retryable, never "vault gone").
+import { defineMachine } from "./fsm";
+
 export enum Endpoint { Login = "login", VaultStatus = "vaultStatus", Chunk = "chunk", Meta = "meta", Commit = "commit", Other = "other" }
 
 // Client-SYNTHESIZED conditions (no HTTP status of their own) — minted as typed errors, not string-matched.
@@ -144,16 +146,27 @@ export const LINK_OK: LinkState = { kind: LinkKind.Ok };
 // recoveryFor to either a Retrying (timer armed) or a Blocked (await-user + self-heal re-probe) state.
 // (A user reconnect needs no distinct event: it routes through disconnect — which resets the link to Ok,
 // F2 — then connect, so the blocked reason clears without a dedicated UserRetry edge.)
-export function linkNext(s: LinkState, e: LinkEvent): LinkState {
-  if (e.kind === LinkEventKind.Connected) return { kind: LinkKind.Ok };
-  const rec = recoveryFor(e.cls);
-  if (rec.kind === RecoveryKind.AwaitUser) {
-    const reason = blockReasonOf(e.cls)!; // AwaitUser ⟺ a block reason exists
-    return { kind: LinkKind.Blocked, reason, recovery: rec };
-  }
-  const attempt = s.kind === LinkKind.Retrying ? s.attempt + 1 : 1;
-  return { kind: LinkKind.Retrying, recovery: rec, attempt };
-}
+// The link machine on the shared primitive (fsm.ts); registered as STPA process model pmSession (is the held
+// token / link usable) - the failure taxonomy the engine's phase refines with.
+export const linkMachine = defineMachine<LinkState, LinkEvent>({
+  name: "pmSession",
+  states: [LinkKind.Ok, LinkKind.Retrying, LinkKind.Blocked],
+  events: [LinkEventKind.Connected, LinkEventKind.Failed],
+  kindOf: (s) => s.kind,
+  eventKindOf: (e) => e.kind,
+  transition(s, e) {
+    if (e.kind === LinkEventKind.Connected) return { kind: LinkKind.Ok };
+    const rec = recoveryFor(e.cls);
+    if (rec.kind === RecoveryKind.AwaitUser) {
+      const reason = blockReasonOf(e.cls)!; // AwaitUser ⟺ a block reason exists
+      return { kind: LinkKind.Blocked, reason, recovery: rec };
+    }
+    const attempt = s.kind === LinkKind.Retrying ? s.attempt + 1 : 1;
+    return { kind: LinkKind.Retrying, recovery: rec, attempt };
+  },
+});
+
+export function linkNext(s: LinkState, e: LinkEvent): LinkState { return linkMachine.next(s, e); }
 
 // Build the classifier input from any thrown error + the device's stored-password fact. A non-ConnError
 // (a raw network reject, a thrown string) has no HTTP status → classifies as a statusless Transient

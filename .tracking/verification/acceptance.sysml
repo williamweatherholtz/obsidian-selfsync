@@ -401,4 +401,10 @@ package ProjectAcceptance {
     // sr19: SEC#4 runtime orphan-chunk sweep bounds uncommitted bytes (runtime_orphan_sweep_runs_on_upload_but_spares_inflight_chunks)
     #Verify dependency from round1DeferredHardeningDoD to sr19;
     // (sr11/sr16/sr19 were unlinkable until the dodBackfillStamp transform recorded the verdicts their DoDs had earned.)
+    // sr26/sr27 (conflict resolver, 2026-09-08): the busy gate + stale-preview guard, and the write-before-remove / keep-both order
+    #Verify dependency from busyStateGatingDoD to sr26;
+    #Verify dependency from conflictModalPerfDoD to sr26;
+    #Verify dependency from resolutionStateMachineDoD to sr26;
+    #Verify dependency from keepBothResolutionDoD to sr27;
+    #Verify dependency from conflictModalPerfDoD to sr27;
 }

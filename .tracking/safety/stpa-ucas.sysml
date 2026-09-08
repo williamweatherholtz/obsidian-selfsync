@@ -644,4 +644,77 @@ package ProjectStpaAnalysis {
     #Senses dependency from s12 to fbRemoteManifest;
     #Senses dependency from s18 to fbRemoteManifest; // the delete ignored the manifest's version (the CAS precondition it lacked)
     #Senses dependency from s19 to fbStatusIndicator; // the connect's inadequate sub-phase feedback is the status indicator (same sensor as S-14)
+
+    // ---- Conflict resolver (c8ConflictResolver), 2026-09-08 — STPA step 3/4 over the resolver's three control
+    // actions, four guide words each; the non-hazardous cells are not listed. ----
+    part uca23 : UnsafeControlAction {
+        :>> id = "af7ed554-9d2e-45e5-a83c-21fd9bca2a77"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-23: the chosen version is written over an original that CHANGED since it was previewed";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> context = "The user reviews a diff, decides, and presses Keep; between the preview and the write a pull (or another app) replaced the original.";
+        :>> statement = "Write-chosen-version provided while the original no longer matches the previewed text — the newer content is overwritten by a decision made against a version that no longer exists. [H-1, H-2]";
+    }
+    part uca24 : UnsafeControlAction {
+        :>> id = "f3ca53b3-3f83-44cd-86c6-758220fbd728"; :>> ucaType = UcaType::wrongTimingOrder;
+        :>> title = "UCA-24: the resolver writes or removes files while a sync pass is reading/writing the same paths";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> context = "The modal runs OUTSIDE the engine's serial queue; a connect or poll pass may be hashing, pulling or pushing the very original/copy at that moment.";
+        :>> statement = "Write-chosen-version / remove-conflict-copy provided concurrently with a pass over the same path — the pass's decision was made against bytes the resolver then changes, so the two interleave: a stale push, a pull that clobbers the just-written choice, or a copy removed under a pull's racing-edit guard. [H-1, H-9]";
+    }
+    part uca25 : UnsafeControlAction {
+        :>> id = "8c847aaf-4c1f-4dd0-a7af-c0c13fc66979"; :>> ucaType = UcaType::wrongTimingOrder;
+        :>> title = "UCA-25: the conflict copy is removed before the chosen version (or the kept-both rename) is durably written";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> context = "Every resolution ends by removing the copy; if it ran first, or the write failed silently, the only surviving instance of this device's version is gone.";
+        :>> statement = "Remove-conflict-copy provided before write-chosen-version / keep-both-rename has completed — a failure or crash in the gap discards the version the user chose to keep, with no preserved copy. [H-2]";
+    }
+    part cc21 : ControllerConstraint { :>> id = "c46ca67c-c4d9-48a3-b807-4ee0e0cb7552"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "C-21: never write a chosen version over an original that differs from what was previewed";
+        :>> statement = "The resolver must re-verify, immediately before the write, that the original still matches the previewed text (content identity), and refuse with a re-render otherwise."; }
+    part cc22 : ControllerConstraint { :>> id = "a9a2c498-c931-41cd-b488-2b2b039abec4"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "C-22: never resolve while a sync pass is running";
+        :>> statement = "The resolver must not write or remove files while the engine reports busy (connecting / checking / syncing); the choice is held, visibly, until the pass settles."; }
+    part cc23 : ControllerConstraint { :>> id = "25dc19d2-b5db-43e9-bd3c-ec9d7fd4b03b"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "C-23: remove the conflict copy only after the kept version is durably written";
+        :>> statement = "Remove-conflict-copy is issued strictly after write-chosen-version / keep-both-rename has completed; a failure before that leaves the copy in place."; }
+    #Analyzes dependency from uca23 to caWriteChosenVersion;
+    #Analyzes dependency from uca24 to caWriteChosenVersion;
+    #Analyzes dependency from uca25 to caRemoveConflictCopy;
+    #Causes dependency from uca23 to h1;
+    #Causes dependency from uca23 to h2;
+    #Causes dependency from uca24 to h1;
+    #Causes dependency from uca24 to h9;
+    #Causes dependency from uca25 to h2;
+    #Inverts dependency from cc21 to uca23;
+    #Inverts dependency from cc22 to uca24;
+    #Inverts dependency from cc23 to uca25;
+
+    part s20 : LossScenario { :>> id = "354a809f-1315-4904-8ed5-43c808e095c2"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> causalFactor = "inadequate process model (the resolver did not know a pass was running) + inadequate feedback (the surface showed live buttons)";
+        :>> title = "S-20: a conflict resolved mid-pass — the user pressed Keep while the engine was checking the same files";
+        :>> statement = "The owner opened Resolve-conflicts during a 152 s first aliased pass (2026-09-07). The modal rendered its keep-buttons live although its own reads were queued behind the pass, and a Keep would have written the original while reconcile was hashing/pulling it. The resolver's process model had no belief about the engine's state, and the surface gave the user no signal that acting now was unsafe. Mitigated: busyState is now a projection the resolver reads (fbEngineBusy) and the buttons are disabled with the state while busy (SR-26); the resolution itself is an FSM whose uploading state waits for the engine to settle."; }
+    #Explains dependency from s20 to uca24;
+    #LeadsTo dependency from s20 to h1;
+    #Senses dependency from s20 to fbEngineBusy;
+
+    part sr26 : SafetyRequirement { :>> id = "1d6a1619-caa0-4743-9679-186f5e42f974"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-26: a resolution acts only on a settled, unchanged file";
+        :>> statement = "The resolver refuses to write or remove while the engine is busy (the choice is held with the state shown on the control itself) and re-verifies immediately before the write that the original still matches the previewed version (content identity), refusing and re-rendering otherwise.";
+        :>> triggeringEvent = "Keep pressed while a pass is running, or after the original changed since the preview";
+        :>> safeState = "nothing written or removed; the control shows why; the user re-reviews";
+        :>> safetyFunction = "busy gate (busygate.ts, busyState) + stale-preview guard (previewStillCurrent, twice)"; }
+    part sr27 : SafetyRequirement { :>> id = "5b4a6e31-2131-459b-b672-98d6e12ac99e"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-27: the conflict copy outlives the kept version's write, and Keep both discards nothing";
+        :>> statement = "Every resolution writes (or renames) the kept version first and removes the conflict copy last; Keep both turns the copy into an ordinary note beside the original so both versions survive and sync. A failure before the final removal leaves the copy in place.";
+        :>> triggeringEvent = "any resolution; a write failure or crash mid-resolution";
+        :>> safeState = "at worst the conflict remains (copy still present); never a lost version";
+        :>> safetyFunction = "resolveNoteConflict ordering (write -> enqueue -> remove) + keptBothName rename path"; }
+    #Mitigates dependency from sr26 to uca23;
+    #Mitigates dependency from sr26 to uca24;
+    #Mitigates dependency from sr27 to uca25;
+    #Satisfies dependency from sr26 to sc1;
+    #Satisfies dependency from sr26 to sc9;
+    #Satisfies dependency from sr27 to sc2;
+    #RealizedBy dependency from sr26 to c8ConflictResolver;
+    #RealizedBy dependency from sr27 to c8ConflictResolver;
 }

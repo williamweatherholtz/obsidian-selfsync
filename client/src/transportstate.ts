@@ -17,6 +17,8 @@
 // a close from live/degraded (the socket worked) → a re-dial; a close from dialing (never opened → usually
 // a bad/expired token) → a full backed-off reconnect. An `errored` no longer discards the "was open" fact
 // (it → degraded, not dialing), so a live socket that errors-then-closes re-dials rather than reconnecting.
+import { defineMachine, identity } from "./fsm";
+
 export type TransportState = "offline" | "dialing" | "live" | "degraded";
 export type TransportEvent = "dial" | "opened" | "errored" | "closed" | "staleTick" | "teardown";
 
@@ -28,7 +30,26 @@ export interface TransportEffects {
   reconnect?: boolean;        // full backed-off reconnect ({connect}) — a socket that NEVER opened, usually a bad/expired token
 }
 
+export const TRANSPORT_STATES: readonly TransportState[] = ["offline", "dialing", "live", "degraded"];
+export const TRANSPORT_EVENTS: readonly TransportEvent[] = ["dial", "opened", "errored", "closed", "staleTick", "teardown"];
+
+// The WebSocket transport machine on the shared primitive (fsm.ts), effects as DATA; registered as STPA process
+// model pmSyncEngine (liveness of the realtime channel is part of the engine's belief).
+export const transportMachine = defineMachine<TransportState, TransportEvent, TransportEffects>({
+  name: "pmSyncEngine",
+  states: TRANSPORT_STATES,
+  events: TRANSPORT_EVENTS,
+  kindOf: identity,
+  eventKindOf: identity,
+  transition: (s, e) => transportRules(s, e),
+});
+
 export function transportTransition(s: TransportState, e: TransportEvent): { state: TransportState; effects: TransportEffects } {
+  const r = transportMachine.step(s, e);
+  return { state: r.state, effects: r.effects ?? {} };
+}
+
+function transportRules(s: TransportState, e: TransportEvent): { state: TransportState; effects: TransportEffects } {
   switch (e) {
     case "teardown": return { state: "offline", effects: {} };                       // plugin unloading — caller clears timers/socket
     case "dial":     return { state: "dialing", effects: { poll: "active" } };        // socket created, not yet open

@@ -125,4 +125,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from keepBothResolution to issuePreserveBothRequiredEditorMerge;
+
+    part issueEngineFsmNotOnPrimitive : Issue {
+        :>> id = "244f6d23-b55d-481d-bd35-20644ae7a799";
+        :>> title = "The sync engine's EngineState is the one hazard-bearing state machine not on the shared fsm.ts primitive - no explicit table, STPA registration pending";
+        :>> createdAt = "2026-09-08";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Found 2026-09-08 while putting every hazard-bearing state machine on the shared fsm.ts primitive (owner: 'FSM module, used all across the project in places where states that can introduce hazards exist'). Four of five machines moved cleanly because they were already pure reducers (connstate linkNext, mountfsm, transportstate, resolvefsm). The fifth - the sync engine's EngineState in syncengine.ts, the controller c2SyncEngine's own phase and the most hazard-bearing state in the client (H-6 unavailability, H-9 reported state vs actual, H-10 ceasing recovery) - keeps its transitions as class-internal setState() calls interleaved with effects, so there is no rule table to prove total, no tableCoverage, and the STPA registration is STPA-FSM-PENDING. Not a defect in behaviour (syncengine.test covers the paths that exist) but a gap in the property the FSM discipline exists to give: that every hazard-bearing transition is enumerable and analysed. Resolver engineFsmOnPrimitive. discoveredInField = false. Severity Medium.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "engineFsmOnPrimitive";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from engineFsmOnPrimitive to issueEngineFsmNotOnPrimitive;
 }

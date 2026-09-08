@@ -132,6 +132,9 @@ package ProjectControlStructure {
         :>> heldBy = c1User;
     }
     part pmSyncEngine : ProcessModel {
+        // STPA-FSM: client/src/mountfsm.ts#mountMachine
+        // STPA-FSM: client/src/transportstate.ts#transportMachine
+        // STPA-FSM-PENDING: client/src/syncengine.ts (issueEngineFsmNotOnPrimitive)
         :>> id = "c0f1a5cc-b202-4a10-9b20-a1b2c3d4b202";
         :>> title = "PM-SyncEngine: phase + pending work + liveness";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
@@ -139,6 +142,7 @@ package ProjectControlStructure {
         :>> heldBy = c2SyncEngine;
     }
     part pmSession : ProcessModel {
+        // STPA-FSM: client/src/connstate.ts#linkMachine
         :>> id = "c0f1a5cc-b203-4a10-9b20-a1b2c3d4b203";
         :>> title = "PM-Session: is the held token valid";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";
@@ -359,5 +363,38 @@ package ProjectControlStructure {
     part senAuthResolver : Sensor {
         :>> id = "c0f1a5cc-b705-4a10-9b20-a1b2c3d4b705"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
         :>> title = "AuthToken extractor + shares/permission lookup — measures p4 identity + ACL -> fbCallerIdentity + fbAuthResponse";
+    }
+
+    // ---- Conflict resolver (added 2026-09-08, STPA step 6: every hazard-bearing state machine is a controller with
+    // a process model on the shared fsm.ts primitive). The Resolve-conflicts modal + resolveNoteConflict: it writes
+    // and removes user files on the human's irreversible choice, outside the engine's serial queue. ----
+    part c8ConflictResolver : Controller {
+        :>> id = "5d447939-6da8-4f42-88f2-05171afd6735";
+        :>> title = "Conflict resolver (client: Resolve-conflicts modal + resolveNoteConflict)";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+    }
+    part pmResolver : ProcessModel {
+        // STPA-FSM: client/src/resolvefsm.ts#resolveMachine
+        :>> id = "0f2e98d4-3d4c-4a7f-9bb2-87ebe111bd87";
+        :>> title = "PM-Resolver: which version was previewed, whether it is still current, whether a pass is running, where the resolution stands";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> beliefs = "The other device's version as PREVIEWED (the text the user chose against); whether that version is still what is on disk (previewStillCurrent); whether the engine is busy (busyState - a pass may be reading/writing the same path); the resolution state (resolvefsm: idle / local step / uploading / done / stale / failed). Staleness of the preview belief is what turns a keep into data loss.";
+        :>> heldBy = c8ConflictResolver;
+    }
+    part caWriteChosenVersion : ControlAction {
+        :>> id = "dda1e4c6-fb3b-4309-bfa9-e737360eb537"; :>> title = "Write the chosen version over the original (Keep + this device's)";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus"; :>> issuedBy = c8ConflictResolver; :>> actsOn = p1LocalVault;
+    }
+    part caRemoveConflictCopy : ControlAction {
+        :>> id = "d28f2f06-6cbd-468e-a771-702fed2acdd4"; :>> title = "Remove the conflict copy (every resolution ends with it)";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus"; :>> issuedBy = c8ConflictResolver; :>> actsOn = p1LocalVault;
+    }
+    part caKeepBothRename : ControlAction {
+        :>> id = "c2817afe-3fb0-42bf-a298-5fb8f4204042"; :>> title = "Rename the conflict copy into an ordinary note (Keep both)";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus"; :>> issuedBy = c8ConflictResolver; :>> actsOn = p1LocalVault;
+    }
+    part fbEngineBusy : Feedback {
+        :>> id = "ff6ad806-6a58-4cc4-8425-38f6ee2ece68"; :>> title = "Engine busy state (busyState: connecting / checking / syncing, with the live stage)";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus"; :>> reportsTo = c8ConflictResolver;
     }
 }

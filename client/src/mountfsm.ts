@@ -5,6 +5,8 @@
 // glue in main.ts stays a thin projection.
 
 // The mount lifecycle states (D0039). A pull mount lives in the same states; it just never enters a push.
+import { defineMachine, identity } from "./fsm";
+
 export type MountState =
   | "detached"    // configured but not yet started (or after a clean unmount)
   | "mounting"    // first-contact: connecting to the source vault + initial reconcile
@@ -20,25 +22,39 @@ export type MountEvent =
   | "mount" | "mounted" | "syncStart" | "syncSettled" | "diverge" | "resolved"
   | "disconnect" | "reconnect" | "unmount" | "unmounted" | "fail" | "retry";
 
-// Pure transition. An event with no defined transition from the current state is a NO-OP (returns the same
-// state) — conservative: an unexpected signal never forces a spurious state change. `unmount` and `fail` are
-// accepted from any live state (user teardown / terminal error can happen at any time).
-export function mountTransition(s: MountState, e: MountEvent): MountState {
-  if (e === "unmount" && s !== "detached" && s !== "unmounting") return "unmounting";
-  if (e === "fail" && s !== "detached" && s !== "unmounting") return "failed";
-  switch (s) {
-    case "detached":   return e === "mount" ? "mounting" : s;
-    case "mounting":   return e === "mounted" ? "live" : e === "disconnect" ? "offline" : s;
-    case "live":       return e === "syncStart" ? "syncing" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : s;
-    case "syncing":    return e === "syncSettled" ? "live" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : s;
-    case "diverged":   return e === "resolved" ? "live" : e === "disconnect" ? "offline" : s;
-    case "offline":    return e === "reconnect" ? "live" : s;
-    case "unmounting": return e === "unmounted" ? "detached" : s;
-    case "localGone":  return e === "mount" ? "mounting" : s; // explicit Reinstate re-mounts (a fresh re-pull); Remove goes via unmount
-    case "failed":     return e === "retry" ? "mounting" : s;
-    default:           return s;
-  }
-}
+export const MOUNT_STATES: readonly MountState[] = ["detached", "mounting", "live", "syncing", "diverged", "offline", "unmounting", "localGone", "failed"];
+export const MOUNT_EVENTS: readonly MountEvent[] = ["mount", "mounted", "syncStart", "syncSettled", "diverge", "resolved", "disconnect", "reconnect", "unmount", "unmounted", "fail", "retry"];
+
+// The per-mount lifecycle machine on the shared primitive (fsm.ts), registered as STPA process model
+// pmSyncEngine (a mount is a scope the engine drives). An event with no rule is a NO-OP — conservative: an
+// unexpected signal never forces a spurious state change. `unmount` and `fail` are accepted from any live state
+// (user teardown / terminal error can happen at any time).
+export const mountMachine = defineMachine<MountState, MountEvent>({
+  name: "pmSyncEngine",
+  states: MOUNT_STATES,
+  events: MOUNT_EVENTS,
+  kindOf: identity,
+  eventKindOf: identity,
+  transition(s, e) {
+    if (e === "unmount" && s !== "detached" && s !== "unmounting") return "unmounting";
+    if (e === "fail" && s !== "detached" && s !== "unmounting") return "failed";
+    switch (s) {
+      case "detached":   return e === "mount" ? "mounting" : undefined;
+      case "mounting":   return e === "mounted" ? "live" : e === "disconnect" ? "offline" : undefined;
+      case "live":       return e === "syncStart" ? "syncing" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : undefined;
+      case "syncing":    return e === "syncSettled" ? "live" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : undefined;
+      case "diverged":   return e === "resolved" ? "live" : e === "disconnect" ? "offline" : undefined;
+      case "offline":    return e === "reconnect" ? "live" : undefined;
+      case "unmounting": return e === "unmounted" ? "detached" : undefined;
+      case "localGone":  return e === "mount" ? "mounting" : undefined; // explicit Reinstate re-mounts (a fresh re-pull); Remove goes via unmount
+      case "failed":     return e === "retry" ? "mounting" : undefined;
+      default:           return undefined;
+    }
+  },
+});
+
+// Pure transition (the reducer shape callers use).
+export function mountTransition(s: MountState, e: MountEvent): MountState { return mountMachine.next(s, e); }
 
 // A scope's coarse HEALTH, the common currency the status light folds over. Ordered worst→best by severity so
 // a single ranking combines the primary scope and every mount. `busy` = transient work in flight; `idle` =
