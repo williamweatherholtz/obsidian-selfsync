@@ -1,4 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
+import { mountBusyGate, type BusyGate } from "./busygate";
+import type { ButtonComponent } from "obsidian";
 import { isValidVaultName, sanitizeVaultName } from "./wizardsteps";
 import { RedeemShareLinkModal } from "./accountui";
 import { confirmModal } from "./confirm";
@@ -23,8 +25,16 @@ export class SwitchVaultModal extends Modal {
 
   constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
+  private gate?: BusyGate;
+  private commitButtons: ButtonComponent[] = [];
   onOpen() { this.titleEl.setText("Switch remote vault"); this.render(); void this.load(); }
-  onClose() { this.contentEl.empty(); }
+  onClose() { this.gate?.dispose(); this.gate = undefined; this.contentEl.empty(); }
+  // Every button that changes which vault this device syncs (or moves data) is gated on the plugin's busy state.
+  private gated(b: ButtonComponent): ButtonComponent { this.commitButtons.push(b); return b; }
+  private mountGate(c: HTMLElement): void {
+    this.gate?.dispose(); this.commitButtons = [];
+    this.gate = mountBusyGate(this.plugin, c, () => this.commitButtons, "Switching vaults");
+  }
 
   private async load() {
     try {
@@ -40,6 +50,7 @@ export class SwitchVaultModal extends Modal {
 
   private render() {
     const c = this.contentEl; c.empty();
+    this.mountGate(c);
     if (this.loading) { c.createEl("p", { text: "Loading vaults…" }); return; }
     if (this.error) {
       c.createEl("p", { text: this.error });
@@ -59,14 +70,14 @@ export class SwitchVaultModal extends Modal {
     }
     new Setting(c).setName("Or create a new vault")
       .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { const n = sanitizeVaultName(v); this.newName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }));
-    new Setting(c).addButton((b) => b.setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
+    new Setting(c).addButton((b) => this.gated(b).setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
 
     // Fork: copy THIS vault's current content into a NEW vault you own, and switch to it. The clearest
     // path to an editable copy of a read-only shared vault (manually = switch to a new vault + upload).
     new Setting(c).setName("Fork this vault")
       .setDesc("Copy the current vault's files into a NEW vault you own and switch this device to it. The original is untouched — handy for making an editable copy of a read-only shared vault.")
       .addText((t) => t.setPlaceholder("new vault name").onChange((v) => { const n = sanitizeVaultName(v); this.forkName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }))
-      .addButton((b) => b.setButtonText("Fork").onClick(() => void this.doFork()));
+      .addButton((b) => this.gated(b).setButtonText("Fork").onClick(() => void this.doFork()));
 
     // Vaults other people have shared with this account.
     if (this.shared.length) {
@@ -75,15 +86,15 @@ export class SwitchVaultModal extends Modal {
         new Setting(c)
           .setName(`${ref.vault}`)
           .setDesc(`owned by ${ref.owner} · ${ref.perm === "read" ? "read-only" : "read-write"}`)
-          .addButton((b) => b.setButtonText("Use").onClick(() => void this.selectShared(ref)))
+          .addButton((b) => this.gated(b).setButtonText("Use").onClick(() => void this.selectShared(ref)))
           // Decline/leave: drop your OWN access to this shared vault (local files stay).
-          .addButton((b) => b.setButtonText("Leave").setWarning().onClick(() => void this.leaveShared(ref)));
+          .addButton((b) => this.gated(b).setButtonText("Leave").setWarning().onClick(() => void this.leaveShared(ref)));
       }
     }
     // Redeeming a share link ADDS someone's vault to the "Shared with you" list above — so it lives
     // here (in the choose-a-vault flow), not as an action on the vault you're currently syncing.
     new Setting(c).setName("Have a share link?").setDesc("Redeem a link someone sent you to add their vault here.")
-      .addButton((b) => b.setButtonText("Redeem a share link").onClick(() => { this.close(); new RedeemShareLinkModal(this.app, this.plugin).open(); }));
+      .addButton((b) => b.setButtonText("Redeem a share link").onClick(() => { this.close(); new RedeemShareLinkModal(this.app, this.plugin).open(); }));    this.gate?.refresh();
   }
 
   private async doSwitch() {
@@ -154,6 +165,7 @@ export class SwitchVaultModal extends Modal {
   // modes are marked as destructive.
   private renderResolve() {
     const c = this.contentEl; c.empty();
+    this.mountGate(c);
     this.titleEl.setText("This vault already has content");
     c.createEl("p", {
       text: `Choose how to combine this vault's files with '${this.target}'. This is a one-time action for this switch.`,
@@ -161,20 +173,21 @@ export class SwitchVaultModal extends Modal {
 
     new Setting(c).setName("Merge — keep everything")
       .setDesc("Combine both sets. Files that differ on both sides are merged, or kept side-by-side as a conflict copy. Nothing is lost.")
-      .addButton((b) => b.setButtonText("Merge").setCta().onClick(() => void this.applySwitch("merge")));
+      .addButton((b) => this.gated(b).setButtonText("Merge").setCta().onClick(() => void this.applySwitch("merge")));
 
     new Setting(c).setName(`Download — mirror '${this.target}'`)
       .setDesc("Replace this vault with the target's content. Local files that aren't on the target are removed.")
-      .addButton((b) => b.setButtonText("Download").setWarning().onClick(() => void this.applySwitch("download")));
+      .addButton((b) => this.gated(b).setButtonText("Download").setWarning().onClick(() => void this.applySwitch("download")));
 
     // Upload isn't possible on a read-only share (we can't push) — omit it there.
     if (!this.targetReadOnly) {
       new Setting(c).setName(`Upload — overwrite '${this.target}'`)
         .setDesc("Replace the target with this vault's content. Target files that aren't in this vault are removed.")
-        .addButton((b) => b.setButtonText("Upload").setWarning().onClick(() => void this.applySwitch("upload")));
+        .addButton((b) => this.gated(b).setButtonText("Upload").setWarning().onClick(() => void this.applySwitch("upload")));
     }
 
     new Setting(c).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
+    this.gate?.refresh();
   }
 
   private async applySwitch(mode: SwitchMode) {

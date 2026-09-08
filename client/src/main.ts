@@ -1713,6 +1713,21 @@ export default class SelfSyncPlugin extends Plugin {
       case "off":        return { label: "Not connected", detail: "" };
     }
   }
+  // BUSY STATE (owner, 2026-09-07: "this state should be tracked and indicated somewhere... grey out some options
+  // until actually ready, along with an indication as to why"). A PURE PROJECTION of the engine phase + the live
+  // connect stage - never a stored flag. Deliberately the RAW engine phase: a `syncing` check pass with nothing
+  // to transfer collapses to idle for the LIGHT (a transition, not a state) but is very much a state for a
+  // modal about to read files - its reads queue behind the pass's own. Surfaces show it via busygate.ts.
+  busyState(): { busy: boolean; reason: string } {
+    const p = this.engine.phase();
+    if (p === "connecting") return { busy: true, reason: `SelfSync is connecting${this.connectStage ? ` — ${this.connectStage}` : ""}` };
+    if (p === "syncing") return { busy: true, reason: this.syncPending > 0 ? `SelfSync is syncing — ${this.syncPending} pending` : "SelfSync is checking your files for changes" };
+    return { busy: false, reason: "" };
+  }
+  private busyListeners = new Set<() => void>();
+  /** Subscribe to busy-state changes (fires on every status repaint + connect stage); returns the unsubscribe. */
+  onBusyChange(fn: () => void): () => void { this.busyListeners.add(fn); return () => { this.busyListeners.delete(fn); }; }
+  private notifyBusy(): void { for (const fn of this.busyListeners) { try { fn(); } catch { /* a listener never breaks the status path */ } } }
   // The status light's SHOWABLE phase: a `syncing` reconcile with nothing queued to transfer (syncPending
   // <= 0) is a CHECK, not a state — so it collapses to `idle` and never paints "Syncing…". Only a genuine
   // transfer (syncPending > 0) is a real syncing phase; the debounce below then also suppresses a sub-second
@@ -1794,6 +1809,7 @@ export default class SelfSyncPlugin extends Plugin {
       el.setAttribute("aria-label", `SelfSync — ${tip}`);
     }
     this.statusListener?.(); // refresh the settings status card if it's on screen
+    this.notifyBusy();       // and any open modal gated on the busy state
   }
 
   // Opt-in in-editor indicator: a state-tinted action button on the active markdown view.
@@ -2032,6 +2048,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.connectStage = stage;
     this.log(`connect: ${stage} (+${((Date.now() - this.connectStartedAt) / 1000).toFixed(1)}s)`);
     this.renderLight(); // repaint the "Connecting…" detail (paintLight's dedupe key includes the tip)
+    this.notifyBusy();  // the reason text changed even where the light's paint deduped
   }
 
   private async doConnect(): Promise<void> {

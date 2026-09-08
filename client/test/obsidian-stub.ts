@@ -65,7 +65,7 @@ class ButtonComponent {
   setCta() { if (HAS_DOM) this.buttonEl.classList.add("mod-cta"); return this; }
   setWarning() { if (HAS_DOM) this.buttonEl.classList.add("mod-warning"); return this; }
   setIcon() { return this; }
-  setDisabled(_d: boolean) { return this; }
+  setDisabled(d: boolean) { if (HAS_DOM) this.buttonEl.disabled = d; return this; } // real, so gating is testable
   setTooltip() { return this; }
   onClick(cb: () => any) { if (HAS_DOM) this.buttonEl.addEventListener("click", cb); return this; }
 }

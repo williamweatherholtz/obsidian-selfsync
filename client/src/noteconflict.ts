@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
+import { mountBusyGate, type BusyGate } from "./busygate";
 import { lcsPairs } from "./merge";
 import { maskedForDisplay } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
@@ -105,9 +106,13 @@ export class NoteConflictModal extends Modal {
   // a half-applied first and acting on a copy that was already gone
   // (issueConflictModalDoubleApply). One flag blocks the re-entry and greys the buttons.
   private busy = false;
+  // Busy gate: while the plugin is connecting / checking files, the two irreversible keep-buttons are disabled
+  // and the banner says why (busygate.ts). Copy / Open-both stay live - they commit nothing.
+  private gate?: BusyGate;
+  private keepButtons: ButtonComponent[] = [];
 
   onOpen() { this.open_ = true; this.titleEl.setText("Resolve conflicts"); void this.run(); }
-  onClose() { this.open_ = false; this.contentEl.empty(); }
+  onClose() { this.open_ = false; this.gate?.dispose(); this.gate = undefined; this.contentEl.empty(); }
 
   // Entry point: DRAW THE FIRST CONFLICT IMMEDIATELY, then clear cosmetic-only ones in the
   // background and redraw if any went. The old order ran the whole auto-dismiss sweep FIRST —
@@ -153,6 +158,8 @@ export class NoteConflictModal extends Modal {
       return;
     }
     const { copy, original } = conflicts[0];
+    this.gate?.dispose(); this.keepButtons = [];
+    this.gate = mountBusyGate(this.plugin, c, () => this.keepButtons, "Resolving");
     c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once. − lines are the other device's version, + lines are this device's:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
@@ -177,10 +184,11 @@ export class NoteConflictModal extends Modal {
       .addButton((b) => b.setButtonText("Copy both versions").onClick(() => void this.copyDetails(copy, original, theirs, mine)))
       .addButton((b) => b.setButtonText("Open both to merge").onClick(() => void this.merge(copy, original)))
       // Each keep-button carries the diff's own sign, so the choice reads straight off the colours above.
-      .addButton((b) => b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)))
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs", theirs)); })
       // No CTA (highlighted default) here: this is an unbiased, irreversible either-side choice, and a
       // highlighted default invites a reflexive tap that discards the OTHER device's edits (capture error).
-      .addButton((b) => b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)));
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)); });
+    this.gate.refresh(); // the buttons exist now - apply the current busy state to them
   }
 
   // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.
@@ -271,6 +279,8 @@ export class NoteConflictModal extends Modal {
   }
   private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther: string) {
     if (this.busy) return; // a second tap while the first apply is still in flight
+    const bs = this.plugin.busyState();
+    if (bs.busy) { new Notice(`SelfSync: ${bs.reason} — try again when it finishes`); return; } // belt to the gate's braces
     this.busy = true;
     // Visible feedback: the apply writes + deletes a file and enqueues sync work, so on a big vault
     // there IS a pause. Dimming says "working" instead of leaving live-looking buttons under a

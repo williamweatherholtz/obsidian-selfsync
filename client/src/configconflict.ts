@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
+import { mountBusyGate, type BusyGate } from "./busygate";
 import type SelfSyncPlugin from "./main";
 import { groupConfigConflicts, ConflictGroup } from "./configsync";
 
@@ -10,8 +11,10 @@ import { groupConfigConflicts, ConflictGroup } from "./configsync";
 export class ConfigConflictModal extends Modal {
   constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
+  private gate?: BusyGate;
+  private sideButtons: ButtonComponent[] = [];
   onOpen() { this.titleEl.setText("Config differences"); void this.render(); }
-  onClose() { this.contentEl.empty(); }
+  onClose() { this.gate?.dispose(); this.gate = undefined; this.contentEl.empty(); }
 
   private async render() {
     const c = this.contentEl; c.empty();
@@ -21,6 +24,8 @@ export class ConfigConflictModal extends Modal {
       new Setting(c).addButton((b) => b.setButtonText("Close").setCta().onClick(() => this.close()));
       return;
     }
+    this.gate?.dispose(); this.sideButtons = [];
+    this.gate = mountBusyGate(this.plugin, c, () => this.sideButtons, "Resolving"); // busy banner + disabled side buttons while a pass runs
     c.createEl("p", {
       text: "These settings and plugins differ across your devices. Nothing was deleted or overwritten — for each, keep this device's version or take the server's (your other device's) version.",
     }).setAttribute("style", "font-size:13px;margin-bottom:12px;opacity:.85;");
@@ -37,12 +42,15 @@ export class ConfigConflictModal extends Modal {
         .setDesc(desc)
         // Standardized vocabulary ("this device's" / "the server's version") + no CTA on this unbiased
         // both-edited choice, matching the note-conflict modal.
-        .addButton((b) => b.setButtonText("Use this device's").onClick(() => void this.resolve(g, "local")))
-        .addButton((b) => b.setButtonText("Use the server's version").onClick(() => void this.resolve(g, "remote")));
+        .addButton((b) => { this.sideButtons.push(b); b.setButtonText("Use this device's").onClick(() => void this.resolve(g, "local")); })
+        .addButton((b) => { this.sideButtons.push(b); b.setButtonText("Use the server's version").onClick(() => void this.resolve(g, "remote")); });
     }
+    this.gate.refresh();
   }
 
   private async resolve(g: ConflictGroup, choice: "local" | "remote") {
+    const bs = this.plugin.busyState();
+    if (bs.busy) { new Notice(`SelfSync: ${bs.reason} — try again when it finishes`); return; }
     try {
       await this.plugin.resolveConfigGroup(g.paths, choice);
       new Notice(`SelfSync: resolved ${g.label}`);

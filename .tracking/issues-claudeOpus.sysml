@@ -77,4 +77,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from casePathAlias to issueCasePathDivergence;
+
+    part issueBusyStateNotSurfaced : Issue {
+        :>> id = "fac1e0a7-587e-4d6c-aaef-de20fa781936";
+        :>> title = "A sync pass in progress made the conflict/config/switch modals unusable for minutes with no indication of the state or the reason - functions were unavailable invisibly";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner 2026-09-07, after the Resolve-conflicts modal sat on its placeholder for the whole 152 s first aliased pass: 'this state should be tracked and indicated somewhere. better transparency, especially if it affects availability of functions. maybe just grey out some options until actually ready, along with an indication as to why? state tracking'. The plugin knew it was busy - the status light said 'Connecting... checked 750/1420 files' - but no surface whose FUNCTION that state degraded said so: the conflict modal, the config-differences modal and the vault switcher all rendered their committing buttons as if ready while their own file reads queued behind the pass (on a large vault, minutes), so the user read 'broken' where the truth was 'busy, here is why, here is when'. Transparency defect on the plugin's irreversible controls. FIX (busyStateGating): busyState() as a pure projection + onBusyChange() subscription; busygate.ts mounts a reason banner and disables the committing buttons in the three modals until the plugin reports settled; the action handlers also refuse with the reason. discoveredInField = true. Severity Medium (no data at risk; availability of functions was invisible).";
+        :>> discoveredInField = true;
+        :>> relatedTask = "busyStateGating";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from busyStateGating to issueBusyStateNotSurfaced;
 }
