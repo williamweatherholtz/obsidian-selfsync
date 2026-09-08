@@ -1,6 +1,6 @@
 {
   "name": "selfsync-client",
-  "version": "1.30.12",
+  "version": "1.30.13",
   "private": true,
   "scripts": {
     "build": "node esbuild.config.mjs",
