@@ -14,6 +14,7 @@ package ProjectAcceptance {
     private import ProjectRequirements::*;
     private import ProjectDelivery::*;
     private import ProjectUseCases::*;
+    private import ProjectStpaAnalysis::*;      // STPA SafetyRequirements sr1..sr25 (stpa-ucas.sysml)
 
     // ---- new config-sync acceptance scenarios (BDD) ----
     verification acConfigSelective : Test {
@@ -315,4 +316,84 @@ package ProjectAcceptance {
     // list (verified: removing the edge made it reappear; issueUnattestedDispositionClosesFinding).
     // Author the edge in the same change that records the owner's attestation:
     //   #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
+
+    // ---- STPA SafetyRequirement #Verify edges (Test -> SafetyRequirement), authored 2026-09-07 ----
+    // stpaSafetyAnalysis's DoD requires each mitigating Safety Requirement to carry a verify-linked Test.
+    // Until now no SR had one: the 25 SRs were REALIZED (#RealizedBy -> controller) but not verified in the
+    // model. Each edge below was settled by reading the Test's recorded procedure against the SR's statement,
+    // and only Tests with a recorded PASS are linked - a Test that verifies the behaviour but has no result
+    // is listed as a gap, not linked. Same discipline as the acceptance edges above.
+    // sr1: restore on mere absence, delete only on a tombstone: the acceptance scenario that would have caught the field data loss, the confirmedAbsent re-probe, and the switch-upload probe guard
+    #Verify dependency from acTombstoneAuthoritativeDelete to sr1;
+    #Verify dependency from falseAbsenceDeleteFixDoD to sr1;
+    #Verify dependency from switchUploadProbeGuardDoD to sr1;
+    // sr2: the streamed-pull racing-edit guard (names SR-2) and the write->read race fix that committed a merge, not the racing save
+    #Verify dependency from streamedPullRacingEditGuardDoD to sr2;
+    #Verify dependency from critiqueRPlus1ClientFixesDoD to sr2;
+    // sr3: streamFileToDisk verifies the whole-file hash before the atomic rename; a hash mismatch on a mount pull is a per-file skip, never adopted
+    #Verify dependency from residualLowFindingsDoD to sr3;
+    #Verify dependency from mountHardeningR7DoD to sr3;
+    // sr4: shouldSync classification: notes always, each .obsidian category only when opted in, unrecognised files never (32-combo matrix + e2e)
+    #Verify dependency from acConfigSelective to sr4;
+    // sr5: CSS trust gate (names SR-5), the hot-load restart trust barrier, and its fresh-privacy re-check
+    #Verify dependency from cssTrustGateDoD to sr5;
+    #Verify dependency from hotLoadSyncedPluginsDoD to sr5;
+    #Verify dependency from hotLoadPrivacyGateFreshCheckDoD to sr5;
+    // sr6: the own/legacy plugin folder never syncs (acceptance matrix), the self-plugin credential-folder guard on push/pull, and mounts under .obsidian rejected
+    #Verify dependency from acConfigSelective to sr6;
+    #Verify dependency from pushPullPreviewDoD to sr6;
+    #Verify dependency from pluginPushPullDoD to sr6;
+    #Verify dependency from mountHardeningR3DoD to sr6;
+    // sr7: the concurrent-commit CAS race test (exactly one 200 / one 409) and the delete-side CAS mirror
+    #Verify dependency from testHardeningServerDoD to sr7;
+    #Verify dependency from deleteRemoteCasGuardDoD to sr7;
+    // sr8: commit_rejects_correct_size_but_wrong_hash and the strict size gate, fail-first
+    #Verify dependency from mutationTestingVaultDoD to sr8;
+    // sr9: journal records durable before replay reconstructs on reopen (torn record discarded); shard-dir fsync after rename
+    #Verify dependency from acDurableIndex to sr9;
+    #Verify dependency from postR2FunctionAuditDoD to sr9;
+    // sr10: safe_rel_path rejects empty/absolute/non-canonical paths (fail-first) - the request-path half; the Unicode case-collision fold is round5CriticFixes (unstamped)
+    #Verify dependency from mutationTestingVaultDoD to sr10;
+    // sr12: must_change gate + revoke-mid-session; exact (owner,vault,grantee) match predicates; read-only grants never push or delete
+    #Verify dependency from testHardeningServerDoD to sr12;
+    #Verify dependency from mutationTestingSharesPassDoD to sr12;
+    #Verify dependency from acReadOnlyGating to sr12;
+    // sr13: revoke-mid-session on the server; revoke/purge durable-write assertions
+    #Verify dependency from testHardeningServerDoD to sr13;
+    #Verify dependency from mutationTestingSharesPassDoD to sr13;
+    // sr14: degraded 503 on a not-empty manifest; a not-ready mount source holds the mount offline; the clear operator message when the server is not ready
+    #Verify dependency from testHardeningServerDoD to sr14;
+    #Verify dependency from mountHardeningR4DoD to sr14;
+    #Verify dependency from schemaRollbackClearErrorDoD to sr14;
+    #Verify dependency from rollback503CleanMessageDoD to sr14;
+    // sr15: the D0042 wire-contract signature: server derives + publishes, client fails closed on mismatch
+    #Verify dependency from wireCompatClientDoD to sr15;
+    #Verify dependency from wireSignatureServerDoD to sr15;
+    // sr17: poll-path 401 re-logs-in once; 401-login -> blocked{authRejected}; mount transports rotate the token on relogin
+    #Verify dependency from reconcilePathReloginOnceDoD to sr17;
+    #Verify dependency from connectionFsmTypedFailureDoD to sr17;
+    #Verify dependency from mountHardeningR1DoD to sr17;
+    // sr18: the WebSocket token travels in the Sec-WebSocket-Protocol auth. entry, never the URL query (hardening suite)
+    #Verify dependency from testHardeningServerDoD to sr18;
+    // sr20: statusDisplay is a pure projection of Phase; no optimistic flip before real transfer
+    #Verify dependency from statusDisplayPureProjectionDoD to sr20;
+    #Verify dependency from connectPhaseNoOptimisticFlipDoD to sr20;
+    // sr21: vault switch reports a decrementing pending count; the exam pass reports checked X/N
+    #Verify dependency from switchReportsProgressDoD to sr21;
+    #Verify dependency from reconcileExamProgressDoD to sr21;
+    // sr22: a whole-connection error aborts the pass (offline + backoff once) instead of completing into a false synced
+    #Verify dependency from switchAbortOnOutageDoD to sr22;
+    #Verify dependency from connectPhaseNoOptimisticFlipDoD to sr22;
+    // sr23: resume cancels the suspended backoff timer and re-attempts; mounts refresh on resume; reconnect() single-flight + backoff
+    #Verify dependency from resumeReattemptsConnectionDoD to sr23;
+    #Verify dependency from mountHardeningR6DoD to sr23;
+    #Verify dependency from acSelfHealingReconnect to sr23;
+    // sr24: delete_checked(path, expected_version) mirrors commit's CAS; 409 on a stale delete
+    #Verify dependency from deleteRemoteCasGuardDoD to sr24;
+    // sr25: the connect sub-phases are shown as the Connecting detail and logged with elapsed time
+    #Verify dependency from connectPhaseVisibilityDoD to sr25;
+    // NOT linked - no Test with a recorded result verifies the statement yet (the STPA DoD stays open on these):
+    //   sr11: refuse reindex over an incomplete directory - the tests exist (reindex_recovers_from_store_and_force_drops_truly_lost, reindex_routes_a_bitrotted_recovered_file_to_lost_not_corruption) but their DoD, autoReindexDoD, carries no recorded result
+    //   sr16: operator repair of any vault - admin_reindex_and_prune_history_http_ok exists but its DoD, uiFunctionalAuditDoD, carries no recorded result
+    //   sr19: bound per-vault uncommitted storage - SEC#4 shipped in 0.10.32 but its DoD, round1DeferredHardeningDoD, carries no recorded result
 }

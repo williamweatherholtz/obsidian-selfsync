@@ -17,4 +17,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from coversEdgesHoisted to issueNestedCoversEdgesSkipped;
+
+    part issueHistoricalDoDsUnstamped : Issue {
+        :>> id = "1ebd18c7-aa30-497f-bda7-bf2a059487ad";
+        :>> title = "103 delivery DoDs (80 method=test) read DONE in prose but carry no TestResult - shipped work with unrecorded verdicts; blocks honest #Verify edges for sr11/sr16/sr19";
+        :>> createdAt = "2026-09-07";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Found 2026-09-07 while authoring #Verify edges from Tests to the 25 STPA SafetyRequirements. A census of .tracking/delivery/delivery.sysml shows 103 verification Tests (DoDs) with no TestResult of any kind: 80 method=test, 14 inspect, 3 demo, 1 analyze, 1 critique, 4 confirmation. Their action comments and procedure texts read DONE and name the releases they shipped in (m1ProtocolDoD .. round7RecoveryFixesDoD, autoReindexDoD, uiFunctionalAuditDoD, round1DeferredHardeningDoD and others), and .tracking/verification/acceptance.sysml adds 5 unstamped method=test acceptance Tests for the embedded-timestamp requirements that timestampIgnoreRedesign (1.9.0) retired. CONSEQUENCE: (a) three SafetyRequirements (sr11 refuse-reindex-over-incomplete-directory, sr16 operator-repair-any-vault, sr19 bound-uncommitted-storage) cannot honestly carry a #Verify edge although the verifying server tests exist and pass - the DoD that owns each was never stamped; (b) every computed lens that keys on recorded verdicts (assured, tier-satisfaction, sitting-coverage, whats-next) under-reports work that shipped, while the prose over-reports it - the exact drift CLAUDE.md 2.1 exists to prevent (prose is not truth; the verdict is). WHY IT HAPPENED: these DoDs predate the write-API (2026-06-15) becoming the primary path and the evidence-cited convention (2026-08-25); DONE was written into the comment and the result never appended. Not fabricated here: a pass without a receipt would be a testimony, not a record (D0232). RESOLVER: dodBackfillStamp - classify each as reproducible (stamp at HEAD with a real run receipt), mooted (record the superseding decision as basis), or owner-judgment (listed for the owner), with reconciled control totals (D0067). discoveredInField = false. Severity Medium: no data at risk, but the record's honesty is the deliverable of this engine.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "dodBackfillStamp";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from dodBackfillStamp to issueHistoricalDoDsUnstamped;
 }
