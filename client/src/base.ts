@@ -5,10 +5,16 @@
 // so correctness never depends on them, and a real local edit is caught by the event path
 // (reconcilePath always reads) regardless. Persisted across restart (toJSON,
 // issueScanSkipHintNotPersisted) so a reload doesn't re-hash the whole vault.
-// `normHash` = the NORMALIZED content hash (managed timestamp keys masked) at the last sync. Unlike the
-// (size, mtime) perf hint, it is identity-meaningful — it lets a copy/re-stamp (raw hash differs, normHash
-// equal) be recognized as "no genuine change", so it IS persisted (see toJSON).
-export interface BaseEntry { hash: string; text?: string; size?: number; mtime?: number; normHash?: string }
+// There is deliberately NO cached normalized-content hash here (issueNormHashDeadPersistedField). One
+// existed (`normHash`, 1.8.x): the 1.9.0 redesign removed every writer but left the field, its
+// persistence and a read that TRUSTED a stored value over recomputation. That is a staleness trap:
+// the hash depends on the user's ignored-timestamp keys (settings can change) AND on the
+// normalisation algorithm (which changed in 1.30.6 to fold frontmatter trailing space + NFC), so a
+// persisted value from an older client silently disagrees with a fresh one. Content identity is
+// therefore always recomputed from `text` (reconcile.baseNormHash) — measured at 0.03ms/1KB,
+// 2.4ms/1MB, so caching buys nothing worth that hazard. Legacy `normHash` values in a data.json are
+// dropped on load (constructor) and never re-persisted.
+export interface BaseEntry { hash: string; text?: string; size?: number; mtime?: number }
 
 // The per-file "base" = the last-synced state (common ancestor for merges).
 // Persisted across restart via the plugin's saveData; `text` is kept only for
@@ -16,7 +22,15 @@ export interface BaseEntry { hash: string; text?: string; size?: number; mtime?:
 export class BaseStore {
   private m: Map<string, BaseEntry>;
   constructor(initial: Record<string, BaseEntry> = {}) {
-    this.m = new Map(Object.entries(initial));
+    // Strip the legacy 1.8.x `normHash` from persisted entries so no stale cached identity can ever be
+    // read by anything — see the interface note. Unknown extra fields are dropped the same way.
+    this.m = new Map(Object.entries(initial).map(([p, e]) => {
+      const clean: BaseEntry = { hash: e.hash };
+      if (e.text !== undefined) clean.text = e.text;
+      if (e.size !== undefined) clean.size = e.size;
+      if (e.mtime !== undefined) clean.mtime = e.mtime;
+      return [p, clean];
+    }));
   }
   get(path: string): BaseEntry | undefined { return this.m.get(path); }
   set(path: string, entry: BaseEntry): void { this.m.set(path, entry); }
@@ -29,7 +43,7 @@ export class BaseStore {
     const e = this.m.get(path);
     if (e) { e.size = size; e.mtime = mtime; }
   }
-  // Persist hash + text + normHash AND the (size, mtime) scan-skip hint (issueScanSkipHintNotPersisted,
+  // Persist hash + text AND the (size, mtime) scan-skip hint (issueScanSkipHintNotPersisted,
   // 2026-08-02 — REVERSES the earlier drop-on-persist). Dropping the stamp meant EVERY plugin reload re-read
   // + re-hashed the WHOLE vault on the first connect (owner: "reconciling ~1100 files, changed nothing") —
   // the field cost that motivated this. Persisting it makes a reload trust the same (size,mtime) heuristic
@@ -40,11 +54,10 @@ export class BaseStore {
   // change (those are detected via the server manifest, independent of the local scan-skip). The stamp is
   // internally consistent: stampStat only sets size/mtime on an entry right after confirming content == its
   // hash. (Owner-directed; ships as a recorded delivery design choice + spec/critique/TDD.)
-  toJSON(): Record<string, { hash: string; text?: string; normHash?: string; size?: number; mtime?: number }> {
+  toJSON(): Record<string, { hash: string; text?: string; size?: number; mtime?: number }> {
     return Object.fromEntries([...this.m].map(([p, e]) => {
-      const o: { hash: string; text?: string; normHash?: string; size?: number; mtime?: number } = { hash: e.hash };
+      const o: { hash: string; text?: string; size?: number; mtime?: number } = { hash: e.hash };
       if (e.text !== undefined) o.text = e.text;
-      if (e.normHash !== undefined) o.normHash = e.normHash;
       if (e.size !== undefined) o.size = e.size;
       if (e.mtime !== undefined) o.mtime = e.mtime;
       return [p, o];

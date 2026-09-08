@@ -226,6 +226,66 @@ function guardedIo(seed: Record<string, string> = {}) {
   return io;
 }
 
+// issueScanSkipMtimePreservedBlindspot — PIN the accepted residual so it cannot silently widen.
+// The (size,mtime) scan-skip does not re-read a file whose stat matches the base stamp. That is a
+// deliberate O(changed files) tradeoff, and it has ONE hole: an out-of-band writer that preserves BOTH
+// size and mtime (rsync -a / cp -p restoring a same-length version, a backup restore) is not noticed
+// until something bumps mtime. Two things must stay true forever: (1) the hole is exactly the stat gate
+// — a changed stat is caught; (2) a scan-hit can NEVER reach the destructive delete-local, because the
+// skip is gated on the remote being PRESENT and delete-local only exists when the remote is ABSENT.
+describe("scan-skip boundary: the accepted residual is pinned, and it can never delete", () => {
+  // reconcileAll takes a file's (size,mtime) from io.list() — the adapter's own stat, exactly as in
+  // production — NOT from deps.statOf (that is reconcilePath's single-file source). So the stat is
+  // driven here by overriding list(): size follows content length, mtime is controllable.
+  const seed = async () => {
+    const srv = fakeServer(); const io = fakeIo();
+    let mtime = 1000;
+    const rawList = io.list.bind(io);
+    io.list = async () => { const r = await rawList(); for (const [k, v] of r) r.set(k, { ...v, mtime }); return r; };
+    await serverPutBytes(srv.api, "n.md", enc("body-alpha\n")); // 11 bytes
+    const d = deps(srv.api, io, { ignorePatterns: [], excludedFolders: [] });
+    await reconcileAll(d); // pulls the note, records base
+    await reconcileAll(d); // a confirming pass: reads, finds content == base, and only THEN stamps (size,mtime)
+    return { srv, io, d, setStat: (s: { size: number; mtime: number }) => { mtime = s.mtime; } };
+  };
+
+  it("a same-size AND same-mtime out-of-band body change is SKIPPED (the residual, stated exactly)", async () => {
+    const { srv, io, d } = await seed();
+    const vBefore = srv.files.get("n.md")!.version;
+    io.m.set("n.md", enc("body-omega\n")); // same length, different content, stat unchanged
+    await reconcileAll(d);
+    expect(srv.files.get("n.md")!.version).toBe(vBefore); // not pushed — this IS the accepted blindspot
+  });
+
+  it("the hole is exactly the stat gate: once mtime moves, the same change is pushed", async () => {
+    const { srv, io, d, setStat } = await seed();
+    const vBefore = srv.files.get("n.md")!.version;
+    io.m.set("n.md", enc("body-omega\n"));
+    setStat({ size: 11, mtime: 1001 });
+    await reconcileAll(d);
+    expect(srv.files.get("n.md")!.version).toBeGreaterThan(vBefore); // caught the moment stat differs
+  });
+
+  it("a scan-hit can NEVER become delete-local: remote deleted + stale-stat local EDIT keeps the edit", async () => {
+    // The dangerous case. If the skip were allowed with the remote ABSENT, localHash would be ASSUMED
+    // equal to base, decide() would say delete-local, and the user's edit would be destroyed. The
+    // rmeta-present gate forces a real read instead, the hash differs, and edit-wins-keep-local holds.
+    const { srv, io, d } = await seed();
+    io.m.set("n.md", enc("body-omega\n")); // same-size, same-mtime local edit
+    await srv.api.deleteFile("n.md", srv.files.get("n.md")!.version); // peer deleted it
+    await reconcileAll(d);
+    expect(io.m.has("n.md")).toBe(true);
+    expect(dec(io.m.get("n.md")!)).toBe("body-omega\n"); // the edit survives
+  });
+
+  it("control: remote deleted + local genuinely UNCHANGED does delete locally (the honest deletion)", async () => {
+    const { srv, io, d } = await seed();
+    await srv.api.deleteFile("n.md", srv.files.get("n.md")!.version);
+    await reconcileAll(d);
+    expect(io.m.has("n.md")).toBe(false); // remote deletion honoured, because the content really is base
+  });
+});
+
 describe("D0041: bulkDeleteHold — user-configurable INCOMING bulk-delete confirmation", () => {
   it("off ⇒ never holds (incoming deletions apply immediately)", () => {
     expect(bulkDeleteHold("off", 10, 999, 1000)).toBe(false);

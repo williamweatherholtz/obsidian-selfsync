@@ -536,12 +536,14 @@ function ignorePatternsFor(d: ReconcileDeps, path: string): readonly string[] {
 }
 
 // The base's CONTENT-IDENTITY hash (EOL/BOM normalized; timestamp keys masked where they apply): prefer the
-// persisted value, else recompute from the stored base text (present for every mergeable text note under the
-// 1 MiB cap). Undefined ⇒ no identity available (a >1 MiB / non-text base) so the cosmetic override can't
-// fire for it — it conflict-copies on a raw diff as before (rare; documented).
+// ALWAYS recomputed from the stored base text (present for every mergeable text note under the 1 MiB
+// cap) — never read from a cached field. A stored hash would depend on both the user's ignore keys and
+// the normalisation algorithm, so a persisted value goes stale silently (1.8.x wrote one; 1.9.0 stopped;
+// 1.30.6 changed the algorithm), and this function used to TRUST it over recomputation
+// (issueNormHashDeadPersistedField). Undefined ⇒ no identity available (a >1 MiB / non-text base) so the
+// cosmetic override can't fire for it — it conflict-copies on a raw diff as before (rare; documented).
 async function baseNormHash(d: ReconcileDeps, path: string, baseEntry: BaseEntry | null): Promise<string | undefined> {
   if (!baseEntry) return undefined;
-  if (baseEntry.normHash) return baseEntry.normHash;
   if (baseEntry.text !== undefined) return normalizedHash(new TextEncoder().encode(baseEntry.text), ignorePatternsFor(d, path));
   return undefined;
 }

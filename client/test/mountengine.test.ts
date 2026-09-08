@@ -104,13 +104,15 @@ describe("parseMountState — validated persistence boundary (B2, hostile-input 
       b: "x",                                                          // not an object → dropped
       c: { size: 1 },                                                  // no hash → dropped
       d: { hash: "H", text: 123 },                                     // bad text → stripped, entry kept as {hash}
-      e: { hash: "H", text: "ok", normHash: "N", size: 5, mtime: 9 },  // all valid → kept whole
+      e: { hash: "H", text: "ok", normHash: "N", size: 5, mtime: 9 },  // valid — but normHash is a LEGACY field, dropped
       f: { hash: "H", normHash: 42, size: "big", mtime: -1 },          // all optionals type-wrong → stripped to {hash}
     }, version: 0 } });
     expect(parsed.k.base).toEqual({
       a: { hash: "H" },
       d: { hash: "H" },
-      e: { hash: "H", text: "ok", normHash: "N", size: 5, mtime: 9 },
+      // normHash is never carried over, even when well-typed: content identity is always recomputed
+      // from text, so a cached 1.8.x value can never be trusted (issueNormHashDeadPersistedField).
+      e: { hash: "H", text: "ok", size: 5, mtime: 9 },
       f: { hash: "H" },
     });
   });

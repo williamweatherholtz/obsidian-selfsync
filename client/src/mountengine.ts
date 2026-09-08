@@ -52,11 +52,11 @@ export function parseMountState(raw: unknown): Record<string, MountPersist> {
       const r = be as Record<string, unknown>;
       if (typeof r.hash !== "string") continue; // hash is the required identity; no hash → drop the entry
       // Rebuild a CLEAN entry, dropping any type-wrong OPTIONAL field rather than casting the blob through
-      // (R8-F3). `text`/`normHash` are load-bearing for three-way merge + content-identity (a wrong-typed
-      // normHash could otherwise flip a keep-local into a delete-local); size/mtime are scan-skip hints.
+      // (R8-F3). `text` is load-bearing for three-way merge + content-identity; size/mtime are scan-skip
+      // hints. A legacy 1.8.x `normHash` is deliberately NOT carried over: content identity is always
+      // recomputed from text, so a stale cached value can never be trusted (issueNormHashDeadPersistedField).
       const entry: BaseEntry = { hash: r.hash };
       if (typeof r.text === "string") entry.text = r.text;
-      if (typeof r.normHash === "string") entry.normHash = r.normHash;
       if (typeof r.size === "number" && Number.isFinite(r.size) && r.size >= 0) entry.size = r.size;
       if (typeof r.mtime === "number" && Number.isFinite(r.mtime) && r.mtime >= 0) entry.mtime = r.mtime;
       base[p] = entry;

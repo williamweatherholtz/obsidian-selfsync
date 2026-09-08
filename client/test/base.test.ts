@@ -14,12 +14,18 @@ describe("BaseStore", () => {
     expect(b2.get("a.md")).toBeUndefined();
   });
 
-  it("persists normHash (identity-meaningful) through toJSON/reload", () => {
-    const s = new BaseStore();
-    s.set("n.md", { hash: "raw1", normHash: "norm1" });
-    const json = JSON.parse(JSON.stringify(s.toJSON()));
-    const s2 = new BaseStore(json);
-    expect(s2.get("n.md")?.normHash).toBe("norm1");
+  // REVERSED (issueNormHashDeadPersistedField): this used to assert normHash round-trips through
+  // toJSON/reload. 1.8.x wrote it; 1.9.0 removed every writer but left the field, and reconcile TRUSTED a
+  // stored value over recomputation — a staleness trap, since the hash depends on both the user's
+  // ignore keys and the normalisation algorithm (changed in 1.30.6). There is now no cached field: a
+  // legacy value in a persisted blob is stripped on load and never saved again.
+  it("DROPS a legacy 1.8.x normHash on load and never re-persists it", () => {
+    const json = { "n.md": { hash: "raw1", text: "t", normHash: "stale-from-1.8" } };
+    const s2 = new BaseStore(json as any);
+    expect((s2.get("n.md") as any)?.normHash).toBeUndefined();
+    expect(s2.toJSON()["n.md"]).not.toHaveProperty("normHash");
+    expect(s2.get("n.md")?.hash).toBe("raw1"); // the real identity fields survive
+    expect(s2.get("n.md")?.text).toBe("t");
   });
 
   it("PERSISTS the (size,mtime) scan-skip hint through toJSON/reload so a reload skips re-hashing (issueScanSkipHintNotPersisted)", () => {

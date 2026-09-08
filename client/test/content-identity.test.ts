@@ -9,11 +9,12 @@
 // The CRITICAL boundary: trailing whitespace is stripped ONLY inside the frontmatter fences. In
 // Markdown body text two trailing spaces are a HARD LINE BREAK — real content that must survive.
 //
-// NO HASH MIGRATION IS NEEDED, and the last test here is what pins that: nothing in the client ever
-// computes or stores BaseEntry.normHash (setBase writes { hash, text? } only), so the base side of
-// every comparison is recomputed from the stored base TEXT at comparison time. Both sides therefore
-// move together when this function changes. If someone ever starts PERSISTING normHash, that test
-// fails and a migration becomes real.
+// NO HASH RESTAMP MIGRATION IS NEEDED — but not for the reason first stated. HEAD never writes a
+// cached identity hash (setBase stores { hash, text? }), so the base side of every comparison is
+// recomputed from stored TEXT and both sides move together when normalisation changes. However 1.8.x
+// DID persist a `normHash`, and reconcile used to TRUST a stored one over recomputation — so legacy
+// data.json files carry stale values. The correct fix is not to restamp them but to have no cached
+// field at all: the last describe pins that legacy values are stripped on load and never re-saved.
 import { describe, it, expect } from "vitest";
 import { normalizedContent, normalizedHash } from "../src/frontmatter";
 import { BaseStore } from "../src/base";
@@ -86,14 +87,26 @@ describe("content identity: Unicode normalisation", () => {
   });
 });
 
-describe("why no hash migration is required", () => {
-  it("setBase persists NO normHash, so the base side is always recomputed from stored text", () => {
-    // If this ever fails, normHash has started being persisted and a stale-hash migration becomes
-    // real: a value stored under an older normalisation would no longer match a fresh computation.
+describe("no cached identity hash: legacy normHash is dropped, never trusted", () => {
+  // HISTORY, because it matters: 1.8.x DID persist a `normHash` (computed under that era's masking).
+  // 1.9.0 removed every writer but left the field, toJSON, a load guard, and a read in
+  // reconcile.baseNormHash that TRUSTED the stored value over recomputation. So a vault that ran 1.8.x
+  // carries stale hashes in data.json today, and after the 1.30.6 normalisation change they are
+  // guaranteed to disagree with a fresh computation. (Stale ⇒ mismatch ⇒ a spurious conflict copy: the
+  // safe direction, never a wrong delete — equality would need a SHA-256 collision. But it is exactly
+  // the phantom-conflict class being eliminated.) The fix is to have NO cached field at all.
+  it("a legacy persisted normHash is stripped on load and never re-persisted", () => {
+    const legacy = { "n.md": { hash: "abc", text: "---\nk: \n---\nb", normHash: "STALE-1.8.x" } };
+    const store = new BaseStore(legacy as any);
+    const e = store.get("n.md") as any;
+    expect(e.normHash).toBeUndefined();          // gone in memory
+    expect(store.toJSON()["n.md"]).not.toHaveProperty("normHash"); // gone on the next save
+    expect(store.toJSON()["n.md"].text).toBe("---\nk: \n---\nb"); // the text IS kept — it is re-hashed
+  });
+
+  it("the entry type has no cached hash field, so nothing can be read from one", () => {
     const store = new BaseStore();
-    store.set("n.md", { hash: "abc", text: "---\nk: \n---\nb" });
-    const persisted = store.toJSON()["n.md"];
-    expect(persisted.normHash).toBeUndefined();
-    expect(persisted.text).toBeDefined(); // the text IS kept — that is what gets re-hashed
+    store.set("n.md", { hash: "abc", text: "x" });
+    expect(Object.keys(store.toJSON()["n.md"]).sort()).toEqual(["hash", "text"]);
   });
 });

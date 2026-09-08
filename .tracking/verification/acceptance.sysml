@@ -287,4 +287,17 @@ package ProjectAcceptance {
     #Verify dependency from deployComposeHardeningDoD to ucDeployServer;      // prebuilt image + Compose + TLS posture
     #Verify dependency from cmmcMfaDoD to ucAdministerServer;                 // admin TOTP MFA
     #Verify dependency from vaultNameAndSizeLimitsDoD to ucContinuousNoteSync; // configurable per-file size cap
+
+    // ---- typed disposition (D0092) for issueScanSkipMtimePreservedBlindspot ----
+    // The (size,mtime) scan-skip has one accepted hole: an out-of-band writer that preserves BOTH size
+    // and mtime is not noticed until something bumps mtime. This Test STATES the acceptRisk; its
+    // TestResult is the OWNER's attestation and is appended only on their explicit word (CLAUDE.md §3c
+    // — never inferred). Until then the finding is, truthfully, undispositioned.
+    verification scanSkipResidualAccept : Test {
+        :>> id = "aec501a9-b89f-484b-84be-a085c6c1119f";
+        :>> method = VerificationMethod::confirmation;
+        :>> disposition = DispositionKind::acceptRisk;
+        :>> procedureText = "ACCEPT-RISK: the (size,mtime) scan-skip residual is knowingly kept. Basis: it turns each whole-vault pass from O(vault bytes) into O(changed files) - a measured battery/CPU drain on large and mobile vaults - and the destructive branch is structurally excluded and now PINNED by reconcile tests (a scan-hit is gated on the remote being present, delete-local exists only when it is absent, so a stale-stat local edit can never be deleted; the hole is exactly the stat gate, caught the moment mtime moves). Consequence when it hits: a same-size-and-same-mtime out-of-band change is LATE, not lost - picked up by the next real edit or a full re-hash. The owner attests acceptance of this residual on these terms.";
+    }
+    #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
 }
