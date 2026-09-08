@@ -407,4 +407,6 @@ package ProjectAcceptance {
     #Verify dependency from resolutionStateMachineDoD to sr26;
     #Verify dependency from keepBothResolutionDoD to sr27;
     #Verify dependency from conflictModalPerfDoD to sr27;
+    // sr28 (engine terminal state, 2026-09-08): the engine table + its terminal cell, pinned by fsm.test's engineMachine coverage
+    #Verify dependency from engineFsmOnPrimitiveDoD to sr28;
 }

@@ -134,7 +134,7 @@ package ProjectControlStructure {
     part pmSyncEngine : ProcessModel {
         // STPA-FSM: client/src/mountfsm.ts#mountMachine
         // STPA-FSM: client/src/transportstate.ts#transportMachine
-        // STPA-FSM-PENDING: client/src/syncengine.ts (issueEngineFsmNotOnPrimitive)
+        // STPA-FSM: client/src/syncengine.ts#engineMachine
         :>> id = "c0f1a5cc-b202-4a10-9b20-a1b2c3d4b202";
         :>> title = "PM-SyncEngine: phase + pending work + liveness";
         :>> createdAt = "2026-07-06"; :>> createdBy = "wweatherholtz";

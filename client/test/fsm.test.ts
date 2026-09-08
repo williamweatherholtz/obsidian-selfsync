@@ -4,6 +4,7 @@ import { resolveMachine, RESOLVE_STATES, type ResolveState, type ResolveEvent } 
 import { mountMachine, MOUNT_STATES, MOUNT_EVENTS } from "../src/mountfsm";
 import { transportMachine, TRANSPORT_STATES, TRANSPORT_EVENTS } from "../src/transportstate";
 import { linkMachine, LinkKind, LinkEventKind, FailureKind, type LinkState, type LinkEvent } from "../src/connstate";
+import { engineMachine, ENGINE_STATES, type EngineStateEvent } from "../src/syncengine";
 
 // The shared primitive every hazard-bearing state machine is built on (fsm.ts). These pin its contract —
 // pure, total, conservative, terminal-aware — and then drive every REAL machine through every (state, event)
@@ -61,6 +62,20 @@ describe("every real machine has a TOTAL table (no throw on any (state, event) p
     const cov = tableCoverage(transportMachine, { states: TRANSPORT_STATES, events: TRANSPORT_EVENTS });
     expect(cov).toHaveLength(TRANSPORT_STATES.length * TRANSPORT_EVENTS.length);
     for (const r of cov) expect(TRANSPORT_STATES).toContain(r.to);
+  });
+  it("engineMachine — and `unloading` is terminal: an effect resolving after teardown cannot revive the engine (UCA-26)", () => {
+    const events: EngineStateEvent[] = [
+      { kind: "unload" }, { kind: "disconnect" }, { kind: "connectStart", linkRetrying: false }, { kind: "connectStart", linkRetrying: true },
+      { kind: "connected", queued: false }, { kind: "connected", queued: true }, { kind: "failed" }, { kind: "work" }, { kind: "drained" },
+    ];
+    const cov = tableCoverage(engineMachine, { states: ENGINE_STATES, events });
+    expect(cov).toHaveLength(ENGINE_STATES.length * events.length);
+    for (const r of cov) expect(ENGINE_STATES).toContain(r.to);
+    for (const r of cov.filter((r) => r.from === "unloading")) expect(r.changed).toBe(false); // nothing leaves unloading
+    expect(engineMachine.next("idle", { kind: "work" })).toBe("reconciling");
+    expect(engineMachine.next("off", { kind: "work" })).toBe("off");          // no rule: unchanged
+    expect(engineMachine.next("reconciling", { kind: "drained" })).toBe("idle");
+    expect(engineMachine.next("connecting", { kind: "drained" })).toBe("connecting");
   });
   it("linkMachine", () => {
     const states: LinkState[] = [

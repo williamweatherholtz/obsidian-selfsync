@@ -18,6 +18,7 @@
 
 import { Phase } from "./syncstate";
 import { LinkState, LINK_OK, LinkKind, LinkEventKind, linkNext, recoveryFor, Recovery, FailureClass, linkPhase } from "./connstate";
+import { defineMachine, identity } from "./fsm";
 
 // The operational (work-queue) state. ITS ONLY CONCERN — the failure taxonomy lives in the separate,
 // single-concern LinkState machine (connstate.ts). `disconnected` = "the link is down"; the WHY (retrying
@@ -46,6 +47,43 @@ export interface EngineEffects {
   classify(e: unknown): FailureClass;          // pure transport-error → failure class (injected: needs settings context)
   scheduleRecovery(rec: Recovery): void;       // arm the recovery timer (backoff / retry-after / slow / self-heal re-probe) → enqueues {connect}
 }
+
+// The STATE transitions of the engine as one rule table on the shared primitive (fsm.ts) — STPA process model
+// pmSyncEngine (engineFsmOnPrimitive). These are the engine's OWN state events, distinct from the work-queue
+// EngineEvents the pump processes: the pump/handlers decide WHEN to fire one (after an effect resolves, when
+// the queue drains), the table decides WHAT state follows. `unloading` is TERMINAL with no exit: an effect that
+// resolves or fails after teardown can no longer flip the state back (UCA-26) — previously setState() would.
+export type EngineStateEvent =
+  | { kind: "unload" }                                  // teardown (enqueue-time or queued)
+  | { kind: "disconnect" }                              // user disconnect → off (stays re-connectable)
+  | { kind: "connectStart"; linkRetrying: boolean }     // a connect effect begins; a backoff retry keeps showing down
+  | { kind: "connected"; queued: boolean }              // the connect effect succeeded; work queued → reconciling
+  | { kind: "failed" }                                  // an effect failed (link advanced separately) → disconnected
+  | { kind: "work" }                                    // genuine transfer work / a local path event → reconciling
+  | { kind: "drained" };                                // the queue emptied while reconciling → idle
+
+export const ENGINE_STATES: readonly EngineState[] = ["off", "connecting", "reconciling", "idle", "disconnected", "unloading"];
+export const ENGINE_STATE_EVENTS = ["unload", "disconnect", "connectStart", "connected", "failed", "work", "drained"] as const;
+
+export const engineMachine = defineMachine<EngineState, EngineStateEvent>({
+  name: "pmSyncEngine",
+  states: ENGINE_STATES,
+  events: ENGINE_STATE_EVENTS,
+  kindOf: identity,
+  eventKindOf: (e) => e.kind,
+  terminal: { states: ["unloading"], exits: [] },
+  transition(s, e) {
+    switch (e.kind) {
+      case "unload":       return "unloading";
+      case "disconnect":   return "off";
+      case "connectStart": return e.linkRetrying ? "disconnected" : "connecting";
+      case "connected":    return e.queued ? "reconciling" : "idle";
+      case "failed":       return "disconnected";
+      case "work":         return s === "idle" || s === "connecting" || s === "disconnected" ? "reconciling" : undefined;
+      case "drained":      return s === "reconciling" ? "idle" : undefined;
+    }
+  },
+});
 
 // State-only projection. `disconnected` defaults to `retrying`; SyncEngine.phase() REFINES it with the
 // LinkState (blocked / lockedOut / retrying). Kept for callers/tests that only have an EngineState.
@@ -96,9 +134,7 @@ export class SyncEngine {
   // (field 2026-08-02: a DNS-failing 'upload' switch transferred nothing → reconciling-0-pending → idle →
   // "Synced (polling)"). A no-op poll never calls it, so a settled idle STAYS idle (no "Syncing…" blip).
   // pump() returns it to idle when work drains.
-  beginReconcile(): void {
-    if (this.state === "idle" || this.state === "connecting" || this.state === "disconnected") this.setState("reconciling");
-  }
+  beginReconcile(): void { this.transition({ kind: "work" }); }
   /** Test/introspection helper: pending event kinds in order. */
   pending(): string[] { return this.queue.map((e) => e.kind); }
 
@@ -112,7 +148,7 @@ export class SyncEngine {
   // @audit-hash sha256:a2d4edee4c8b574c
   enqueue(ev: EngineEvent): void {
     if (this.state === "unloading") return;
-    if (ev.kind === "unload") { this.link = LINK_OK; this.state = "unloading"; this.queue = []; this.fx.teardown(); this.fx.onPhase(this.phase()); return; }
+    if (ev.kind === "unload") { this.link = LINK_OK; this.transition({ kind: "unload" }); this.queue = []; this.fx.teardown(); return; }
     // A repeat {path} for a path already queued coalesces — but keep the LARGER size, so a save
     // that grew the file past the RAM/size gate between the two events isn't judged on the stale
     // smaller size (which would bypass the pre-read skip). (Round-6 CONC)
@@ -129,8 +165,10 @@ export class SyncEngine {
     void this.pump();
   }
 
-  private setState(s: EngineState): void {
-    if (s !== this.state) { this.state = s; this.fx.onPhase(this.phase()); }
+  // The ONLY writer of `state`: one event through engineMachine; the phase projection repaints on a real change.
+  private transition(ev: EngineStateEvent): void {
+    const next = engineMachine.next(this.state, ev);
+    if (next !== this.state) { this.state = next; this.fx.onPhase(this.phase()); }
   }
 
   // On any effect failure: go offline, log, arm the backoff reconnect, and DROP pending
@@ -147,7 +185,7 @@ export class SyncEngine {
   private failWith(where: string, e: unknown): void {
     const cls = this.fx.classify(e);
     this.link = linkNext(this.link, { kind: LinkEventKind.Failed, cls });
-    this.setState("disconnected");
+    this.transition({ kind: "failed" });
     this.fx.onError(where, e);
     // Drop pending reconcile work (connect's reconcileAll subsumes it) but PRESERVE a queued `task`: it is a
     // held-review resolver's LOCAL base mutation (no network), so it must still run after a link failure — else
@@ -167,7 +205,7 @@ export class SyncEngine {
       }
       // Settle to idle only if we're connected and nothing failed us into offline. "reconciling" is a
       // connected state, so the old `connected &&` guard is subsumed (a failure would have left "offline").
-      if (this.state === "reconciling" && this.queue.length === 0) this.setState("idle");
+      if (this.queue.length === 0) this.transition({ kind: "drained" }); // only `reconciling` has a rule for it
     } finally {
       this.running = false;
     }
@@ -182,7 +220,7 @@ export class SyncEngine {
   private async handle(ev: EngineEvent): Promise<void> {
     switch (ev.kind) {
       case "unload":
-        this.link = LINK_OK; this.setState("unloading"); this.queue = []; this.fx.teardown(); return;
+        this.link = LINK_OK; this.transition({ kind: "unload" }); this.queue = []; this.fx.teardown(); return;
       case "disconnect":
         // F2: reset the health machine — a user-initiated disconnect is not a failure, so getLastIssue/
         // isVaultGone (which read LinkState directly) must not keep reporting the stale blocked reason
@@ -190,16 +228,16 @@ export class SyncEngine {
         // PRESERVE a queued `task` (a held-review resolver's LOCAL base mutation): teardown only stops the sync
         // timers/WS, not the vault adapter, so the resolver still completes + its promise settles (pump drains it
         // after this returns) — else it would hang like the failWith case (issuePrimaryHeldResolverSerialization).
-        this.link = LINK_OK; this.queue = this.queue.filter((q) => q.kind === "task"); this.fx.teardown(); this.setState("off"); return; // "off" is not-connected + not-retrying
+        this.link = LINK_OK; this.queue = this.queue.filter((q) => q.kind === "task"); this.fx.teardown(); this.transition({ kind: "disconnect" }); return; // "off" is not-connected + not-retrying
       case "connect": {
         // A transient backoff RETRY (link=retrying) keeps showing the down state so the light doesn't flash
         // connecting↔disconnected every attempt; a fresh connect, a self-heal re-probe, or a user reconnect
         // (link ok or blocked) shows "Connecting…". On success the link machine goes back to `ok`.
-        this.setState(this.link.kind === LinkKind.Retrying ? "disconnected" : "connecting");
+        this.transition({ kind: "connectStart", linkRetrying: this.link.kind === LinkKind.Retrying });
         try {
           await this.fx.connect();
           this.link = linkNext(this.link, { kind: LinkEventKind.Connected });
-          this.setState(this.queue.length ? "reconciling" : "idle"); // → a connected state
+          this.transition({ kind: "connected", queued: this.queue.length > 0 }); // → a connected state
         } catch (e) { this.failWith("connect", e); }
         return;
       }
@@ -216,7 +254,7 @@ export class SyncEngine {
         return;
       case "path":
         if (!this.isConnected()) return;   // a local edit while disconnected is caught by connect()'s reconcileAll
-        this.setState("reconciling");
+        this.transition({ kind: "work" });
         try { await this.fx.reconcilePath(ev.path, ev.size); } catch (e) { this.failWith("path", e); }
         return;
       case "task":

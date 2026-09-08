@@ -717,4 +717,38 @@ package ProjectStpaAnalysis {
     #Satisfies dependency from sr27 to sc2;
     #RealizedBy dependency from sr26 to c8ConflictResolver;
     #RealizedBy dependency from sr27 to c8ConflictResolver;
+
+    // ---- Step 5 reanalysis of c2SyncEngine (2026-09-08, engineFsmOnPrimitive): the engine's state transitions were
+    // written out as ONE explicit table (engineMachine) for the first time; walking every (state, event) cell exposed
+    // one hazardous cell the class-interleaved setState() calls had allowed. ----
+    part uca26 : UnsafeControlAction {
+        :>> id = "ea6c1d17-9cf5-4b00-8224-6d3be92960a1"; :>> ucaType = UcaType::wrongTimingOrder;
+        :>> title = "UCA-26: a connect/reconcile effect that resolves or fails AFTER teardown flips the engine out of `unloading`";
+        :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> context = "The user disables or updates the plugin (unload) while a connect() or reconcile effect is in flight; the pump stops, but the awaited effect still completes later.";
+        :>> statement = "Establish-connection's completion (or failure) is applied after unload — the unconditional setState() moved the state from `unloading` to idle/reconciling/disconnected and repainted a status light on a torn-down plugin — so the reported state no longer matched the actual (unloaded) system, and further phase projections ran after teardown. [H-9]";
+    }
+    part cc24 : ControllerConstraint { :>> id = "f15c6b1a-209d-4f8c-845c-096470fff8b7"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "C-24: `unloading` is terminal — no effect outcome may change the engine's state after teardown";
+        :>> statement = "Once the engine has entered `unloading`, no state event (connected, failed, work, drained, connectStart, disconnect) may leave it; late effect outcomes are ignored."; }
+    #Analyzes dependency from uca26 to caEstablishConn;
+    #Causes dependency from uca26 to h9;
+    #Inverts dependency from cc24 to uca26;
+
+    part s21 : LossScenario { :>> id = "0d5dd360-65e2-4d94-8562-1d31ab8d8182"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> causalFactor = "inadequate control algorithm (no terminal state - every setState() was unconditional)";
+        :>> title = "S-21: plugin unloaded mid-connect; the connect resolves and repaints a phase on the torn-down plugin";
+        :>> statement = "SyncEngine.enqueue(unload) set state=unloading, cleared the queue and tore down timers/WS, but the connect() effect already awaited in handle() kept running; on resolution the handler called setState(idle|reconciling) unconditionally, so the state left `unloading`, onPhase fired against a plugin whose UI had been torn down, and the recorded state contradicted reality. Found by walking the explicit table when the transitions were moved onto fsm.ts; closed by declaring `unloading` terminal with no exits (engineMachine) - the cell is now unreachable by construction and pinned by tableCoverage."; }
+    #Explains dependency from s21 to uca26;
+    #LeadsTo dependency from s21 to h9;
+
+    part sr28 : SafetyRequirement { :>> id = "59481694-7c27-48b2-b5d2-7ae1cdbc4041"; :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-28: the engine's state changes only through its rule table, and `unloading` admits no further transition";
+        :>> statement = "Every EngineState change goes through engineMachine (fsm.ts) - one writer, one table - and the table declares `unloading` terminal with no exits, so an effect resolving or failing after teardown cannot alter the reported state or repaint the status.";
+        :>> triggeringEvent = "unload while a connect / reconcile effect is in flight";
+        :>> safeState = "state stays `unloading`; no phase repaint after teardown";
+        :>> safetyFunction = "engineMachine terminal state + the single transition() writer (syncengine.ts); tableCoverage pins it"; }
+    #Mitigates dependency from sr28 to uca26;
+    #Satisfies dependency from sr28 to sc9;
+    #RealizedBy dependency from sr28 to c2SyncEngine;
 }
