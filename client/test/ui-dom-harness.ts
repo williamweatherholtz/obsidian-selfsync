@@ -88,6 +88,7 @@ export function fakePlugin(over: any = {}) {
     addMount: vi.fn(async () => {}),
     removeMount: vi.fn(async () => {}),
     readTextOrEmpty: vi.fn(async () => "content"),
+    fileStat: vi.fn(() => ({ size: 12, mtime: 0 })), // small text by default; binary/oversize tests override
     // Raw bytes for the modal's cosmetic-conflict auto-dismiss pass. Default null = "unreadable", so
     // the auto-dismiss is a no-op and tests see the normal adjudication UI unless they opt in.
     readBytesOrNull: vi.fn(async () => null as Uint8Array | null),

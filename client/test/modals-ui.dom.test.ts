@@ -424,3 +424,44 @@ describe("busy-state gating (busygate.ts): the committing button is disabled and
     m.onClose();
   });
 });
+
+// Owner, 2026-09-08: "resolve totally hangs - i see no diff, just '2 files need review'... it's an mp4". The modal
+// read both versions as TEXT and line-diffed them - 200 MB decoded into a string on the main thread. A binary
+// or oversize conflict is now shown as sizes + dates with the same keep choices, and NOTHING is read.
+describe("NoteConflictModal: a binary or oversize conflict is not read or diffed", () => {
+  it("an .mp4 conflict shows each side's size + date and the keep choices without reading either file", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "clip (conflict dev 20260907120000).mp4", original: "clip.mp4" }] } });
+    plugin.fileStat = vi.fn((p: string) => p === "clip.mp4"
+      ? { size: 211_000_000, mtime: Date.UTC(2026, 8, 7, 19, 53) }
+      : { size: 205_000_000, mtime: Date.UTC(2026, 8, 7, 19, 55) });
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(plugin.readTextOrEmpty).not.toHaveBeenCalled();
+    expect(plugin.readBytesOrNull).not.toHaveBeenCalled();
+    const text = m.contentEl.textContent ?? "";
+    expect(text).toContain("a binary file, so there is no text diff");
+    expect(text).toContain("− other device's version: 201.2 MB");
+    expect(text).toContain("+ this device's version: 195.5 MB");
+    expect(buttonByText(m.contentEl, "Copy both versions")).toBeFalsy(); // nothing textual to copy
+    buttonByText(m.contentEl, "Keep − other device's")!.click(); await flush();
+    expect(plugin.resolveNoteConflict).toHaveBeenCalledWith("clip (conflict dev 20260907120000).mp4", "clip.mp4", "theirs", undefined);
+  });
+
+  it("a text conflict over 4 MB is shown the same way, with the size as the reason", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "big (conflict dev 20260907120000).md", original: "big.md" }] } });
+    plugin.fileStat = vi.fn(() => ({ size: 6 * 1024 * 1024, mtime: 0 }));
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(plugin.readTextOrEmpty).not.toHaveBeenCalled();
+    expect(m.contentEl.textContent).toContain("too large to diff (6.0 MB)");
+    expect(buttonByText(m.contentEl, "Keep + this device's")).toBeTruthy();
+  });
+
+  it("a small text conflict still gets the real diff", async () => {
+    const plugin = fakePlugin({ settings: { noteConflicts: [{ copy: "note (conflict).md", original: "note.md" }] } });
+    const m = new NoteConflictModal(plugin.app, plugin as any);
+    m.onOpen(); await flush();
+    expect(plugin.readTextOrEmpty).toHaveBeenCalledTimes(2);
+    expect(buttonByText(m.contentEl, "Copy both versions")).toBeTruthy();
+  });
+});

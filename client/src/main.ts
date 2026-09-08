@@ -1219,6 +1219,12 @@ export default class SelfSyncPlugin extends Plugin {
     this.settingsRefresh?.(); this.statusListener?.();
   }
 
+  // Size + mtime of a vault file, or null if it isn't there — the conflict modal decides from this whether a
+  // conflict can be diffed at all (binary / oversize) WITHOUT reading the file.
+  fileStat(path: string): { size: number; mtime: number } | null {
+    const f = this.app.vault.getAbstractFileByPath(path);
+    return f instanceof TFile ? { size: f.stat.size, mtime: f.stat.mtime } : null;
+  }
   // Local file size (0 if unknown/absent) — lets reconcilePath apply the size gate on
   // the event path, not just the batch path.
   private localSizeOf(path: string): number {

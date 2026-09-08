@@ -89,4 +89,16 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from busyStateGating to issueBusyStateNotSurfaced;
+
+    part issueConflictModalHangsOnBinary : Issue {
+        :>> id = "e4a89857-a36d-47d0-8cf3-085cda19b435";
+        :>> title = "Resolve-conflicts modal hung indefinitely on a ~200 MB .mp4 conflict - it read both versions as text and line-diffed them";
+        :>> createdAt = "2026-09-08";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Owner field report 2026-09-08: 'resolve totally hangs - i see no diff, just 2 files need review. Looks like it's an mp4 that multiple files edited at once (which almost surely didn't actually happen)'. The vault holds a conflict copy of a ~200 MB .mp4 (the same recording the size gate logs as 'over this device's 200 MB sync limit'). NoteConflictModal.render read BOTH versions with readTextOrEmpty - TextDecoder over 200 MB on the renderer's main thread, twice - then handed the two giant strings to unifiedLineDiff and revealInvisible: a multi-second-to-indefinite freeze with nothing on screen but the header, i.e. 'totally hangs'. The 1.30.5 cosmetic-conflict sweep already gated on isTextExt/strictDecode; the modal's own render path never did, so the one surface a user reaches for on a binary conflict was the one that could not survive it. FIX (conflictModalBinaryView): decide from fileStat (no read) - binary extension or text > 4 MB -> the no-diff view (sizes + dates per side, same keep choices, nothing read, no stale-preview guard because nothing was previewed). WHY THE MP4 HAD A CONFLICT COPY AT ALL (not fixed here, likely benign): the file is the meeting recording that was still being written into the vault while a pull ran, and conflictCopyIfRaced preserves a local file whose bytes changed during a pull as a copy - or the recording crossed the 200 MB limit between devices; either produces exactly one copy and no data loss. discoveredInField = true. Severity High: the resolve surface hung indefinitely on a real conflict.";
+        :>> discoveredInField = true;
+        :>> relatedTask = "conflictModalBinaryView";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from conflictModalBinaryView to issueConflictModalHangsOnBinary;
 }

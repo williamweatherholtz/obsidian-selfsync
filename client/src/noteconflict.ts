@@ -1,11 +1,18 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import { gateButtons, type BusyGate } from "./busygate";
-import { lcsPairs } from "./merge";
+import { lcsPairs, isTextExt } from "./merge";
 import { maskedForDisplay } from "./frontmatter";
 import type SelfSyncPlugin from "./main";
 
 // A single line of a unified diff: shared context, or a line only on one side.
 type DiffLine = { sign: " " | "-" | "+"; text: string };
+
+// A text conflict larger than this is shown as sizes + dates, not a line diff: decoding + diffing tens of MB on
+// the main thread is a hang, and a 4 MB note has no readable diff anyway.
+const MAX_DIFF_BYTES = 4 * 1024 * 1024;
+function fmtBytes(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.ceil(n / 1024))} KB`;
+}
 
 // ---- invisible differences (issueConflictDiffInvisibleChars) ----
 // Field report: the diff showed `- tagNames:` and `+ tagNames:` — two VISUALLY IDENTICAL lines — so
@@ -160,6 +167,18 @@ export class NoteConflictModal extends Modal {
     const { copy, original } = conflicts[0];
     this.gate?.dispose(); this.keepButtons = [];
     this.gate = gateButtons(this.plugin, () => this.keepButtons);
+    // NOT EVERY CONFLICT IS TEXT (owner, 2026-09-08: "resolve totally hangs - i see no diff... it's an mp4"). The
+    // modal read BOTH versions as text and line-diffed them - for a 200 MB recording that is decoding 200 MB into
+    // a string on the main thread and then diffing it: a hang, and a diff that could mean nothing anyway. A
+    // binary extension, or a text file too large to diff usefully, gets the NO-DIFF view: what each side IS
+    // (size, modified) and the same keep choices. Nothing is read.
+    const so = this.plugin.fileStat(original), sc = this.plugin.fileStat(copy);
+    const biggest = Math.max(so?.size ?? 0, sc?.size ?? 0);
+    if (!isTextExt(original) || !isTextExt(copy) || biggest > MAX_DIFF_BYTES) {
+      this.renderNoDiff(c, conflicts.length, copy, original, so, sc, isTextExt(original) && isTextExt(copy) ? `too large to diff (${fmtBytes(biggest)})` : "a binary file, so there is no text diff");
+      this.gate.refresh();
+      return;
+    }
     c.createEl("p", { text: `${conflicts.length} file${conflicts.length > 1 ? "s" : ""} to resolve. “${original}” was edited on two devices at once. − lines are the other device's version, + lines are this device's:` })
       .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
 
@@ -189,6 +208,25 @@ export class NoteConflictModal extends Modal {
       // highlighted default invites a reflexive tap that discards the OTHER device's edits (capture error).
       .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine", theirs)); });
     this.gate.refresh(); // the buttons exist now - apply the current busy state to them
+  }
+
+  // The no-diff view for a binary / oversize conflict: the header, one line per side (size + modified, in the
+  // diff's own −/+ colours), and the two keep choices - gated like the diff view. Nothing is read from disk.
+  private renderNoDiff(c: HTMLElement, count: number, copy: string, original: string,
+                       so: { size: number; mtime: number } | null, sc: { size: number; mtime: number } | null, why: string) {
+    c.createEl("p", { text: `${count} file${count > 1 ? "s" : ""} to resolve. “${original}” exists in two versions — ${why}. Choose by size and date:` })
+      .setAttribute("style", "font-size:13px;margin-bottom:10px;opacity:.85;");
+    const row = (sign: string, label: string, st: { size: number; mtime: number } | null, color: string) => {
+      const line = c.createEl("div", { text: `${sign} ${label}: ${st ? fmtBytes(st.size) : "size unknown"}${st?.mtime ? `, modified ${new Date(st.mtime).toLocaleString()}` : ""}` });
+      line.setAttribute("style", `color:${color};font-weight:600;font-size:12px;margin:2px 0;`);
+    };
+    row("−", "other device's version", so, "var(--color-red)");
+    row("+", "this device's version", sc, "var(--color-green)");
+    new Setting(c)
+      // No preview to go stale against (nothing was displayed but sizes), so no previewedOther: the choice
+      // applies to whatever the other side holds now, which is exactly what the two lines above describe.
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep − other device's").onClick(() => void this.resolve(copy, original, "theirs")); })
+      .addButton((b) => { this.keepButtons.push(b); b.setButtonText("Keep + this device's").onClick(() => void this.resolve(copy, original, "mine")); });
   }
 
   // A real diff: shared lines dim, "− the other version" lines red, "+ this device's" lines green.
@@ -277,7 +315,7 @@ export class NoteConflictModal extends Modal {
       new Notice("SelfSync: couldn't reach the clipboard — select the diff text and copy it manually");
     }
   }
-  private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther: string) {
+  private async resolve(copy: string, original: string, choice: "mine" | "theirs", previewedOther?: string) {
     if (this.busy) return; // a second tap while the first apply is still in flight
     const bs = this.plugin.busyState();
     if (bs.busy) { new Notice(`SelfSync: ${bs.reason} — try again when it finishes`); return; } // belt to the gate's braces
