@@ -17,10 +17,36 @@
 //   * selfHostOperator — runs/repairs the server for others; values: can keep tenants' data
 //                        intact + isolated, can repair without data loss.
 //
-// SYSTEM BOUNDARY (Step-1 input — controllable vs environment):
-//   IN SCOPE (controllable): the SelfSync plugin (client), the server binary, the sync protocol
-//     between them, the local vault files the plugin manages, and the server's index + chunk store.
-//   ENVIRONMENT (not controllable; worst-case conditions hazards will invoke):
+// SYSTEM BOUNDARY (Step-1 input) — REDRAWN 2026-09-09 (owner: "our system boundary is our plugin"):
+//   SYSTEM UNDER ANALYSIS: the SelfSync PLUGIN (client) — its sync engine, reconciler, session manager,
+//     conflict resolver and config sync — and the local vault files + `.obsidian/` config it manages.
+//   OWNED, TRUSTED ENVIRONMENT (same author, analysed as environment controllers whose behaviour the plugin
+//     depends on — their SRs are commitments we make to ourselves, not plugin requirements): the SelfSync
+//     server (vault manager, access control, index + chunk store), its operator (D0009), and the sync protocol.
+//   Until this date the server sat INSIDE the boundary; its controllers/UCAs/SRs (c5-c7, UCA-10..15/18, SR-7..13/16/19)
+//   are kept unchanged — the redraw changes what is a REQUIREMENT ON THE PLUGIN vs an ASSUMPTION ABOUT ITS ENVIRONMENT.
+//
+// AUTHORITIES (Step-1 inventory — every party that can change the plugin's controlled processes, i.e. the
+// local vault files, the plugin's own config/code, or the server's data). Each is a controller in Step 2;
+// the ones marked NEW have no controller yet and are the Step 2 follow-up of this refresh:
+//   INSIDE the plugin:      sync engine (c2), session (c3), reconciler (c4), conflict resolver (c8), config sync.
+//   THE USER (c1):          edits/renames/deletes files through the Obsidian editor; resolves conflicts; changes settings.
+//   THE HOST APP — NEW:     Obsidian itself: vault API + file events (exact-case keyed), plugin lifecycle
+//                           (load / unload / update mid-operation), settings UI; the plugin runs ON ITS MAIN THREAD.
+//   OTHER PLUGINS — NEW:    write the SAME files (Metadata Menu fileClass frontmatter, Linter / timestamp stampers,
+//                           Templater) — observed 2026-09-07 as recurring trailing-space + `updated:` conflicts.
+//   OTHER SYNC TOOLS — NEW: Syncthing / cloud drives operating on the same directory (`.sync-conflict-*` files are
+//                           present in the owner's vault; cloud placeholders hydrate on read).
+//   THE OS / FILESYSTEM:    case-insensitive + Unicode-folding + mtime-granular semantics; antivirus locks;
+//                           observed 2026-09-07 as ~500 paths differing from the server only in capitalisation.
+//   OTHER DEVICES + PEERS:  the user's other devices (concurrent writers, trusted); share peers (untrusted, A6).
+//   THE SERVER + OPERATOR:  owned + trusted (above); authoritative index, tombstones, versions, grants; repair.
+//   THE RELEASE CHANNEL — NEW: GitHub Releases via BRAT (plugin code) and GHCR (server image) — the authority that
+//                           changes the plugin's OWN CODE; integrity is checked by scripts/check-release.mjs + CI.
+//   THE NETWORK PATH:       reverse proxy (Caddy) / TLS / DNS between plugin and server.
+//   TIME:                   device clocks (mtimes, frontmatter timestamps, backoff timers).
+//
+// ENVIRONMENT ASSUMPTIONS (worst-case conditions hazards invoke):
 //     A1 a device may be pointed at the WRONG / a fresh / a restored server that lacks our files
 //        and has issued no deletion tombstones;
 //     A2 the network may drop, delay, or reorder at any point (mid-transfer, mid-commit);
@@ -29,7 +55,19 @@
 //     A5 two devices may edit concurrently; a shared vault may have multiple writers;
 //     A6 the server OPERATOR is trusted (D0009), but share PEERS and synced CONTENT are NOT trusted;
 //     A7 a device may be offline for arbitrary periods;
-//     A8 storage (disk / index) may be lost, restored from backup, or only partially present.
+//     A8 storage (disk / index) may be lost, restored from backup, or only partially present;
+//     A9 (2026-09-09) other plugins rewrite the same files at any time, including on every open/save (timestamp
+//        stampers, fileClass tooling), so a file may change between the plugin's read and its write;
+//     A10 (2026-09-09) another sync tool may be operating on the same directory, creating its own conflict
+//        files and rewriting ours;
+//     A11 (2026-09-09) the host may unload, update or suspend the plugin at ANY point of an in-flight operation,
+//        and the host's file API keys paths by exact case while the filesystem does not;
+//     A12 (2026-09-09) a vault may hold files of any size (multi-hundred-MB media) and any count (thousands);
+//        the plugin shares the host's single main thread and a mobile device's memory;
+//     A13 (2026-09-09) the plugin's own code arrives through a release channel that could be stale, skipped,
+//        or altered; the server image may be behind or ahead of the plugin;
+//     A14 (2026-09-09) the user acts on what the plugin SHOWS (a diff, a status, a button) and may act while the
+//        plugin is mid-operation.
 // =====================================================================
 package ProjectSafety {
     private import EngineElement::*;

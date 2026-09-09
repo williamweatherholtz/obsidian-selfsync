@@ -186,4 +186,57 @@ package ProjectHazards {
     #Enforces dependency from c2SyncEngine to sc9;   // the status projection (phase = pure fn of the two FSMs) is truthful
     #Enforces dependency from c1User to sc9;         // the display surfaces sync progress; the user reads the true state
     #Enforces dependency from c2SyncEngine to sc10;  // reconnect/backoff + resume re-attempt keep a recoverable link recovering
+
+    // ---- Step 1 refresh, 2026-09-09: hazards the authority inventory exposed (each was LIVED this week before it
+    // was named — the case-divergence, the 200 MB freeze, the plugin/sync-tool rewrite loops). ----
+    part h11 : Hazard {
+        :>> id = "2a7ed975-5834-4c0a-8039-a7ab4129f7e3";
+        :>> title = "H-11: the system treats one user artefact as two, or two as one (identity divergence)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "A path whose spelling differs only in ways the user's filesystem does not distinguish (case, Unicode form, trailing dot/space), or content that differs only in ways the user cannot see (frontmatter whitespace, invisible characters), is handled as a DISTINCT file - or two distinct artefacts as ONE - so edits silently stop syncing, phantom conflicts recur on every pass, pushes are refused, or two artefacts are merged. [L-1, L-4, L-5]";
+    }
+    part h12 : Hazard {
+        :>> id = "fd93f786-8a34-4471-a809-cca13f94645b";
+        :>> title = "H-12: the plugin renders the host application unresponsive or its own controls unreachable";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "A pass, a read, a hash or a render saturates the host's single main thread, memory or disk I/O (a multi-hundred-MB file decoded as text; hundreds of unstamped binaries hashed at once; a modal whose reads queue behind the pass) so the user cannot work in Obsidian, cannot reach the plugin's own controls, or reads 'broken' where the truth is 'busy'. [L-3, L-4]";
+    }
+    part h13 : Hazard {
+        :>> id = "75f4ae0c-53ba-4190-8bac-073e02d391d8";
+        :>> title = "H-13: the plugin acts on a file another authority on the same device is writing or has reshaped";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "The user's editor, another plugin (timestamp stampers, fileClass tooling), another sync tool (Syncthing, a cloud drive) or the OS writes, moves or reshapes a file the plugin is also acting on, so one authority's write is lost or duplicated, a rewrite loop re-triggers on every pass, or a second tool's conflict file is synced as content. [L-1, L-5]";
+    }
+    part sc11 : SystemSafetyConstraint {
+        :>> id = "832a7af4-c005-4644-93a4-16f24734231a";
+        :>> title = "SC-11: one file for the user is one file for the plugin";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "The plugin must treat as one file exactly what the user's filesystem treats as one file, and must never let an identity-only difference (case, Unicode form, invisible whitespace in metadata) create, hide or merge a user artefact without telling the user. [H-11]";
+    }
+    part sc12 : SystemSafetyConstraint {
+        :>> id = "c4bb5aa0-d0a4-4260-b0a3-171a4eb4fa93";
+        :>> title = "SC-12: the host and the plugin's own controls stay usable during any pass";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "The plugin must bound its use of the host's main thread, memory and I/O on any vault size or file size, never read as text what it cannot diff, and show its state on the controls it gates while it works. [H-12]";
+    }
+    part sc13 : SystemSafetyConstraint {
+        :>> id = "de000ca3-2ca3-4985-913c-9ab0df7c3cf1";
+        :>> title = "SC-13: co-exist with other writers of the same files";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "The plugin must detect a concurrent change by another authority before acting on a file, must never overwrite a version another authority produced without preserving it, and must never re-trigger another writer's rewrite loop. [H-13]";
+    }
+    #LeadsTo dependency from h11 to l1;
+    #LeadsTo dependency from h11 to l4;
+    #LeadsTo dependency from h11 to l5;
+    #LeadsTo dependency from h12 to l3;
+    #LeadsTo dependency from h12 to l4;
+    #LeadsTo dependency from h13 to l1;
+    #LeadsTo dependency from h13 to l5;
+    #Inverts dependency from sc11 to h11;
+    #Inverts dependency from sc12 to h12;
+    #Inverts dependency from sc13 to h13;
+    #Enforces dependency from c4Reconciler to sc11;         // path identity (case-aware aliasing, content identity) is the reconciler's
+    #Enforces dependency from c2SyncEngine to sc12;         // pass scheduling, busy state, bounded work
+    #Enforces dependency from c8ConflictResolver to sc12;   // never reads/diffs what it cannot; gated on busy
+    #Enforces dependency from c4Reconciler to sc13;         // racing-edit guards, content identity vs other writers' rewrites
 }
