@@ -132,7 +132,6 @@ package ProjectControlStructure {
         :>> heldBy = c1User;
     }
     part pmSyncEngine : ProcessModel {
-        // STPA-FSM: client/src/mountfsm.ts#mountMachine
         // STPA-FSM: client/src/transportstate.ts#transportMachine
         // STPA-FSM: client/src/syncengine.ts#engineMachine
         :>> id = "c0f1a5cc-b202-4a10-9b20-a1b2c3d4b202";
@@ -396,5 +395,106 @@ package ProjectControlStructure {
     part fbEngineBusy : Feedback {
         :>> id = "ff6ad806-6a58-4cc4-8425-38f6ee2ece68"; :>> title = "Engine busy state (busyState: connecting / checking / syncing, with the live stage)";
         :>> createdAt = "2026-09-08"; :>> createdBy = "claudeOpus"; :>> reportsTo = c8ConflictResolver;
+    }
+
+    // ---- Nesting (composed vaults / mounts, D0039) — Step 2, 2026-09-09. A mount is a SECOND reconcile scope
+    // over a subtree, run by its own runtime with its own base/cursor/state, driven from the primary cycle
+    // (D0040) plus its own source subscription. Three controllers and three controlled processes join. ----
+    part c9MountEngine : Controller {
+        :>> id = "a6bf1593-8830-4c84-8b07-9685373e1187";
+        :>> title = "Mount engine (per-mount scope runtime: MountRuntime + mountsync loop + rebuildMountScopes)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part c10MountConfig : Controller {
+        :>> id = "018417aa-71f1-4d0c-85b9-211c056c0be4";
+        :>> title = "Mount configuration (settings UI, validateMounts/validMounts, recipe import — decides the configured + ACTIVE set)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part c11SourceOwner : Controller {
+        :>> id = "d7e234d9-a8ce-47a4-8596-07fbf56fc94e";
+        :>> title = "Source-vault owner / peers (environment: other writers of the mounted source; untrusted unless it is the user's own vault)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part pmMount : ProcessModel {
+        // STPA-FSM: client/src/mountfsm.ts#mountMachine
+        :>> id = "56259a82-51a9-4070-b8a9-0c632fce117d";
+        :>> title = "PM-Mount: this mount's base + cursor, lifecycle state, direction, the source's readiness/compatibility, the user's grant, whether the primary owns this folder";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> beliefs = "Per mount: the last-agreed content per path (its OWN base) and source-global cursor; its lifecycle state (mountMachine); its direction (pull/sync); the source's readiness + apiVersion; the user's grant on the source (read vs read-write); whether the source IS the current primary (self-referential -> dormant); the local subtree listing. Staleness of the base while dormant, or a listing taken mid-write, are the demonstrated failure roots.";
+        :>> heldBy = c9MountEngine;
+    }
+    part pmMountConfig : ProcessModel {
+        :>> id = "9adb00b9-c8d5-4e21-b7c6-fe39c5077c4d";
+        :>> title = "PM-MountConfig: the configured set, which entries are valid, the maximal non-overlapping ACTIVE subset, the primary's exclusion set";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> beliefs = "The configured mounts (settings.mounts), each entry's validity (non-empty, not under .obsidian, not nested/overlapping), the ACTIVE subset (validMounts: drop only the offending entry), and therefore which local folders the PRIMARY scope must exclude. A wrong belief here moves whole folders between scopes.";
+        :>> heldBy = c10MountConfig;
+    }
+    part p6MountFolder : ControlledProcess {
+        :>> id = "a83dcbce-88dd-4051-914d-125b4aeea2ab";
+        :>> title = "The local mount-point subtree (a folder of the user's vault presenting another vault's data)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part p7SourceSubtree : ControlledProcess {
+        :>> id = "df75a9d8-e08c-464b-8aff-cfa0433f6523";
+        :>> title = "The mounted SOURCE subtree on the server (another vault's files — the user's own or a peer's)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part p8MountState : ControlledProcess {
+        :>> id = "fc4d831a-b3cd-4c2d-87ab-83aa46def901";
+        :>> title = "Persisted mount state (settings.mounts + mountStateStore: per-mount base snapshot + cursor)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+    }
+    part caMountStart : ControlAction {
+        :>> id = "1627e419-30f6-4a3e-a327-4ddec8b00b4a"; :>> title = "Start / first-contact a mount scope (build its runtime, base, cursor; adopt the source subtree)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c9MountEngine; :>> actsOn = p6MountFolder;
+    }
+    part caMountPull : ControlAction {
+        :>> id = "9412b6c2-ab6c-499a-94ef-c7ac5a8749a0"; :>> title = "Apply a source change into the mount folder (pull / delete-local within the mount)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c9MountEngine; :>> actsOn = p6MountFolder;
+    }
+    part caMountPush : ControlAction {
+        :>> id = "df5822b2-3d60-4e8e-a87a-bbd66264fc77"; :>> title = "Commit a local change of the mount folder to the source (sync mounts only)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c9MountEngine; :>> actsOn = p7SourceSubtree;
+    }
+    part caMountDeleteOutgoing : ControlAction {
+        :>> id = "7d5252b6-5a0e-47d3-b4c0-36620e033957"; :>> title = "Propagate a local deletion inside the mount to the source (delete-remote on the source subtree)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c9MountEngine; :>> actsOn = p7SourceSubtree;
+    }
+    part caComputeActiveMounts : ControlAction {
+        :>> id = "59bd03a6-1011-460a-95e5-546023a9fe44"; :>> title = "Compute the ACTIVE mount set and the primary scope's exclusion (validMounts + primaryExcludes)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c10MountConfig; :>> actsOn = p8MountState;
+    }
+    part caMountRemove : ControlAction {
+        :>> id = "56a62b46-bf5c-42be-91d9-6690dbf5b64c"; :>> title = "Remove / unmount a mount (non-destructive: files stay as ordinary notes; base + cursor dropped)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c10MountConfig; :>> actsOn = p8MountState;
+    }
+    part caSetMountDirection : ControlAction {
+        :>> id = "64003f08-61a6-4edc-a2e1-bb3dd9c7b455"; :>> title = "Set a mount's direction (pull <-> sync)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c10MountConfig; :>> actsOn = p8MountState;
+    }
+    part caApplyRecipe : ControlAction {
+        :>> id = "2ae78da1-681c-4074-851f-d7938195a6c6"; :>> title = "Apply an imported composition recipe (add mounts from a pasted selfsync-recipe:// string)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c10MountConfig; :>> actsOn = p8MountState;
+    }
+    part caSourceWrite : ControlAction {
+        :>> id = "f19ac057-8932-4d2d-adf9-c6a5432bcca5"; :>> title = "A source owner/peer writes, deletes or prunes history on the mounted source (environment action)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> issuedBy = c11SourceOwner; :>> actsOn = p7SourceSubtree;
+    }
+    part fbMountStatus : Feedback {
+        :>> id = "ef16781a-88d7-449d-a3a3-1605efbdfe82"; :>> title = "Per-mount state folded into the status light, hero and per-mount rows";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> reportsTo = c1User;
+    }
+    part fbSourceReady : Feedback {
+        :>> id = "6bcfd8eb-9485-4691-9c83-0f003d763d8a"; :>> title = "Source readiness + apiVersion (status probe) and the user's grant on the source";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> reportsTo = c9MountEngine;
+    }
+    part fbSourceChanges : Feedback {
+        :>> id = "cea18a20-107f-48fe-b79b-060177a097fd"; :>> title = "Source change feed (filtered manifest / delta with source-global version; per-mount WebSocket poke)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> reportsTo = c9MountEngine;
+    }
+    part fbMountFolderEvents : Feedback {
+        :>> id = "a1f64450-8583-4a2e-8d7e-0f4db8963477"; :>> title = "Local file events + listing under the mount point (incl. the folder itself vanishing)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> reportsTo = c9MountEngine;
     }
 }

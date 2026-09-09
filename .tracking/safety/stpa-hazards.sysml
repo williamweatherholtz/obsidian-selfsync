@@ -239,4 +239,43 @@ package ProjectHazards {
     #Enforces dependency from c2SyncEngine to sc12;         // pass scheduling, busy state, bounded work
     #Enforces dependency from c8ConflictResolver to sc12;   // never reads/diffs what it cannot; gated on busy
     #Enforces dependency from c4Reconciler to sc13;         // racing-edit guards, content identity vs other writers' rewrites
+
+    // ---- Nesting-focused STPA (composed vaults / mounts, D0039), Step 1 additions 2026-09-09. The composition
+    // introduces a SCOPE dimension the flat vault never had: every file now belongs to exactly one of the primary
+    // scope, a mount scope, or another mount scope, and every action must respect that attribution and the
+    // per-mount DIRECTION + GRANT. Two hazards are specific to it. ----
+    part h14 : Hazard {
+        :>> id = "5e8d872c-5129-440e-9bb0-c7d7681fe046";
+        :>> title = "H-14: content attributed to the wrong scope (primary vs mount vs another mount)";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "A file under a mount point is treated as primary-vault content (or vice versa), or one folder is claimed by two scopes, so it is synced to a vault it does not belong to, double-synced, deleted from the wrong source, or synced to nobody — the scope BOUNDARY (the primary excludes every mount point; mount points never nest or overlap) is the load-bearing invariant of composition. [L-1, L-2]";
+    }
+    part h15 : Hazard {
+        :>> id = "e347f14d-253c-4ed4-ba92-aba92d60fb38";
+        :>> title = "H-15: a write crosses a mount against its direction or the user's grant";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "A pull (read-only) mount writes, deletes or resurrects content on its source; or a sync mount writes to a source the user's grant no longer (or never) permits — a peer's vault altered by a device that was only meant to read it. [L-1, L-2]";
+    }
+    part sc14 : SystemSafetyConstraint {
+        :>> id = "e2f4c44a-4b20-4959-9348-7774c248b84e";
+        :>> title = "SC-14: every file belongs to exactly one scope, decided the way the filesystem decides identity";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "The primary scope must exclude every active mount point and mount points must never nest or overlap, with the boundary compared the way the user's filesystem compares paths (case- and Unicode-folded); each scope must own its own base, cursor and state. [H-14]";
+    }
+    part sc15 : SystemSafetyConstraint {
+        :>> id = "c35f94c5-eaa0-42a7-b66a-8cb1e3b2d5d9";
+        :>> title = "SC-15: a mount writes to its source only in its direction and within the user's grant";
+        :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus";
+        :>> statement = "A pull mount must never commit, delete or upload to its source (refused at the adapter, not only by policy); a sync mount must write only while the user's grant on the source is read-write; configuration and recipes must fail closed to pull. [H-15]";
+    }
+    #LeadsTo dependency from h14 to l1;
+    #LeadsTo dependency from h14 to l2;
+    #LeadsTo dependency from h15 to l1;
+    #LeadsTo dependency from h15 to l2;
+    #Inverts dependency from sc14 to h14;
+    #Inverts dependency from sc15 to h15;
+    #Enforces dependency from c9MountEngine to sc14;  // per-mount isolation + the primary's exclusion of mount points
+    #Enforces dependency from c10MountConfig to sc14; // validity / overlap / nesting decided at configuration
+    #Enforces dependency from c9MountEngine to sc15;  // MountedApi hard-refuses writes on a pull mount
+    #Enforces dependency from c10MountConfig to sc15; // direction offered only for writable sources; recipes fail closed
 }

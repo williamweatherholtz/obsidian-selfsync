@@ -14,6 +14,7 @@ package ProjectAcceptance {
     private import ProjectRequirements::*;
     private import ProjectDelivery::*;
     private import ProjectUseCases::*;
+    private import ProjectStpaNesting::*;       // nesting STPA SafetyRequirements sr29..sr43 (stpa-nesting.sysml)
     private import ProjectStpaAnalysis::*;      // STPA SafetyRequirements sr1..sr25 (stpa-ucas.sysml)
 
     // ---- new config-sync acceptance scenarios (BDD) ----
@@ -409,4 +410,38 @@ package ProjectAcceptance {
     #Verify dependency from conflictModalPerfDoD to sr27;
     // sr28 (engine terminal state, 2026-09-08): the engine table + its terminal cell, pinned by fsm.test's engineMachine coverage
     #Verify dependency from engineFsmOnPrimitiveDoD to sr28;
+
+    // ---- nesting STPA (composed vaults) #Verify edges, 2026-09-09: each SR -> the passed DoDs whose recorded procedure verifies it ----
+    #Verify dependency from mountEngineCoreDoD to sr29;
+    #Verify dependency from mountEngineDoD to sr29;
+    #Verify dependency from mountHardeningR3DoD to sr29;
+    #Verify dependency from mountIoAdaptersDoD to sr30;
+    #Verify dependency from mountHardeningR5DoD to sr30;
+    #Verify dependency from composedMountPermissionsDoD to sr30;
+    #Verify dependency from mountHardeningR2DoD to sr31;
+    #Verify dependency from mountHardeningR4DoD to sr32;
+    #Verify dependency from mountHardeningR7DoD to sr32;
+    #Verify dependency from mountFolderDeleteGuardDoD to sr33;
+    #Verify dependency from mountDeleteGuardHardeningDoD to sr33;
+    #Verify dependency from mountHardeningR3DoD to sr34;
+    #Verify dependency from mountIoAdaptersDoD to sr34;
+    #Verify dependency from mountHardeningR4DoD to sr35;
+    #Verify dependency from mountHardeningR5DoD to sr35;
+    #Verify dependency from mountHardeningR10DoD to sr35;
+    #Verify dependency from mountHardeningR1DoD to sr36;
+    #Verify dependency from stpaProcessAndFsmModuleDoD to sr36;
+    #Verify dependency from composeRecipeFeatureDoD to sr37;
+    #Verify dependency from mountHeldResolverSerializeDoD to sr38;
+    #Verify dependency from mountHardeningR5DoD to sr39;
+    #Verify dependency from mountBaseFreshnessDoD to sr39;
+    #Verify dependency from mountHardeningR6DoD to sr40;
+    #Verify dependency from mountHardeningR4DoD to sr40;
+    #Verify dependency from mountLiveSubscriptionDoD to sr40;
+    #Verify dependency from mountSocketLivenessDoD to sr40;
+    #Verify dependency from mountHardeningR9DoD to sr40;
+    #Verify dependency from mountHardeningR6DoD to sr41;
+    #Verify dependency from mountSharedSourceResurrectionPolicyDoD to sr42;
+    #Verify dependency from mountResetDetectionDoD to sr42;
+    #Verify dependency from mountSyncPushLocalDoD to sr43;
+    #Verify dependency from mountMoveSafetyDoD to sr43;
 }

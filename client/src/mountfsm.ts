@@ -26,11 +26,11 @@ export const MOUNT_STATES: readonly MountState[] = ["detached", "mounting", "liv
 export const MOUNT_EVENTS: readonly MountEvent[] = ["mount", "mounted", "syncStart", "syncSettled", "diverge", "resolved", "disconnect", "reconnect", "unmount", "unmounted", "fail", "retry"];
 
 // The per-mount lifecycle machine on the shared primitive (fsm.ts), registered as STPA process model
-// pmSyncEngine (a mount is a scope the engine drives). An event with no rule is a NO-OP — conservative: an
+// pmMount (the composed-vault controller c9MountEngine's belief about one mount). An event with no rule is a NO-OP — conservative: an
 // unexpected signal never forces a spurious state change. `unmount` and `fail` are accepted from any live state
 // (user teardown / terminal error can happen at any time).
 export const mountMachine = defineMachine<MountState, MountEvent>({
-  name: "pmSyncEngine",
+  name: "pmMount",
   states: MOUNT_STATES,
   events: MOUNT_EVENTS,
   kindOf: identity,
