@@ -497,4 +497,69 @@ package ProjectControlStructure {
         :>> id = "a1f64450-8583-4a2e-8d7e-0f4db8963477"; :>> title = "Local file events + listing under the mount point (incl. the folder itself vanishing)";
         :>> createdAt = "2026-09-09"; :>> createdBy = "claudeOpus"; :>> reportsTo = c9MountEngine;
     }
+
+    // ---- Step 2 follow-up of the 2026-09-09 Step 1 refresh (2026-09-10): the four authorities the inventory named
+    // NEW, modelled as ENVIRONMENT controllers. Each can change a controlled process the plugin also controls
+    // (the vault files p1, the local runtime p5, the server p2) — the plugin does not command them, it must
+    // COEXIST with them, so their actions are the CONTEXT of the plugin's own UCAs (stpa-authorities.sysml). ----
+    part c12HostApp : Controller {
+        :>> id = "799044bb-8504-4cbe-9d6c-8bf6b0f3617a";
+        :>> title = "Host application (Obsidian: vault API + file events keyed by EXACT case; plugin lifecycle load / unload / update / suspend / resume; one main thread shared with the plugin)";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus";
+    }
+    part c13OtherPlugins : Controller {
+        :>> id = "7f71b4b4-2b0e-4990-aa83-5a2b9cbea13f";
+        :>> title = "Other plugins on this device (same-file writers - timestamp stampers, fileClass tooling, Templater - and plugin CODE that itself arrives through config sync)";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus";
+    }
+    part c14OtherSyncTools : Controller {
+        :>> id = "cfaf7368-eebb-463e-a3a9-2bd4efa1772a";
+        :>> title = "Other sync tools on the same directory (Syncthing, cloud drives: rewrite files, create their own conflict copies, hydrate / dehydrate placeholders, hold locks)";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus";
+    }
+    part c15ReleaseChannel : Controller {
+        :>> id = "d76c9f0f-d61c-46b4-a39f-152d88c5d382";
+        :>> title = "Release channel (GitHub Releases installed by BRAT for plugin code; GHCR image deployed or rolled back by the operator for the server; CI builds from tags)";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus";
+    }
+    part pmHost : ProcessModel {
+        :>> id = "a62de147-759d-4028-b569-39b70c8a3806";
+        :>> title = "PM-Host: the host's own picture of the vault and of this plugin";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus";
+        :>> beliefs = "The file index keyed by the EXACT-case path the host first saw (not what the filesystem folds together); which plugins are enabled and which instance of ours is live; whether the app is foregrounded (mobile suspends timers while backgrounded); the minAppVersion it will load. The plugin inherits every one of these beliefs through the API it is given.";
+        :>> heldBy = c12HostApp;
+    }
+    part caHostLifecycle : ControlAction {
+        :>> id = "7d174b9d-3e5c-415c-ae23-41411fc0a54c"; :>> title = "Load / unload / update (BRAT: disable + re-enable) / suspend / resume the plugin - at ANY point of an in-flight operation";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> issuedBy = c12HostApp; :>> actsOn = p5LocalRuntime;
+    }
+    part caPluginRewrite : ControlAction {
+        :>> id = "e9cc4f7b-450a-485e-a6b2-cf9465cb0094"; :>> title = "Another plugin rewrites a note (frontmatter timestamp / fileClass normalisation / template expansion) on open, save, or its own timer";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> issuedBy = c13OtherPlugins; :>> actsOn = p1LocalVault;
+    }
+    part caSyncToolWrite : ControlAction {
+        :>> id = "d53d0952-2960-45d6-935e-759d8249e703"; :>> title = "Another sync tool writes, rewrites or deletes a file, creates its own conflict copy (`*.sync-conflict-*`, `(conflicted copy)`), or hydrates / dehydrates a placeholder";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> issuedBy = c14OtherSyncTools; :>> actsOn = p1LocalVault;
+    }
+    part caReleasePluginBuild : ControlAction {
+        :>> id = "4d9abd9d-7991-4ada-b7de-e57bd52c6f97"; :>> title = "Publish a plugin build (manifest + main.js + styles) that BRAT installs on every device";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> issuedBy = c15ReleaseChannel; :>> actsOn = p5LocalRuntime;
+    }
+    part caReleaseServerImage : ControlAction {
+        :>> id = "d10b4381-bd85-4c15-afa4-838e878ff0f4"; :>> title = "Publish a server image the operator deploys - or rolls back over a vault a newer image migrated";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> issuedBy = c15ReleaseChannel; :>> actsOn = p2ServerIndex;
+    }
+    part fbVaultEvents : Feedback {
+        :>> id = "793e817c-d434-4de6-9e7d-fc764bf2e4ce"; :>> title = "Host file events (modify / create / delete / rename, exact-case keyed) + raw `.obsidian` adapter events - the plugin's ONLY prompt notice of another authority's write";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> reportsTo = c2SyncEngine;
+    }
+    part fbAppLifecycle : Feedback {
+        :>> id = "80f9589a-ab03-4e4f-b62d-6dd441d209bb"; :>> title = "Lifecycle notices from the host: onunload, visibilitychange (resume), onLayoutReady";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> reportsTo = c2SyncEngine;
+    }
+    part fbReleaseAssertion : Feedback {
+        :>> id = "b089cdd4-c9dd-4a6e-ae54-fa0fec00328b"; :>> title = "Release assertions (check-release: tagged + published + assets present; check-release-currency: unreleased drift bounded; CI version-sync)";
+        :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> reportsTo = c7Operator;
+    }
+    #Enforces dependency from c2SyncEngine to sc13;   // detects other writers only through fbVaultEvents; bounds its own echo
 }

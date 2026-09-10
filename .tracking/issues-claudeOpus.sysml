@@ -137,4 +137,28 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from engineFsmOnPrimitive to issueEngineFsmNotOnPrimitive;
+
+    part issueSyncToolCoexistenceUnguarded : Issue {
+        :>> id = "7882a996-4252-4357-9f58-f6bf7db534b6";
+        :>> title = "No coexistence rule for another sync tool operating on the same directory";
+        :>> createdAt = "2026-09-10";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Found by the STPA over the same-device authorities (2026-09-10, UCA-52 / SR-47 in .tracking/safety/stpa-authorities.sysml). Step 1 recorded 'other sync tools' as an authority present in the owner's own vault (`.sync-conflict-*` files exist there), but the plugin has no coexistence rule: it neither detects a co-located tool nor recognises that tool's artefacts, so another tool's conflict copies sync everywhere as authored content, and two tools rewriting one file have nothing bounding the loop (the plugin bounds only the echo of its own writes). Hazard H-13 (another same-device authority) and H-6 (a rewrite loop starves real changes). Non-trivial: needs an owner call on whether foreign conflict copies are skipped or synced, and a loop breaker with a threshold.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "syncToolCoexistence";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from syncToolCoexistence to issueSyncToolCoexistenceUnguarded;
+
+    part issueReleaseAssetIntegrityUnchecked : Issue {
+        :>> id = "0ff1a512-8945-408b-b014-b9250c11c341";
+        :>> title = "Published plugin assets are checked for presence, never for integrity";
+        :>> createdAt = "2026-09-10";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Found by the STPA over the release-channel authority (2026-09-10, UCA-58 / SR-50 in .tracking/safety/stpa-authorities.sysml). check-release.mjs and verify-released.yml assert that the manifest version is tagged, published and carries the BRAT assets, and check-release-currency bounds unreleased drift, but nothing attests that the published main.js is the CI build of the tagged commit: no recorded digest, no signature, no post-publish comparison. A replaced or corrupted asset installs through BRAT on every device unnoticed (H-5). Non-trivial: touches release.yml, the release script and the plugin's About surface; signing is a separate owner decision.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "releaseAssetIntegrity";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from releaseAssetIntegrity to issueReleaseAssetIntegrityUnchecked;
 }

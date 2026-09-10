@@ -14,6 +14,7 @@ package ProjectAcceptance {
     private import ProjectRequirements::*;
     private import ProjectDelivery::*;
     private import ProjectUseCases::*;
+    private import ProjectStpaAuthorities::*;   // same-device / release-channel authorities STPA sr44..sr51 (stpa-authorities.sysml)
     private import ProjectStpaNesting::*;       // nesting STPA SafetyRequirements sr29..sr43 (stpa-nesting.sysml)
     private import ProjectStpaAnalysis::*;      // STPA SafetyRequirements sr1..sr25 (stpa-ucas.sysml)
 
@@ -444,4 +445,24 @@ package ProjectAcceptance {
     #Verify dependency from mountResetDetectionDoD to sr42;
     #Verify dependency from mountSyncPushLocalDoD to sr43;
     #Verify dependency from mountMoveSafetyDoD to sr43;
+
+    // ---- authorities STPA (host app / other plugins / other sync tools / release channel) #Verify edges, 2026-09-10.
+    // sr47 and sr50 carry NO edge yet: their mitigations are the OPEN tasks syncToolCoexistence / releaseAssetIntegrity. ----
+    #Verify dependency from editorStatusCleanupOnUnloadDoD to sr44;
+    #Verify dependency from engineFsmOnPrimitiveDoD to sr44;
+    #Verify dependency from pluginWiringTimerLeakFixDoD to sr44;
+    #Verify dependency from casePathAliasDoD to sr45;
+    #Verify dependency from rejectedPushHoldDoD to sr45;
+    #Verify dependency from contentIdentityNormalisationDoD to sr46;
+    #Verify dependency from frontmatterTrailingSpaceIdentityDoD to sr46;
+    #Verify dependency from contentIdentityUnicodeNormaliseDoD to sr46;
+    #Verify dependency from timestampIgnoreRedesignDoD to sr46;
+    #Verify dependency from normHashDecideDoD to sr46;
+    #Verify dependency from conflictModalBinaryViewDoD to sr48;
+    #Verify dependency from conflictModalPerfDoD to sr48;
+    #Verify dependency from busyStateGatingDoD to sr48;
+    #Verify dependency from versionRecordDriftGuardDoD to sr49;
+    #Verify dependency from releaseCurrencyGuardDoD to sr49;
+    #Verify dependency from switchUploadProbeGuardDoD to sr51;
+    #Verify dependency from mountDeleteGuardHardeningDoD to sr51;
 }
