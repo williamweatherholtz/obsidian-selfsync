@@ -358,7 +358,7 @@ describe("SR-47 / SR-50: other sync tools + build digest (settings tab)", () => 
     await flush();
     expect(p.settings.skipForeignArtefacts).toBe(false);
     expect(p.saveSettings).toHaveBeenCalled();
-    expect(p.requestReconcile).toHaveBeenCalled();
+    expect(p.requestFullReconcile).toHaveBeenCalled(); // a FULL pass — the skipped files have no server-side change to trigger them
     const none = renderTab(fakePlugin({ settings: { skipForeignArtefacts: true } })).containerEl.textContent ?? "";
     expect(none).toContain("Nothing detected right now");
   });

@@ -423,8 +423,8 @@ package ProjectStpaAnalysis {
         :>> safeState = "no phantom deletion of a path another device holds";
         :>> safetyFunction = "REALIZED: accepts() gate in reconcileOne + switchTo manifest filter; verified by acConfigAdditiveSafe."; }
     part sr5 : SafetyRequirement { :>> id = "c0f1a5cc-d305-4a10-9b20-a1b2c3d4d305"; :>> createdAt = "2026-07-07"; :>> createdBy = "wweatherholtz";
-        :>> title = "SR-5: no auto-execution/apply of untrusted synced code or CSS";
-        :>> statement = "Never auto-enable community-plugin CODE, nor auto-apply theme/snippet CSS, that arrived via sync — for ANY vault; require an explicit user reload to apply.";
+        :>> title = "SR-5: synced plugin code stays behind the restart barrier unless the vault is provably private AND the code is this account's; synced CSS is applied by the host with a source-named warning";
+        :>> statement = "Community-plugin CODE that arrived via sync is never enabled automatically unless (a) the vault is provably PRIVATE — this account's own, no read-write grant, no share link, re-derived at the moment of decision and fail-safe — AND (b) the code's recorded committer is this account (an unknown author is accepted only in a private vault); everything else waits for an explicit user restart. Theme/snippet CSS cannot be staged (the host applies an enabled snippet live), so it is written with a source-named warning. AMENDED 2026-09-11: the 0.10.27 'for ANY vault' wording predated the 1.11.0 hot-load exception; the panel found the statement false against shipped code (hotLoadSyncedPluginsDoD verifies the EXCEPTION, not a blanket ban).";
         :>> triggeringEvent = "config sync writes plugin code or theme/snippet CSS to disk";
         :>> safeState = "nothing is executed/applied automatically; the user reloads to apply, only if they trust the source";
         :>> safetyFunction = "REALIZED (0.10.27, Round-6): flushConfigReload never auto-enables synced plugin code nor auto-applies synced CSS for ANY vault. The prior gate keyed only on non-owned vaults — missing the owner-of-a-shared-vault RCE (a readWrite peer's main.js) and leaving CSS ungated entirely."; }

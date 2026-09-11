@@ -508,7 +508,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     if (flipping.length) {
       g.addSetting((st) => st.setName(`${flipping.length} file${flipping.length > 1 ? "s" : ""} keep${flipping.length > 1 ? "" : "s"} changing back and forth`).setClass("mod-warning")
         .setDesc(`Something else on this device rewrites ${flipping.length > 1 ? "these files" : "this file"} every time they sync (another sync tool or a plugin), so uploading is paused to stop the loop: ${flipping.slice(0, 3).join(", ")}${flipping.length > 3 ? ", …" : ""}. Editing the file resumes syncing.`)
-        .addButton((b) => b.setButtonText("Upload current versions anyway").onClick(async () => { this.plugin.releaseFlipHeld(); this.display(); })));
+        .addButton((b) => b.setButtonText("Upload current versions anyway").setTooltip("Uploads exactly the versions on disk now. If the file keeps flipping afterwards, uploading pauses again.").onClick(async () => { this.plugin.releaseFlipHeld(); this.display(); })));
     }
     // F2: a large batch of local-only files bound for a SHARED source, held for your OK. This guards against a
     // re-first-contact resurrecting a peer's mass deletion (and confirms a legitimate large first seed). Push
@@ -688,7 +688,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       }));
     new Setting(body).setName("Max file size to sync (MB)")
       .setDesc(Platform.isMobile
-        ? "Files larger than this are skipped ON THIS DEVICE. Mobile buffers files in memory — very large values can crash the app. Larger files still sync on desktop."
+        ? "Files larger than this are skipped ON THIS DEVICE. Mobile buffers files in memory, so the cap is limited to 100 MB here regardless of this value — very large files still sync on desktop."
         : "Files larger than this are skipped on this device. The server enforces its own ceiling.")
       .addText((t) => {
         t.setPlaceholder("200").setValue(String(s.maxSyncMB)).onChange(async (v) => {
@@ -728,21 +728,24 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     }
     // SR-47 (other sync tools on the same directory): their conflict copies / markers / version folders are THEIR
     // bookkeeping, not content — skipped entirely, and the row NAMES what was detected so a skipped file is never
-    // a mystery. Turning this off syncs them as ordinary files (the pre-1.30.17 behaviour).
+    // a mystery. Turning this off syncs them as ordinary files (the pre-1.30.17 behaviour) — via a FULL pass, since
+    // the server's change feed has nothing to say about a local setting.
     const foreign = this.plugin.foreignToolsDescription();
     new Setting(body).setName("Leave other sync tools' files alone")
       .setDesc(foreign
         ? `${foreign}. Their conflict copies, version folders and markers are not synced and never treated as deletions.`
         : "If Syncthing, Dropbox, Nextcloud, Resilio or iCloud also manage this folder, their conflict copies, version folders and markers are not synced and never treated as deletions. Nothing detected right now.")
-      .addToggle((tg) => tg.setValue(s.skipForeignArtefacts).onChange(async (v) => { s.skipForeignArtefacts = v; await this.plugin.saveSettings(); this.plugin.requestReconcile(); }));
+      .addToggle((tg) => tg.setValue(s.skipForeignArtefacts).onChange(async (v) => { s.skipForeignArtefacts = v; await this.plugin.saveSettings(); this.plugin.requestFullReconcile(); }));
     new Setting(body).setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(body).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
     // SR-50: the running build is auditable against its GitHub release — version + the SHA-256 of the installed
-    // main.js (the release's SHA256SUMS asset carries the published digest; a match proves this device runs the
-    // CI build of the tagged commit). Computed lazily; "unavailable" when the adapter can't read the plugin file.
+    // main.js. The release's SHA256SUMS asset carries the published digest, and verify-released.yml rebuilds the tag
+    // daily and compares — a match here means this device runs the PUBLISHED asset, which those checks tie to the
+    // tag's build (panel RL3: the digest alone is not proof of origin). Computed lazily; "unavailable" when the
+    // adapter can't read the plugin file.
     const about = new Setting(body).setName("About").setDesc(`SelfSync ${this.plugin.manifest.version} · reading build digest…`);
     void this.plugin.buildDigest().then((d) => about.setDesc(`SelfSync ${this.plugin.manifest.version} · main.js sha256 ${d ? d.slice(0, 16) + "…" : "unavailable"}`));
     about.addButton((b) => b.setButtonText("Copy digest").onClick(async () => {

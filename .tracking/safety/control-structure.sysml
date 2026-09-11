@@ -562,4 +562,18 @@ package ProjectControlStructure {
         :>> createdAt = "2026-09-10"; :>> createdBy = "claudeOpus"; :>> reportsTo = c7Operator;
     }
     #Enforces dependency from c2SyncEngine to sc13;   // detects other writers only through fbVaultEvents; bounds its own echo
+
+    // ---- 2026-09-11 architecture panel (SE3/SE4): the operator's history prune is a control action that destroys
+    // SR-1's evidence (tombstones) and had no place in the structure; and Step 3's "every control action" mandate
+    // is now honoured EXPLICITLY — the actions with no hazardous cell are recorded as considered, not left silent. ----
+    part caPruneHistory : ControlAction {
+        :>> id = "c41d5a27-641a-41a4-8197-f7fd8e000ee0"; :>> title = "Prune deletion history on a vault (operator: POST /api/admin/prune-history — advances the tombstone floor)";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus"; :>> issuedBy = c7Operator; :>> actsOn = p2ServerIndex;
+    }
+    // considered, no hazardous cell of their own (the hazard lives in the RECEIVING action, already analysed):
+    //   caAuthorNote / caDeleteNote — the user's authority; a deletion's fleet-wide effect is UCA-1/UCA-2/SR-1 + SR-63 on the peers.
+    //   caAdjudicate — a human choice presented by the resolver; acting on a stale preview is UCA-23 (caWriteChosenVersion).
+    //   caTombstone — server-side, CAS-guarded (SR-24); its downstream is UCA-1..2 / UCA-64.
+    //   caKeepBothRename — ordered before caRemoveConflictCopy by SR-27 (UCA-25).
+    //   caReleaseServerImage — analysed as the CONTEXT of UCA-55 (version skew / rollback) and UCA-71 (no version-tagged image).
 }

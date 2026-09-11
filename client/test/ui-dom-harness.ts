@@ -76,6 +76,7 @@ export function fakePlugin(over: any = {}) {
     releaseFlipHeld: vi.fn(),
     foreignToolsDescription: () => "",              // SR-47: no other sync tool detected by default
     requestReconcile: vi.fn(),
+    requestFullReconcile: vi.fn(),
     manifest: { id: "selfsync", version: "1.30.17", dir: ".obsidian/plugins/selfsync" },
     buildDigest: vi.fn(async () => "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), // SR-50
     acceptBulkPushes: vi.fn(async () => {}),

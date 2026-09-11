@@ -507,4 +507,125 @@ package ProjectStpaNesting {
     #Satisfies dependency from sr43 to sc6;
     #RealizedBy dependency from sr43 to c9MountEngine;
     #RealizedBy dependency from sr43 to c10MountConfig;
+
+    // ---- 2026-09-11 architecture panel (composed-vault critic + SE): cells the ten hardening rounds had NOT closed.
+    // Each is fixed in sprint mountScopeBoundaryHardening (1.30.18); the #Verify edges land with its DoD. ----
+
+    part uca58 : UnsafeControlAction {
+        :>> id = "8ff4780c-01ab-4968-82f1-cb9f9563584c"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-58: the primary reconciles a just-unmounted (or just-mounted) subtree against a base FROZEN while the mount owned it";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "While a folder is mounted the primary skips its paths (accepts=false), so its base entries under the mount point keep their pre-mount values; on remove the primary owns the folder again and compares the MOUNT's content / deletions against that frozen base.";
+        :>> statement = "Push-file / delete-remote provided by the primary over the frozen base: a file the mount changed reads as a plain local edit → pushed over the primary's own copy with no conflict copy; a file the mount removed reads as a local deletion → delete-remote'd from the primary vault, fleet-wide. Found by the panel (CV1). [H-1, H-14]";
+    }
+    part cc56 : ControllerConstraint { :>> id = "a4856b8c-d6ac-47d8-bfcc-fba4ab2cfc4e"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-56: a scope boundary crossing forgets the other scope's base";
+        :>> statement = "Adding or removing a mount purges the primary's base entries under the mount point, so the primary re-first-contacts the subtree (no base ⇒ a divergence is a conflict copy, an absence is nothing)."; }
+
+    part uca59 : UnsafeControlAction {
+        :>> id = "79b0ab47-2a30-419e-92d3-851bf619a5d8"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-59: the primary uploads a mounted subtree after its FOLDER was renamed or moved";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "The user renames/moves the mount-point folder (or an ancestor). The mount holds localGone (its folder is gone); the primary no longer excludes the new path.";
+        :>> statement = "Push-file provided by the primary for every file under the renamed folder — a peer's whole mounted subtree copied into the user's own vault on every device by one drag (H-14 by gesture; UCA-32 covered deletion only). Found by the panel (CV2). [H-14]";
+    }
+    part cc57 : ControllerConstraint { :>> id = "800218b9-f0d2-47f6-957f-3e85d4f54fb7"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-57: the mount point follows its folder";
+        :>> statement = "A rename of the mount-point folder (or an ancestor) moves the mount definition with it when the destination is a valid mount point; otherwise the mount is left as it was and the user is told."; }
+
+    part uca60 : UnsafeControlAction {
+        :>> id = "e2ff5f03-d5d7-4aa8-8c43-c709e0c12d69"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-60: a note dragged INTO a pull mount is tombstoned on the primary and stranded where no scope can upload it";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "The user moves a note from the primary into a read-only mounted folder.";
+        :>> statement = "Delete-remote provided for the old path (a move is a delete there) while the new path belongs to a pull mount that never pushes — the only copy sits in a folder no scope uploads, and the notice called it an 'edit that won't sync back'. Found by the panel (CV3). [H-6, H-9]";
+    }
+    part cc58 : ControllerConstraint { :>> id = "598bdf41-bd0e-4d4d-9ece-054cda587442"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-58: a move into a pull mount is said plainly";
+        :>> statement = "The user is told that the note has left the primary vault (other devices will remove it) and will not be uploaded anywhere, with the two ways back."; }
+
+    part uca61 : UnsafeControlAction {
+        :>> id = "7ed5c934-913e-4274-869b-969c90831364"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-61: a Sync mount keeps pushing after the source's grant was downgraded mid-session";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "The write grant on a shared source is read at connect; the owner downgrades it to read-only during the session.";
+        :>> statement = "Mount-push provided per file, each refused 403, while the mount reports 'In sync' (per-file isolation lands the pass live) — the edits are neither uploaded nor kept as read-only edits. Found by the panel (CV4). [H-15, H-9]";
+    }
+    part cc59 : ControllerConstraint { :>> id = "72f03ce6-cd7e-436f-b941-8156a582b04a"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-59: a refused write re-reads the grant";
+        :>> statement = "A 401/403 on a mount write re-reads the source grants immediately; the read-only rail follows on the next pass and the edit is kept and shown as a read-only edit."; }
+
+    part uca62 : UnsafeControlAction {
+        :>> id = "4586d3ce-a8e2-4563-8360-786cf15b73f5"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-62: a mount lifecycle state is written outside its machine";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "Three direct `scope.state = …` assignments (localGone, diverged/live after a pass, failed→detached, unmounting) sat beside mountTransition().";
+        :>> statement = "Mount-start / mount-pull provided under a state the machine's table has no edge into — the table the analysis reads (SR-36) was not the table the code ran, so Step 6's guarantee was false for mounts. Found by the panel (CV5) and the SE critic. [H-9]";
+    }
+    part cc60 : ControllerConstraint { :>> id = "dbc9c0c1-674d-4553-af25-d25ef5a1849e"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-60: one writer for the mount lifecycle";
+        :>> statement = "Every mount state write goes through mountTransition(); the machine carries localGone / conflict / reset edges; a source grep in the conformance test forbids literal state assignment."; }
+
+    part uca63 : UnsafeControlAction {
+        :>> id = "0e680b52-7279-444c-aa39-0111635a4f6f"; :>> ucaType = UcaType::provided;
+        :>> title = "UCA-63: a mount's direction is set to Sync while the source grant is read-only";
+        :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> context = "The user (or a hand-edit) flips a shared read-only source's mount to `sync`.";
+        :>> statement = "Set-mount-direction provided against a read grant: every push 403s and the read-only UX is lost — the rail must key on the GRANT, not the user-editable direction. The composedMountPermissions rail (direction offered only for writable sources; mountSourceReadOnly per pass) closes it; recorded so the control action is analysed, not silent (SE3). [H-15]";
+    }
+    part cc61 : ControllerConstraint { :>> id = "007313d8-5a7f-4356-b1a9-aee4e2191b9c"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "C-61: direction cannot exceed the grant";
+        :>> statement = "Sync is offered only for sources the account may write; the read-only rail is evaluated per pass from the grant, whatever the direction says."; }
+
+    #Analyzes dependency from uca58 to caMountRemove;
+    #Analyzes dependency from uca58 to caMountStart;
+    #Causes dependency from uca58 to h1;
+    #Causes dependency from uca58 to h14;
+    #Analyzes dependency from uca59 to caPushFile;
+    #Causes dependency from uca59 to h14;
+    #Analyzes dependency from uca60 to caDeleteRemote;
+    #Causes dependency from uca60 to h6;
+    #Causes dependency from uca60 to h9;
+    #Analyzes dependency from uca61 to caMountPush;
+    #Causes dependency from uca61 to h15;
+    #Causes dependency from uca61 to h9;
+    #Analyzes dependency from uca62 to caMountStart;
+    #Causes dependency from uca62 to h9;
+    #Analyzes dependency from uca63 to caSetMountDirection;
+    #Causes dependency from uca63 to h15;
+    #Inverts dependency from cc56 to uca58;
+    #Inverts dependency from cc57 to uca59;
+    #Inverts dependency from cc58 to uca60;
+    #Inverts dependency from cc59 to uca61;
+    #Inverts dependency from cc60 to uca62;
+    #Inverts dependency from cc61 to uca63;
+
+    part sr52 : SafetyRequirement { :>> id = "fb033c2f-df7f-4009-b66a-0eebe95f0d88"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-52: the primary forgets a mounted subtree's base at both boundary crossings, the mount point follows its folder, and a move into a pull mount is said plainly";
+        :>> statement = "addMount and removeMount purge the primary's base entries under the mount point; a rename of the mount-point folder or an ancestor moves the mount (refused + explained when the destination is invalid); a note moved into a pull mount raises a notice naming what happened and the ways back.";
+        :>> triggeringEvent = "a mount added or removed; the mount folder renamed; a note dragged into a pull mount";
+        :>> safeState = "no silent overwrite or phantom delete-remote on unmount; the primary never sees a mounted subtree; the user knows a moved note left the vault";
+        :>> safetyFunction = "forgetPrimaryBaseUnder + followMountPointRename + noteMoveIntoPullMount (main.ts)"; }
+    part sr53 : SafetyRequirement { :>> id = "80482e4f-99e2-4b3d-90f8-20bab8704044"; :>> createdAt = "2026-09-11"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-53: a mount's write rail follows the LIVE grant, and its lifecycle has one writer";
+        :>> statement = "A refused mount write (401/403) re-reads the source grants at once so the read-only rail flips on the next pass; every mount state write goes through mountTransition(), whose table carries localGone / conflict / reset, enforced by a source grep in fsm-conformance.";
+        :>> triggeringEvent = "a grant downgraded mid-session; any lifecycle write";
+        :>> safeState = "edits kept + shown as read-only edits, never lost in 403s; the table the analysis reads is the table the code runs";
+        :>> safetyFunction = "onFileError grant refresh (main.ts) + mountMachine edges + the SR-36 grep guard"; }
+    #Mitigates dependency from sr52 to uca58;
+    #Mitigates dependency from sr52 to uca59;
+    #Mitigates dependency from sr52 to uca60;
+    #Mitigates dependency from sr53 to uca61;
+    #Mitigates dependency from sr53 to uca62;
+    #Mitigates dependency from sr53 to uca63;
+    #Satisfies dependency from sr52 to sc14;
+    #Satisfies dependency from sr52 to sc2;
+    #Satisfies dependency from sr53 to sc15;
+    #Satisfies dependency from sr53 to sc14;
+    #RealizedBy dependency from sr52 to c9MountEngine;
+    #RealizedBy dependency from sr52 to c10MountConfig;
+    #RealizedBy dependency from sr53 to c9MountEngine;
+    #RealizedBy dependency from sr53 to c10MountConfig;
+    #Verify dependency from composedMountPermissionsDoD to sr53; // the grant-keyed rail (UCA-63) was already verified there
+
 }

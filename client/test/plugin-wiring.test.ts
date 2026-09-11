@@ -5,7 +5,7 @@ import { VaultIo, SyncApi } from "../src/sync";
 import { CLIENT_API_VERSION, FileMeta } from "../src/protocol";
 import { ConnError, Endpoint } from "../src/connstate";
 import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
-import { TFile } from "obsidian";
+import { TFile, TFolder } from "obsidian";
 import { mountKey as mountKeyOf } from "../src/mountengine";
 import { isConflictCopy, keptBothName } from "../src/base"; // fixture-name sanity for the conflict-sweep tests
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
@@ -1277,6 +1277,66 @@ describe("real modal action bodies (not spies): resolveNoteConflict / switchToVa
     await p.io_.write(".obsidian/app.json", enc("{}"));
     await p.resolveConfigGroup([".obsidian/app.json"], "local");
     expect(p.settings.configConflicts).toEqual([".obsidian/hotkeys.json"]); // only the resolved path removed
+    p.onunload();
+  });
+});
+
+// ---- 2026-09-11 architecture panel: composed-vault boundary (CV1, CV2) and the hot-load author gate (ID8) ----
+describe("panel CV1: the primary base never keeps entries for a subtree another scope owns", () => {
+  it("addMount and removeMount drop the primary's base entries under the mount point (the primary re-first-contacts)", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.mountIo = {}; anyp.buildMountApi = () => null; anyp.reconcileMounts = async () => {}; anyp.ensureMountFolder = async () => {};
+    anyp.base.set("Work/ASI/x.md", { hash: "hx" }); anyp.base.set("Work/ASI/y.md", { hash: "hy" }); anyp.base.set("Other/z.md", { hash: "hz" });
+    const m = { source: { owner: "alice", vaultId: "team", sourcePath: "" }, mountPoint: "Work/ASI", direction: "pull" };
+    await p.addMount(m as any);
+    expect(anyp.base.get("Work/ASI/x.md")).toBeUndefined();   // frozen pre-mount knowledge dropped
+    expect(anyp.base.get("Other/z.md")).toBeDefined();         // unrelated paths untouched
+    anyp.base.set("Work/ASI/x.md", { hash: "stale-from-somewhere" }); // e.g. a persisted entry that predates the mount
+    await p.removeMount(m as any);
+    expect(anyp.base.get("Work/ASI/x.md")).toBeUndefined();   // on remove too: the primary must NOT compare the mount's content against a frozen base
+    expect(anyp.base.get("Other/z.md")).toBeDefined();
+    p.onunload();
+  });
+});
+
+describe("panel CV2: the mount point FOLLOWS a rename of its folder (the primary never sees the mounted subtree)", () => {
+  it("renaming the mount-point folder (or an ancestor) moves the mount; an invalid destination leaves it and notifies", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    anyp.mountIo = {}; anyp.buildMountApi = () => null; anyp.reconcileMounts = async () => {};
+    p.settings.mounts = [
+      { source: { owner: "alice", vaultId: "team", sourcePath: "" }, mountPoint: "Work/ASI", direction: "pull" } as any,
+      { source: { owner: "", vaultId: "refs", sourcePath: "" }, mountPoint: "Docs", direction: "pull" } as any,
+    ];
+    const folder = new TFolder(); folder.path = "Projects/ASI";
+    anyp.onLocalRename(folder, "Work/ASI");
+    expect(p.settings.mounts.map((m: any) => m.mountPoint).sort()).toEqual(["Docs", "Projects/ASI"]);
+    const parent = new TFolder(); parent.path = "Archive";
+    anyp.onLocalRename(parent, "Projects");                     // an ancestor rename carries the mount along
+    expect(p.settings.mounts.map((m: any) => m.mountPoint).sort()).toEqual(["Archive/ASI", "Docs"]);
+    // an invalid destination (inside .obsidian) is refused: the mount stays where it was
+    const bad = new TFolder(); bad.path = ".obsidian/ASI";
+    anyp.onLocalRename(bad, "Archive/ASI");
+    expect(p.settings.mounts.map((m: any) => m.mountPoint).sort()).toEqual(["Archive/ASI", "Docs"]);
+    expect(anyp.getLogText()).toContain("can't follow it");
+    p.onunload();
+  });
+});
+
+describe("panel ID8: hot-load is keyed on WHO WROTE the code, not only on the vault being private now", () => {
+  it("a newly-arrived plugin whose recorded committer is a peer keeps the restart barrier even on a private vault", async () => {
+    const { p } = await bootPlugin();
+    const anyp = p as any;
+    const enabled: string[] = [];
+    (p.app as any).plugins = { plugins: {}, loadManifests: async () => {}, enablePlugin: async (id: string) => { enabled.push(id); } };
+    anyp.myVaultShares = async () => [{ vault: p.settings.vaultId, grants: [] }];
+    anyp.listShareLinks = async () => [];
+    anyp.serverPluginAuthors = new Map([["peerplug", "bob"], ["mineplug", "u"]]); // committers recorded by the server
+    await anyp.applyPluginCodeChange(new Set(["peerplug", "mineplug"]), [".obsidian/plugins/peerplug/main.js", ".obsidian/plugins/mineplug/main.js"]);
+    expect(enabled).toContain("mineplug");                       // my own code → live
+    expect(enabled).not.toContain("peerplug");                   // a peer's code → restart barrier, private vault or not
+    expect(anyp.getLogText() + JSON.stringify(anyp.logs ?? [])).toBeDefined();
     p.onunload();
   });
 });

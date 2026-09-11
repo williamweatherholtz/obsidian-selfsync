@@ -2109,3 +2109,131 @@ describe("Syncthing-style rewrite loop is broken by the FlipGuard (S-39, SR-47)"
     expect(guard.held(now)).toEqual([]);
   });
 });
+
+// ---- 2026-09-11 architecture panel: identity + host coexistence findings, each pinned as a permanent guard ----
+
+// A VaultIo over a CASE-FOLDING filesystem (Windows / macOS / iOS): two spellings that differ only in case are ONE
+// on-disk file. Keys keep the spelling they were first written with; lookups fold.
+function foldingIo(seed: Record<string, string> = {}) {
+  const m = new Map<string, Uint8Array>(Object.entries(seed).map(([k, v]) => [k, enc(v)]));
+  const keyOf = (p: string) => [...m.keys()].find((k) => k.toLowerCase() === p.toLowerCase());
+  const io: VaultIo & { m: Map<string, Uint8Array> } = {
+    m,
+    async list() { const r = new Map<string, { mtime: number; size: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0, size: m.get(k)!.length }); return r; },
+    async read(p) { const k = keyOf(p); if (!k) throw new Error("ENOENT"); return m.get(k)!; },
+    async write(p, b) { const k = keyOf(p) ?? p; m.set(k, b); },
+    async remove(p) { const k = keyOf(p); if (k) m.delete(k); },
+    async exists(p) { return keyOf(p) !== undefined; },
+  };
+  return io;
+}
+
+describe("panel H1: a case-only rename from a case-SENSITIVE peer must not delete the note on a folding peer", () => {
+  it("tombstone `Note.md` + upsert `note.md` in one pass is a base RENAME — the file survives, nothing is tombstoned", async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, "Note.md", "hello\n");
+    const io = foldingIo({ "Note.md": "hello\n" });
+    const d = deps(srv.api, io, { caseInsensitivePaths: true });
+    await reconcileAll(d);                                  // in sync under the old spelling
+    expect(d.base.get("Note.md")).toBeDefined();
+    // the case-sensitive peer renames: the server now holds a tombstone for the old key and the new key
+    const v = srv.files.get("Note.md")!.version;
+    await srv.api.deleteFile("Note.md", v);
+    await serverPut(srv.api, "note.md", "hello\n");
+    let deletes = 0; const realDelete = srv.api.deleteFile.bind(srv.api);
+    srv.api.deleteFile = async (p: string, ver: number) => { deletes++; return realDelete(p, ver); };
+    await reconcileAll(d);
+    expect(io.m.size).toBe(1);                              // the one on-disk file is still there
+    expect(new TextDecoder().decode([...io.m.values()][0])).toBe("hello\n");
+    expect(d.base.get("Note.md")).toBeUndefined();          // old key dropped…
+    expect(d.base.get("note.md")).toBeDefined();            // …new key adopted
+    expect(deletes).toBe(0);                                // and nothing was tombstoned back to the server
+    expect(srv.files.has("note.md")).toBe(true);
+  });
+  it("on a case-SENSITIVE filesystem the same pair is an ordinary delete + create (two distinct files)", async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, "Note.md", "hello\n");
+    const io = fakeIo({ "Note.md": "hello\n" });
+    const d = deps(srv.api, io); // caseInsensitivePaths off
+    await reconcileAll(d);
+    await srv.api.deleteFile("Note.md", srv.files.get("Note.md")!.version);
+    await serverPut(srv.api, "note.md", "hello\n");
+    await reconcileAll(d);
+    expect(io.m.has("Note.md")).toBe(false);
+    expect(io.m.has("note.md")).toBe(true);
+  });
+});
+
+describe("panel H2: an unloaded instance's in-flight pass stops between items (SR-44)", () => {
+  it("alive() turning false mid-pass leaves the remaining items untouched", async () => {
+    const srv = fakeServer();
+    for (let i = 0; i < 12; i++) await serverPut(srv.api, `n${String(i).padStart(2, "0")}.md`, `v${i}\n`);
+    const io = fakeIo({});
+    let alive = true; let pulled = 0; let tripped = false;
+    const d = deps(srv.api, io, { alive: () => alive, onProgress: () => { if (!tripped && ++pulled >= 3) { alive = false; tripped = true; } } }); // unload ONCE, mid-pass
+    await reconcileAll(d);
+    expect(io.m.size).toBeLessThan(12);                     // the pass stopped early
+    expect(io.m.size).toBeGreaterThan(0);
+    alive = true;
+    await reconcileAll(d);
+    expect(io.m.size).toBe(12);                             // a live instance finishes the job
+  });
+});
+
+describe("panel ID1: a stamp-only local + a remote edit is a plain pull, not a phantom conflict copy", () => {
+  it("cosmetic local change (trailing newline) stamped in-sync, then the remote moves → pulled, no copy", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "n.md": "alpha\n" });
+    const conflicts: string[] = [];
+    const d = deps(srv.api, io, { onConflict: (p) => conflicts.push(p) });
+    await reconcileAll(d);                                  // pushed
+    io.m.set("n.md", enc("alpha"));                          // a cosmetic re-save (no trailing newline) — identity-equal
+    await reconcileAll(d);                                  // push→in-sync override; scan-skip hint stamped
+    expect(srv.files.get("n.md")!.hash).toBe(await sha256hex(enc("alpha\n"))); // nothing pushed
+    await serverPut(srv.api, "n.md", "alpha\nbeta\n");       // a real edit elsewhere
+    await reconcileAll(d);
+    expect(new TextDecoder().decode(io.m.get("n.md")!)).toBe("alpha\nbeta\n"); // pulled
+    expect(conflicts).toEqual([]);                           // and NO conflict copy of the stamp-only local
+    expect([...io.m.keys()].filter((k) => k.includes("(conflict"))).toEqual([]);
+  });
+});
+
+describe("panel ID2: identity is TWO-sided — a 'merge' where one side moved only cosmetically is a pull or a push", () => {
+  it("local NFD re-save + remote real edit on the same line → the remote edit is pulled, no conflict copy", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "c.md": "café\n" });                 // NFC on both sides at first
+    const conflicts: string[] = [];
+    const d = deps(srv.api, io, { onConflict: (p) => conflicts.push(p) });
+    await reconcileAll(d);
+    io.m.set("c.md", enc("café\n"));                        // macOS-style NFD re-save: same text to a human
+    await serverPut(srv.api, "c.md", "café!\n");             // a genuine remote edit on the SAME line
+    await reconcileAll(d);
+    expect(conflicts).toEqual([]);
+    expect(new TextDecoder().decode(io.m.get("c.md")!)).toBe("café!\n");
+  });
+  it("remote NFD re-save + local real edit on the same line → our edit is pushed, no conflict copy", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "c.md": "café\n" });
+    const conflicts: string[] = [];
+    const d = deps(srv.api, io, { onConflict: (p) => conflicts.push(p) });
+    await reconcileAll(d);
+    await serverPut(srv.api, "c.md", "café\n");             // the peer's editor re-saved in NFD
+    io.m.set("c.md", enc("café!\n"));                        // we really edited the line
+    await reconcileAll(d);
+    expect(conflicts).toEqual([]);
+    expect(srv.files.get("c.md")!.hash).toBe(await sha256hex(enc("café!\n")));
+  });
+});
+
+describe("panel ID4: adopting the remote never drops a masked timestamp line present on one side only", () => {
+  it("local has `created:` (an ignored timestamp key), remote lacks it → NOT silently adopted", async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, "t.md", "---\ntitle: x\n---\nbody\n");
+    const io = fakeIo({ "t.md": "---\ntitle: x\ncreated: 2024-01-01\n---\nbody\n" });
+    const d = deps(srv.api, io, { ignorePatterns: ["created"] });
+    await reconcileAll(d);                                  // first contact: identity-equal under masking…
+    const local = new TextDecoder().decode(io.m.get("t.md")!);
+    const survivedSomewhere = local.includes("created: 2024-01-01") || [...io.m.keys()].some((k) => k.includes("(conflict")) || (await (async () => { const f = srv.files.get("t.md"); return !!f && f.hash === await sha256hex(enc("---\ntitle: x\ncreated: 2024-01-01\n---\nbody\n")); })());
+    expect(survivedSomewhere).toBe(true);                    // …but the line is preserved: pushed, kept, or copied — never dropped
+  });
+});

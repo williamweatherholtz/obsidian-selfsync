@@ -1,25 +1,37 @@
 name: Verify released
 
-# Automated net for the "bumped but never released" failure mode: if manifest.json's version
-# ever lacks a matching tag + published release, this goes red on its own — no one has to
-# remember to look. Runs daily and on demand. (The release itself is published by release.yml
-# on a version-tag push; this checks that a bump actually reached that state.)
+# Automated net for the "bumped but never released" failure mode: if manifest.json's version ever lacks a
+# matching tag + published release, this goes red on its own — no one has to remember to look. Runs daily and
+# on demand. (release.yml publishes when a bumped manifest.json lands on main; this checks that a bump actually
+# reached that state.)
+#
+# Since 1.30.17 (D0054 / SR-50) this also checks INTEGRITY, two ways:
+#   1. check-release.mjs downloads the published assets and verifies them against the SHA256SUMS the release
+#      recorded — catches corruption / accidental replacement.
+#   2. The INDEPENDENT anchor: rebuild the tagged commit here and compare the built main.js / styles.css digests
+#      to the DOWNLOADED assets. SHA256SUMS lives in the same mutable release as the assets, so on its own it
+#      cannot prove "the build of its tag" against someone who can rewrite both; a rebuild from the tag can
+#      (the build is reproducible: identical bytes were confirmed on Windows + Linux for 1.30.17).
 on:
   schedule:
     - cron: "0 12 * * *" # daily at 12:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0 # need all tags
-      - uses: actions/setup-node@v5
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
-      - name: Assert manifest version is released
+      - name: Assert manifest version is released (tag + published release + assets + digests)
         run: node scripts/check-release.mjs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -28,3 +40,20 @@ jobs:
       # tag with shippable-path commits (the blind spot that let 47 commits accrue unreleased past 1.6.0).
       - name: Assert main hasn't drifted past the last release (currency)
         run: node scripts/check-release-currency.mjs
+      # SR-50 independent anchor: the published bytes ARE the build of the tag.
+      - name: Rebuild the released tag and compare with the published assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./manifest.json').version")
+          rm -rf published && mkdir published
+          gh release download "$VER" --dir published --pattern main.js --pattern styles.css
+          git -c advice.detachedHead=false checkout --quiet "$VER"
+          (cd client && npm ci --no-audit --no-fund && npm run build)
+          echo "built:";     (cd client && sha256sum main.js styles.css)
+          echo "published:"; (cd published && sha256sum main.js styles.css)
+          for f in main.js styles.css; do
+            B=$(sha256sum "client/$f" | cut -d' ' -f1); P=$(sha256sum "published/$f" | cut -d' ' -f1)
+            if [ "$B" != "$P" ]; then echo "::error::published $f ($P) is NOT the build of tag $VER ($B)"; exit 1; fi
+          done
+          echo "release $VER: published assets match a fresh build of the tag"

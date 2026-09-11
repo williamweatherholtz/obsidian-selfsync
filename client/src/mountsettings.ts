@@ -155,7 +155,7 @@ export class MountEditModal extends Modal {
       for (const f of folders) dl.createEl("option", { value: f });
       revalidate();
     };
-    new Setting(c).setName("Local folder").setDesc("Where it appears in THIS vault. This folder stops syncing to your primary vault and is managed by the mount instead; any existing files here merge with the source (a file that differs on both sides is kept as a conflict copy, never overwritten).")
+    new Setting(c).setName("Local folder").setDesc("Where it appears in THIS vault. On this device the folder stops syncing to your primary vault and is managed by the mount instead (a device without this mount keeps treating the folder as ordinary notes); any existing files here merge with the source (a file that differs on both sides is kept as a conflict copy, never overwritten).")
       .addText((t) => t.setPlaceholder("Work/ASI").onChange((v) => { mountPoint = v; revalidate(); }));
 
     const dirSetting = new Setting(c).setName("Direction");

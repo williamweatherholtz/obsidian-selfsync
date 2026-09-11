@@ -1,0 +1,19 @@
+# Keeps the pinned third-party action SHAs and the two dependency lockfiles current (2026-09-11 panel, release-
+# channel critique: mutable action refs + no update automation were the supply-chain gaps). Actions are pinned
+# to commit SHAs in the workflows; Dependabot proposes the bumps so pinning does not mean freezing.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /client
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

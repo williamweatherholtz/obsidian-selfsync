@@ -92,3 +92,19 @@ describe("every real machine has a TOTAL table (no throw on any (state, event) p
     for (const r of cov) expect([LinkKind.Ok, LinkKind.Retrying, LinkKind.Blocked]).toContain(r.to);
   });
 });
+
+// ---- 2026-09-11 architecture panel CV5: the edges the code used to write by hand are now machine edges (SR-36) ----
+describe("mountMachine carries the lifecycle edges the poll loop needs (no hand-written state)", () => {
+  it("localGone from any live state; conflict → diverged; a clean pass settles live from mounting/diverged/offline; reset → detached", () => {
+    for (const s of ["mounting", "live", "syncing", "diverged", "offline"] as const) expect(mountMachine.next(s, "localGone")).toBe("localGone");
+    expect(mountMachine.next("detached", "localGone")).toBe("detached");       // nothing to hold when nothing started
+    expect(mountMachine.next("syncing", "conflict")).toBe("diverged");
+    expect(mountMachine.next("mounting", "conflict")).toBe("diverged");
+    expect(mountMachine.next("mounting", "syncSettled")).toBe("live");
+    expect(mountMachine.next("diverged", "syncSettled")).toBe("live");         // a clean pass clears a divergence
+    expect(mountMachine.next("diverged", "conflict")).toBe("diverged");
+    expect(mountMachine.next("offline", "syncSettled")).toBe("live");
+    expect(mountMachine.next("failed", "reset")).toBe("detached");
+    expect(mountMachine.next("live", "reset")).toBe("live");                    // reset means nothing outside failed
+  });
+});

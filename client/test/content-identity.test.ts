@@ -16,7 +16,7 @@
 // data.json files carry stale values. The correct fix is not to restamp them but to have no cached
 // field at all: the last describe pins that legacy values are stripped on load and never re-saved.
 import { describe, it, expect } from "vitest";
-import { normalizedContent, normalizedHash } from "../src/frontmatter";
+import { normalizedContent, normalizedHash, maskedForDisplay } from "../src/frontmatter";
 import { BaseStore } from "../src/base";
 
 const KEYS = ["created", "updated"];
@@ -108,5 +108,25 @@ describe("no cached identity hash: legacy normHash is dropped, never trusted", (
     const store = new BaseStore();
     store.set("n.md", { hash: "abc", text: "x" });
     expect(Object.keys(store.toJSON()["n.md"]).sort()).toEqual(["hash", "text"]);
+  });
+});
+
+// ---- 2026-09-11 architecture panel: ID5 (block scalars) + ID6 (display folds like identity) ----
+describe("panel ID5/ID6: in-fence trimming stops at indented (block-scalar) lines; display folds like identity", () => {
+  it("trailing whitespace on an INDENTED frontmatter line is significant (YAML block scalar) — two such files stay distinct", async () => {
+    const a = "---\ndescription: |\n  line one  \n  line two\n---\nbody\n";
+    const b = "---\ndescription: |\n  line one\n  line two\n---\nbody\n";
+    expect(normalizedContent(a)).not.toBe(normalizedContent(b));
+    // while a TOP-LEVEL key's trailing space still folds (the Metadata Menu case)
+    expect(normalizedContent("---\nkey: \n---\nx\n")).toBe(normalizedContent("---\nkey:\n---\nx\n"));
+  });
+  it("maskedForDisplay applies NFC + top-level in-fence trim, so the diff shows nothing where identity sees nothing", () => {
+    const nfd = "---\nkey: \ntitle: café\n---\nbody\n";
+    const nfc = "---\nkey:\ntitle: café\n---\nbody\n";
+    expect(maskedForDisplay(nfd)).toBe(maskedForDisplay(nfc));
+    // body trailing spaces (hard line breaks) are NOT touched by display folding either
+    expect(maskedForDisplay("body  \nmore\n")).toBe("body  \nmore\n");
+    // and an indented fence line keeps its trailing whitespace for display too
+    expect(maskedForDisplay("---\nd: |\n  x  \n---\n")).toContain("  x  ");
   });
 });

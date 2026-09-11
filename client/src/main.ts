@@ -27,15 +27,15 @@ import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; // content identity + ignored-key presence for the conflict paths
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
-import { isForeignArtefact, summarizeForeign, describeForeign } from "./foreigntools"; // SR-47: other sync tools' artefacts
+import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
 import { FlipGuard } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
-import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, nudgeTarget } from "./mounts";
+import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, validateMounts, nudgeTarget } from "./mounts";
 import { foldersWithContent } from "./mountsettings";
 import { MountRuntime, MountPersist, mountKey, parseMountState } from "./mountengine";
 import { MountScope, reconcileMountScopes } from "./mountsync";
-import { aggregateStatus, Health, MountState } from "./mountfsm";
+import { aggregateStatus, Health, MountState, mountTransition } from "./mountfsm";
 
 
 // Max wall-clock between forced full config-aware reconciles. Local config changes fire no vault
@@ -89,6 +89,8 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 // WS-less client still converges quickly.
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
+const MOBILE_MAX_SYNC_MB = 100; // hard per-file ceiling on mobile (panel H3); the user setting applies below it
+const PERSIST_DEBOUNCE_MS = 1_500; // trailing-edge coalescing of base persistence (panel H4)
 const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
 const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers whole files (no streamed writer) — cap to avoid a WebView OOM (R6-Med2); files over this are skipped + noticed, never buffered
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
@@ -157,7 +159,17 @@ class ObsidianVaultIo implements VaultIo {
     const tmp = abs + ".selfsync-part";
     const fh = await fs.promises.open(tmp, "w");
     return {
-      append: async (bytes: Uint8Array) => { await fh.write(bytes); },
+      // Panel H5: fh.write may write FEWER bytes than asked (ENOSPC mid-write returns a partial count and the next write
+      // may not throw); the fetched-bytes hash would still verify and a truncated file would be renamed into place and
+      // its base recorded. Loop until every byte is on disk; a zero-progress write is an error.
+      append: async (bytes: Uint8Array) => {
+        let off = 0;
+        while (off < bytes.length) {
+          const { bytesWritten } = await fh.write(bytes, off, bytes.length - off);
+          if (bytesWritten <= 0) throw new Error(`short write to '${tmp}' (${off}/${bytes.length} bytes)`);
+          off += bytesWritten;
+        }
+      },
       close: async () => {
         // CONTRACT (issueStreamedPullMidEditLoss): this must NEVER throw AFTER the rename succeeds. The
         // streamed-pull seam writes a racing-edit conflict copy just before calling close(); applyPull
@@ -203,7 +215,12 @@ class ObsidianVaultIo implements VaultIo {
       if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size, ctime: f.stat.ctime });
       else if (!this.forMount && isForeignArtefact(f.path)) foreign.push(f.path);
     }
-    if (!this.forMount) this.plugin.noteForeignArtefacts(foreign);
+    if (!this.forMount) {
+      // SR-47: the host never indexes dot-prefixed paths, so a tool's root marker (.stfolder, .dropbox, .sync…) is
+      // probed through the adapter — the only way the settings row can NAME a tool before it has caused a conflict.
+      for (const marker of FOREIGN_ROOT_MARKERS) { try { if (await this.plugin.app.vault.adapter.exists(marker)) foreign.push(marker); } catch { /* unknowable → not claimed */ } }
+      this.plugin.noteForeignArtefacts(foreign);
+    }
     if (!this.forMount && this.plugin.settings.configSync.enabled) {
       // Enumerate the hidden .obsidian/ tree via a BOUNDED-PARALLEL walk (issueConfigWalkSlow): the old
       // recursion awaited every adapter.list/stat one at a time, so a plugin-heavy tree cost seconds on a
@@ -611,6 +628,14 @@ export default class SelfSyncPlugin extends Plugin {
     if (this.uiRefreshTimer !== undefined) { window.clearTimeout(this.uiRefreshTimer); this.uiRefreshTimer = undefined; }
     if (this.heldPushTimer !== undefined) { window.clearTimeout(this.heldPushTimer); this.heldPushTimer = undefined; }
     if (this.aliasTimer !== undefined) { window.clearTimeout(this.aliasTimer); this.aliasTimer = undefined; }
+    // Panel H7: every one-shot timer this instance owns dies with it (C-44), not only the ones with side effects.
+    for (const k of ["lightTimer", "flipHeldTimer", "configScanTimer", "rawDebounce", "mountUiTimer", "mountPokeTimer"] as const) {
+      const v = (this as unknown as Record<string, number | undefined>)[k];
+      if (v !== undefined) { window.clearTimeout(v); (this as unknown as Record<string, number | undefined>)[k] = undefined; }
+    }
+    // Panel H4: a debounced base write must not be lost to the unload — flush it now (the write itself is async;
+    // saveData is the host's own persistence and completes independently of this instance).
+    if (this.persistTimer !== undefined) { window.clearTimeout(this.persistTimer); this.persistTimer = undefined; void this.persist(); }
     this.log("plugin unloaded");
   }
 
@@ -639,6 +664,9 @@ export default class SelfSyncPlugin extends Plugin {
   foreignToolsDescription(): string { return this.settings.skipForeignArtefacts ? this.foreignDescription : ""; }
   heldFlipPaths(): string[] { return this.flipGuard.held(Date.now()); }
   requestReconcile(): void { if (!this.unloading) this.engine.enqueue({ kind: "remote" }); }
+  // A WHOLE-VAULT pass now (not the delta/no-op poll): what changed is on THIS side (a setting), so nothing in the
+  // server's change feed would trigger the work.
+  requestFullReconcile(): void { if (this.unloading) return; this.lastFullScanAt = 0; this.engine.enqueue({ kind: "remote" }); }
   releaseFlipHeld(): void {
     for (const p of this.flipGuard.held(Date.now())) this.flipGuard.release(p);
     this.requestReconcile();
@@ -650,7 +678,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.flipHeldTimer = window.setTimeout(() => {
       this.flipHeldTimer = undefined;
       const n = this.flipHeldBurst; this.flipHeldBurst = 0;
-      if (n > 0 && !this.unloading) this.log(`${n} file${n > 1 ? "s keep" : " keeps"} changing back and forth between versions (e.g. '${path}') — something else on this device rewrites ${n > 1 ? "them" : "it"} after every sync, so uploading ${n > 1 ? "them is" : "it is"} paused to stop the loop; edit the file, or use Settings → Conflicts to upload anyway`);
+      if (n > 0 && !this.unloading) this.log(`${n} file${n > 1 ? "s keep" : " keeps"} changing back and forth between versions (e.g. '${path}') — another sync tool or plugin on this device rewrites ${n > 1 ? "them" : "it"} after every sync (or ${n > 1 ? "they were" : "it was"} edited back and forth very quickly), so uploading ${n > 1 ? "them is" : "it is"} paused to stop a loop; edit the file, wait 10 minutes, or use Settings → Conflicts to upload the current version`);
     }, 2_000);
   }
   // SR-50: SHA-256 of the INSTALLED main.js, so a device can be audited against the release's SHA256SUMS.
@@ -1263,7 +1291,17 @@ export default class SelfSyncPlugin extends Plugin {
   // full list. Fired only from the FULL pass (the delta sees a churning subset), and de-duped on the stable
   // PLUGIN SET (not the volatile file list), so a poll / reconnect can't re-log it (owner: "just one, please").
   private declinedSig = "";
+  private foreignOnServerSig = "";
   private noteDeclined(paths: string[]): void {
+    // SR-47: another sync tool's artefacts that reached the server BEFORE this device started skipping them are
+    // not 'config files' — say what they are, once per distinct set, and how to clear them (the server keeps them).
+    const foreignOnServer = paths.filter((p) => isForeignArtefact(p)); paths = paths.filter((p) => !isForeignArtefact(p));
+    const fsig = foreignOnServer.slice().sort().join("|");
+    if (fsig !== this.foreignOnServerSig) {
+      this.foreignOnServerSig = fsig;
+      if (foreignOnServer.length) this.log(`${foreignOnServer.length} file${foreignOnServer.length === 1 ? "" : "s"} from another sync tool ${foreignOnServer.length === 1 ? "is" : "are"} on the server from before this device started leaving such files alone (e.g. '${foreignOnServer[0]}') — ignored here and left on the server. To remove them: turn off “Leave other sync tools' files alone”, delete them, then turn it back on.`, false);
+    }
+    if (!paths.length) return;
     const plugins = new Set<string>(); let files = 0;
     for (const p of paths) { const id = pluginIdOf(p); if (id) plugins.add(id); else files++; }
     const sig = [...plugins].sort().join("|") + (files ? "#cfg" : ""); // stable across passes → one notice per distinct declined set
@@ -1736,16 +1774,24 @@ export default class SelfSyncPlugin extends Plugin {
     // Re-checking now — only when a plugin actually ARRIVED (rare) — makes the gate current on EVERY entry
     // path; a shared or now-shareable vault re-derives `false` (fail-safe) and keeps the restart barrier.
     if (newlyArrived.length && pm?.loadManifests && pm?.enablePlugin) await this.refreshVaultPrivacy();
-    if (this.vaultIsPrivate && newlyArrived.length && pm?.loadManifests && pm?.enablePlugin) {
+    // Panel ID8 (2026-09-11): the vault being private NOW is not the same as WHO WROTE the code — a peer's main.js
+    // pushed under a since-revoked read-write grant passes a privacy check taken after the revocation. Hot-load only
+    // code whose recorded main.js committer is THIS account (the autopilot's own rule); an unknown author is
+    // accepted only in a provably private vault. Everything else keeps the restart barrier.
+    const hotLoadable = this.vaultIsPrivate
+      ? newlyArrived.filter((id) => { const author = this.serverPluginAuthors.get(id); return this.isOwnAccount(author) || (!author && this.vaultIsPrivate); })
+      : [];
+    needRestart.push(...newlyArrived.filter((id) => !hotLoadable.includes(id))); // gated (shared/untrusted vault, foreign author) or no API → the restart trust-barrier stays
+    if (hotLoadable.length && pm?.loadManifests && pm?.enablePlugin) {
       try {
         await pm.loadManifests(); // register the newly-arrived manifest(s) so enablePlugin can find them
-        for (const id of newlyArrived) {
+        for (const id of hotLoadable) {
           try { await pm.enablePlugin(id); hotLoaded.push(id); }
           catch (e) { this.log(`hot-load of '${id}' failed (${e instanceof Error ? e.message : e}) — restart to activate`); needRestart.push(id); }
         }
-      } catch { needRestart.push(...newlyArrived); }
-    } else {
-      needRestart.push(...newlyArrived); // gated (shared/untrusted vault) or no API → the restart trust-barrier stays
+      } catch { needRestart.push(...hotLoadable); }
+    } else if (hotLoadable.length) {
+      needRestart.push(...hotLoadable); // no host API for live enable → restart
     }
     const src = this.notifiableConfigSource(paths); // null ⇒ your own change ⇒ stay silent (log only)
     const who = src ? changeSourceLabel(src, this.selfIdentity()) : "";
@@ -1992,7 +2038,11 @@ export default class SelfSyncPlugin extends Plugin {
   // floor so a bad/zero value can't silently skip everything.
   private maxSyncBytes(): number {
     const mb = this.settings.maxSyncMB;
-    return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_SETTINGS.maxSyncMB) * 1024 * 1024;
+    const wanted = Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_SETTINGS.maxSyncMB;
+    // Panel H3 (2026-09-11): the single default (200 MB) applies to mobile too, where a file is buffered WHOLE in the
+    // WebView (×FILE_CONCURRENCY) and chunked in a synchronous loop — a real OOM path. A hard ceiling the setting
+    // cannot exceed on mobile; larger files are skipped + noticed there and still sync on desktop.
+    return (Platform.isMobile ? Math.min(wanted, MOBILE_MAX_SYNC_MB) : wanted) * 1024 * 1024;
   }
   // The timestamp-ignore key patterns when the feature is on, else [] → no frontmatter masking (EOL/BOM
   // normalization in content identity stays on regardless). SelfSync never WRITES these keys.
@@ -2072,7 +2122,8 @@ export default class SelfSyncPlugin extends Plugin {
       onPathAliased: (p, k) => this.notePathAliased(p, k),
       onDeclined: (paths) => this.noteDeclined(paths),
       onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
-      onBaseChanged: () => { void this.persist(); },
+      onBaseChanged: () => this.schedulePersist(),
+      alive: () => !this.unloading, // panel H2: a pass stops between items once this instance is unloaded
       onGuard: (p) => this.noteGuard(p),
       bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: user-configurable incoming bulk-delete confirmation
       bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
@@ -2774,7 +2825,7 @@ export default class SelfSyncPlugin extends Plugin {
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
         bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: the global incoming bulk-delete confirmation applies to mounts too
         bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
-        skipForeignArtefacts: this.settings.skipForeignArtefacts, // SR-47
+        skipForeignArtefacts: () => this.settings.skipForeignArtefacts, // SR-47 — a LIVE predicate (a frozen boolean let io and accepts disagree across a toggle)
         sourceReadOnly: () => this.mountSourceReadOnly(mount), // issueMountReadOnlyRailDirectionKeyed: the read-only rail follows the grant, not just direction (evaluated per pass)
         // R4-F4 + R7-F1: hold the mount OFFLINE unless the SOURCE is both READY and on a COMPATIBLE protocol
         // version — the same guard the primary connect applies. sessionToken is set even after a version-
@@ -2782,7 +2833,15 @@ export default class SelfSyncPlugin extends Plugin {
         // validation catches structural wire changes but not a semantic one — a hash/chunk-encoding change).
         sourceReady: async () => { const h = await sourceApi.status(); return h.status === "ready" && (await this.checkWireCompat(h.schemaHash)).ok; }, // D0042: same-server source shares the primary's verified signature (cheap)
         callbacks: {
-          onFileError: (p, e: any) => this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`),
+          pushFlipHold: (p, h) => this.flipGuard.record(`${mount.mountPoint}/${p}`, h, Date.now()).hold, // SR-47: the loop breaker covers mounts (S-39 is a Syncthing-shared mount)
+          onFlipHeld: (p) => this.noteFlipHeld(`${mount.mountPoint}/${p}`),
+          onFileError: (p, e: any) => {
+            this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`);
+            // Panel finding CV4 (2026-09-11): the source's write grant was read once per connect, so a mid-session
+            // downgrade left a Sync mount 'In sync' while every push 403'd per file. A refused write re-reads the
+            // grants now; mountSourceReadOnly() then flips the rail on the very next pass (the edit is kept + shown).
+            if (e instanceof CommitRejectedError && (e.status === 401 || e.status === 403) && this.sessionToken) { void this.refreshSourceGrants(this.sessionToken).then(() => { if (this.mountSourceReadOnly(mount)) this.log(`mount ${mount.mountPoint}: the source no longer grants you write access — treating it as read-only from now on`, true); }); }
+          },
           onConflict: (p) => this.log(`mount ${mount.mountPoint}: conflict copy created for '${p}' — your version is kept alongside the source's`),
           // R4-F3: a permanently-corrupt source copy (fails its integrity check every pull) and a too-large
           // file were silently missing from the composed folder — surface both, as the primary does.
@@ -2906,7 +2965,7 @@ export default class SelfSyncPlugin extends Plugin {
       if (this.mountScopes.length === 0) return; // couldn't build (no session) — nothing to do
       // R4-F2: a FAILED mount auto-recovers — after a backoff since it failed, reset it to detached so this
       // pass re-mounts it (a source that was reindexing/offline comes back without a manual reconnect).
-      for (const s of this.mountScopes) if (s.state === "failed" && s.failedAt && Date.now() - s.failedAt >= MOUNT_FAILED_RETRY_MS) { s.state = "detached"; s.fails = 0; s.failedAt = undefined; }
+      for (const s of this.mountScopes) if (s.state === "failed" && s.failedAt && Date.now() - s.failedAt >= MOUNT_FAILED_RETRY_MS) { s.state = mountTransition(s.state, "reset"); s.fails = 0; s.failedAt = undefined; }
       await reconcileMountScopes(this.mountScopes, {
         onEvent: (scope) => {
           if (!this.mountScopes.includes(scope)) return; // removed mid-pass (C1): don't resurrect the state we just deleted
@@ -2958,6 +3017,7 @@ export default class SelfSyncPlugin extends Plugin {
   // connect). activeMounts() re-validates the whole set, so an add that would overlap simply doesn't take.
   async addMount(m: Mount): Promise<void> {
     this.settings.mounts = [...this.mounts(), m];
+    this.forgetPrimaryBaseUnder(m, "mounted");
     await this.saveSettings();
     // Create the dedicated local folder NOW so the mount is visible + usable even before anything syncs — a
     // mount over an empty source folder otherwise never materializes on disk (the silent-empty-mount trap the
@@ -2965,6 +3025,18 @@ export default class SelfSyncPlugin extends Plugin {
     await this.ensureMountFolder(m.mountPoint);
     void this.reconcileMounts();
     this.log(`composed vaults: added mount ${m.mountPoint} ← ${m.source.owner ? m.source.owner + "/" : ""}${m.source.vaultId}${m.source.sourcePath ? "/" + m.source.sourcePath : ""} (${m.direction})`);
+  }
+  // Panel finding CV1 (2026-09-11): while a folder is mounted the PRIMARY scope skips its paths entirely (accepts=false),
+  // so any primary base entries under it FREEZE at their pre-mount values. On remove, the primary then compared
+  // the mount's content (or the mount's deletions) against that frozen base: a differing file read as a plain
+  // local edit → pushed over the primary's own copy with no conflict copy; a file the mount had removed read as a
+  // local deletion → delete-remote'd from the primary vault, fleet-wide. Dropping those entries at both boundary
+  // crossings makes the primary re-first-contact the subtree: no base ⇒ a divergence is a conflict copy (nothing
+  // lost), an absence is nothing (no phantom delete). Base-only; nothing on disk or on the server is touched.
+  private forgetPrimaryBaseUnder(m: Mount, why: "mounted" | "unmounted"): void {
+    let n = 0;
+    for (const p of this.base.paths()) if (claimsLocal(m, p)) { this.base.delete(p); n++; }
+    if (n > 0) this.log(`composed vaults: ${m.mountPoint} ${why} — the primary vault will re-check ${n} file${n === 1 ? "" : "s"} under it from scratch (differences become conflict copies, never silent overwrites)`);
   }
   // Best-effort create the mount-point folder (each ancestor level), so a new/empty mount is a real, visible
   // folder in the vault instead of nothing on disk. Never throws — a failure just logs and the lazy on-write
@@ -3091,7 +3163,7 @@ export default class SelfSyncPlugin extends Plugin {
     // R1-F3: mark the scope unmounting FIRST — an in-flight detached pass re-checks state per scope and will
     // skip it (no disk mutation for a mount being removed) even though it still holds the pre-filter array.
     const live = this.mountScopes.find((s) => s.runtime.key === key);
-    if (live) live.state = "unmounting";
+    if (live) live.state = mountTransition(live.state, "unmount");
     this.settings.mounts = this.mounts().filter((x) => mountKey(x) !== key);
     this.mountScopes = this.mountScopes.filter((s) => s.runtime.key !== key);
     // mountLiveSubscription (5-pass review): close this mount's live WS NOW. Unlike the sibling mutators,
@@ -3100,6 +3172,7 @@ export default class SelfSyncPlugin extends Plugin {
     const sock = this.mountSockets.get(key);
     if (sock) { try { sock.close(); } catch { /* already closed */ } this.mountSockets.delete(key); }
     delete this.mountStateStore[key];
+    this.forgetPrimaryBaseUnder(m, "unmounted");
     this.pendingBulkDeletes.delete(key); // D0041: drop any held-deletion review for a removed mount
     this.pendingBulkPushes.delete(key); // F2: drop any held-push review for a removed mount
     this.clearRoMountEdits(key); // F4: drop read-only-edit tracking for a removed mount
@@ -3277,10 +3350,44 @@ export default class SelfSyncPlugin extends Plugin {
     this.nudgeMountForLocalPath(path);
   }
   private onLocalRename(file: TAbstractFile, oldPath: string) {
+    if (file instanceof TFolder) { this.followMountPointRename(oldPath, file.path); return; }
     if (!(file instanceof TFile)) return;
+    this.noteMoveIntoPullMount(oldPath, file.path);
     this.engine.enqueue({ kind: "path", path: oldPath, size: 0 });     // old path removed
     this.engine.enqueue({ kind: "path", path: file.path, size: file.stat.size }); // new path created
     this.nudgeMountForLocalPath(oldPath); this.nudgeMountForLocalPath(file.path);
+  }
+  // Panel finding CV2 (2026-09-11): renaming/moving the mount-point FOLDER (or an ancestor of it) used to leave the
+  // mount pointing at a folder that no longer exists — the mount held `localGone` (safe on the source side) while
+  // the PRIMARY scope, which no longer excluded the new path, uploaded the peer's whole mounted subtree into the
+  // user's own vault on every device (H-14 by one drag). The mount point now FOLLOWS the folder: the composition
+  // stays intact and the primary never sees the subtree. If the new location is not a valid mount point (inside
+  // .obsidian, overlapping another mount) the mount is left as it was and the user is told what happened.
+  private followMountPointRename(oldFolder: string, newFolder: string): void {
+    const oldN = normMountFolder(oldFolder), newN = normMountFolder(newFolder);
+    if (!oldN || !newN || oldN === newN) return;
+    const affected = this.mounts().filter((m) => { const mp = normMountFolder(m.mountPoint); return mp === oldN || mp.startsWith(oldN + "/"); });
+    if (!affected.length) return;
+    const moved = new Map(affected.map((m) => [mountKey(m), newN + normMountFolder(m.mountPoint).slice(oldN.length)] as const));
+    const next = this.mounts().map((m) => moved.has(mountKey(m)) ? { ...m, mountPoint: moved.get(mountKey(m))! } : m);
+    const problems = validateMounts(next);
+    if (problems.length) {
+      this.log(`composed vaults: the folder ${oldFolder} was renamed to ${newFolder}, but a mount can't follow it (${problems[0]}) — the mount still points at ${oldFolder}; rename the folder back, or remove and re-add the mount`, true);
+      return;
+    }
+    this.settings.mounts = next;
+    void this.saveSettings();
+    this.mountScopes = []; this.closeMountSockets(); // rebuilt on the next pass from the moved definitions (their persisted base/cursor survive in mountStateStore)
+    for (const m of affected) this.log(`composed vaults: mount ${m.mountPoint} now lives at ${moved.get(mountKey(m))} (the folder was renamed — the mount followed it)`, true);
+    void this.reconcileMounts();
+  }
+  // Panel finding CV3 (2026-09-11): dragging a note INTO a pull (read-only) mount removes it from the primary vault on
+  // every device (a move IS a delete at the old path) and strands the only copy in a folder no scope can upload.
+  // The old toast described it as an "edit that won't sync back". Say what actually happened.
+  private noteMoveIntoPullMount(oldPath: string, newPath: string): void {
+    const into = this.activeMounts().find((m) => m.direction === "pull" && claimsLocal(m, newPath));
+    if (!into || this.activeMounts().some((m) => claimsLocal(m, oldPath))) return;
+    this.log(`'${oldPath}' was moved into ${into.mountPoint}, a read-only mounted folder: it has left your primary vault (other devices will remove it) and it will NOT be uploaded to the mount's source. Move it back out to keep syncing it, or use “Keep my edits” on the mount to copy it into your vault.`, true);
   }
   // issueMountRwPushBack: a local change under a mount point must trigger a FULL (local-scanning) reconcile of
   // THAT mount, so a SYNC mount PUSHES the edit to its source. The steady-state mount poll is source-driven
@@ -3351,6 +3458,16 @@ export default class SelfSyncPlugin extends Plugin {
     this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
   }
   async saveSettings() { await this.persist(); }
+  // Panel H4 (2026-09-11): the base is persisted whole (every entry, up to 1 MiB of text each) and used to be written
+  // on EVERY setBase — during a pass that is a continuous stringify+write loop of the entire data.json on the host's
+  // main thread (and that many MB to flash per write on mobile). Coalesce into one write ~1.5 s after the last
+  // change; unload and explicit saves flush immediately. Only the trailing-edge timing changed, not what is saved.
+  private persistTimer?: number;
+  private schedulePersist(): void {
+    if (this.unloading) return; // the unload path flushes once itself
+    if (this.persistTimer !== undefined) return;
+    this.persistTimer = window.setTimeout(() => { this.persistTimer = undefined; void this.persist(); }, PERSIST_DEBOUNCE_MS);
+  }
   // CONC-1: SINGLE-FLIGHT persistence. reconcileAll fires `void persist()` once per setBase, so
   // dozens of saveData writes to the same data.json used to be in flight at once; on a store that
   // does tmp-write+rename (not internally serialized) they can land out of order, so an earlier

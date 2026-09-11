@@ -161,4 +161,112 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from releaseAssetIntegrity to issueReleaseAssetIntegrityUnchecked;
+
+    part issueMountBaseFrozenAcrossScopeBoundary : Issue {
+        :>> id = "6a40f9d8-0c60-4803-aff1-60d8525bb0c7";
+        :>> title = "Primary base entries freeze under a mounted folder and drive silent overwrites / delete-remotes on unmount";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (composed-vaults critic, CV1..CV5): (1) while a folder is mounted the primary skips it, so its base entries there keep pre-mount values; on remove the primary pushes the mount's content over its own copy with no conflict copy and delete-remotes what the mount removed — fleet-wide (H-1, H-14). (2) Renaming the mount-point folder left the mount localGone while the primary uploaded the peer's whole subtree into the user's vault. (3) A note dragged into a pull mount is tombstoned on the primary and stranded, with a misleading toast. (4) The source grant is read once per connect, so a mid-session downgrade leaves a Sync mount 'In sync' while every push 403s. (5) Four mount lifecycle writes bypass mountMachine (SR-36 false). Resolver: sprint mountScopeBoundaryHardening.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "mountScopeBoundaryHardening";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from mountScopeBoundaryHardening to issueMountBaseFrozenAcrossScopeBoundary;
+
+    part issueCaseRenamePairDeletesOnFoldingPeer : Issue {
+        :>> id = "6f15f38a-7f33-449d-865a-fc156cdfbb67";
+        :>> title = "A case-only rename made on a case-sensitive peer deletes the note fleet-wide on folding peers";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (host critic, H1 BLOCKER + H2..H7): tombstone `Note.md` + upsert `note.md` in one pass name ONE on-disk file on Windows/macOS/iOS; removeLocal deleted the file the upsert adopted and the host's delete event then tombstoned the new key for every peer (H-1, H-11; SR-45 unmet). Also: an in-flight pass keeps writing after onunload (SR-44's safe state false); the mobile per-file cap equals the desktop default (OOM path); persist() runs on every setBase (a whole-data.json write loop); short writes in the streamed writer; the fold index rebuilt per event; timers not cleared on unload. Resolver: sprint hostCoexistenceHardening.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "hostCoexistenceHardening";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from hostCoexistenceHardening to issueCaseRenamePairDeletesOnFoldingPeer;
+
+    part issueIdentityOneSidedPhantomCopies : Issue {
+        :>> id = "88aab9b7-e375-4ae2-bdfc-4d89a6614014";
+        :>> title = "Content identity is one-sided and its seam / adopt paths can still spawn phantom copies or drop invisible content";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (identity critic, ID1/ID2/ID4/ID5/ID6/ID8): the push→in-sync override stamps the scan-skip hint on a raw-different file and the write seam then copies a stamp-only local on a remote move (UCA-49 'closed' only in the single-sided case); a 'merge' with one cosmetically-changed side conflicts instead of pulling/pushing; adopt-remote drops a masked timestamp line present on one side only; in-fence trimming reaches YAML block scalars; the display does not fold what identity folds; hot-load is keyed on the vault being private now, not on who wrote the code (a peer's main.js under a since-revoked grant executes). Resolver: sprint contentIdentityTwoSided.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "contentIdentityTwoSided";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from contentIdentityTwoSided to issueIdentityOneSidedPhantomCopies;
+
+    part issueForeignSkipSnapshotAndPermanentRelease : Issue {
+        :>> id = "3919a5d4-6823-4066-a054-1464dd8d4047";
+        :>> title = "The 1.30.17 coexistence code froze the skip setting in mount scopes and let a user release disarm the loop breaker permanently";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (other-sync-tools critic, FT1..FT8; identity critic ID3): the mount runtime captured skipForeignArtefacts as a boolean while the mount io read the live setting — a mid-session toggle could tombstone a based foreign path on the SOURCE; 'Upload current versions anyway' set a standing override so the loop resumed unbounded with the row hidden; the default limit misclassified a person toggling a checkbox; foreign paths already on the server were reported as 'config files'; root-marker detection was unreachable (the host never indexes dot paths); toggling the skip off did not resync; the loop breaker did not reach mounts or the merged-push site. Resolver: sprint coexistenceHardening.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "coexistenceHardening";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from coexistenceHardening to issueForeignSkipSnapshotAndPermanentRelease;
+
+    part issueReleasePublishedBeforeVerified : Issue {
+        :>> id = "37ddcc33-769c-4b0c-986f-67bee8d07999";
+        :>> title = "A release is BRAT-installable before it is verified, a tag can be silently reused, integrity has no anchor outside the release, and no version-tagged server image exists";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (release-channel critic, RL1..RL6): release.yml published non-draft before the verify step and treated a partial upload as released; `gh release create --target` reuses a tag pointing elsewhere (assets = build of main-HEAD); SHA256SUMS lives in the same mutable release as the assets, so the daily check could not detect a rewrite of both (H-5); GITHUB_TOKEN-created tags never trigger server-image.yml, so the version-tagged image docs tell operators to pin never existed; mutable action refs, persisted checkout credentials, no Dependabot; check-release.mjs hid gh's real error and downloaded every asset. Resolver: sprint releaseIntegrityHardening (D0054 amended).";
+        :>> discoveredInField = false;
+        :>> relatedTask = "releaseIntegrityHardening";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from releaseIntegrityHardening to issueReleasePublishedBeforeVerified;
+
+    part issueStpaModelClaimsDrift : Issue {
+        :>> id = "08dce644-7590-482d-8732-4ec3f92c3dc9";
+        :>> title = "The safety model's claims drifted from the code: SR-5 false, six #Verify edges that verify nothing, unanalysed control actions, an unmodelled operator prune, stale prose";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (SE critic, SE1..SE7; identity ID7; release RL3): SR-5 stated 'never, for ANY vault' against shipped hot-load; six #Verify edges cite DoDs that do not exercise the SR; eight control actions had no UCA and c1User none; POST /api/admin/prune-history destroys SR-1's evidence with no ControlAction/UCA/SR; the D0041 incoming mass-deletion hold was load-bearing but unstated; pmSyncEngine beliefs omitted the terminal `unloading` state and the header still said PENDING; c15ReleaseChannel realizes SRs while declared uncommandable; cc49 and cc55/sr50 over-claimed. Resolver: sprint stpaModelHonesty.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "stpaModelHonesty";
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from stpaModelHonesty to issueStpaModelClaimsDrift;
+
+    part issueMountCaseSensitiveClaimMismatch : Issue {
+        :>> id = "6a041daf-23bb-406d-b5ea-c1e477964c99";
+        :>> title = "Mount claim folds case while mount I/O uses the configured spelling on a case-sensitive filesystem";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (composed-vaults critic, CV6 MINOR): on Linux a differently-cased real folder is claimed by the mount (primary excludes it) but every read/write is built from the configured spelling and ENOENTs — the files belong to no scope. Deferred with an OPEN resolver (rare platform combination; no data loss, files simply do not sync).";
+        :>> discoveredInField = false;
+        :>> relatedTask = "mountCaseSensitiveClaim";
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from mountCaseSensitiveClaim to issueMountCaseSensitiveClaimMismatch;
+
+    part issueRoMountConflictCopiesInvisible : Issue {
+        :>> id = "ee189947-10d7-49b2-8814-e96b766ae8ba";
+        :>> title = "Conflict copies produced on a pull mount are invisible to the read-only-edit keeper flow";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (composed-vaults critic, CV7 MINOR): readOnly && isConflictCopy is a noop in reconcile, so roMountEdits never contains such a copy and 'Keep my edits' cannot sweep it; it stays single-device until the mount is removed (then uploads to the primary — now via re-first-contact after CV1). Deferred with an OPEN resolver.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "mountRoConflictCopyKeeper";
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from mountRoConflictCopyKeeper to issueRoMountConflictCopiesInvisible;
+
+    part issueMonotonicRewriteLoopUndetected : Issue {
+        :>> id = "36c427fd-cb86-4305-872c-37f7ee5cadf2";
+        :>> title = "The SR-47 loop breaker cannot see a monotonic rewrite loop (a never-seen value each round)";
+        :>> createdAt = "2026-09-11";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Panel 2026-09-11 (identity critic, ID3): a stamper on an unmasked key, or in a .txt / excluded folder, produces a novel hash every round; the returning-content detector never holds it. A per-path push-rate bound was rejected (it would hold a person's own rapid autosaves). SR-47's statement now records this honest scope; the detector is an OPEN resolver.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "monotonicRewriteDetection";
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from monotonicRewriteDetection to issueMonotonicRewriteLoopUndetected;
 }

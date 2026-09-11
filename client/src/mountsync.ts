@@ -89,7 +89,7 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
     // source-rewind (reset) route to a full pass. On a hit, hold as `localGone` and never propagate.
     let localGone = false;
     await pollMount(scope.runtime, { forceFull: full }, () => { localGone = true; });
-    if (localGone) { scope.state = "localGone"; hooks.onEvent?.(scope); return; }
+    if (localGone) { scope.state = mountTransition(scope.state, "localGone"); hooks.onEvent?.(scope); return; }
     hooks.onHeld?.(scope, scope.runtime.takeHeld(), full); // record held deletions (a full pass is authoritative → replace)
     hooks.onHeldPush?.(scope, scope.runtime.takeHeldPush(), full); // F2: record held bulk-pushes-to-shared (full pass → replace)
     hooks.onRoEdits?.(scope, scope.runtime.takeRoEdits(), full); // record read-only edits (full pass → replace, so a reverted edit drops off — F2)
@@ -97,7 +97,7 @@ export async function reconcileMountScope(scope: MountScope, hooks: MountSyncHoo
     // Success lands `live` — UNLESS this pass produced a conflict copy, which surfaces as `diverged` ("Needs
     // review") so a mounted-folder conflict isn't hidden behind a green light (R5-MED-1). A clean pass clears
     // a prior diverged back to live.
-    scope.state = scope.runtime.tookConflict() ? "diverged" : "live";
+    scope.state = mountTransition(scope.state, scope.runtime.tookConflict() ? "conflict" : "syncSettled");
     hooks.onEvent?.(scope);
   } catch (err) {
     scope.fails++;

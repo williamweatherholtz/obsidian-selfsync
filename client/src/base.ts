@@ -33,9 +33,17 @@ export class BaseStore {
     }));
   }
   get(path: string): BaseEntry | undefined { return this.m.get(path); }
-  set(path: string, entry: BaseEntry): void { this.m.set(path, entry); }
-  delete(path: string): void { this.m.delete(path); }
+  set(path: string, entry: BaseEntry): void { if (!this.m.has(path)) this.fold = undefined; this.m.set(path, entry); }
+  delete(path: string): void { if (this.m.delete(path)) this.fold = undefined; }
   paths(): string[] { return [...this.m.keys()]; }
+  // Case-fold lookup (caseInsensitivePaths): the base key whose lower-cased form equals `path`'s, if any. Memoized —
+  // it used to be rebuilt from every key on EVERY single-path event whose path was not an exact key (a folder rename
+  // of N files fired 2N rebuilds), which is O(N) synchronous work on the host's main thread per event (panel H6).
+  private fold?: Map<string, string>;
+  foldSibling(path: string): string | undefined {
+    if (!this.fold) { this.fold = new Map(); for (const k of this.m.keys()) { const f = k.toLowerCase(); if (!this.fold.has(f)) this.fold.set(f, k); } }
+    return this.fold.get(path.toLowerCase());
+  }
   // Record the on-disk (size, mtime) of a file we've just confirmed equals its base, so the next
   // whole-vault pass can skip re-hashing it. Persisted (see toJSON) so the skip survives a reload
   // (issueScanSkipHintNotPersisted) — still a hint: absent/stale ⇒ fall back to hashing.

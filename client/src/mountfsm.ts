@@ -20,10 +20,13 @@ export type MountState =
 
 export type MountEvent =
   | "mount" | "mounted" | "syncStart" | "syncSettled" | "diverge" | "resolved"
-  | "disconnect" | "reconnect" | "unmount" | "unmounted" | "fail" | "retry";
+  | "disconnect" | "reconnect" | "unmount" | "unmounted" | "fail" | "retry"
+  | "localGone"   // the mass-local-deletion guard tripped: the mount-point folder is gone → hold for Reinstate/Remove
+  | "conflict"    // a pass produced a conflict copy → needs review
+  | "reset";      // the failed-retry backoff elapsed → back to detached so the next pass re-mounts
 
 export const MOUNT_STATES: readonly MountState[] = ["detached", "mounting", "live", "syncing", "diverged", "offline", "unmounting", "localGone", "failed"];
-export const MOUNT_EVENTS: readonly MountEvent[] = ["mount", "mounted", "syncStart", "syncSettled", "diverge", "resolved", "disconnect", "reconnect", "unmount", "unmounted", "fail", "retry"];
+export const MOUNT_EVENTS: readonly MountEvent[] = ["mount", "mounted", "syncStart", "syncSettled", "diverge", "resolved", "disconnect", "reconnect", "unmount", "unmounted", "fail", "retry", "localGone", "conflict", "reset"];
 
 // The per-mount lifecycle machine on the shared primitive (fsm.ts), registered as STPA process model
 // pmMount (the composed-vault controller c9MountEngine's belief about one mount). An event with no rule is a NO-OP — conservative: an
@@ -38,16 +41,22 @@ export const mountMachine = defineMachine<MountState, MountEvent>({
   transition(s, e) {
     if (e === "unmount" && s !== "detached" && s !== "unmounting") return "unmounting";
     if (e === "fail" && s !== "detached" && s !== "unmounting") return "failed";
+    // The mass-local-deletion hold can trip on ANY pass that scans the local folder (first mount, a poll, a reset
+    // re-pull) — from every live state it lands in localGone (SR-33), never propagating.
+    if (e === "localGone" && (s === "mounting" || s === "live" || s === "syncing" || s === "diverged" || s === "offline")) return "localGone";
     switch (s) {
       case "detached":   return e === "mount" ? "mounting" : undefined;
-      case "mounting":   return e === "mounted" ? "live" : e === "disconnect" ? "offline" : undefined;
-      case "live":       return e === "syncStart" ? "syncing" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : undefined;
-      case "syncing":    return e === "syncSettled" ? "live" : e === "diverge" ? "diverged" : e === "disconnect" ? "offline" : undefined;
-      case "diverged":   return e === "resolved" ? "live" : e === "disconnect" ? "offline" : undefined;
-      case "offline":    return e === "reconnect" ? "live" : undefined;
+      // a first pass ends in live (clean) or diverged (it produced a conflict copy)
+      case "mounting":   return e === "mounted" || e === "syncSettled" ? "live" : e === "conflict" ? "diverged" : e === "disconnect" ? "offline" : undefined;
+      case "live":       return e === "syncStart" ? "syncing" : e === "diverge" || e === "conflict" ? "diverged" : e === "syncSettled" ? "live" : e === "disconnect" ? "offline" : undefined;
+      case "syncing":    return e === "syncSettled" ? "live" : e === "diverge" || e === "conflict" ? "diverged" : e === "disconnect" ? "offline" : undefined;
+      // a clean pass clears a divergence back to live; a pass with a fresh conflict copy stays diverged
+      case "diverged":   return e === "resolved" || e === "syncSettled" ? "live" : e === "conflict" ? "diverged" : e === "disconnect" ? "offline" : undefined;
+      // the poll loop lands a clean pass in live from offline too (a reconnect IS a successful pass)
+      case "offline":    return e === "reconnect" || e === "syncSettled" ? "live" : e === "conflict" ? "diverged" : undefined;
       case "unmounting": return e === "unmounted" ? "detached" : undefined;
       case "localGone":  return e === "mount" ? "mounting" : undefined; // explicit Reinstate re-mounts (a fresh re-pull); Remove goes via unmount
-      case "failed":     return e === "retry" ? "mounting" : undefined;
+      case "failed":     return e === "retry" ? "mounting" : e === "reset" ? "detached" : undefined; // reset: the backoff elapsed, the next pass re-mounts from detached
       default:           return undefined;
     }
   },

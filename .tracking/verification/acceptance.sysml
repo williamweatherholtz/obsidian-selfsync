@@ -14,6 +14,9 @@ package ProjectAcceptance {
     private import ProjectRequirements::*;
     private import ProjectDelivery::*;
     private import ProjectUseCases::*;
+    // 2026-09-11 panel (SE2): six #Verify edges removed — their DoDs did not exercise the SR they were said to verify
+    // (residualLowFindings→sr3, mountHardeningR3→sr6, postR2FunctionAudit→sr9, mountHardeningR4→sr14, mountHardeningR1→sr17,
+    // mountHardeningR6→sr23); each SR keeps at least one legitimate edge.
     private import ProjectStpaAuthorities::*;   // same-device / release-channel authorities STPA sr44..sr51 (stpa-authorities.sysml)
     private import ProjectStpaNesting::*;       // nesting STPA SafetyRequirements sr29..sr43 (stpa-nesting.sysml)
     private import ProjectStpaAnalysis::*;      // STPA SafetyRequirements sr1..sr25 (stpa-ucas.sysml)
@@ -333,7 +336,6 @@ package ProjectAcceptance {
     #Verify dependency from streamedPullRacingEditGuardDoD to sr2;
     #Verify dependency from critiqueRPlus1ClientFixesDoD to sr2;
     // sr3: streamFileToDisk verifies the whole-file hash before the atomic rename; a hash mismatch on a mount pull is a per-file skip, never adopted
-    #Verify dependency from residualLowFindingsDoD to sr3;
     #Verify dependency from mountHardeningR7DoD to sr3;
     // sr4: shouldSync classification: notes always, each .obsidian category only when opted in, unrecognised files never (32-combo matrix + e2e)
     #Verify dependency from acConfigSelective to sr4;
@@ -345,7 +347,6 @@ package ProjectAcceptance {
     #Verify dependency from acConfigSelective to sr6;
     #Verify dependency from pushPullPreviewDoD to sr6;
     #Verify dependency from pluginPushPullDoD to sr6;
-    #Verify dependency from mountHardeningR3DoD to sr6;
     // sr7: the concurrent-commit CAS race test (exactly one 200 / one 409) and the delete-side CAS mirror
     #Verify dependency from testHardeningServerDoD to sr7;
     #Verify dependency from deleteRemoteCasGuardDoD to sr7;
@@ -353,7 +354,6 @@ package ProjectAcceptance {
     #Verify dependency from mutationTestingVaultDoD to sr8;
     // sr9: journal records durable before replay reconstructs on reopen (torn record discarded); shard-dir fsync after rename
     #Verify dependency from acDurableIndex to sr9;
-    #Verify dependency from postR2FunctionAuditDoD to sr9;
     // sr10: safe_rel_path rejects empty/absolute/non-canonical paths (fail-first) - the request-path half; the Unicode case-collision fold is round5CriticFixes (unstamped)
     #Verify dependency from mutationTestingVaultDoD to sr10;
     // sr12: must_change gate + revoke-mid-session; exact (owner,vault,grantee) match predicates; read-only grants never push or delete
@@ -365,7 +365,6 @@ package ProjectAcceptance {
     #Verify dependency from mutationTestingSharesPassDoD to sr13;
     // sr14: degraded 503 on a not-empty manifest; a not-ready mount source holds the mount offline; the clear operator message when the server is not ready
     #Verify dependency from testHardeningServerDoD to sr14;
-    #Verify dependency from mountHardeningR4DoD to sr14;
     #Verify dependency from schemaRollbackClearErrorDoD to sr14;
     #Verify dependency from rollback503CleanMessageDoD to sr14;
     // sr15: the D0042 wire-contract signature: server derives + publishes, client fails closed on mismatch
@@ -374,7 +373,6 @@ package ProjectAcceptance {
     // sr17: poll-path 401 re-logs-in once; 401-login -> blocked{authRejected}; mount transports rotate the token on relogin
     #Verify dependency from reconcilePathReloginOnceDoD to sr17;
     #Verify dependency from connectionFsmTypedFailureDoD to sr17;
-    #Verify dependency from mountHardeningR1DoD to sr17;
     // sr18: the WebSocket token travels in the Sec-WebSocket-Protocol auth. entry, never the URL query (hardening suite)
     #Verify dependency from testHardeningServerDoD to sr18;
     // sr20: statusDisplay is a pure projection of Phase; no optimistic flip before real transfer
@@ -388,7 +386,6 @@ package ProjectAcceptance {
     #Verify dependency from connectPhaseNoOptimisticFlipDoD to sr22;
     // sr23: resume cancels the suspended backoff timer and re-attempts; mounts refresh on resume; reconnect() single-flight + backoff
     #Verify dependency from resumeReattemptsConnectionDoD to sr23;
-    #Verify dependency from mountHardeningR6DoD to sr23;
     #Verify dependency from acSelfHealingReconnect to sr23;
     // sr24: delete_checked(path, expected_version) mirrors commit's CAS; 409 on a stale delete
     #Verify dependency from deleteRemoteCasGuardDoD to sr24;
@@ -465,4 +462,10 @@ package ProjectAcceptance {
     #Verify dependency from releaseCurrencyGuardDoD to sr49;
     #Verify dependency from switchUploadProbeGuardDoD to sr51;
     #Verify dependency from mountDeleteGuardHardeningDoD to sr51;
+
+    // ---- 2026-09-11 panel: requirements whose mechanism already carried a passed DoD (the sprint DoDs' edges follow at closeOut) ----
+    #Verify dependency from tombstonePruneDoD to sr61;
+    #Verify dependency from bulkDeleteConfirmDoD to sr62;
+    #Verify dependency from switchUploadProbeGuardDoD to sr60;
+    #Verify dependency from testHardeningClientDoD to sr60;
 }

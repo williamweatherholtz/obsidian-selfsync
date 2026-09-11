@@ -5,7 +5,7 @@ import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, CommitRejectedError, Deletion, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
 import { isExcluded } from "./excludedFolders";
-import { normalizedHash, neutralizeTimestamps, restoreTimestamps } from "./frontmatter";
+import { normalizedHash, neutralizeTimestamps, restoreTimestamps, ignoredTimestampKeysPresent } from "./frontmatter";
 
 export type Presence = { hash: string } | null;
 export type Action =
@@ -298,6 +298,11 @@ export interface ReconcileDeps {
   // (adoptRemote). Default false: a fresh read-only share still adopts the owner's canonical copy on first
   // contact without spamming copies. (R2-F1: pull-mount-over-existing-file silent data loss.)
   preserveLocalFirstContact?: boolean;
+  // Panel H2 (2026-09-11): is the plugin instance that started this pass still alive? Checked between items in
+  // isolatedPass so an in-flight pass stops writing the vault (and persisting its base) once the host has unloaded
+  // the instance — otherwise a torn-down instance's pass ran to completion beside the NEW instance, two writers of
+  // one vault and one data.json (the engine's terminal `unloading` guarded only the state repaint, not the effect).
+  alive?: () => boolean;
   // Per-device selective-sync filter. A path this returns false for is skipped ENTIRELY
   // (no pull, no base, no delete): a replica that doesn't ACCEPT a path must never record a
   // base for it, or a dropped/filtered write turns into a phantom deletion of the device that
@@ -450,6 +455,7 @@ async function isolatedPass(
   let connAbort: unknown = null; // a server-unreachable error aborts the whole pass
   await mapPool(items, FILE_CONCURRENCY, async (p) => {
     if (connAbort) throw connAbort; // server unreachable — stop; don't per-file-log the remaining files
+    if (d.alive && !d.alive()) return;   // the instance was unloaded mid-pass — touch nothing further (panel H2, SR-44)
     try {
       await run(p);
       d.retryBudget?.delete(p); // reconciled cleanly → reset any failure budget for this path (R18)
@@ -592,6 +598,16 @@ async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHa
   const cur = await readOrNull(d.io, path);
   const curHash = cur ? await sha256hex(cur) : null;
   if (curHash !== expectLocalHash && cur) {
+    // Panel ID1 (2026-09-11): the push→in-sync override stamps the scan-skip hint on a file whose RAW hash differs
+    // from base (a cosmetic / timestamp-only local change). The next full pass trusts the hint (localHash := base
+    // hash); a remote edit decides `pull`; and this seam then saw raw(cur) ≠ expected → a conflict copy of a
+    // stamp-only local — the "phantom copy" UCA-49 was supposed to have closed, reappearing on reconnect. If the
+    // current bytes are IDENTITY-equal to base there is nothing genuine to preserve: no copy, the pull proceeds.
+    if (!isConfig(path) && isMergeable(path, cur)) {
+      const be = d.base.get(path);
+      const bn = be ? await baseNormHash(d, path, be) : undefined;
+      if (bn !== undefined && (await normalizedHash(cur, ignorePatternsFor(d, path))) === bn) return { kind: "none" };
+    }
     if (isConfig(path)) {
       // A local `.obsidian/` file was rewritten (by its own plugin) DURING this clean pull → a genuine
       // config divergence. Config uses ADJUDICATION, never note-style copies: a stray `(conflict …).json`
@@ -751,6 +767,16 @@ function foldIndex(keys: Iterable<string>): Map<string, string> {
   return m;
 }
 
+// The tombstoned paths that are really case-only RENAMES this pass: a fold-sibling of theirs is a remote key (the
+// re-cased upsert). Only on a case-insensitive filesystem, where both spellings are one on-disk file (panel H1).
+function caseRenamedTombstones(d: ReconcileDeps, tombstoned: Iterable<string>, remoteKeys: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  if (!d.caseInsensitivePaths) return out;
+  const fold = foldIndex(remoteKeys);
+  for (const p of tombstoned) { const k = fold.get(p.toLowerCase()); if (k && k !== p) out.add(p); }
+  return out;
+}
+
 // Re-key the LOCAL listing onto the canonical spelling wherever a local path has no exact canonical match but
 // a case-fold one (caseInsensitivePaths only). A local path that already IS a canonical key is untouched, and
 // if the listing somehow carries both spellings (impossible on such a filesystem) nothing is merged.
@@ -773,7 +799,7 @@ function aliasLocalPaths<T>(d: ReconcileDeps, local: Map<string, T>, canonical: 
 // The single-path (event) form: a locally reported path adopts the base's spelling when only case differs.
 export function canonicalLocalPath(d: ReconcileDeps, path: string): string {
   if (!d.caseInsensitivePaths || d.base.get(path)) return path;
-  const k = foldIndex(d.base.paths()).get(path.toLowerCase());
+  const k = d.base.foldSibling(path); // memoized on the BaseStore (panel H6)
   if (!k || k === path) return path;
   d.onPathAliased?.(path, k);
   return k;
@@ -847,13 +873,14 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // doing anything"). Real transfer work shows separately as "Syncing… N pending" via onProgress.
   const total = paths.length;
   d.onStage?.(`checking ${total} files for changes`);
+  const caseRenamed = caseRenamedTombstones(d, tombstoned, remote.keys()); // panel H1
   // Files are reconciled with bounded CONCURRENCY (Finding 1) under the shared error-isolation contract:
   // per-file errors stay isolated (one bad file never aborts the pass); a whole-connection failure aborts.
   // Hold the cursor below any failed change so it's retried next poll (R14 sync#1) — covering a failed
   // TOMBSTONE (delete-local) path too (R15 sync#2) — until its retry budget runs out (R18).
   let examined = 0;
   await isolatedPass(d, paths, failedRemote,
-    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardBulkPush, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: local.has(p), localStat: local.get(p) }),
+    (p) => reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, guardBulkPush, localSize: local.get(p)?.size ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: local.has(p), localStat: local.get(p), caseRenamed: caseRenamed.has(p) }),
     (p) => remote.get(p)?.version ?? resp.deletes.find((x) => x.path === p)?.version,
     (p) => {
       if (pendingPaths.has(p)) d.onProgress?.(--pending);
@@ -894,6 +921,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   // a delta sees only the CHANGED declined subset, so firing here churns the "N plugins not synced" notice
   // (a different subset each poll). The FULL pass (reconcileAll) has the complete set + fires it once.
   const changed = changedAll.filter((p) => accepts(d, p)); // the delta IS the pending set (accepted-only)
+  const caseRenamed = caseRenamedTombstones(d, tombstoned, remote.keys()); // panel H1
   let pending = changed.length; d.onProgress?.(pending);
   await isolatedPass(d, changed, failed,
     async (p) => {
@@ -905,7 +933,7 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
       // destroy; a genuine local deletion still propagates via the event path / full scan (which have
       // authoritative presence). Matches reconcilePath's own io.exists probe.
       const present = d.io.exists ? await d.io.exists(p) : true;
-      await reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: d.localSizeOf?.(p) ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: present });
+      await reconcileOne(d, p, { rmeta: remote.get(p), guardDelete: guardBulkDelete, localSize: d.localSizeOf?.(p) ?? 0, hasTombstone: (pp) => tombstoned.has(pp), deletionOf: (pp) => delByPath.get(pp), locallyPresent: present, caseRenamed: caseRenamed.has(p) });
     },
     versionOf,
     () => d.onProgress?.(--pending),
@@ -1095,10 +1123,38 @@ async function reconcileMergeOrConflict(
   // push-cosmetic override, never re-pushed).
   if (isMergeable(path, liveLocal) && isMergeable(path, remoteBytes)) {
     const patterns = ignorePatternsFor(d, path);
-    if (await normalizedHash(liveLocal, patterns) === await normalizedHash(remoteBytes, patterns)) {
+    const dec = new TextDecoder();
+    // Panel ID4 (2026-09-11): identity MASKS a timestamp-valued ignored key, so two files that differ by the PRESENCE of
+    // such a line (`created: 2024-01-01` on one side, no key on the other) are identity-equal — and adopting the remote
+    // would silently drop that line. The auto-sweep already refuses exactly this (ignoredTimestampKeysPresent); the
+    // engine must too: an automatic action loses nothing at all. A presence difference falls through to the
+    // ordinary divergence handling (merge / conflict copy), where nothing is discarded.
+    const sameMaskedKeys = ignoredTimestampKeysPresent(dec.decode(liveLocal), patterns) === ignoredTimestampKeysPresent(dec.decode(remoteBytes), patterns);
+    const localNorm = await normalizedHash(liveLocal, patterns), remoteNorm = await normalizedHash(remoteBytes, patterns);
+    if (localNorm === remoteNorm && sameMaskedKeys) {
       await d.io.write(path, remoteBytes);
       setBase(d, path, remoteBytes, rmeta.hash);
       return;
+    }
+    // Panel ID2 (2026-09-11): identity was ONE-SIDED — the push→in-sync override recognised a cosmetic LOCAL change, but
+    // a "merge" (both hashes moved) was never demoted when one side had moved only cosmetically. A macOS NFD re-save
+    // (or Metadata Menu's `key: ` → `key:`) plus ONE genuine remote edit read as both-changed, every folded line as a
+    // local change, and the overlap became a conflict copy. If exactly one side is identity-equal to base, the other
+    // side's edit is the only real one: adopt it as a plain pull / push. (The masked-key presence guard applies to the
+    // side being discarded, as above.)
+    if (action === "merge" && baseEntry) {
+      const bnorm = await baseNormHash(d, path, baseEntry);
+      if (bnorm !== undefined) {
+        const keysL = ignoredTimestampKeysPresent(dec.decode(liveLocal), patterns), keysR = ignoredTimestampKeysPresent(dec.decode(remoteBytes), patterns);
+        const keysB = baseEntry.text !== undefined ? ignoredTimestampKeysPresent(baseEntry.text, patterns) : undefined;
+        if (localNorm === bnorm && remoteNorm !== bnorm && (keysB === undefined || keysL === keysB)) {
+          await d.io.write(path, remoteBytes); setBase(d, path, remoteBytes, rmeta.hash); return; // only the remote really changed → pull
+        }
+        if (remoteNorm === bnorm && localNorm !== bnorm && !d.readOnly && (keysB === undefined || keysR === keysB)) {
+          if (d.pushFlipHold?.(path, liveLocalHash)) { d.onFlipHeld?.(path); return; } // SR-47
+          const { hash: h, bytes } = await pushBytes(d, path, liveLocal, rmeta.version); setBase(d, path, bytes, h); return; // only we really changed → push
+        }
+      }
     }
   }
   // Cosmetic-only difference (line endings / trailing newline) is NOT a real conflict. TEXT ONLY:
@@ -1148,6 +1204,7 @@ async function reconcileMergeOrConflict(
       // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
       // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
       const mergedBytes = new TextEncoder().encode(mergeResult!.merged);
+      if (d.pushFlipHold?.(path, await sha256hex(mergedBytes))) { d.onFlipHeld?.(path); return; } // SR-47: a merge that keeps producing an already-seen result is the same two-writer loop
       const { hash: h, bytes: committed } = await pushBytes(d, path, mergedBytes, rmeta.version);
       setBase(d, path, committed, h);
       return;
@@ -1177,6 +1234,12 @@ interface ReconcileOneOpts {
   deletionOf?: (p: string) => Deletion | undefined; // the tombstone record for p (carries deletion provenance) → the removeLocal config-delete notice
   locallyPresent?: boolean;                    // does the vault report the file present? (C1: present-but-unreadable ≠ deleted)
   localStat?: { size: number; mtime: number; ctime?: number }; // on-disk stat (scan-skip fast path + first-seed source)
+  // Panel H1 (2026-09-11): on a case-insensitive filesystem a tombstone for `Note.md` arriving together with an
+  // upsert for `note.md` (a case-only rename made on a case-SENSITIVE peer) names the SAME on-disk file as the
+  // upsert. Removing it would delete the file the upsert just adopted, and the host's delete event would then
+  // tombstone the NEW key fleet-wide. Set when the tombstoned path has a fold-sibling among this pass's remote keys:
+  // the delete-local becomes a base rename (drop the old key; the upsert's in-sync path records the new one).
+  caseRenamed?: boolean;
 }
 
 // Reconcile ONE path against the server — a dispatcher: selective-sync + size gate, decide(), then the
@@ -1188,7 +1251,7 @@ interface ReconcileOneOpts {
 // read boundary instead of a null + a separate presence flag + a runtime if).
 // @audit-hash sha256:b688b74935495e56
 async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOpts): Promise<void> {
-  const { rmeta, guardDelete = false, guardBulkPush = false, localSize = 0, hasTombstone = () => false, deletionOf, locallyPresent, localStat } = opts;
+  const { rmeta, guardDelete = false, guardBulkPush = false, localSize = 0, hasTombstone = () => false, deletionOf, locallyPresent, localStat, caseRenamed = false } = opts;
   // Selective-sync gate FIRST: a path this device doesn't accept (a `.obsidian/` category it
   // opted out of) is skipped entirely — no pull, no base, no delete. This is the root-cause
   // fix for phantom deletions: if we recorded a base for a filtered path, the next sync would
@@ -1365,6 +1428,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       d.onKeptAbsent?.(path);
       return;
     case "removeLocal":
+      if (caseRenamed) { d.base.delete(path); d.onBaseChanged?.(); return; } // the file lives on under its re-cased key (panel H1) — never remove it
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.();
       // Attribute an incoming CONFIG/plugin removal to WHO deleted it (issueDeletionProvenanceUnnotified) — AFTER
       // the remove SUCCEEDS (a throw above propagates → no notice, no re-fire loop; the notice tracks the real

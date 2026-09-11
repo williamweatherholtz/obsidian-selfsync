@@ -3,10 +3,15 @@ name: Release SelfSync plugin
 # "We can't be not releasing code" (D0035). The version lives in manifest.json; the release is published
 # AUTOMATICALLY when a bumped manifest.json lands on main — no separate "remember to tag + push" step (the
 # gap that put 1.9.0 on main but not into a GitHub release, so BRAT still showed 1.8.1). This job derives
-# the version from manifest.json, and is IDEMPOTENT: if that version is already released it no-ops, so a
-# re-run, a manual re-push, or an unrelated manifest edit is safe. `gh release create` creates the matching
-# tag (X.Y.Z, no "v" — matching manifest.json) and uploads the assets BRAT installs. workflow_dispatch is
-# the manual re-run escape hatch. verify-released.yml remains the daily backstop.
+# the version from manifest.json, and is IDEMPOTENT: if that version is already PUBLISHED it no-ops, so a
+# re-run, a manual re-push, or an unrelated manifest edit is safe. workflow_dispatch is the manual re-run
+# escape hatch. verify-released.yml remains the daily backstop.
+#
+# INTEGRITY (D0054 + the 2026-09-11 panel): the release is created as a DRAFT, its published assets are
+# downloaded back and verified against SHA256SUMS, and only then is it published — so a mismatched or partial
+# upload is never BRAT-installable, not even for the seconds a red job would take to notice. A stale DRAFT
+# from a failed run is deleted and rebuilt; a tag that already points at a DIFFERENT commit fails loudly
+# (`gh release create --target` would silently reuse it and publish a build of the wrong commit).
 on:
   push:
     branches: [main]
@@ -16,30 +21,46 @@ on:
 
 permissions:
   contents: write
+  actions: write   # to dispatch server-image.yml on the version ref (a GITHUB_TOKEN-created tag never triggers it)
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false # the build step (npm ci) never needs the token; gh steps get GH_TOKEN explicitly
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
 
-      - name: Determine version and whether it is already released
+      - name: Determine version and whether it is already published
         id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VER=$(node -p "require('./manifest.json').version")
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          if gh release view "$VER" >/dev/null 2>&1; then
+          # A tag that exists but points elsewhere means a prior release of this version was built from ANOTHER
+          # commit (e.g. a deleted release whose tag survived): `gh release create --target` would reuse that tag and
+          # publish THIS build under it — the assets would be the build of main-HEAD, not of the tag. Refuse.
+          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VER" -q .object.sha 2>/dev/null || true)
+          if [ -n "$TAG_SHA" ] && [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $VER already points at $TAG_SHA, not at this commit $GITHUB_SHA — delete the release WITH its tag (gh release delete $VER --cleanup-tag) or bump the version"
+            exit 1
+          fi
+          DRAFT=$(gh release view "$VER" --json isDraft -q .isDraft 2>/dev/null || echo "missing")
+          if [ "$DRAFT" = "false" ]; then
             echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "version $VER is already released — nothing to do."
+            echo "version $VER is already published — nothing to do."
           else
+            if [ "$DRAFT" = "true" ]; then
+              echo "a DRAFT of $VER exists (an earlier run did not complete) — deleting it and rebuilding."
+              gh release delete "$VER" --yes
+            fi
             echo "released=false" >> "$GITHUB_OUTPUT"
-            echo "version $VER is not released yet — will build + publish."
+            echo "version $VER is not published yet — will build, verify, publish."
           fi
 
       - name: Build the plugin
@@ -49,31 +70,29 @@ jobs:
           npm ci
           npm run build
 
-      - name: Publish release with plugin assets
+      - name: Create the DRAFT release with plugin assets + SHA256SUMS
         if: steps.v.outputs.released == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VER="${{ steps.v.outputs.version }}"
-          # Create the tag (at this commit) AND the release in one step; manifest.json's version IS the tag.
-          # BRAT downloads these assets from the release.
-          # SR-50 (issueReleaseAssetIntegrityUnchecked): record the SHA-256 of EVERY asset at publish time, as a
-          # SHA256SUMS asset AND in the release notes, so the published files can be re-verified against the build
-          # (scripts/check-release.mjs does, daily via verify-released.yml; the plugin's About row shows the digest
-          # of the installed main.js for a device-side audit). Basenames only, so `sha256sum -c` works in a flat dir.
+          # SR-50: record the SHA-256 of EVERY asset at publish time, as a SHA256SUMS asset AND in the release notes,
+          # so the published files can be re-verified against the build (scripts/check-release.mjs does, daily via
+          # verify-released.yml, which ALSO rebuilds the tag and compares — the independent anchor; the plugin's About
+          # row shows the digest of the installed main.js for a device-side audit). Basenames only.
           (cd client && sha256sum main.js styles.css) > SHA256SUMS
           sha256sum manifest.json versions.json >> SHA256SUMS
           cat SHA256SUMS
-          NOTES="$(printf 'SelfSync %s — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync.\n\nSHA-256 of the published assets (also the SHA256SUMS asset):\n\n```\n%s\n```' "$VER" "$(cat SHA256SUMS)")"
-          gh release create "$VER" --target "$GITHUB_SHA" \
+          NOTES="$(printf 'SelfSync %s — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync.\n\nSHA-256 of the published assets (also the SHA256SUMS asset; verify-released.yml rebuilds this tag daily and compares):\n\n```\n%s\n```' "$VER" "$(cat SHA256SUMS)")"
+          # DRAFT: not installable, no tag yet. The tag is created at publish (below), at this commit.
+          gh release create "$VER" --draft --target "$GITHUB_SHA" \
             client/main.js client/styles.css manifest.json versions.json SHA256SUMS \
             --title "$VER" \
             --notes "$NOTES"
 
-      # SR-50: what GitHub now SERVES must be what we just built — download the published assets back and verify
-      # them against SHA256SUMS. A mismatch fails the job loudly (the release stays visible, red, for the operator
-      # to delete + re-run) instead of an altered/corrupted asset installing silently through BRAT.
-      - name: Verify the published assets against SHA256SUMS
+      # SR-50: what GitHub now SERVES must be what we just built — download the draft's assets back and verify them
+      # against SHA256SUMS BEFORE anything is installable. A mismatch fails here and the draft stays a draft.
+      - name: Verify the uploaded assets against SHA256SUMS
         if: steps.v.outputs.released == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,7 +104,29 @@ jobs:
             echo "assets not yet downloadable (attempt $attempt) — retrying"; sleep 10
           done
           cd verify && ls -l && sha256sum -c SHA256SUMS
+          # every checksummed asset must be present (a partial upload would pass `-c` on what IS there)
+          for f in main.js styles.css manifest.json versions.json SHA256SUMS; do [ -f "$f" ] || { echo "::error::asset $f missing from the draft"; exit 1; }; done
 
-  # The server image is published by a dedicated workflow (.github/workflows/server-image.yml), which
-  # fires on server changes to main (and on version tags) — so a release that touches the server publishes
-  # the matching image independently of this job.
+      - name: Publish (creates the tag at this commit)
+        if: steps.v.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          gh release edit "$VER" --draft=false --latest
+          echo "published $VER"
+
+      # The server image is built by .github/workflows/server-image.yml. It runs on server changes to main (→ :latest),
+      # but a tag created by GITHUB_TOKEN never triggers a workflow, so the VERSION-tagged image (what
+      # docs/deployment.md tells operators to pin) is dispatched here explicitly on the new tag ref.
+      - name: Publish the version-tagged server image
+        if: steps.v.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run server-image.yml --ref "$VER"; then echo "dispatched server-image.yml on $VER"; exit 0; fi
+            echo "tag $VER not yet visible to workflow dispatch (attempt $attempt) — retrying"; sleep 10
+          done
+          echo "::warning::could not dispatch server-image.yml on $VER — run it manually (Actions → Publish server image → ref $VER)"

@@ -30,6 +30,7 @@ export const REQUIRED_ASSETS = ["main.js", "manifest.json", "styles.css"]; // wh
 export const CHECKSUMMED_ASSETS = [...REQUIRED_ASSETS, "versions.json"];   // everything SHA256SUMS covers
 export const FIRST_CHECKSUMMED_VERSION = "1.30.17";                       // the first release that shipped SHA256SUMS
 const problems = [];
+const detail = (e) => (e?.stderr ? String(e.stderr).trim().split(/\r?\n/).slice(-2).join(" | ") : "") || e?.message || String(e);
 
 export function compareVersions(a, b) {
   const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
@@ -55,8 +56,11 @@ if (tags && !tags.split(/\r?\n/).includes(version)) {
   problems.push(`no git tag '${version}' — the version was bumped but never tagged, so the release workflow never ran`);
 }
 
-// (2) a published GitHub release for that version must carry the BRAT assets.
+// (2) a published GitHub release for that version must carry the BRAT assets. Probe gh's auth FIRST so an
+// unauthenticated / rate-limited gh is reported as what it is, never as "not released" (panel RL6).
 let released = false;
+try { execSync("gh auth status", { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
+catch (e) { problems.push(`gh is not authenticated (gh auth status failed: ${detail(e)}) — the release checks below cannot run`); }
 try {
   const out = execSync(`gh release view ${version} --json assets -q ".assets[].name"`,
     { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -67,8 +71,8 @@ try {
   if (compareVersions(version, FIRST_CHECKSUMMED_VERSION) >= 0 && !assets.includes("SHA256SUMS")) {
     problems.push(`GitHub release '${version}' has no SHA256SUMS asset — release.yml records one for every release since ${FIRST_CHECKSUMMED_VERSION}; without it the assets cannot be verified`);
   }
-} catch {
-  problems.push(`no published GitHub release '${version}' (gh release view failed — not released, or gh not installed/authenticated)`);
+} catch (e) {
+  problems.push(`no published GitHub release '${version}' (gh release view failed: ${detail(e)})`);
 }
 
 // (3) SR-50: the published assets must MATCH the digests recorded at publish time.
@@ -76,7 +80,7 @@ const digests = new Map();
 if (released && compareVersions(version, FIRST_CHECKSUMMED_VERSION) >= 0 && !problems.some((p) => p.includes("SHA256SUMS"))) {
   const dir = mkdtempSync(join(tmpdir(), "selfsync-release-"));
   try {
-    execSync(`gh release download ${version} --dir "${dir}"`, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    execSync(`gh release download ${version} --dir "${dir}" ${[...CHECKSUMMED_ASSETS, "SHA256SUMS"].map((a) => `--pattern ${a}`).join(" ")}`, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); // only what is verified — never every asset a future release might carry
     const sums = parseSums(readFileSync(join(dir, "SHA256SUMS"), "utf8"));
     for (const name of CHECKSUMMED_ASSETS) {
       const file = join(dir, name);
@@ -88,7 +92,7 @@ if (released && compareVersions(version, FIRST_CHECKSUMMED_VERSION) >= 0 && !pro
       else digests.set(name, actual);
     }
   } catch (e) {
-    problems.push(`could not download + verify the assets of release '${version}': ${e?.message ?? e}`);
+    problems.push(`could not download + verify the assets of release '${version}': ${detail(e)}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -97,7 +101,7 @@ if (released && compareVersions(version, FIRST_CHECKSUMMED_VERSION) >= 0 && !pro
 if (problems.length) {
   console.error(`check-release: version ${version} is NOT fully released:`);
   for (const p of problems) console.error(`  - ${p}`);
-  console.error(`fix: run the release-versioning skill through tag + push (git tag ${version} && git push origin ${version}), then re-run this check. A DIGEST mismatch means the published asset is not the build: delete the release's assets and re-run release.yml (workflow_dispatch) from the tagged commit.`);
+  console.error(`fix: a MISSING release means release.yml did not run for the manifest bump — re-run it (Actions → Release SelfSync plugin → workflow_dispatch on main); it creates the tag at the commit it builds. A DIGEST mismatch means the published asset is not the build: delete the release AND its tag (gh release delete ${version} --cleanup-tag), then re-run release.yml on the commit that bumped the manifest — release.yml refuses to publish under a tag that points at a different commit, so assets and tag always describe the same build.`);
   process.exit(1);
 }
 const digestNote = digests.size ? ` — digests verified: ${[...digests].map(([n, h]) => `${n} ${h.slice(0, 12)}…`).join(", ")}` : (compareVersions(version, FIRST_CHECKSUMMED_VERSION) < 0 ? ` (predates SHA256SUMS ${FIRST_CHECKSUMMED_VERSION}; presence checked, digests not available)` : "");

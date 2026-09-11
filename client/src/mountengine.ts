@@ -88,7 +88,11 @@ export interface MountRuntimeCtx {
   restore?: MountPersist;    // persisted own base + cursor to resume from (absent ⇒ fresh mount, cursor 0)
   ignorePatterns?: string[];
   maxSyncBytes?: number;
-  skipForeignArtefacts?: boolean; // SR-47: leave another sync tool's artefacts alone inside mounts too (default on)
+  // SR-47: leave another sync tool's artefacts alone inside mounts too (default on). A PREDICATE, not a snapshot:
+  // rebuildMountScopes keeps a runtime alive across setting changes, and the mount io reads the LIVE setting, so a
+  // frozen boolean here let list()/exists() and accepts() disagree — toggling skip ON mid-session could then read
+  // a based foreign path as absent and tombstone it on the SOURCE (panel finding, 2026-09-11).
+  skipForeignArtefacts?: () => boolean;
   bulkDeleteStrategy?: BulkDeleteStrategy; // D0041: the GLOBAL incoming bulk-delete confirmation policy applies to mounts too
   bulkDeleteThreshold?: number;
   // issueMountReadOnlyRailDirectionKeyed: is writing to the SOURCE actually FORBIDDEN by the grant (a shared
@@ -100,7 +104,7 @@ export interface MountRuntimeCtx {
   // (base/state/api/io/guard/retry) is never overridable — only these observational hooks.
   callbacks?: Partial<Pick<ReconcileDeps,
     "onProgress" | "onConflict" | "onFileError" | "onGuard" | "onPushGuard" | "onBaseChanged" |
-    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent" | "onPullExhausted">>;
+    "onSkip" | "onReadOnly" | "onStage" | "onDeclined" | "onKeptAbsent" | "onPullExhausted" | "pushFlipHold" | "onFlipHeld">>; // SR-47: the rewrite-loop breaker covers mount scopes too
   // Optional source-vault readiness probe (the raw transport's status()) — the mount holds OFFLINE on a not-
   // ready source (mid-reindex/degraded), the same guard the primary connect applies (R4-F4).
   sourceReady?: () => Promise<boolean>;
@@ -135,7 +139,7 @@ export class MountRuntime {
     return {
       api: this.api, io: this.io, base: this.base, cache: this.ctx.cache, state: this.state,
       device: this.ctx.device,
-      accepts: (p) => isDataPath(p) && !((this.ctx.skipForeignArtefacts ?? true) && isForeignArtefact(p)), // data-only, in mount-relative space; another sync tool's artefacts skipped (SR-47)
+      accepts: (p) => isDataPath(p) && !((this.ctx.skipForeignArtefacts?.() ?? true) && isForeignArtefact(p)), // data-only, in mount-relative space; another sync tool's artefacts skipped (SR-47, live predicate)
       readOnly: this.mount.direction === "pull" || !!this.ctx.sourceReadOnly?.(), // pull, OR the grant forbids writing this shared source — never mutate it
       noResurrect: this.mount.source.owner !== "", // a SHARED source (owned by someone else): keep an absent-without-tombstone file locally but do NOT re-push it — that would resurrect a peer's tombstone-pruned deletion on their vault (issueMountSharedSourceResurrection). Genuine local edits still push (owner-directed 2026-08-14).
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)

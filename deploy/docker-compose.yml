@@ -5,6 +5,8 @@
 services:
   selfsync:
     # Pin :<version> in production; :latest tracks the newest release.
+    # Every plugin release also publishes a VERSION-tagged server image (release.yml dispatches server-image.yml on the
+    # tag) — pin it in production, e.g. `:1.30.18`, for reproducible upgrades (docs/deployment.md).
     image: ghcr.io/williamweatherholtz/obsidian-selfsync-server:latest
     restart: unless-stopped
     environment:

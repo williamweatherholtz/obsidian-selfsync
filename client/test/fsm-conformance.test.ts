@@ -68,3 +68,18 @@ describe("STPA ↔ fsm.ts conformance", () => {
     }
   });
 });
+
+// SR-36 (panel finding CV5, 2026-09-11): mountMachine is the ONLY lifecycle writer. Three direct `scope.state = "…"`
+// assignments had crept in beside mountTransition() — states the machine had no edge into (localGone, diverged
+// from mounting/offline), so the table the analysis reads was not the table the code ran. Every write must go
+// through mountTransition(); this grep guards it.
+describe("mount lifecycle: every state write goes through the machine (SR-36)", () => {
+  it("no `.state = \"<literal>\"` assignment on a mount scope outside mountfsm.ts", () => {
+    const offenders: string[] = [];
+    for (const file of ["mountsync.ts", "main.ts", "mountengine.ts", "mountsettings.ts", "settings.ts"]) {
+      const src = read(path.join(SRC, file)).split("\n");
+      src.forEach((line, i) => { if (/\.state\s*=\s*"(detached|mounting|live|syncing|diverged|offline|unmounting|localGone|failed)"/.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`); });
+    }
+    expect(offenders).toEqual([]);
+  });
+});

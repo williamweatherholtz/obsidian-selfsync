@@ -51,6 +51,11 @@ export function foreignArtefact(path: string): ForeignArtefact | null {
 
 export function isForeignArtefact(path: string): boolean { return foreignArtefact(path) !== null; }
 
+// Vault-root MARKERS a tool leaves even when it has produced no conflict copy. Obsidian's file index never lists
+// dot-prefixed paths, so these must be probed with the adapter (ObsidianVaultIo.list does, once per listing) —
+// without that the settings row could only ever name a tool after it had already caused a conflict.
+export const FOREIGN_ROOT_MARKERS: readonly string[] = [".stfolder", ".stignore", ".stversions", ".dropbox", ".dropbox.cache", ".sync"];
+
 // Summarise a listing: which tools are evidenced (any artefact of theirs) and how many paths each accounts
 // for. Feeds the settings row ("Syncthing detected — 12 of its files not synced") and a once-per-change log.
 export interface ForeignSummary { tools: ForeignTool[]; skipped: number; byTool: Record<string, number> }

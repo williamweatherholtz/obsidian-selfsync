@@ -41,8 +41,12 @@
 //                           observed 2026-09-07 as ~500 paths differing from the server only in capitalisation.
 //   OTHER DEVICES + PEERS:  the user's other devices (concurrent writers, trusted); share peers (untrusted, A6).
 //   THE SERVER + OPERATOR:  owned + trusted (above); authoritative index, tombstones, versions, grants; repair.
-//   THE RELEASE CHANNEL — NEW: GitHub Releases via BRAT (plugin code) and GHCR (server image) — the authority that
-//                           changes the plugin's OWN CODE; integrity is checked by scripts/check-release.mjs + CI.
+//   THE RELEASE CHANNEL:    OWNED environment (our CI workflows + our GitHub account; the same trust as the server +
+//                           operator): GitHub Releases via BRAT (plugin code) and GHCR (server image) — the authority that
+//                           changes the plugin's OWN CODE. Integrity: release.yml records SHA256SUMS and verifies the
+//                           uploaded assets before publishing; verify-released.yml re-verifies daily and REBUILDS the tag
+//                           to compare (D0054). SR-49/50/61 are realized by c15ReleaseChannel BECAUSE it is ours
+//                           (panel SE7, 2026-09-11) — an SR is never realized by an uncommandable controller.
 //   THE NETWORK PATH:       reverse proxy (Caddy) / TLS / DNS between plugin and server.
 //   TIME:                   device clocks (mtimes, frontmatter timestamps, backoff timers).
 //
