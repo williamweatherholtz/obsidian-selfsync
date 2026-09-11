@@ -468,4 +468,25 @@ package ProjectAcceptance {
     #Verify dependency from bulkDeleteConfirmDoD to sr62;
     #Verify dependency from switchUploadProbeGuardDoD to sr60;
     #Verify dependency from testHardeningClientDoD to sr60;
+
+    // ---- 2026-09-11 architecture panel sprints (1.30.18) #Verify edges — each DoD carries a recorded pass at 39f31d3d ----
+    #Verify dependency from coexistenceHardeningDoD to sr58;
+    #Verify dependency from coexistenceHardeningDoD to sr64;
+    #Verify dependency from coexistenceHardeningDoD to sr47;
+    #Verify dependency from mountScopeBoundaryHardeningDoD to sr52;
+    #Verify dependency from mountScopeBoundaryHardeningDoD to sr53;
+    #Verify dependency from mountScopeBoundaryHardeningDoD to sr36;
+    #Verify dependency from contentIdentityTwoSidedDoD to sr56;
+    #Verify dependency from contentIdentityTwoSidedDoD to sr57;
+    #Verify dependency from contentIdentityTwoSidedDoD to sr46;
+    #Verify dependency from contentIdentityTwoSidedDoD to sr5;
+    #Verify dependency from hostCoexistenceHardeningDoD to sr54;
+    #Verify dependency from hostCoexistenceHardeningDoD to sr55;
+    #Verify dependency from hostCoexistenceHardeningDoD to sr63;
+    #Verify dependency from hostCoexistenceHardeningDoD to sr45;
+    #Verify dependency from hostCoexistenceHardeningDoD to sr48;
+    #Verify dependency from releaseIntegrityHardeningDoD to sr59;
+    #Verify dependency from releaseIntegrityHardeningDoD to sr65;
+    #Verify dependency from releaseIntegrityHardeningDoD to sr50;
+    #Verify dependency from releaseIntegrityHardeningDoD to sr49;
 }
