@@ -7,6 +7,7 @@
 // constructs its own; a caller cannot inject the primary's. Pure over injected VaultIo/SyncApi/ChunkCache (no
 // Obsidian API, no transport), so the isolation + wiring are exhaustively unit-testable.
 import { Mount } from "./mounts";
+import { isForeignArtefact } from "./foreigntools";
 import { MountedIo, MountedApi, isDataPath } from "./mountio";
 import { VaultIo, SyncApi, SyncState, ChunkCache } from "./sync";
 import { BaseStore, BaseEntry } from "./base";
@@ -87,6 +88,7 @@ export interface MountRuntimeCtx {
   restore?: MountPersist;    // persisted own base + cursor to resume from (absent ⇒ fresh mount, cursor 0)
   ignorePatterns?: string[];
   maxSyncBytes?: number;
+  skipForeignArtefacts?: boolean; // SR-47: leave another sync tool's artefacts alone inside mounts too (default on)
   bulkDeleteStrategy?: BulkDeleteStrategy; // D0041: the GLOBAL incoming bulk-delete confirmation policy applies to mounts too
   bulkDeleteThreshold?: number;
   // issueMountReadOnlyRailDirectionKeyed: is writing to the SOURCE actually FORBIDDEN by the grant (a shared
@@ -133,7 +135,7 @@ export class MountRuntime {
     return {
       api: this.api, io: this.io, base: this.base, cache: this.ctx.cache, state: this.state,
       device: this.ctx.device,
-      accepts: isDataPath,                              // data-only, in mount-relative space
+      accepts: (p) => isDataPath(p) && !((this.ctx.skipForeignArtefacts ?? true) && isForeignArtefact(p)), // data-only, in mount-relative space; another sync tool's artefacts skipped (SR-47)
       readOnly: this.mount.direction === "pull" || !!this.ctx.sourceReadOnly?.(), // pull, OR the grant forbids writing this shared source — never mutate it
       noResurrect: this.mount.source.owner !== "", // a SHARED source (owned by someone else): keep an absent-without-tombstone file locally but do NOT re-push it — that would resurrect a peer's tombstone-pruned deletion on their vault (issueMountSharedSourceResurrection). Genuine local edits still push (owner-directed 2026-08-14).
       preserveLocalFirstContact: true,                  // a mount composes over EXISTING local data — never adopt-over-local on first contact (R2-F1)

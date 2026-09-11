@@ -346,3 +346,41 @@ describe("Conflicts 'Resolve' button wears the busy state (busygate.ts)", () => 
     p.busy = { busy: true, label: "Analyzing files…", reason: "x" }; p.fireBusy(); // unsubscribed on hide: no throw
   });
 });
+
+describe("SR-47 / SR-50: other sync tools + build digest (settings tab)", () => {
+  it("Advanced names the detected tool on the coexistence toggle, and the toggle re-reconciles when flipped", async () => {
+    const p = fakePlugin({ settings: { skipForeignArtefacts: true }, foreignToolsDescription: () => "Syncthing (12 files) detected — their files are left to that tool and not synced" });
+    const { containerEl } = renderTab(p);
+    const row = rowByName(containerEl, "Leave other sync tools' files alone");
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain("Syncthing (12 files) detected");
+    flipToggle(toggleByName(containerEl, "Leave other sync tools' files alone"));
+    await flush();
+    expect(p.settings.skipForeignArtefacts).toBe(false);
+    expect(p.saveSettings).toHaveBeenCalled();
+    expect(p.requestReconcile).toHaveBeenCalled();
+    const none = renderTab(fakePlugin({ settings: { skipForeignArtefacts: true } })).containerEl.textContent ?? "";
+    expect(none).toContain("Nothing detected right now");
+  });
+  it("Conflicts lists flip-held files with the paths and wires 'Upload current versions anyway'", async () => {
+    const p = fakePlugin({ heldFlipPaths: () => ["Daily/2026-09-10.md", "Inbox/todo.md"] });
+    const { containerEl } = renderTab(p);
+    const row = rowByName(containerEl, "2 files keep changing back and forth");
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain("Daily/2026-09-10.md");
+    expect(row.textContent).toContain("uploading is paused");
+    buttonByText(row, "Upload current versions anyway").click();
+    await flush();
+    expect(p.releaseFlipHeld).toHaveBeenCalled();
+    // no held paths → no row at all (the Conflicts group is absent when nothing is pending)
+    expect(rowByName(renderTab(fakePlugin()).containerEl, "1 file keeps changing back and forth")).toBeFalsy();
+  });
+  it("About shows the version and the installed main.js digest (SR-50 audit surface)", async () => {
+    const { containerEl } = renderTab(fakePlugin());
+    await flush();
+    const row = rowByName(containerEl, "About");
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain("SelfSync 1.30.17");
+    expect(row.textContent).toContain("main.js sha256 0123456789abcdef…");
+  });
+});

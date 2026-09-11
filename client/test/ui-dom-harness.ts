@@ -72,6 +72,12 @@ export function fakePlugin(over: any = {}) {
     acceptBulkDeletions: vi.fn(async () => {}),
     keepBulkDeletions: vi.fn(async () => {}),
     pendingBulkPushReview: () => [],                  // F2: no held bulk-pushes-to-shared by default
+    heldFlipPaths: () => [] as string[],              // SR-47: no rewrite-loop holds by default
+    releaseFlipHeld: vi.fn(),
+    foreignToolsDescription: () => "",              // SR-47: no other sync tool detected by default
+    requestReconcile: vi.fn(),
+    manifest: { id: "selfsync", version: "1.30.17", dir: ".obsidian/plugins/selfsync" },
+    buildDigest: vi.fn(async () => "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), // SR-50
     acceptBulkPushes: vi.fn(async () => {}),
     keepBulkPushes: vi.fn(async () => {}),
     activeMounts: () => settings.mounts ?? [],       // by default every configured mount is "active" in tests

@@ -57,10 +57,34 @@ jobs:
           VER="${{ steps.v.outputs.version }}"
           # Create the tag (at this commit) AND the release in one step; manifest.json's version IS the tag.
           # BRAT downloads these assets from the release.
+          # SR-50 (issueReleaseAssetIntegrityUnchecked): record the SHA-256 of EVERY asset at publish time, as a
+          # SHA256SUMS asset AND in the release notes, so the published files can be re-verified against the build
+          # (scripts/check-release.mjs does, daily via verify-released.yml; the plugin's About row shows the digest
+          # of the installed main.js for a device-side audit). Basenames only, so `sha256sum -c` works in a flat dir.
+          (cd client && sha256sum main.js styles.css) > SHA256SUMS
+          sha256sum manifest.json versions.json >> SHA256SUMS
+          cat SHA256SUMS
+          NOTES="$(printf 'SelfSync %s — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync.\n\nSHA-256 of the published assets (also the SHA256SUMS asset):\n\n```\n%s\n```' "$VER" "$(cat SHA256SUMS)")"
           gh release create "$VER" --target "$GITHUB_SHA" \
-            client/main.js client/styles.css manifest.json versions.json \
+            client/main.js client/styles.css manifest.json versions.json SHA256SUMS \
             --title "$VER" \
-            --notes "SelfSync $VER — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync."
+            --notes "$NOTES"
+
+      # SR-50: what GitHub now SERVES must be what we just built — download the published assets back and verify
+      # them against SHA256SUMS. A mismatch fails the job loudly (the release stays visible, red, for the operator
+      # to delete + re-run) instead of an altered/corrupted asset installing silently through BRAT.
+      - name: Verify the published assets against SHA256SUMS
+        if: steps.v.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          rm -rf verify && mkdir verify
+          for attempt in 1 2 3 4 5; do
+            if gh release download "$VER" --dir verify --clobber; then break; fi
+            echo "assets not yet downloadable (attempt $attempt) — retrying"; sleep 10
+          done
+          cd verify && ls -l && sha256sum -c SHA256SUMS
 
   # The server image is published by a dedicated workflow (.github/workflows/server-image.yml), which
   # fires on server changes to main (and on version tags) — so a release that touches the server publishes

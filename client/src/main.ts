@@ -27,6 +27,8 @@ import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; // content identity + ignored-key presence for the conflict paths
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
+import { isForeignArtefact, summarizeForeign, describeForeign } from "./foreigntools"; // SR-47: other sync tools' artefacts
+import { FlipGuard } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, nudgeTarget } from "./mounts";
@@ -183,6 +185,10 @@ class ObsidianVaultIo implements VaultIo {
   // MOUNT io is data-only and does the OPPOSITE — it must accept its own mount-subtree files (MountedIo scopes
   // them) and never applies the mount-exclusion, else it would drop its own writes (A1).
   private passes(path: string): boolean {
+    // SR-47: another sync tool's bookkeeping (its conflict copies, version folders, markers, lock files) is that
+    // tool's, not content — out of scope for EVERY scope (primary and mount), so never pushed, pulled, based or read
+    // as a deletion. The listing counts what it skips so the settings row can name the tool (foreignToolsDescription).
+    if (this.plugin.settings.skipForeignArtefacts && isForeignArtefact(path)) return false;
     if (this.forMount) return !isConfigPath(path); // data-only; subtree scoping is MountedIo's job
     return !primaryExcludes(this.plugin.activeMounts(), path) // exclude only mounts actually in effect (N1)
       && shouldSync(path, this.plugin.settings.configSync, this.plugin.selfFolderId());
@@ -192,9 +198,12 @@ class ObsidianVaultIo implements VaultIo {
     const m = new Map<string, { mtime: number; size: number; ctime?: number }>();
     // getFiles() returns notes/attachments only (never .obsidian); passes() is a
     // belt-and-suspenders guard. ctime feeds first-seed of a managed note's `created`.
+    const foreign: string[] = [];
     for (const f of this.plugin.app.vault.getFiles()) {
       if (this.passes(f.path)) m.set(f.path, { mtime: f.stat.mtime, size: f.stat.size, ctime: f.stat.ctime });
+      else if (!this.forMount && isForeignArtefact(f.path)) foreign.push(f.path);
     }
+    if (!this.forMount) this.plugin.noteForeignArtefacts(foreign);
     if (!this.forMount && this.plugin.settings.configSync.enabled) {
       // Enumerate the hidden .obsidian/ tree via a BOUNDED-PARALLEL walk (issueConfigWalkSlow): the old
       // recursion awaited every adapter.list/stat one at a time, so a plugin-heavy tree cost seconds on a
@@ -615,6 +624,47 @@ export default class SelfSyncPlugin extends Plugin {
   // Pushes the server refused (path → refused content hash), held until the file changes or the plugin
   // reloads (reconcile.rejectedPushes). The held count is logged ONCE per burst, not once per file.
   private rejectedPushes = new Map<string, string>();
+  // SR-47: what the primary listing skipped as another sync tool's artefacts (summarised for the settings row; the
+  // description is logged when it CHANGES, not on every pass), and the two-writer loop breaker with its burst log.
+  private foreignDescription = "";
+  private readonly flipGuard = new FlipGuard();
+  private flipHeldBurst = 0;
+  private flipHeldTimer?: number;
+  noteForeignArtefacts(paths: string[]): void {
+    const desc = describeForeign(summarizeForeign(paths));
+    if (desc === this.foreignDescription) return;
+    this.foreignDescription = desc;
+    if (desc && !this.unloading) this.log(`other sync tool: ${desc}`);
+  }
+  foreignToolsDescription(): string { return this.settings.skipForeignArtefacts ? this.foreignDescription : ""; }
+  heldFlipPaths(): string[] { return this.flipGuard.held(Date.now()); }
+  requestReconcile(): void { if (!this.unloading) this.engine.enqueue({ kind: "remote" }); }
+  releaseFlipHeld(): void {
+    for (const p of this.flipGuard.held(Date.now())) this.flipGuard.release(p);
+    this.requestReconcile();
+  }
+  private noteFlipHeld(path: string): void {
+    this.flipHeldBurst++;
+    this.requestUiRefresh();
+    if (this.flipHeldTimer !== undefined) return;
+    this.flipHeldTimer = window.setTimeout(() => {
+      this.flipHeldTimer = undefined;
+      const n = this.flipHeldBurst; this.flipHeldBurst = 0;
+      if (n > 0 && !this.unloading) this.log(`${n} file${n > 1 ? "s keep" : " keeps"} changing back and forth between versions (e.g. '${path}') — something else on this device rewrites ${n > 1 ? "them" : "it"} after every sync, so uploading ${n > 1 ? "them is" : "it is"} paused to stop the loop; edit the file, or use Settings → Conflicts to upload anyway`);
+    }, 2_000);
+  }
+  // SR-50: SHA-256 of the INSTALLED main.js, so a device can be audited against the release's SHA256SUMS.
+  private buildDigestCache?: Promise<string | undefined>;
+  buildDigest(): Promise<string | undefined> {
+    this.buildDigestCache ??= (async () => {
+      try {
+        const dir = this.manifest.dir; if (!dir) return undefined;
+        const bytes = new Uint8Array(await this.app.vault.adapter.readBinary(normalizePath(`${dir}/main.js`)));
+        return await sha256hex(bytes);
+      } catch { return undefined; }
+    })();
+    return this.buildDigestCache;
+  }
   private heldPushes = 0;
   private heldPushTimer?: number;
   // Local paths matched to a server key by case-insensitive name this pass — logged ONCE per burst with one
@@ -1992,7 +2042,10 @@ export default class SelfSyncPlugin extends Plugin {
       // Plus the D0039 mount BOUNDARY: a mount-point path is excluded from the primary scope (synced by its
       // own mount scope) — the load-bearing invariant that a mounted file never double-syncs to the primary.
       // Uses activeMounts() (the validated in-effect set) so exclusion and scope-building agree (N1).
-      accepts: (p) => !primaryExcludes(this.activeMounts(), p) && shouldSync(p, this.settings.configSync, this.selfFolderId()),
+      accepts: (p) => !primaryExcludes(this.activeMounts(), p) && shouldSync(p, this.settings.configSync, this.selfFolderId())
+        && !(this.settings.skipForeignArtefacts && isForeignArtefact(p)), // SR-47: another sync tool's artefacts are out of scope
+      pushFlipHold: (p, h) => this.flipGuard.record(p, h, Date.now()).hold, // SR-47: never amplify a two-writer loop
+      onFlipHeld: (p) => this.noteFlipHeld(p),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
       onProgress: (pending) => {
@@ -2721,6 +2774,7 @@ export default class SelfSyncPlugin extends Plugin {
         ignorePatterns: this.ignorePatterns(), // R5-LOW-2: apply the user's timestamp-ignore rules inside mounts too
         bulkDeleteStrategy: this.settings.bulkDeleteStrategy, // D0041: the global incoming bulk-delete confirmation applies to mounts too
         bulkDeleteThreshold: this.settings.bulkDeleteThreshold,
+        skipForeignArtefacts: this.settings.skipForeignArtefacts, // SR-47
         sourceReadOnly: () => this.mountSourceReadOnly(mount), // issueMountReadOnlyRailDirectionKeyed: the read-only rail follows the grant, not just direction (evaluated per pass)
         // R4-F4 + R7-F1: hold the mount OFFLINE unless the SOURCE is both READY and on a COMPATIBLE protocol
         // version — the same guard the primary connect applies. sessionToken is set even after a version-

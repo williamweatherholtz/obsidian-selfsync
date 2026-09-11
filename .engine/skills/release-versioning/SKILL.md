@@ -65,10 +65,14 @@ release.yml is the manual re-run. Step 5 still asserts the result.
 
 ## 5. Verify the published release (automated — do not eyeball)
 ```
-node scripts/check-release.mjs        # asserts manifest version == tag == published release + assets
+node scripts/check-release.mjs        # asserts manifest version == tag == published release + assets + matching digests
 ```
 It exits non-zero unless `manifest.json`'s version has a matching git tag **and** a published
-GitHub release carrying the BRAT assets (`main.js`, `manifest.json`, `styles.css`). This is the
+GitHub release carrying the BRAT assets (`main.js`, `manifest.json`, `styles.css`) **whose bytes match
+the `SHA256SUMS` the release workflow recorded at publish time** (releases since 1.30.17; SR-50 —
+presence is not integrity: release.yml writes SHA256SUMS + re-downloads and verifies the published
+assets, and the plugin's Settings → Advanced → About row shows the installed `main.js` digest so a
+device can be audited against the release). This is the
 guard against the "bumped + committed but never released" miss — "released" is a checkable
 assertion, not a memory. The `.github/workflows/verify-released.yml` CI job runs the same check
 daily, so drift goes red on its own even if this step is skipped.

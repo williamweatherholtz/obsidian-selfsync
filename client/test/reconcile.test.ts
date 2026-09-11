@@ -5,6 +5,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRejectedError, CommitRequest, FileMeta } from "../src/protocol";
 import { isSafeVaultPath } from "../src/pathsafe";
+import { FlipGuard } from "../src/flipguard";
 
 const H = (h: string) => ({ hash: h });
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -2047,5 +2048,64 @@ describe("case-aware path identity on a case-insensitive filesystem (issueCasePa
     expect(s.aliased).toEqual([]);
     expect(s.srv.files.has("4 Archive/plans.md")).toBe(true);
     expect(s.srv.files.has("4 archive/plans.md")).toBe(false);
+  });
+});
+
+// SR-47 / UCA-52 (issueSyncToolCoexistenceUnguarded): a push whose content keeps RETURNING to an earlier value is
+// a two-writer loop (another sync tool / plugin rewriting the file after each sync). The reconciler asks the
+// caller's FlipGuard before every push and HOLDS when told to — nothing written anywhere, the path surfaced.
+describe("a flip-held push is not sent (SR-47 rewrite-loop breaker)", () => {
+  it("pushFlipHold=true holds the push, fires onFlipHeld, changes no base and touches no other file", async () => {
+    const srv = fakeServer(); const io = fakeIo({ "loop.md": "A\n", "ok.md": "fine\n" });
+    const asked: string[] = []; const held: string[] = [];
+    const d = deps(srv.api, io, { pushFlipHold: (p, h) => { asked.push(`${p}:${h.slice(0, 4)}`); return p === "loop.md"; }, onFlipHeld: (p) => held.push(p) });
+    await reconcileAll(d);
+    expect(srv.files.has("ok.md")).toBe(true);
+    expect(srv.files.has("loop.md")).toBe(false);          // held, never sent
+    expect(held).toEqual(["loop.md"]);
+    expect(d.base.get("loop.md")).toBeUndefined();          // no base recorded for a held push
+    expect(asked.filter((a) => a.startsWith("loop.md:"))).toHaveLength(1);
+    await reconcileAll(d);                                  // re-asked every pass (the guard decides, not a memo)
+    expect(asked.filter((a) => a.startsWith("loop.md:"))).toHaveLength(2);
+    expect(held).toEqual(["loop.md", "loop.md"]);
+  });
+  it("pushFlipHold=false (or absent) pushes as before", async () => {
+    const srv = fakeServer(); const io = fakeIo({ "n.md": "x\n" });
+    await reconcileAll(deps(srv.api, io, { pushFlipHold: () => false }));
+    expect(srv.files.has("n.md")).toBe(true);
+    const srv2 = fakeServer(); const io2 = fakeIo({ "n.md": "x\n" });
+    await reconcileAll(deps(srv2.api, io2));
+    expect(srv2.files.has("n.md")).toBe(true);
+  });
+});
+
+// End-to-end shape of the Syncthing loop (S-39): after EVERY push, "another tool" on this device rewrites the
+// file back to the version it had before — so the reconciler sees a fresh local change each pass and, without
+// the guard, would push forever. With a real FlipGuard wired in, the pushes stop at the limit while the file
+// itself is left exactly as the other tool wants it, and a genuine edit resumes syncing.
+describe("Syncthing-style rewrite loop is broken by the FlipGuard (S-39, SR-47)", () => {
+  it("pushes stop at the flip limit; a real edit resumes them", async () => {
+    const srv = fakeServer(); const io = fakeIo({ "loop.md": "A\n" });
+    const guard = new FlipGuard(3, 10 * 60_000);
+    let now = 0; const held: string[] = [];
+    const d = deps(srv.api, io, { pushFlipHold: (p, h) => guard.record(p, h, now).hold, onFlipHeld: (p) => held.push(p) });
+    const realCommit = srv.api.commit.bind(srv.api); let pushes = 0;
+    srv.api.commit = async (r: CommitRequest) => { if (r.path === "loop.md") pushes++; return realCommit(r); };
+    // the other tool: whatever we just pushed, it flips the file to the OTHER of two contents
+    // Different SIZES on purpose: the fake io reports mtime 0 for everything, so an equal-size flip would be
+    // masked by the size+mtime scan-skip hint (a harness artefact, not the behaviour under test).
+    const otherTool = () => { const cur = new TextDecoder().decode(io.m.get("loop.md")!); io.m.set("loop.md", enc(cur === "A\n" ? "BBB\n" : "A\n")); };
+    for (let i = 0; i < 12; i++) { now += 1000; await reconcileAll(d); otherTool(); }
+    expect(pushes).toBeLessThanOrEqual(5);     // A, B, A(flip1), B(flip2), A(flip3 → held from here)
+    expect(pushes).toBeGreaterThanOrEqual(4);
+    expect(held.length).toBeGreaterThan(0);
+    expect(guard.held(now)).toEqual(["loop.md"]);
+    // a genuinely NEW edit (neither A nor B) releases the hold and syncs
+    io.m.set("loop.md", enc("C — a real edit\n")); now += 1000;
+    const before = pushes;
+    await reconcileAll(d);
+    expect(pushes).toBe(before + 1);
+    expect(srv.files.get("loop.md")!.hash).toBe(await sha256hex(enc("C — a real edit\n")));
+    expect(guard.held(now)).toEqual([]);
   });
 });

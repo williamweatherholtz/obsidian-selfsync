@@ -306,6 +306,11 @@ export interface ReconcileDeps {
   onConflict?: (path: string, copy: string) => void;
   onBaseChanged?: () => void;
   onGuard?: (path: string) => void; // fired per path HELD by the incoming bulk-delete confirmation (D0041) — the plugin collects these into the pending-review set
+  // SR-47 rewrite-loop breaker: asked before every push with the content about to go up; true ⇒ HOLD (nothing written
+  // anywhere, onFlipHeld fired, re-evaluated next pass). The caller's FlipGuard recognises content RETURNING to an
+  // earlier value — the signature of two writers bouncing one file — and lifts the hold on a genuinely new value.
+  pushFlipHold?: (path: string, hash: string) => boolean;
+  onFlipHeld?: (path: string) => void;
   onPushGuard?: (path: string) => void; // fired per LOCAL-ONLY-NEW path HELD by the bulk-push-to-shared-source guard (F2) — the plugin collects these into a pending-push-review set (never resurrect a peer's mass deletion, never blind-seed a shared folder). Reuses the bulkDeleteStrategy/Threshold knob.
   // D0041: user-configurable INCOMING bulk-delete confirmation. When a full/delta pass would delete-LOCAL more
   // than the chosen threshold (off ⇒ never; count ⇒ > N files; percent ⇒ > N% of the accepted base), those
@@ -1326,6 +1331,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // reaches here). CAS on the remote version we saw (0 for a local-only create); a concurrent commit that
       // advanced the server 409s → per-file skip → next reconcile merges.
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      if (localHash && d.pushFlipHold?.(path, localHash)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       let pushed: { hash: string; bytes: Uint8Array };
       try { pushed = await pushFile(d, path, eff.version); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
@@ -1344,6 +1350,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // (expected-absent): a peer that created it meanwhile 409s → next reconcile merges, no lost update.
       d.onKeptAbsent?.(path);
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      if (localHash && d.pushFlipHold?.(path, localHash)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       let restored: { hash: string; bytes: Uint8Array };
       try { restored = await pushFile(d, path, 0); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }

@@ -62,6 +62,7 @@ export interface SelfSyncSettings {
   maxSyncMB: number; // per-file size cap for THIS device (MB). Files larger than this are skipped here; raise with care on mobile (files buffer in RAM). The server enforces its own ceiling (MAX_FILE_MB).
   bulkDeleteStrategy: "off" | "count" | "percent"; // confirm a large INCOMING deletion batch before applying it locally? (D0041). Your own (outgoing) deletes are never gated.
   bulkDeleteThreshold: number; // the threshold value — a file COUNT (count) or a PERCENT of the synced set (percent).
+  skipForeignArtefacts: boolean; // leave OTHER sync tools' bookkeeping (Syncthing/Dropbox/Nextcloud conflict copies, markers, version folders, lock files) to that tool — never synced, never read as deletions (SR-47)
   configConflicts: string[]; // `.obsidian/` paths whose sync diverged (removal or both-edited) and await user adjudication (see reconcile + ConfigConflictModal)
   // NOTE conflicts are NOT stored here — they are DERIVED from the vault's conflict-copy files
   // (deriveNoteConflicts, D-conflict-model), so the list/count/modal can never drift from reality.
@@ -134,6 +135,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   maxSyncMB: 200, // default per-file sync cap (MB); was hard-coded 50 (mobile) / 200 (desktop)
   bulkDeleteStrategy: "count", // D0041: by default, confirm before applying an incoming deletion of more than…
   bulkDeleteThreshold: 10,     // …10 files (absolute; a % nags on small vaults)
+  skipForeignArtefacts: true,  // SR-47: another sync tool's artefacts are its own, not content to propagate
   configConflicts: [],
   // Timestamp-ignore (identity-only, default ON — it never writes notes; see the field docs above).
   ignoreTimestampChanges: true,
@@ -180,6 +182,7 @@ export function parseSettings(raw: unknown): SelfSyncSettings {
   // is a whole number > 0 (default 10) — a bad/absent value falls back so the control can never be un-usable.
   out.bulkDeleteStrategy = s.bulkDeleteStrategy === "off" || s.bulkDeleteStrategy === "percent" ? s.bulkDeleteStrategy : "count";
   { const n = Math.floor(Number(s.bulkDeleteThreshold)); out.bulkDeleteThreshold = Number.isFinite(n) && n > 0 ? n : 10; }
+  out.skipForeignArtefacts = s.skipForeignArtefacts !== false; // default ON; only an explicit false turns it off
   out.autoSyncNewPlugins = s.autoSyncNewPlugins === true; // opt-in; any non-true persisted value → off
   out.autopilotSeen = Array.isArray(s.autopilotSeen) ? [...new Set(s.autopilotSeen.filter((x): x is string => typeof x === "string"))] : undefined;
   { const m = parseMounts(s.mounts); out.mounts = m.length ? m : undefined; } // composed-vault mounts (D0039), normalized + malformed-dropped
@@ -472,7 +475,8 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     const noteConflicts = this.plugin.listNoteConflicts();
     const pendingDeletes = this.plugin.pendingBulkDeletions(); // D0041: incoming bulk deletions held for confirmation
     const pendingPushes = this.plugin.pendingBulkPushReview(); // F2: local-only-new files held before mass-pushing to a shared source
-    if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length && !pendingPushes.length) return;
+    const flipping = this.plugin.heldFlipPaths(); // SR-47: paths whose content keeps returning to an earlier version — a two-writer loop, held
+    if (!configGroups.length && !noteConflicts.length && !pendingDeletes.length && !pendingPushes.length && !flipping.length) return;
     const g = new SettingGroup(c).setHeading("Conflicts");
     this.conflictGate?.dispose();
     const resolveButtons: ButtonComponent[] = [];
@@ -497,6 +501,14 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           const ok = await confirmModal(this.app, { title: `Delete ${pd.count} file${pd.count > 1 ? "s" : ""}?`, body: `These were deleted on the other side and will be removed from ${pd.label} (to your local trash where available). This can't be undone from here.`, confirmText: "Delete them", warn: true });
           if (ok) { await this.plugin.acceptBulkDeletions(pd.scope); this.display(); }
         })));
+    }
+    // SR-47: a file whose content keeps FLIPPING between versions is being rewritten by something else on this
+    // device (another sync tool, a plugin) each time we sync it. Pushing again would feed the loop, so the push
+    // is held; a real edit (new content) releases it on its own, or the user pushes the current version anyway.
+    if (flipping.length) {
+      g.addSetting((st) => st.setName(`${flipping.length} file${flipping.length > 1 ? "s" : ""} keep${flipping.length > 1 ? "" : "s"} changing back and forth`).setClass("mod-warning")
+        .setDesc(`Something else on this device rewrites ${flipping.length > 1 ? "these files" : "this file"} every time they sync (another sync tool or a plugin), so uploading is paused to stop the loop: ${flipping.slice(0, 3).join(", ")}${flipping.length > 3 ? ", …" : ""}. Editing the file resumes syncing.`)
+        .addButton((b) => b.setButtonText("Upload current versions anyway").onClick(async () => { this.plugin.releaseFlipHeld(); this.display(); })));
     }
     // F2: a large batch of local-only files bound for a SHARED source, held for your OK. This guards against a
     // re-first-contact resurrecting a peer's mass deletion (and confirms a legitimate large first seed). Push
@@ -714,11 +726,31 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           });
         });
     }
+    // SR-47 (other sync tools on the same directory): their conflict copies / markers / version folders are THEIR
+    // bookkeeping, not content — skipped entirely, and the row NAMES what was detected so a skipped file is never
+    // a mystery. Turning this off syncs them as ordinary files (the pre-1.30.17 behaviour).
+    const foreign = this.plugin.foreignToolsDescription();
+    new Setting(body).setName("Leave other sync tools' files alone")
+      .setDesc(foreign
+        ? `${foreign}. Their conflict copies, version folders and markers are not synced and never treated as deletions.`
+        : "If Syncthing, Dropbox, Nextcloud, Resilio or iCloud also manage this folder, their conflict copies, version folders and markers are not synced and never treated as deletions. Nothing detected right now.")
+      .addToggle((tg) => tg.setValue(s.skipForeignArtefacts).onChange(async (v) => { s.skipForeignArtefacts = v; await this.plugin.saveSettings(); this.plugin.requestReconcile(); }));
     new Setting(body).setName("Device name").setDesc("Shown in conflict-copy filenames.")
       .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(body).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
+    // SR-50: the running build is auditable against its GitHub release — version + the SHA-256 of the installed
+    // main.js (the release's SHA256SUMS asset carries the published digest; a match proves this device runs the
+    // CI build of the tagged commit). Computed lazily; "unavailable" when the adapter can't read the plugin file.
+    const about = new Setting(body).setName("About").setDesc(`SelfSync ${this.plugin.manifest.version} · reading build digest…`);
+    void this.plugin.buildDigest().then((d) => about.setDesc(`SelfSync ${this.plugin.manifest.version} · main.js sha256 ${d ? d.slice(0, 16) + "…" : "unavailable"}`));
+    about.addButton((b) => b.setButtonText("Copy digest").onClick(async () => {
+      const d = await this.plugin.buildDigest();
+      if (!d) { new Notice("SelfSync: build digest unavailable on this device"); return; }
+      await navigator.clipboard.writeText(`${this.plugin.manifest.version} main.js sha256 ${d}`);
+      new Notice("SelfSync: build digest copied");
+    }));
   }
 
   // Collapsible section built from Obsidian's OWN components: the header is a REAL `SettingGroup` section
