@@ -45,7 +45,13 @@ jobs:
           # A tag that exists but points elsewhere means a prior release of this version was built from ANOTHER
           # commit (e.g. a deleted release whose tag survived): `gh release create --target` would reuse that tag and
           # publish THIS build under it — the assets would be the build of main-HEAD, not of the tag. Refuse.
-          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VER" -q .object.sha 2>/dev/null || true)
+          # Read the API's EXIT STATUS, not its stdout: on a missing tag `gh api` prints the 404 error body to stdout,
+          # which a `$(… || true)` capture would take for a SHA (the 1.30.18 first run failed exactly so — D0056).
+          TAG_SHA=""
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VER" > tagref.json 2>/dev/null; then
+            TAG_SHA=$(node -p "require('./tagref.json').object.sha")
+          fi
+          rm -f tagref.json
           if [ -n "$TAG_SHA" ] && [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
             echo "::error::tag $VER already points at $TAG_SHA, not at this commit $GITHUB_SHA — delete the release WITH its tag (gh release delete $VER --cleanup-tag) or bump the version"
             exit 1
