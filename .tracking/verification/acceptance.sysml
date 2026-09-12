@@ -489,4 +489,11 @@ package ProjectAcceptance {
     #Verify dependency from releaseIntegrityHardeningDoD to sr65;
     #Verify dependency from releaseIntegrityHardeningDoD to sr50;
     #Verify dependency from releaseIntegrityHardeningDoD to sr49;
+
+    // ---- 2026-09-12 residual sprints (1.30.19) #Verify edges — each DoD carries a recorded pass at 5e63dcd4 ----
+    #Verify dependency from monotonicRewriteDetectionDoD to sr66;
+    #Verify dependency from monotonicRewriteDetectionDoD to sr47;
+    #Verify dependency from mountCaseSensitiveClaimDoD to sr67;
+    #Verify dependency from mountCaseSensitiveClaimDoD to sr29;
+    #Verify dependency from mountRoConflictCopyKeeperDoD to sr68;
 }
