@@ -48,9 +48,9 @@ describe("finalize — pure reconcile decision table", () => {
     expect(e).toEqual({ kind: "push", version: 7, allowStamp: true });
   });
 
-  it("push on a read-only share: reports 'won't sync' — except a conflict-copy (deliberately local) → noop", () => {
+  it("push on a read-only share: reports 'won't sync' — a conflict-copy has its OWN report (panel CV7: a mount offers it to the keeper; the primary stays quiet)", () => {
     expect(kind("push", { readOnly: true })).toBe("reportReadOnly");
-    expect(kind("push", { readOnly: true, isConflictCopy: true })).toBe("noop");
+    expect(kind("push", { readOnly: true, isConflictCopy: true })).toBe("reportReadOnlyCopy");
   });
 
   it("pull and edit-wins-pull both resolve to a guarded pull", () => {

@@ -6,17 +6,23 @@
 // the caller to HOLD the push. A hold changes nothing on disk or on the server; it stops the plugin from being
 // the loop's amplifier and surfaces the path for the user.
 //
-// SCOPE (honest): a writer that produces a NEVER-SEEN value each round (a monotonic timestamp stamper on a key
-// that is not masked by the ignore-timestamp rules) is not a "return" and is not detected here — that class is
-// handled by content identity for configured keys and is otherwise a recorded residual (SR-47).
+// A writer that produces a NEVER-SEEN value each round — a monotonic timestamp stamper on a key the ignore-timestamp
+// rules do not mask, or in a .txt / excluded folder — is not an exact return. It IS a return of the content's SHAPE:
+// the text with every timestamp-shaped token masked. Callers pass the shape of mergeable text (shapeOf) beside the
+// hash; a shape already seen in the window counts as a flip too (panel ID3 residual, monotonicRewriteDetection).
 //
 // The hold lifts by itself when the content settles on a value NOT seen before (a real edit), when the flips age
 // out of the window, or — one-shot — when the user chooses to upload the CURRENT content anyway: exactly that
 // content passes; if the file flips again the hold is back. Pure + total; unit-tested (flipguard.test.ts).
 export interface FlipVerdict { hold: boolean; flips: number }
 
+// The content with timestamp-shaped tokens masked: ISO dates/date-times (any separator, optional zone), 10–13 digit
+// epoch numbers, and HH:MM(:SS) clock times. Two rounds of a stamper differ only there, so their shapes are equal.
+const TS_TOKEN = /\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?|\b\d{10,13}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b/g;
+export function shapeOf(text: string): string { return text.replace(/\r\n?/g, "\n").replace(TS_TOKEN, "\u27e8ts\u27e9"); }
+
 interface Entry {
-  hashes: { hash: string; at: number }[]; // recent distinct observations, newest last
+  hashes: { hash: string; shape?: string; at: number }[]; // recent distinct observations, newest last
   last?: string;                          // the last content asked about (a REPEAT across passes is not a flip)
   flips: { at: number }[];                // when content returned to an earlier value
   releasedHash?: string;                  // the user's one-shot "upload this anyway" — valid for exactly this content
@@ -29,17 +35,17 @@ export class FlipGuard {
   constructor(private readonly limit = 6, private readonly windowMs = 10 * 60_000) {}
 
   // Record that the reconciler wants to push `path` with content `hash` at `now`. Returns whether to hold.
-  record(path: string, hash: string, now: number): FlipVerdict {
+  record(path: string, hash: string, now: number, shape?: string): FlipVerdict {
     let e = this.seen.get(path);
     if (!e) { e = { hashes: [], flips: [] }; this.seen.set(path, e); }
     const cutoff = now - this.windowMs;
     e.hashes = e.hashes.filter((h) => h.at >= cutoff);
     e.flips = e.flips.filter((f) => f.at >= cutoff);
     if (hash !== e.last) {
-      const returning = e.hashes.some((h) => h.hash === hash);
+      const returning = e.hashes.some((h) => h.hash === hash || (shape !== undefined && h.shape === shape)); // exact return, OR the same shape with only timestamps moved
       if (returning) e.flips.push({ at: now });
       else if (e.last !== undefined && e.flips.length > 0) e.flips = []; // settled on something NEW: a real edit — the loop is over
-      e.hashes.push({ hash, at: now });
+      e.hashes.push({ hash, shape, at: now });
       e.last = hash;
     }
     if (e.flips.length === 0) e.releasedHash = undefined; // nothing held ⇒ nothing to override

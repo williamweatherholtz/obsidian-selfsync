@@ -47,6 +47,7 @@ export type ReconcileEffect =
   | { kind: "clearBase" }                     // in-sync + both absent but a stale base lingers → drop it
   | { kind: "reportReadOnly" }                // a read-only share can't perform this write → surface it
   | { kind: "reportGuard" }                   // a bulk-delete guard tripped → refuse + surface, keep data
+  | { kind: "reportReadOnlyCopy" }            // a conflict copy sitting on a READ-ONLY scope: un-syncable, offered to the mount keeper flow (panel CV7)
   | { kind: "reportPushGuard" }               // a bulk-PUSH-to-shared-source guard tripped → refuse the push, keep local, surface for confirmation (F2)
   | { kind: "push"; version: number; allowStamp: boolean } // upload local at CAS base `version`
   | { kind: "pull" }                          // download remote (guarded against a racing local edit)
@@ -80,7 +81,11 @@ export function finalize(action: Action, f: FinalizeFacts): ReconcileEffect {
       if (!f.hasLocalBytes && !f.hasRmeta && f.hasBaseEntry) return { kind: "clearBase" };
       return { kind: "noop" };
     case "push":
-      if (f.readOnly) return f.isConflictCopy ? { kind: "noop" } : { kind: "reportReadOnly" };
+      // A conflict copy on a read-only scope is ALSO an un-syncable local file. It used to be a silent noop (the 2026-07
+      // noise-suppression choice: the primary's onReadOnly LOGS per pass), so the mount keeper flow ("Keep my edits")
+      // never offered it and it stayed single-device until the mount was removed (panel CV7). It now has its OWN
+      // report: a mount collects it into its read-only edits (offered to the keeper), the primary ignores it (quiet).
+      if (f.readOnly) return f.isConflictCopy ? { kind: "reportReadOnlyCopy" } : { kind: "reportReadOnly" };
       // A LOCAL-ONLY-NEW push (R absent ⇒ !hasRmeta; decide only yields "push" with R absent when B is null) TO A
       // SHARED SOURCE. Two sub-cases, both of which avoid resurrecting a peer's deletion (issueMountSharedSource-
       // Resurrection). An "only-local-changed" push (R PRESENT ⇒ hasRmeta) is normal collaboration, never touched.
@@ -314,7 +319,7 @@ export interface ReconcileDeps {
   // SR-47 rewrite-loop breaker: asked before every push with the content about to go up; true ⇒ HOLD (nothing written
   // anywhere, onFlipHeld fired, re-evaluated next pass). The caller's FlipGuard recognises content RETURNING to an
   // earlier value — the signature of two writers bouncing one file — and lifts the hold on a genuinely new value.
-  pushFlipHold?: (path: string, hash: string) => boolean;
+  pushFlipHold?: (path: string, hash: string, bytes?: Uint8Array) => boolean; // bytes (when text) let the caller compare SHAPES too (a stamper's rounds)
   onFlipHeld?: (path: string) => void;
   onPushGuard?: (path: string) => void; // fired per LOCAL-ONLY-NEW path HELD by the bulk-push-to-shared-source guard (F2) — the plugin collects these into a pending-push-review set (never resurrect a peer's mass deletion, never blind-seed a shared folder). Reuses the bulkDeleteStrategy/Threshold knob.
   // D0041: user-configurable INCOMING bulk-delete confirmation. When a full/delta pass would delete-LOCAL more
@@ -325,6 +330,7 @@ export interface ReconcileDeps {
   bulkDeleteThreshold?: number;
   onSkip?: (path: string, bytes: number) => void; // fired when a too-large file is skipped
   onReadOnly?: (path: string) => void; // fired when a local change can't sync (read-only vault)
+  onReadOnlyCopy?: (path: string) => void; // fired for a CONFLICT COPY on a read-only scope (panel CV7) — a mount offers it to the keeper flow
   // Progress feedback: the number of files still PENDING transfer this pass (drives to 0). Fired at
   // the start and as each pending file completes — the consumer should throttle. Files that don't need
   // syncing are never counted, so this is "work left", not "files examined". Used for the "N pending" text.
@@ -1151,7 +1157,7 @@ async function reconcileMergeOrConflict(
           await d.io.write(path, remoteBytes); setBase(d, path, remoteBytes, rmeta.hash); return; // only the remote really changed → pull
         }
         if (remoteNorm === bnorm && localNorm !== bnorm && !d.readOnly && (keysB === undefined || keysR === keysB)) {
-          if (d.pushFlipHold?.(path, liveLocalHash)) { d.onFlipHeld?.(path); return; } // SR-47
+          if (d.pushFlipHold?.(path, liveLocalHash, liveLocal)) { d.onFlipHeld?.(path); return; } // SR-47
           const { hash: h, bytes } = await pushBytes(d, path, liveLocal, rmeta.version); setBase(d, path, bytes, h); return; // only we really changed → push
         }
       }
@@ -1204,7 +1210,7 @@ async function reconcileMergeOrConflict(
       // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
       // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
       const mergedBytes = new TextEncoder().encode(mergeResult!.merged);
-      if (d.pushFlipHold?.(path, await sha256hex(mergedBytes))) { d.onFlipHeld?.(path); return; } // SR-47: a merge that keeps producing an already-seen result is the same two-writer loop
+      if (d.pushFlipHold?.(path, await sha256hex(mergedBytes), mergedBytes)) { d.onFlipHeld?.(path); return; } // SR-47: a merge that keeps producing an already-seen result is the same two-writer loop
       const { hash: h, bytes: committed } = await pushBytes(d, path, mergedBytes, rmeta.version);
       setBase(d, path, committed, h);
       return;
@@ -1382,6 +1388,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     case "reportReadOnly":
       d.onReadOnly?.(path);
       return;
+    case "reportReadOnlyCopy":
+      d.onReadOnlyCopy?.(path); // collected by a mount runtime into its read-only edits; the primary has no handler (no per-pass log noise)
+      return;
     case "reportGuard":
       d.onGuard?.(path); // a real tombstone / evidenced deletion, but a suspicious MASS delete — refuse, keep data
       return;
@@ -1394,7 +1403,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // reaches here). CAS on the remote version we saw (0 for a local-only create); a concurrent commit that
       // advanced the server 409s → per-file skip → next reconcile merges.
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
-      if (localHash && d.pushFlipHold?.(path, localHash)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
+      if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       let pushed: { hash: string; bytes: Uint8Array };
       try { pushed = await pushFile(d, path, eff.version); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
@@ -1413,7 +1422,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // (expected-absent): a peer that created it meanwhile 409s → next reconcile merges, no lost update.
       d.onKeptAbsent?.(path);
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
-      if (localHash && d.pushFlipHold?.(path, localHash)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
+      if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       let restored: { hash: string; bytes: Uint8Array };
       try { restored = await pushFile(d, path, 0); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }

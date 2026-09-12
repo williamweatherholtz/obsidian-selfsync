@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { FlipGuard } from "../src/flipguard";
+import { FlipGuard, shapeOf } from "../src/flipguard";
 
 // SR-47 / C-50: a file whose content RETURNS to an earlier value is a two-writer loop; past the limit the push
 // is held, and the hold lifts on a genuinely new value, on window expiry, or (one-shot) on an explicit release.
@@ -65,5 +65,29 @@ describe("FlipGuard — rewrite-loop breaker", () => {
     for (const [i, h] of ["A", "B", "A", "B"].entries()) g.record("x.md", h, i * 1000);
     expect(g.record("y.md", "A", 5000).hold).toBe(false);
     expect(g.held(5000)).toEqual(["x.md"]);
+  });
+});
+
+// monotonicRewriteDetection (panel ID3 residual): a stamper writes a NEVER-SEEN value each round — no exact return — but
+// the content's SHAPE (timestamps masked) returns every time. Passing the shape beside the hash makes that a flip.
+describe("FlipGuard — timestamp-shape returns (monotonic stampers)", () => {
+  it("shapeOf masks ISO dates/date-times, epoch numbers and clock times; leaves prose alone", () => {
+    expect(shapeOf("updated: 2026-09-12T10:15:30Z\nx")).toBe("updated: ⟨ts⟩\nx");
+    expect(shapeOf("updated: 2026-09-12 10:15:30+02:00")).toBe("updated: ⟨ts⟩");
+    expect(shapeOf("at 1757671530 and 1757671530123")).toBe("at ⟨ts⟩ and ⟨ts⟩");
+    expect(shapeOf("meeting 9:05 then 14:30:00")).toBe("meeting ⟨ts⟩ then ⟨ts⟩");
+    expect(shapeOf("version 42 of chapter 3\r\n")).toBe("version 42 of chapter 3\n");
+  });
+  it("a stamper's rounds (new timestamp each time, same shape) are held at the limit; a real edit releases", () => {
+    const g = new FlipGuard(3, 10 * 60_000);
+    const round = (i: number) => `---\nlast-modified: 2026-09-12T10:${String(i).padStart(2, "0")}:00Z\n---\nbody\n`;
+    const verdicts = [0, 1, 2, 3, 4].map((i) => g.record("n.md", `h${i}`, i * 1000, shapeOf(round(i))));
+    expect(verdicts.map((v) => v.hold)).toEqual([false, false, false, true, true]); // round 1..3 return the shape → 3 flips
+    expect(g.held(5000)).toEqual(["n.md"]);
+    expect(g.record("n.md", "hX", 6000, shapeOf("---\nlast-modified: 2026-09-12T10:06:00Z\n---\nbody with a real edit\n")).hold).toBe(false);
+  });
+  it("without a shape (binary / oversize) only exact returns count — a monotonic writer is not held", () => {
+    const g = new FlipGuard(3, 10 * 60_000);
+    for (let i = 0; i < 8; i++) expect(g.record("a.bin", `h${i}`, i * 1000).hold).toBe(false);
   });
 });

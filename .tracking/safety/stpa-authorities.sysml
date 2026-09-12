@@ -648,4 +648,18 @@ package ProjectStpaAuthorities {
     #RealizedBy dependency from sr63 to c2SyncEngine;
     #RealizedBy dependency from sr64 to c4Reconciler;
     #RealizedBy dependency from sr65 to c15ReleaseChannel;
+
+    // ---- 2026-09-12 (sprint monotonicRewriteDetection): the SR-64 residual is closed — the breaker also detects returns of
+    // the content's SHAPE (timestamps masked), so a monotonic stamper's rounds are held too. Superseding item (D0108). ----
+    part sr66 : SafetyRequirement { :>> id = "e39365ed-ecb5-4ff3-bf66-f7254bbaa2bf"; :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-66 (supersedes SR-64): the rewrite-loop breaker holds exact returns AND timestamp-shape returns";
+        :>> statement = "The plugin recognises a co-located sync tool and its artefact paths (skip predicate read live by every sink; root markers probed; foreign paths already on the server reported as such) and holds for review a path whose content returns — exactly, OR with only timestamp-shaped tokens changed (the SHAPE of mergeable text up to 256 KiB, passed beside the hash) — more than a bounded number of times within a window; a user release is one-shot. A monotonic stamper on an unmasked key, or in a .txt / excluded folder, is therefore held like an alternating rewriter. Residual: a writer that changes NON-timestamp content each round (a counter) is indistinguishable from typing and is not held.";
+        :>> triggeringEvent = "another writer re-stamping or alternating a file after every sync";
+        :>> safeState = "uploading pauses after N returns; nothing on disk or on the server changes; the user is told which file and why";
+        :>> safetyFunction = "FlipGuard.record(path, hash, now, shape) + shapeOf (flipguard.ts); flipShape in main.ts feeds text ≤ 256 KiB on the primary and mount push paths and the merged push"; }
+    #Supersede dependency from sr66 to sr64;
+    #Mitigates dependency from sr66 to uca52;
+    #Mitigates dependency from sr66 to uca70;
+    #Satisfies dependency from sr66 to sc13;
+    #RealizedBy dependency from sr66 to c4Reconciler;
 }

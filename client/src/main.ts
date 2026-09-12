@@ -28,7 +28,7 @@ import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; 
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
-import { FlipGuard } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker
+import { FlipGuard, shapeOf } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker (+ timestamp-shape return detection)
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
 import { androidModelFromUA, platformDisplayName, usableModel } from "./devicename";
 import { Mount, MountDirection, primaryExcludes, claimsLocal, localFromMountRel, normMountFolder, validMounts, validateMounts, nudgeTarget } from "./mounts";
@@ -90,6 +90,7 @@ const FULL_SCAN_INTERVAL_MS = 15 * 60 * 1000;
 const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the primary change detector
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
 const MOBILE_MAX_SYNC_MB = 100; // hard per-file ceiling on mobile (panel H3); the user setting applies below it
+const FLIP_SHAPE_MAX_BYTES = 256 * 1024; // shape-compare text up to this size (a decode + regex per push)
 const PERSIST_DEBOUNCE_MS = 1_500; // trailing-edge coalescing of base persistence (panel H4)
 const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
 const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers whole files (no streamed writer) — cap to avoid a WebView OOM (R6-Med2); files over this are skipped + noticed, never buffered
@@ -663,6 +664,12 @@ export default class SelfSyncPlugin extends Plugin {
   }
   foreignToolsDescription(): string { return this.settings.skipForeignArtefacts ? this.foreignDescription : ""; }
   heldFlipPaths(): string[] { return this.flipGuard.held(Date.now()); }
+  // The timestamp-masked SHAPE of text content, so a stamper's rounds (a never-seen value each time) read as a
+  // return too (monotonicRewriteDetection). Text only, bounded — a big attachment gets no shape (exact-return only).
+  private flipShape(path: string, bytes?: Uint8Array): string | undefined {
+    if (!bytes || bytes.length > FLIP_SHAPE_MAX_BYTES || !isTextExt(path)) return undefined;
+    try { const text = strictDecode(bytes); return text === null ? undefined : shapeOf(text); } catch { return undefined; }
+  }
   requestReconcile(): void { if (!this.unloading) this.engine.enqueue({ kind: "remote" }); }
   // A WHOLE-VAULT pass now (not the delta/no-op poll): what changed is on THIS side (a setting), so nothing in the
   // server's change feed would trigger the work.
@@ -2094,7 +2101,7 @@ export default class SelfSyncPlugin extends Plugin {
       // Uses activeMounts() (the validated in-effect set) so exclusion and scope-building agree (N1).
       accepts: (p) => !primaryExcludes(this.activeMounts(), p) && shouldSync(p, this.settings.configSync, this.selfFolderId())
         && !(this.settings.skipForeignArtefacts && isForeignArtefact(p)), // SR-47: another sync tool's artefacts are out of scope
-      pushFlipHold: (p, h) => this.flipGuard.record(p, h, Date.now()).hold, // SR-47: never amplify a two-writer loop
+      pushFlipHold: (p, h, bytes) => this.flipGuard.record(p, h, Date.now(), this.flipShape(p, bytes)).hold, // SR-47: never amplify a two-writer loop (exact OR timestamp-shape returns)
       onFlipHeld: (p) => this.noteFlipHeld(p),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
@@ -2833,7 +2840,7 @@ export default class SelfSyncPlugin extends Plugin {
         // validation catches structural wire changes but not a semantic one — a hash/chunk-encoding change).
         sourceReady: async () => { const h = await sourceApi.status(); return h.status === "ready" && (await this.checkWireCompat(h.schemaHash)).ok; }, // D0042: same-server source shares the primary's verified signature (cheap)
         callbacks: {
-          pushFlipHold: (p, h) => this.flipGuard.record(`${mount.mountPoint}/${p}`, h, Date.now()).hold, // SR-47: the loop breaker covers mounts (S-39 is a Syncthing-shared mount)
+          pushFlipHold: (p, h, bytes) => this.flipGuard.record(`${mount.mountPoint}/${p}`, h, Date.now(), this.flipShape(p, bytes)).hold, // SR-47: the loop breaker covers mounts (S-39 is a Syncthing-shared mount)
           onFlipHeld: (p) => this.noteFlipHeld(`${mount.mountPoint}/${p}`),
           onFileError: (p, e: any) => {
             this.log(`mount ${mount.mountPoint}: '${p}' failed (${e?.message ?? e})`);

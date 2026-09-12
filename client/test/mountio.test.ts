@@ -152,3 +152,23 @@ describe("MountedApi — read-only invariant for a PULL mount (the load-bearing 
     expect(api.metaAsked).toEqual([]); // short-circuits before touching the source
   });
 });
+
+// panel CV6 (mountCaseSensitiveClaim): the CLAIM folds case, the I/O must follow the disk's spelling — on a case-sensitive
+// filesystem a configured `Work/ASI` over a real `work/asi` folder used to ENOENT every read/write.
+describe("MountedIo uses the mount point's REAL on-disk spelling once the listing has shown it", () => {
+  it("list() learns `work/asi` for a configured `Work/ASI`; read/write/remove/exists then use it", async () => {
+    const io = fakeIo({ "work/asi/a.md": { size: 1, mtime: 1 }, "Other/x.md": { size: 1, mtime: 1 } }, { withExists: true });
+    const m = new MountedIo(io, mk("Work/ASI"));
+    expect([...(await m.list()).keys()]).toEqual(["a.md"]);
+    await m.read("a.md"); await m.write("b.md", new Uint8Array([2])); await m.remove("a.md"); await m.exists!("c.md");
+    expect(io.reads).toEqual(["work/asi/a.md", "exists:work/asi/c.md"]);
+    expect(io.writes).toEqual(["work/asi/b.md"]);
+    expect(io.removes).toEqual(["work/asi/a.md"]);
+  });
+  it("before any listing (an empty mount) the configured spelling is used", async () => {
+    const io = fakeIo({});
+    const m = new MountedIo(io, mk("Work/ASI"));
+    await m.write("first.md", new Uint8Array([1]));
+    expect(io.writes).toEqual(["Work/ASI/first.md"]);
+  });
+});

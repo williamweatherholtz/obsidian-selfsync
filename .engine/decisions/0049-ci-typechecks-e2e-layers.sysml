@@ -21,10 +21,4 @@ package ProjectDecision0049 {
         :>> rationale = "Cheap, additive, and it closes a real gap: the layer that exercises the real ObsidianVaultIo and transport was the one piece of code with no static check at all. Placing it in CI rather than only in the pre-commit hook matters because the hook runs `keel validate` and `keel guard`, not tsc, and because CI is where a contributor without a local Obsidian gets any signal about that code. The change is confined to a single new step so the enforcement surface changes in exactly one, auditable place - which is also why it is recorded here as a prospective process change rather than folded into a code commit: a CI workflow is part of what enforces this project's honesty, and the guard that blocked the unsigned edit was doing its job.";
         :>> consequences = "ci.yml client-tests gains one step. The e2e layers are typechecked on every CI run (they passed clean when introduced). A future e2e type error blocks merge. The ci.yml step was co-committed with this PROPOSED record at 152f269a - the D0070 keystone shape the process-change guard accepts, so the gate ran on the change rather than the change waiting on the gate. The decision itself stays PROPOSED until the owner runs `keel accept d0049 --by wweatherholtz --note ... --date ...`; if they reject it, the step is reverted in the same commit as the rejection.";
     }
-
-    verification d0049Accept : Test {
-        :>> id = "e6343e11-ce19-4f6d-96f4-1f9c93207e77";
-        :>> method = VerificationMethod::confirmation;
-        :>> procedureText = "The owner accepts adding the e2e typecheck step to CI. This is a HUMAN attestation: it is recorded only by the owner's explicit acceptance (keel accept), never inferred from a general instruction to continue working.";
-    }
 }

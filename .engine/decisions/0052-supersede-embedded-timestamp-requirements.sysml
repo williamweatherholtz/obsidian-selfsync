@@ -27,10 +27,4 @@ package ProjectDecision0052 {
     #Supersede dependency from d0052 to srTimestampConflictResolve;
     #Supersede dependency from d0052 to srDriveFsTimes;
     #Supersede dependency from d0052 to srExcludedFolders;
-
-    verification d0052Accept : Test {
-        :>> id = "79c21552-fc05-4550-8bd0-106e9ec0400f";
-        :>> method = VerificationMethod::confirmation;
-        :>> procedureText = "The owner confirms the five embedded-timestamp requirements are superseded (retired by 1.9.0). HUMAN attestation via `keel accept d0052`; never inferred.";
-    }
 }

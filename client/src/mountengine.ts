@@ -164,6 +164,7 @@ export class MountRuntime {
       // issueMountRoLocalEditBehavior: collect read-only local edits this pass so the driver can AUTHORITATIVELY
       // replace the tracked set on a full pass (a reverted edit stops being reported → drops off, never phantom).
       onReadOnly: (p: string) => { this._roEdits.push(p); this.ctx.callbacks?.onReadOnly?.(p); },
+      onReadOnlyCopy: (p: string) => { this._roEdits.push(p); }, // panel CV7: a pull-mount conflict copy is a read-only edit the keeper flow can keep
     };
   }
   // Read + reset whether this poll made a conflict copy (drives the scope to `diverged`).

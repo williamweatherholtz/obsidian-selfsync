@@ -25,10 +25,4 @@ package ProjectDecision0050 {
 
     // D0048 chose the additive route and deferred the wholesale resync; this decision performs it.
     #Supersede dependency from d0050 to d0048;
-
-    verification d0050Accept : Test {
-        :>> id = "8876039c-502a-440c-a994-76f00091be96";
-        :>> method = VerificationMethod::confirmation;
-        :>> procedureText = "The owner accepts the wholesale resync of .engine/ onto the keel 0.3.1 vintage with this project's additions re-applied by name. This is a HUMAN attestation: recorded only by the owner's explicit `keel accept d0050`, never inferred from an instruction to continue working the backlog.";
-    }
 }

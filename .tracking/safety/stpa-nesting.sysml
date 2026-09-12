@@ -628,4 +628,54 @@ package ProjectStpaNesting {
     #RealizedBy dependency from sr53 to c10MountConfig;
     #Verify dependency from composedMountPermissionsDoD to sr53; // the grant-keyed rail (UCA-63) was already verified there
 
+
+    // ---- 2026-09-12 (sprints mountCaseSensitiveClaim + mountRoConflictCopyKeeper): the two composed-vault residuals
+    // the 2026-09-11 panel deferred, now closed. ----
+    part uca75 : UnsafeControlAction {
+        :>> id = "8387e08c-a7de-4344-a863-5ade1cfd760f"; :>> ucaType = UcaType::notProvided;
+        :>> title = "UCA-75: on a case-sensitive filesystem a mount's files belong to no scope — claimed by the mount (folded), addressed by the configured spelling";
+        :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> context = "Linux; the configured mount point is `Work/ASI`, the real folder is `work/asi`. claimsLocal folds case, so the primary excludes the files; MountedIo built read/write/remove paths from the configured spelling.";
+        :>> statement = "Mount-pull / mount-push NOT provided for any file under the folder: every read ENOENTs, nothing syncs anywhere, silently (panel CV6). [H-6, H-14]";
+    }
+    part cc75 : ControllerConstraint { :>> id = "9268418c-8fba-4618-bf0d-47ef773baaa7"; :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> title = "C-75: mount I/O follows the disk's spelling";
+        :>> statement = "MountedIo learns the mount point's real on-disk prefix from the listing and addresses every read/write/remove/exists with it; the configured spelling is used only until a listing has shown one."; }
+    part uca76 : UnsafeControlAction {
+        :>> id = "d2344aeb-9418-425a-aa5e-246a13b2bcaf"; :>> ucaType = UcaType::notProvided;
+        :>> title = "UCA-76: a conflict copy produced on a pull mount is never offered to the keeper flow";
+        :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> context = "readOnlyKeepCopy preserved the reader's version as a copy; on a read-only scope a conflict copy decided `noop` (the primary's onReadOnly would have logged it every pass).";
+        :>> statement = "Report-read-only NOT provided for the copy, so roMountEdits never listed it and 'Keep my edits' could not sweep it — it stayed single-device until the mount was removed (panel CV7). [H-6, H-9]";
+    }
+    part cc76 : ControllerConstraint { :>> id = "5e544e69-a978-4463-b499-fb589b535152"; :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> title = "C-76: a read-only conflict copy has its own report";
+        :>> statement = "A conflict copy on a read-only scope is reported through onReadOnlyCopy: a mount collects it into its read-only edits (offered to the keeper); the primary has no handler and stays quiet."; }
+    #Analyzes dependency from uca75 to caMountPull;
+    #Analyzes dependency from uca75 to caMountPush;
+    #Causes dependency from uca75 to h6;
+    #Causes dependency from uca75 to h14;
+    #Inverts dependency from cc75 to uca75;
+    #Analyzes dependency from uca76 to caMountPull;
+    #Causes dependency from uca76 to h6;
+    #Causes dependency from uca76 to h9;
+    #Inverts dependency from cc76 to uca76;
+    part sr67 : SafetyRequirement { :>> id = "2b1ec919-4f34-46d4-8f49-daf608bf9a97"; :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-67: a mount addresses its files by the spelling the disk uses";
+        :>> statement = "MountedIo records the real on-disk mount-point prefix from list() and uses it for read/write/remove/exists/appendWrite; before any listing the configured spelling applies.";
+        :>> triggeringEvent = "a case-sensitive filesystem with a differently-cased real folder";
+        :>> safeState = "every claimed file is addressable; nothing belongs to no scope";
+        :>> safetyFunction = "MountedIo.realMountPoint + local(rel) (mountio.ts)"; }
+    part sr68 : SafetyRequirement { :>> id = "6a8b4c56-88c7-406f-9137-64113c0e9278"; :>> createdAt = "2026-09-12"; :>> createdBy = "claudeOpus";
+        :>> title = "SR-68: a pull-mount conflict copy is offered to the keeper flow";
+        :>> statement = "A conflict copy on a read-only scope decides reportReadOnlyCopy; the mount runtime collects it into its read-only edits so 'Keep my edits' copies it into the user's vault and re-pulls the source; the primary ignores the report (no per-pass log).";
+        :>> triggeringEvent = "a divergence on a pull mount produced a conflict copy";
+        :>> safeState = "the copy is visible in the mount row and keepable; no silent single-device file";
+        :>> safetyFunction = "decide() reportReadOnlyCopy + MountRuntime onReadOnlyCopy → _roEdits (mountengine.ts)"; }
+    #Mitigates dependency from sr67 to uca75;
+    #Mitigates dependency from sr68 to uca76;
+    #Satisfies dependency from sr67 to sc14;
+    #Satisfies dependency from sr68 to sc2;
+    #RealizedBy dependency from sr67 to c9MountEngine;
+    #RealizedBy dependency from sr68 to c9MountEngine;
 }

@@ -33,21 +33,32 @@ export function isDataPath(rel: string): boolean {
 export class MountedIo implements VaultIo {
   exists?: (rel: string) => Promise<boolean>;
   appendWrite?: (rel: string) => Promise<AppendHandle>;
+  // The mount point's REAL on-disk spelling, learned from the listing. The CLAIM is case-folded (a configured `Work/ASI`
+  // claims `work/asi/*`), but read/write/remove used to be built from the CONFIGURED spelling — on a case-SENSITIVE
+  // filesystem those paths ENOENT'd every pass and the files belonged to no scope (panel CV6, mountCaseSensitiveClaim).
+  // Until a listing has shown a real prefix (an empty mount), the configured spelling is used.
+  private realMountPoint?: string;
   constructor(private readonly base: VaultIo, private readonly mount: Mount) {
-    if (base.exists) this.exists = (rel) => base.exists!(localFromMountRel(mount, rel));
-    if (base.appendWrite) this.appendWrite = (rel) => base.appendWrite!(localFromMountRel(mount, rel));
+    if (base.exists) this.exists = (rel) => base.exists!(this.local(rel));
+    if (base.appendWrite) this.appendWrite = (rel) => base.appendWrite!(this.local(rel));
+  }
+  private local(rel: string): string {
+    return localFromMountRel(this.realMountPoint ? { ...this.mount, mountPoint: this.realMountPoint } : this.mount, rel);
   }
   async list(): Promise<Map<string, { mtime: number; size: number; ctime?: number }>> {
     const out = new Map<string, { mtime: number; size: number; ctime?: number }>();
     for (const [p, stat] of await this.base.list()) {
       const rel = mountRelFromLocal(this.mount, p);
-      if (rel !== null && rel !== "" && isDataPath(rel)) out.set(rel, stat);
+      if (rel === null || rel === "" || !isDataPath(rel)) continue;
+      out.set(rel, stat);
+      // the listing's own spelling of the mount-point prefix is the truth about the disk
+      if (this.realMountPoint === undefined && p.length > rel.length) this.realMountPoint = p.slice(0, p.length - rel.length).replace(/\/+$/, "");
     }
     return out;
   }
-  read(rel: string): Promise<Uint8Array> { return this.base.read(localFromMountRel(this.mount, rel)); }
-  write(rel: string, bytes: Uint8Array): Promise<void> { return this.base.write(localFromMountRel(this.mount, rel), bytes); }
-  remove(rel: string): Promise<void> { return this.base.remove(localFromMountRel(this.mount, rel)); }
+  read(rel: string): Promise<Uint8Array> { return this.base.read(this.local(rel)); }
+  write(rel: string, bytes: Uint8Array): Promise<void> { return this.base.write(this.local(rel), bytes); }
+  remove(rel: string): Promise<void> { return this.base.remove(this.local(rel)); }
 }
 
 // A SyncApi scoped to ONE mount over a base API already bound to the SOURCE server-vault (owner/vaultId): it

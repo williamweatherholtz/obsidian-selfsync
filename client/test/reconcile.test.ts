@@ -5,7 +5,7 @@ import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile } from "../src/sync";
 import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRejectedError, CommitRequest, FileMeta } from "../src/protocol";
 import { isSafeVaultPath } from "../src/pathsafe";
-import { FlipGuard } from "../src/flipguard";
+import { FlipGuard, shapeOf } from "../src/flipguard";
 
 const H = (h: string) => ({ hash: h });
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -1166,7 +1166,17 @@ describe("read-only shared vault (never mutates the server)", () => {
     const io = fakeIo({ "keep.md": "owner", "keep (conflict Pixel 9 20260712193013-09ba63).md": "old local" });
     const ro: string[] = [];
     await reconcileAll(deps(api, io, { readOnly: true, onReadOnly: (p) => ro.push(p) }));
-    expect(ro).toEqual([]); // the conflict-copy file is deliberately local — not a failed sync
+    expect(ro).toEqual([]); // the conflict-copy file is deliberately local — not a failed sync (the primary stays quiet)
+  });
+
+  it("panel CV7: the same conflict copy IS reported through onReadOnlyCopy, so a mount's keeper flow can offer it", async () => {
+    const { api } = fakeServer();
+    await serverPut(api, "keep.md", "owner");
+    const io = fakeIo({ "keep.md": "owner", "keep (conflict Pixel 9 20260712193013-09ba63).md": "old local" });
+    const ro: string[] = []; const copies: string[] = [];
+    await reconcileAll(deps(api, io, { readOnly: true, onReadOnly: (p) => ro.push(p), onReadOnlyCopy: (p) => copies.push(p) }));
+    expect(ro).toEqual([]);
+    expect(copies).toEqual(["keep (conflict Pixel 9 20260712193013-09ba63).md"]);
   });
 });
 
@@ -2235,5 +2245,26 @@ describe("panel ID4: adopting the remote never drops a masked timestamp line pre
     const local = new TextDecoder().decode(io.m.get("t.md")!);
     const survivedSomewhere = local.includes("created: 2024-01-01") || [...io.m.keys()].some((k) => k.includes("(conflict")) || (await (async () => { const f = srv.files.get("t.md"); return !!f && f.hash === await sha256hex(enc("---\ntitle: x\ncreated: 2024-01-01\n---\nbody\n")); })());
     expect(survivedSomewhere).toBe(true);                    // …but the line is preserved: pushed, kept, or copied — never dropped
+  });
+});
+
+// monotonicRewriteDetection: a timestamp stamper rewrites `last-modified` after EVERY sync — a never-seen hash each round,
+// so the exact-return breaker never fired. With the content's shape passed beside the hash, the rounds are held.
+describe("a monotonic stamper loop is broken by the shape-aware FlipGuard (panel ID3 residual)", () => {
+  it("pushes stop at the flip limit even though every round has a new hash", async () => {
+    const srv = fakeServer();
+    const stamp = (i: number) => `---\nlast-modified: 2026-09-12T10:${String(i).padStart(2, "0")}:00Z\n---\nbody\n`;
+    const io = fakeIo({ "s.md": stamp(0) });
+    const guard = new FlipGuard(3, 10 * 60_000);
+    let now = 0; let pushes = 0;
+    // every round has the SAME size, so give the listing a moving mtime — else the size+mtime scan-skip hint (a harness
+    // artefact: fakeIo reports mtime 0) would hide the stamper's rewrite from the reconciler entirely
+    const ioLive: VaultIo = { ...io, list: async () => new Map([...(await io.list())].map(([k, v]) => [k, { ...v, mtime: now }])) };
+    const d = deps(srv.api, ioLive, { pushFlipHold: (p, h, bytes) => guard.record(p, h, now, bytes ? shapeOf(new TextDecoder().decode(bytes)) : undefined).hold });
+    const realCommit = srv.api.commit.bind(srv.api);
+    srv.api.commit = async (r: CommitRequest) => { if (r.path === "s.md") pushes++; return realCommit(r); };
+    for (let i = 1; i <= 10; i++) { now += 1000; await reconcileAll(d); io.m.set("s.md", enc(stamp(i))); } // the stamper re-stamps after each pass
+    expect(pushes).toBeLessThanOrEqual(4);   // first push + up to 3 shape-returns, then held
+    expect(guard.held(now)).toEqual(["s.md"]);
   });
 });
