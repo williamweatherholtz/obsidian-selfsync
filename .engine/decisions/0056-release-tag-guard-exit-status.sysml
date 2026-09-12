@@ -18,7 +18,7 @@ package ProjectDecision0056 {
         :>> title = "D0056: release.yml's tag guard decides on the API call's exit status, never on its stdout";
         :>> createdAt = "2026-09-11";
         :>> createdBy = "claudeOpus";
-        :>> status = DecisionStatus::proposed;
+        :>> status = DecisionStatus::accepted;
         :>> context = "D0055 (2026-09-11, proposed) added a guard to release.yml: refuse to publish when a tag for the version already points at a different commit. The first run of the amended workflow — the 1.30.18 release, run 34646222700 — failed in that guard with `tag 1.30.18 already points at {\"message\":\"Not Found\",...}, not at this commit`: `gh api` prints the 404 error body to STDOUT when the ref does not exist, and the capture `TAG_SHA=$(gh api … -q .object.sha 2>/dev/null || true)` took that body for a SHA. The guard therefore refused every NEW version — the common case — while the case it was written for (an existing tag) would have worked. Nothing was published or tagged (the failure was before the draft step), so 1.30.18 is simply not yet released.";
         :>> decision = "The guard tests the API call's EXIT STATUS: `if gh api …/git/ref/tags/$VER > tagref.json; then TAG_SHA=$(node -p \"require('./tagref.json').object.sha\"); fi` — a missing tag leaves TAG_SHA empty (no refusal), an existing tag yields its commit SHA and is compared to GITHUB_SHA as before. The release for 1.30.18 is then produced by re-running release.yml via workflow_dispatch on main (manifest.json already says 1.30.18; the fix commit does not touch it, so the push trigger does not fire).";
         :>> rationale = "A guard that refuses the normal case is a broken gate, and a gate on the release path blocks every release until fixed — so the fix cannot wait for a batch. Testing the exit status is the only correct way to distinguish 'no such ref' from 'ref exists' with `gh api`, whose stdout carries the error body on failure; parsing the JSON with node (already installed for the build) avoids depending on jq being present. WHY A DECISION: release.yml is enforcement surface (D0209 clause 2) and the process-change guard hard-locks it; D0055 cannot be edited in place by a non-owner actor (D0108), so the correction is its own small, honest record rather than a silent patch. WHY PROPOSED: same reason as D0054/D0055.";
@@ -26,9 +26,7 @@ package ProjectDecision0056 {
     }
     #Supersede dependency from d0056 to d0055;
 
-    verification d0056Accept : Test {
-        :>> id = "475f762d-6cc2-4007-bf10-3be830c868cc";
-        :>> method = VerificationMethod::confirmation;
-        :>> procedureText = "The owner accepts the tag-guard correction (exit status, not stdout) in release.yml. HUMAN attestation via `keel accept d0056`; never inferred from the directive that prompted the work.";
-    }
+    // acceptance event (D0121 review-queue sign-off; D0066/D0106 — human-judged, not fabricated)
+    verification d0056Accept : Test { :>> id = "e5397816-7f2e-4bf6-b0cd-c1304240f3fd"; :>> method = VerificationMethod::confirmation; :>> procedureText = "owner's words: 'keel accept d0054, d0055, d0056'"; }
+    part d0056AcceptR1 : TestResult { :>> id = "8682fce8-2ceb-489f-8a8b-bc9a3db9b33b"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "b2f04889"; :>> judgedAt = "2026-09-12"; :>> judgedBy = "wweatherholtz"; }
 }
