@@ -1,0 +1,82 @@
+{
+ "generatedAt": "2026-09-13",
+ "tree": "82a67080",
+ "facts": {
+  "pendingAcceptances": {
+   "value": 39,
+   "how": "keel show authority-queue . | kind == decisionAcceptance"
+  },
+  "pendingDispositions": {
+   "value": 208,
+   "how": "keel show authority-queue . | kind == findingDisposition"
+  },
+  "oldestSince": {
+   "value": "2026-08-07",
+   "how": "min waitingSince over decisionAcceptance rows"
+  },
+  "head": {
+   "value": "82a67080",
+   "how": "git rev-parse --short HEAD"
+  },
+  "date": {
+   "value": "2026-09-13",
+   "how": "git log -1 --format=%cs (HEAD commit date)"
+  },
+  "pluginVersion": {
+   "value": "1.30.19",
+   "how": "manifest.json version"
+  },
+  "guards": {
+   "value": 73,
+   "how": "keel version"
+  },
+  "guardsHard": {
+   "value": 64,
+   "how": "keel version"
+  },
+  "keelVersion": {
+   "value": "0.4.1",
+   "how": "keel version"
+  },
+  "guardsBefore": {
+   "value": 58,
+   "how": "the previous binary's `keel version` (0.3.1: 58 guards, 49 hard), recorded in this session before the update"
+  },
+  "deltaAdded": {
+   "value": {
+    "Decision": 35,
+    "Issue": 2,
+    "action": 2
+   },
+   "how": "keel show commit-delta . --range 43a10f4b..HEAD | added, grouped by type"
+  },
+  "deltaRetired": {
+   "value": 0,
+   "how": "commit-delta: retired by a supersede edge"
+  },
+  "deltaResolved": {
+   "value": 2,
+   "how": "commit-delta: issues resolved"
+  },
+  "clauseChildren": {
+   "value": 34,
+   "how": "count of .engine/decisions/*-clause-*.sysml"
+  },
+  "compoundParents": {
+   "value": 7,
+   "how": "distinct parents named in the clause files' headers"
+  },
+  "e2eFiles": {
+   "value": 6,
+   "how": "glob client/e2e-obsidian/**/*.ts"
+  },
+  "systemRequirements": {
+   "value": 0,
+   "how": "count of `part \u2026 : SystemRequirement` in .tracking/requirements/*.sysml"
+  },
+  "liveSubscriptionShipped": {
+   "value": true,
+   "how": "mountLiveSubscriptionDoD carries a pass result in delivery.sysml"
+  }
+ }
+}
