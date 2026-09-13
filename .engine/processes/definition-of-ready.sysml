@@ -28,7 +28,7 @@ package EngineDoR {
     action dorTests : ProcessStep {
         :>> id = "4aba2383-2c35-47ea-a173-db53762a95b1";
         :>> title = "Acceptance criteria exist as Tests";
-        :>> actionText = "[computed: keel item] The task has a method-tagged DoD criterion; no bare text blobs.";
+        :>> actionText = "[computed: keel show item] The task has a method-tagged DoD criterion; no bare text blobs.";
         :>> owner = Owner::ai;
     }
     action dorDeps : ProcessStep {
@@ -50,7 +50,7 @@ package EngineDoR {
                        + "and confirm it can read the thing as specified, BEFORE building. Check the "
                        + "direction of any dependency the change would create: a producer in `.engine` "
                        + "may not depend on `.tracking`. Where a computed proxy exists, use it: "
-                       + "`keel guard parser-coverage` says whether the parser reads a construct, and the "
+                       + "`keel gate guard parser-coverage` says whether the parser reads a construct, and the "
                        + "dead-schema rule (rules.sysml) says whether anything instantiates a type.";
         :>> owner = Owner::either;
     }

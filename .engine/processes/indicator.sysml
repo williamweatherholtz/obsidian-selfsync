@@ -1,6 +1,8 @@
 // =====================================================================
 // EngineIndicatorMonitoring — declare + collect + interpret MONITORED MEASURES (D0089;
-// ISO-15939/PSM/SMM). An Indicator informs by DIRECTION (D0088), not a threshold. Data arrives by a
+// ISO-15939/PSM/SMM). An Indicator informs by DIRECTION (D0088), not a threshold - though a declared
+// TRIGGER (.engine/contracts/indicator-triggers.toml, D0333) may SURFACE work when a value is crossed;
+// it gates nothing, so the indicator stays an indicator. Data arrives by a
 // measurement METHOD: computed (repo-derived, no stored datapoints), pulled (external, recorded),
 // manual (subjective, recorded). Deployed by the indicator skill (D0059).
 // =====================================================================
@@ -28,7 +30,7 @@ package EngineIndicatorMonitoring {
         :>> id = "63940516-2c7d-4e8f-c089-516273849712";
         :>> title = "Collect data by the method";
         :>> triggerCondition = "An indicator exists and a fresh datapoint is due (cadence) or first needed.";
-        :>> actionText = "computed: nothing to record — the series is computed on demand from the repo (the report/trend engine). pulled: run the collection skill/command (an API/scraper, e.g. via web/MCP tools) and `keel record-measurement --indicator I --value V --at DATE --source ...` (a recorded observation, because external values can't be recomputed). manual: gather the value (survey/assessment) and record it the same way. NEVER fabricate or back-date an external/manual observation — record what was actually observed, with provenance.";
+        :>> actionText = "computed: nothing to record — the series is computed on demand from the repo (the report/trend engine). pulled: run the collection skill/command (an API/scraper, e.g. via web/MCP tools) and `keel record measurement --indicator I --value V --at DATE --source ...` (a recorded observation, because external values can't be recomputed). manual: gather the value (survey/assessment) and record it the same way. NEVER fabricate or back-date an external/manual observation — record what was actually observed, with provenance.";
         :>> producedArtifact = "For pulled/manual: a recorded Measurement datapoint (value @ measuredAt + source). For computed: nothing stored.";
         :>> owner = Owner::ai;
     }

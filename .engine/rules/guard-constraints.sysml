@@ -87,5 +87,35 @@ package EngineGuardConstraints {
     constraint def questionCoverage;      // guard 46 (D0161): declared knowledge facts are well-formed
     constraint def claimAncestry;         // guard 47 (issue229): claimedAt bounded by its introducing commit
     constraint def judgmentRequestQuality; // guard 48 (D0207): a fork decision must earn the ask
+    // D0302 (issue370): twelve guards had NO constraint-def identity although this file's own rule
+    // (D0195 clause 1, above) says every enforced guard has one - eight of them from before guard 49,
+    // found when the vintage fixture needed a constraint the current rules define and an older
+    // release does not. Named here so the control map, a unit's assert, and the K8 handshake all
+    // have the identity to bind to.
+    constraint def evidenceCited;
+    constraint def gatingWorkflowHistory;
+    constraint def processApplicability;
+    constraint def docGuardCount;
+    constraint def manifestKeyPortability;
+    constraint def controlMapReconciled;
+    constraint def sprintClosure;
+    constraint def untrustedRouting;
+    constraint def controlDefectRegistry;
+    constraint def cliSurfaceDeclared;      // guard 58 (D0271/D0283)
+    constraint def decisionAmendsProcess;   // guard 59 (D0297), warning-tier
+    constraint def unitExtrasPresent;       // guard 60 (D0300)
+    constraint def acceptanceBindsToText;   // guard 61 (D0308): the text signed is the text carried
+    constraint def stpaCurrency;            // guard 62 (D0313), warning-tier: the computed control structure says when STPA must run again
+    constraint def untrustedTaint;          // guard 63 (D0314): the untrusted label travels through derivation to every sink
+    constraint def gateEnvironmentParity;   // guard 64 (D0358, issue385): two workflows running the same gate supply the same environment
+    constraint def instrumentsDeclared;     // guard 65 (D0361): every measurement instrument is declared, and every declaration resolves
+    constraint def releaseChecksumsPublished; // guard 66 (D0385): a workflow that publishes release assets hashes them and publishes the hash
+    constraint def wrapperPinChecksummed;   // guard 67 (D0385), warning-tier: the pinned engine has a wrapper checksum for every asset keelw can download
+    constraint def planCoversStep;          // guard 68 (D0396): a PLAN-COVERED acceptance still holds its plan's three clauses against the tree
+    constraint def idIsAUuid;               // guard 69 (D0430/issue454): an id dated on/after 2026-09-10, or on a line added in the working tree, is an RFC 4122 v4 UUID; earlier failures are history, counted by class
+    constraint def stepCheckResolves;       // guard 70 (D0434, D0321 option A): a ProcessStep's checkedBy names a guard or declared rule that runs; a ghost or empty name is EHZ5
+    constraint def consentScope;            // guard 71 (D0439/issue460): an AUTO-ACCEPTED Decision carries no marker part (from 2026-09-06) and its text names no marker word without NOT A PROCESS CHANGE (from 2026-09-10); earlier hits are history, counted
+    constraint def workingTreeEol;          // guard 72 (issue478): every tracked path whose .gitattributes declares eol=lf or eol=crlf holds that ending in the working copy (git ls-files --eol, w/ vs attr/); text=auto and undeclared paths are not judged; suite --touched and land refuse on the same census
+    constraint def directionCited;          // guard 73 (D0463/issue428): a Decision field or task DoD dated on/after 2026-09-12 that quotes the human (their words / the human's words / the human, YYYY-MM-DD, then a quoted span) reaches by DerivedFrom a Statement whose text holds the span verbatim; earlier citing Decisions and undated DoDs (issue513) are history, counted
 
 }

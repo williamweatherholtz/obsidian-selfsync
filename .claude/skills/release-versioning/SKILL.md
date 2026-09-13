@@ -1,0 +1,99 @@
+---
+name: release-versioning
+description: |
+  Deploys the Release Versioning process (D0002): after a coherent set of shippable SelfSync
+  plugin changes is committed and green, increment the version per semantic versioning and push
+  to main — the release then AUTO-PUBLISHES (D0035). Use whenever asked to "cut a release",
+  "bump the version", "publish", or after finishing a feature/fix batch. Classifies the semver
+  level, bumps via scripts/bump-version.mjs (the sole version-editing path), commits + pushes to
+  main (.github/workflows/release.yml auto-builds + tags X.Y.Z + publishes), and verifies the
+  release. This is the deploying skill for .engine/processes/release-versioning.sysml (D0059).
+metadata:
+  version: 0.1.0
+  domain: [release, versioning, semver, publishing, obsidian-plugin, BRAT]
+  writePolicy: direct
+  engine: keel-ai-toolkit
+---
+
+# release-versioning — increment the version and publish (semver)
+
+Run this at the END of a coherent set of changes (a feature/fix batch) that is committed to
+`main` and green. It respects semantic versioning so each set ships as a distinct, correctly
+classified version, and it keeps the version files from drifting.
+
+## 1. Classify the change set (semver level)
+
+SelfSync is at **1.x** (D0034). Pick the level for the changes since the last release —
+**the highest applicable wins:**
+
+| Level | When |
+|-------|------|
+| **major** | Breaking change to the sync protocol, on-disk/base format, server API, or settings schema (not backward compatible) — bumps the major (e.g. 2.0.0). |
+| **minor** | New backward-compatible user-facing capability — a new setting, sync mode, or command. |
+| **patch** | Bug fix, docs, internal refactor, or test-only — no new capability. |
+
+When torn between minor and patch, prefer **minor** if any user-visible behavior was added.
+
+## 2. Verify preconditions are green
+
+Working tree clean (all intended changes committed to `main`), and:
+```
+cd client && npx tsc --noEmit && npm run build && npx vitest run
+```
+Do not release on red.
+
+## 3. Bump the version files
+```
+node scripts/bump-version.mjs <major|minor|patch>
+```
+This is the **only** place versions are edited — it updates `manifest.json` (the source of
+truth BRAT reads), `versions.json` (adds `version → minAppVersion`), and `client/package.json`
+in one step. Never hand-edit those files.
+
+## 4. Commit and push to main — the release auto-publishes (D0035)
+```
+git add manifest.json versions.json client/package.json
+git commit -m "release: <new-version> — <one-line summary of the set>"
+git push origin main
+```
+That is the whole release action. `.github/workflows/release.yml` fires on the `manifest.json`
+change to `main` and **idempotently builds + tags (`<new-version>`, no `v`) + publishes** the
+GitHub release with the BRAT assets. There is **no manual `git tag` / `git push <tag>` step** — a
+forgotten tag is exactly the miss D0035 removed (1.9.0 sat on `main` unreleased). Commit with the
+**keel gate enabled** (no `--no-verify`). If the auto-run is ever missed, `workflow_dispatch` on
+release.yml is the manual re-run. Step 5 still asserts the result.
+
+## 5. Verify the published release (automated — do not eyeball)
+```
+node scripts/check-release.mjs        # asserts manifest version == tag == published release + assets + matching digests
+```
+It exits non-zero unless `manifest.json`'s version has a matching git tag **and** a published
+GitHub release carrying the BRAT assets (`main.js`, `manifest.json`, `styles.css`) **whose bytes match
+the `SHA256SUMS` the release workflow recorded at publish time** (releases since 1.30.17; SR-50 —
+presence is not integrity: release.yml writes SHA256SUMS + re-downloads and verifies the published
+assets, and the plugin's Settings → Advanced → About row shows the installed `main.js` digest so a
+device can be audited against the release). This is the
+guard against the "bumped + committed but never released" miss — "released" is a checkable
+assertion, not a memory. The `.github/workflows/verify-released.yml` CI job runs the same check
+daily, so drift goes red on its own even if this step is skipped.
+
+## 6. Currency net (D0033 — complements step 5)
+
+Step 5's `check-release.mjs` asserts the *manifest's* version is released — it says nothing about
+work piling up unreleased on top (the manifest sits at an already-released version while `main`
+drifts). That blind spot let 47 shippable commits accrue unreleased past 1.6.0. So:
+```
+node scripts/check-release-currency.mjs
+```
+It counts commits on `main` since the last release tag touching **shippable** paths (`client/**`,
+`server/**`, `manifest.json`, `versions.json` — engine/tracking/docs are excluded so they don't
+false-positive), **warns** at ≥1 and **fails** past the threshold (`>10` commits or `>14` days). It's
+wired into `.github/workflows/verify-released.yml` (the same daily net), so an overdue release goes red
+on its own — a signal to run this skill from step 1. Thresholds live in the script (tunable without a
+new Decision). Where step 5 is release *completeness*, this is release *currency*.
+
+## Notes
+- Tags are `X.Y.Z` (no `v`) — created BY the release workflow (`gh release create`), not pushed by hand.
+- `client/package.json`'s version is kept in step for tidiness; it is not shipped in the plugin.
+- Adding or changing this process is itself a process-definition change — it needs its own
+  process-change Decision (D0070), like D0002 that introduced it.

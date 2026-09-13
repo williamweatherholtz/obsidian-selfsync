@@ -66,7 +66,7 @@ package ProcessControlDefect {
         :>> id = "d0278a01-0901-4b2c-8e11-1f2a3b4c5d64";
         :>> title = "Ask what it PASSED while broken - the step no ordinary defect has";
         :>> triggerCondition = "The direction is known.";
-        :>> actionText = "This is the whole reason control defects are their own class. Write down what this control let through while it was wrong, and whether any of it was re-checked. Three honest answers are available and only these three: RE-CHECKED (say how, and `keel reverify` is usually the tool); ACCEPTED AS-IS (say why the exposure is tolerable, which is a judgment and must read like one); or NOT RE-CHECKED (say so). The unacceptable answer is silence, because silence reads as re-checked to everyone who comes later. For an over-reporting defect this section is usually short - its errors are refusals, not false greens - but write it anyway, since the reader cannot know that without being told.";
+        :>> actionText = "This is the whole reason control defects are their own class. Write down what this control let through while it was wrong, and whether any of it was re-checked. Three honest answers are available and only these three: RE-CHECKED (say how, and `keel record reverify` is usually the tool); ACCEPTED AS-IS (say why the exposure is tolerable, which is a judgment and must read like one); or NOT RE-CHECKED (say so). The unacceptable answer is silence, because silence reads as re-checked to everyone who comes later. For an over-reporting defect this section is usually short - its errors are refusals, not false greens - but write it anyway, since the reader cannot know that without being told.";
         :>> producedArtifact = "An invalidation statement naming the exposed population and its disposition.";
         :>> owner = Owner::either;
     }
@@ -78,13 +78,14 @@ package ProcessControlDefect {
         :>> actionText = "Record the Issue with a resolver, exactly as any Issue - and then add a section to `.engine/contracts/control-defects.toml` keyed by the CONTROL's name, carrying the issue id, the direction, the effect and the invalidation. The registry is not bookkeeping: it is what makes the next step work. Do both in the same act. The failure this prevents is the one that produced this process - three true findings written into retro prose, where they were unfindable, uncounted and unresolved.";
         :>> producedArtifact = "A tracked Issue with a resolver, plus its registry entry.";
         :>> owner = Owner::ai;
+        :>> checkedBy = "control-defect-registry";
     }
 
     action cd5Announce : ProcessStep {
         :>> id = "d0278a01-0901-4b2c-8e11-1f2a3b4c5d66";
         :>> title = "The defective control now says so beside its own verdict";
         :>> triggerCondition = "The registry entry exists.";
-        :>> actionText = "Nothing to do - this is what the registry BUYS, and it is stated as a step so the reader knows to expect it. `keel guard` prints each registered defect beside the verdict of the control it belongs to, so a green from a control known to under-report arrives already qualified. That is the hook: it fires at the moment of reading rather than depending on anyone remembering, and it keeps firing until the Issue is resolved and the entry removed. A control-defect entry whose Issue does not exist or is already closed fails `control-defect-registry`, so the announcement cannot rot into noise.";
+        :>> actionText = "Nothing to do - this is what the registry BUYS, and it is stated as a step so the reader knows to expect it. `keel gate guard` prints each registered defect beside the verdict of the control it belongs to, so a green from a control known to under-report arrives already qualified. That is the hook: it fires at the moment of reading rather than depending on anyone remembering, and it keeps firing until the Issue is resolved and the entry removed. A control-defect entry whose Issue does not exist or is already closed fails `control-defect-registry`, so the announcement cannot rot into noise.";
         :>> producedArtifact = "Every subsequent verdict from that control, qualified.";
         :>> owner = Owner::ai;
     }

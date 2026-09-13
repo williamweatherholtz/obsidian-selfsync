@@ -51,8 +51,8 @@ package MyProjectNeeds {
 ```
 
 Copy authoring idioms from `docs/tracking-template.sysml` (it parses green). Query
-the tracked work with `keel orient` / `keel view <name>`; validate with the Rust
-toolchain (`keel validate` + `keel guard`) and, for deep `.engine` SysML semantics,
+the tracked work with `keel show orient` / `keel show view <name>`; validate with the Rust
+toolchain (`keel gate validate` + `keel gate guard`) and, for deep `.engine` SysML semantics,
 the kernel layer validators in `tools/validate/` (mandatory before commit, CLAUDE.md §5).
 
 ## Reuse model

@@ -1,7 +1,7 @@
 // =====================================================================
-// EngineRuleSet — the engine's DECLARED controls (D0105 migration). These run via `keel check`
+// EngineRuleSet — the engine's DECLARED controls (D0105 migration). These run via `keel gate check`
 // ALONGSIDE the Rust guards during EXPAND; a guard retires only once its rule reaches PARITY
-// (`keel check` == `keel guard` on the live repo — guardsToRulesMigration). Each rule carries its
+// (`keel gate check` == `keel gate guard` on the live repo — guardsToRulesMigration). Each rule carries its
 // WHY as a typed #JustifiedBy edge to the Decision that justifies it (provenance, not prose).
 // =====================================================================
 package EngineRuleSet {
@@ -91,7 +91,7 @@ package EngineRuleSet {
 
     // issue058 detecting rule: a Decision must NOT restate its acceptance verdict as PROSE (the dual-truth
     // the human caught — "ACCEPTED <date> by <who>" belongs in the discrete AcceptR1 TestResult, not a
-    // field). Diagnostic (surfaced by `keel rules`, not gating); heuristic like decision-requirement-link.
+    // field). Diagnostic (surfaced by `keel gate rules`, not gating); heuristic like decision-requirement-link.
     part decisionNoVerdictProseRule : ElementRule {
         :>> id = "d0105r006-0006-4006-9006-516273841006";
         :>> title = "A Decision must not restate its acceptance verdict as prose (one source of truth)";
@@ -121,16 +121,23 @@ package EngineRuleSet {
 
     // D0192 OPTION A (the delegation clause, srK06aDelegatedRecording): an acceptance recorded under
     // the declared recording delegation must EVIDENCE its channel - quote the human's conversational
-    // words verbatim (a single-quoted span) or cite a human surface gesture (deck/console). Forward-only
-    // from D0192's acceptance date (issue068): earlier events are grandfathered. GATING - the
+    // words verbatim (a single-quoted span) or cite a human surface gesture (deck/console/GitHub comment,
+    // or the TTY itself - `keel accept` typed at an interactive terminal cites it, D0315/issue359). Forward-only
+    // from D0192's acceptance date (issue068): earlier events are grandfathered - and the cutoff READS as the
+    // later of this literal and the adopting project's adoption-profile declaredAt (D0319/issue352). GATING - the
     // `confirmation-authenticity` guard sources this rule alongside confirmationAuthenticityRule.
+    // The SECOND date (D0411/issue426): from it a DELEGATED record's gesture WORDS are text - console and
+    // deck records are self-recorded (recorder == judge, exempt) and carry a device receipt the server wrote;
+    // the TTY citation counts only in the form the command writes for a terminal it observed, not the
+    // asserted KEEL_TTY_GESTURE stand-in; a GitHub citation is a URL anyone can type. What a delegated
+    // record evidences is the human's quoted words. Both dates read raised to the adoption date.
     // STATED LIMIT (from D0192 itself): an agent that fabricates a quote defeats this check; the
     // protections behind it are the human reading their own queue and the audit trail.
     part delegatedAcceptanceSubstanceRule : ElementRule {
         :>> id = "f20caebc-aef4-4487-83d4-b4a1be0d8900";
         :>> title = "A delegated acceptance record must quote the human's words (or cite their gesture)";
         :>> subjectType = "Decision";
-        :>> predicate = "acceptQuotesDelegatedWords(2026-08-22)";
+        :>> predicate = "acceptQuotesDelegatedWords(2026-08-22, 2026-09-09)";
         :>> severity = RuleSeverity::blocking;
         :>> onViolation = ViolationKind::block;
         :>> appliesWhen = "whereStatus(accepted)";
@@ -141,7 +148,8 @@ package EngineRuleSet {
     // D0198 OPTION A (quote receipts): a human-judged confirmation FLIP recorded on/after the
     // delegation date must carry its evidence - its own text quotes the human's words or cites
     // their gesture, OR a companion <test>Attest<N> record does. Acceptance events keep their own
-    // rule; companion records are the evidence, not subjects. Forward-only (issue068). GATING via
+    // rule; companion records are the evidence, not subjects. Forward-only (issue068; the cutoff reads as the
+    // later of the literal and the project's declaredAt, D0319). GATING via
     // the confirmation-authenticity guard. STATED LIMIT: a fabricated quote defeats it (D0192 family).
     part delegatedConfirmationSubstanceRule : ElementRule {
         :>> id = "7e348a2e-92f7-4bb0-a1c4-6d84f0b5c9e1";

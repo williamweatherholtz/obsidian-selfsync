@@ -63,7 +63,7 @@ package EngineDecisionAuthoring {
         :>> id = "63940516-2c7d-4e8f-c108-516273849703";
         :>> title = "Let state be computed — don't author derived facts";
         :>> triggerCondition = "Any status/coverage/suspicion/resolution fact about the Decision is wanted.";
-        :>> actionText = "Read it, never store it: acceptance state, critique coverage, suspicion, and open/resolved are COMPUTED views (keel orient/decisions/coverage). The authored `status` field is the one materialized flag, guarded to match its acceptance event (proposed/accepted/superseded); everything else derivable is a #View, not a field or a prose note (§2.1).";
+        :>> actionText = "Read it, never store it: acceptance state, critique coverage, suspicion, and open/resolved are COMPUTED views (keel show orient/decisions/coverage). The authored `status` field is the one materialized flag, guarded to match its acceptance event (proposed/accepted/rejected - retirement is the #Supersede edge, D0398); everything else derivable is a #View, not a field or a prose note (§2.1).";
         :>> producedArtifact = "Computed state surfaced by the views; no dual-truth stored.";
         :>> owner = Owner::ai;
     }
@@ -71,7 +71,7 @@ package EngineDecisionAuthoring {
         :>> id = "63940516-2c7d-4e8f-c108-516273849704";
         :>> title = "Automated backstop — the detecting rule";
         :>> triggerCondition = "Before committing a Decision change.";
-        :>> actionText = "Run `keel rules` — decisionNoVerdictProseRule flags a Decision that restates its acceptance verdict as prose (case-insensitive, all prose fields). Treat any flag as a defect to fix, not to ignore. (Warning-level per D0102 warning->hard precedent; promotable once proven low-noise.)";
+        :>> actionText = "Run `keel gate rules` — decisionNoVerdictProseRule flags a Decision that restates its acceptance verdict as prose (case-insensitive, all prose fields). Treat any flag as a defect to fix, not to ignore. (Warning-level per D0102 warning->hard precedent; promotable once proven low-noise.)";
         :>> producedArtifact = "A clean decisionNoVerdictProseRule (0 flags) confirming one-source authoring held.";
         :>> owner = Owner::ai;
     }

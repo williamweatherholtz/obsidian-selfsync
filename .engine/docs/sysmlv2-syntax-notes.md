@@ -20,7 +20,7 @@ These supersede guesses; treat them as ground truth for authoring `.sysml`.
 ### KERNEL-VERIFIED base constructs (`_spike_base_algebra.py`, 2026-08-14)
 
 **Read this before inventing a marker (D0139 base-first).** These verdicts come from the KERNEL, the only
-conformance oracle. Do **not** substitute `keel check`: the rust authority is PERMISSIVE and accepts
+conformance oracle. Do **not** substitute `keel gate check`: the rust authority is PERMISSIVE and accepts
 constructs real SysML v2 rejects — that error put an invalid migration target into an accepted Decision
 (issue097). Re-run the spike to re-measure; never assert from the rust parser alone.
 
@@ -169,7 +169,8 @@ pipe and the shell hangs.
   (`orient::compute` in sysmlv2-cli) as a fallback. Sprint 7 extended done-detection to accept
   both `{task}DoDR{n}` (primary) and `{task}R{n}` (legacy fallback). New work should use the
   `DoDR` canonical form; existing legacy files are tolerated without migration.
-- **Outcome enum**: `outcome = VerdictKind::pass` (or `::fail`). The enum is `VerdictKind`,
+- **Outcome enum**: `outcome = VerdictKind::pass` (or `::fail`; `::proposed` is what the write path records
+  for an AI-judged pass on demo/analyze/inspect with no replayable receipt, D0312 B - never authored by hand). The enum is `VerdictKind`,
   **not** `TestOutcome`. Using the wrong name silently produces a non-pass result.
 - **Required TestResult fields**: `id` (UUID), `outcome` (VerdictKind), `judgedAgainst`
   (short git SHA), `judgedAt` (ISO-8601 date), `judgedBy` (actor name string).
@@ -202,7 +203,7 @@ Decision files are standalone SysML v2 packages. Common mistakes caught by the l
 - **Fields**: `id`, `title`, `createdAt`, `createdBy` (inherited from `Element`) + `status : DecisionStatus`, `context : String` (the forces/situation), `decision : String` (the choice), `rationale : String` (why — incl. alternatives + criteria), `consequences : String`. Acceptance is NOT a field — it is a confirmation event (below).
 - **Template**: always copy a recent file (e.g. `0065-attribution-contract.sysml`) — do not author from scratch.
 - **Acceptance is a confirmation event (D0066), not a field.** A new accepted Decision `dNNNN` carries `verification dNNNNAccept : Test { :>> method = VerificationMethod::confirmation; ... }` (verifies `dNNNN` by naming) + `part dNNNNAcceptR1 : TestResult { :>> outcome = VerdictKind::pass; :>> judgedBy = <accepting human>; :>> judgedAt; :>> judgedAgainst; }`. `status = accepted` is the structured fact; the event carries who/when/commit. Tooling reads acceptance from the event.
-- **Status lifecycle (`DecisionStatus`): `proposed` → `accepted` | `rejected` | `superseded`** (ADR/MADR-aligned). `rejected` (D0122) is the *proposal-declined* path — a rejected proposed Decision flips `status=rejected` + gains a `dNNNNReject` confirmation event (`outcome=fail`, rationale in `procedureText`); recorded via the review-queue reject (D0121), NOT deleted. `superseded` (D0070) is the reversal-of-an-accepted-decision path (a *new* Decision supersedes; the old is kept). You reject a *proposal*; you supersede an *accepted* decision.
+- **Status lifecycle (`DecisionStatus`): `proposed` → `accepted` | `rejected`** (ADR/MADR-aligned). `rejected` (D0122) is the *proposal-declined* path — a rejected proposed Decision flips `status=rejected` + gains a `dNNNNReject` confirmation event (`outcome=fail`, rationale in `procedureText`); recorded via the review-queue reject (D0121), NOT deleted. **Retirement is an EDGE, not a status (D0398, 2026-09-09):** a *new* Decision carries `#Supersede dependency from dNEW to dOLD;` (`keel record decision --supersedes dOLD`) and dOLD is retired WHOLE, keeping the `status` it had; `#SupersedeClause` (`--supersedes-clause`) reverses one clause named in dNEW's text and leaves dOLD in force. `superseded` is not a member — the instance gate refuses it by name. You reject a *proposal*; you supersede an *accepted* decision.
 - **Decision Analysis convention (D0058; ISO 42010 / NPR 7123.1 / ADR).** When a Decision chose
   between real options, capture the *trade* in `rationale`:
   `ALTERNATIVES: (A) <opt> — rejected: <why>; (B) <opt> — rejected: <why>; (C) <chosen>.

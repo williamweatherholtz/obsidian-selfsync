@@ -269,4 +269,28 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from monotonicRewriteDetection to issueMonotonicRewriteLoopUndetected;
+
+    part issueAcceptanceTextDriftBlocksGate : Issue {
+        :>> id = "60624435-999b-4fbb-b18f-dd3766988968";
+        :>> title = "Three accepted Decisions' text drifted after acceptance; keel 0.4.1's acceptance-binds-to-text guard blocks every commit until the owner re-binds";
+        :>> createdAt = "2026-09-13";
+        :>> createdBy = "claudeOpus";
+        :>> description = "keel 0.4.1 (D0308, HARD): d0014, d0025, d0046 - their decision/consequences text at HEAD differs from the text at the SHA their acceptance bound to (editorial edits by the agent on 2026-07-05, 2026-07-12, 2026-09-07). The only remedy is the human's `keel accept <d> --rebind --note ...`. Surfaced by the D0057 resync; owner-only.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "rebindDriftedAcceptances";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from rebindDriftedAcceptances to issueAcceptanceTextDriftBlocksGate;
+
+    part issueCompoundDecisionsUnderD0303 : Issue {
+        :>> id = "999d234b-93db-467b-9d9e-dea8628e48cc";
+        :>> title = "Seven compound Decisions (created on/after 2026-09-05) violate D0303 option C; keel 0.4.1's decision-scaffolding guard blocks every commit until split or grandfathered";
+        :>> createdAt = "2026-09-13";
+        :>> createdBy = "claudeOpus";
+        :>> description = "keel 0.4.1 (D0303 option C, HARD): d0046, d0048, d0050, d0051, d0053, d0054, d0055 enumerate 2-8 clauses each; the guard wants one Decision per clause with #DependsOn edges. Four are already accepted, so a split re-proposes them (about thirty owner acceptances). Owner policy: split here, or an upstream cutoff/grandfather. Surfaced by the D0057 resync.";
+        :>> discoveredInField = false;
+        :>> relatedTask = "decisionClauseSplit";
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from decisionClauseSplit to issueCompoundDecisionsUnderD0303;
 }

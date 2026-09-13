@@ -198,7 +198,7 @@ An **`Issue` must be TRIAGED** (issue-resolution process/skill, D0077/D0078): gi
 `#Resolves` edge from a resolving **action** (create one if none) or a mooting **Decision** —
 `#Resolves dependency from <resolver> to <issueNNN>;`. Resolution is then COMPUTED (resolved
 iff the resolver is done/accepted; `keel show open-issues` / `orient` open_issues), never a prose
-"RESOLVED" note; `keel guard issues` fails on an untriaged Issue. When a Decision moots an
+"RESOLVED" note; `keel gate guard issues` fails on an untriaged Issue. When a Decision moots an
 Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`) — not prose.
 
 - **Confirmation results require explicit human sign-off.** A `method=confirmation`
@@ -340,9 +340,9 @@ A change is not done until it parses with zero `ERROR:`. **The Rust toolchain is
 canonical validator for `.tracking/` (D0048) — fast, no JVM:**
 
 ```
-keel validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
-keel guard                                                               # EVERY enforced honest-state guard (no kernel; exit≠0 on any violation). Inventory: `keel version` + .engine/docs/guards.md — keel 0.3.1 runs ~60 checks, far more than the original 14 named below
-keel guard <name>                                                        # one guard by name — the names and what each enforces are in .engine/docs/guards.md (e.g. actors | process-change | issues | ownership | parser-coverage | evidence-cited | duplicate-identity | base-first-justification ...); read the FAIL/WARN lines, not the exit code alone
+keel gate validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
+keel gate guard                                                               # EVERY enforced honest-state guard (no kernel; exit≠0 on any violation). Inventory: `keel version` + .engine/docs/guards.md — keel 0.3.1 runs ~60 checks, far more than the original 14 named below
+keel gate guard <name>                                                        # one guard by name — the names and what each enforces are in .engine/docs/guards.md (e.g. actors | process-change | issues | ownership | parser-coverage | evidence-cited | duplicate-identity | base-first-justification ...); read the FAIL/WARN lines, not the exit code alone
 keel reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
 ```
 **Use the `keel` on PATH — never a sibling checkout's build.** `keel --version` must match the
@@ -357,7 +357,7 @@ model is TRUTHFUL / well-formed / traceable — never that the work is COMPLETE.
 critique-coverage, readiness) is a NON-BLOCKING burndown surfaced in `orient` + run on demand
 (`keel assured`/`keel show critique-coverage`); incomplete implementation flagged AS incomplete is honest
 state, never a commit blocker (don't fake a pass, don't block recording true state).
-The hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098). The CURRENT inventory is `.engine/docs/guards.md` (engine-shipped, resynced with the binary — D0050); the fourteen described next are the ORIGINAL set, still enforced, kept here for their rationale: `keel guard` (actors
+The hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098). The CURRENT inventory is `.engine/docs/guards.md` (engine-shipped, resynced with the binary — D0050); the fourteen described next are the ORIGINAL set, still enforced, kept here for their rationale: `keel gate guard` (actors
 D0037, acceptance-events D0066, sprint-coverage D0064/issue020, ceremony D0047/issue010+011, charter
 D0068, process-change D0070 keystone, issues D0077/D0078 [every recorded problem accounted for],
 viewpoint-renderer D0056/issue034 [renderers must name a real `keel` command, no retired query.py/
@@ -370,7 +370,7 @@ the engine is legitimately decision-driven, D0064; the full charter-source balan
 `keel show rootedness` burndown], decision-rationale D0103 [every Decision must carry a SUBSTANTIVE context +
 rationale — the why — not a blank/trivial field; guarantees the decision-record's basis for future
 improvement + reevaluation]). A FOURTEENTH guard, `decision-requirement-link` (D0102/issue052), RUNS in
-`keel guard` every commit but is WARNING-level (visible, never blocks): it flags an accepted Decision
+`keel gate guard` every commit but is WARNING-level (visible, never blocks): it flags an accepted Decision
 that names a Need/SystemRequirement in its prose with NO typed edge to it (a governance link that should
 be typed, not prose) — promotable to a hard gate once proven low-noise. (Relatedly, `critique_suspect`
 honors dispositions, D0102: a `fail` critique whose finding is ACCEPT-RISK'd/DISMISSED — via a typed
@@ -384,9 +384,9 @@ action]. The python `validate_*.py` guards, `query.py`, and `parity_check.py` we
 
 **`.engine/` changes (schema / workflows / decisions / processes / skills) go through the SAME `keel`
 path — there is NO separate kernel validator to run.** `keel validate [ROOT]` parses the `.tracking/`
-`.sysml`; `keel guard` additionally SCANS `.engine/` (engine-lint over the schema/workflow/instance
+`.sysml`; `keel gate guard` additionally SCANS `.engine/` (engine-lint over the schema/workflow/instance
 elements, decision-rationale over every Decision, process-skill + process-change over the process defs),
-so a green `keel validate` + `keel guard` is the full local gate for both trees. The Python kernel
+so a green `keel gate validate` + `keel gate guard` is the full local gate for both trees. The Python kernel
 validators (`validate_schema/workflows/instances/tracking.py`), `kill_stale_kernels.py`, and the JVM
 SysML kernel were retired with the Rust-sole-gate move (D0048 / D0074 / M4) and are no longer present in
 this repo — do not look for a conda/JVM validation step; there isn't one.
@@ -400,7 +400,7 @@ this repo — do not look for a conda/JVM validation step; there isn't one.
   edits to items owned by someone else become `guard:ownership` violations. One command, once per
   machine: `keel actor set wweatherholtz` (`keel actor show` to check). It writes `.keel/actor`, which
   is machine-local and **gitignored — never commit it**; committing it would bind every clone to one
-  machine's identity. READ THE FAILURE PROPERLY: `keel guard`'s last line reports the WARNING count
+  machine's identity. READ THE FAILURE PROPERLY: `keel gate guard`'s last line reports the WARNING count
   ("19 warning(s) ... NOT blocking") while the exit code reflects VIOLATIONS listed further up, so a
   `tail -1` looks like warnings are blocking the commit when the real cause is a `FAIL` line above.
   Grep the whole output for `FAIL`, or run `keel gate --workspace`, which names the cause directly.
@@ -410,7 +410,7 @@ this repo — do not look for a conda/JVM validation step; there isn't one.
   PowerShell tools share one working directory, so a `cd` in one silently changes the cwd
   the other sees and breaks later relative-path commands. Pass absolute paths to scripts
   and files (the `keel` binary takes an explicit `[ROOT]`, so cwd doesn't matter to it).
-- **The whole validation path is kernel-free Rust (D0048).** `keel validate` / `keel guard` are the
+- **The whole validation path is kernel-free Rust (D0048).** `keel gate validate` / `keel gate guard` are the
   only validators — no JVM SysML kernel, no `conda`, no `java`. (The historical guidance about the
   `sysml` conda env, not piping `conda run` output, and orphaned JVMs is obsolete — the kernel was
   retired with the Rust-sole-gate move; see §5.)

@@ -4,7 +4,7 @@
 [ "$SKIP_KEEL" = "1" ] && { echo 'pre-commit: SKIP_KEEL=1 — keel gate skipped'; exit 0; }
 KEEL="${KEEL:-keel}"
 command -v "$KEEL" >/dev/null 2>&1 || { echo "pre-commit: '$KEEL' not on PATH — keel gate skipped (install keel to enforce)"; exit 0; }
-echo 'pre-commit: keel validate .'
-"$KEEL" validate . || { echo 'pre-commit: keel validate FAILED — commit aborted'; exit 1; }
-echo 'pre-commit: keel guard'
-"$KEEL" guard || { echo 'pre-commit: keel guard FAILED — commit aborted'; exit 1; }
+echo 'pre-commit: keel gate validate .'
+"$KEEL" gate validate . || { echo 'pre-commit: keel gate validate FAILED — commit aborted'; exit 1; }
+echo 'pre-commit: keel gate guard'
+"$KEEL" gate guard || { echo 'pre-commit: keel gate guard FAILED — commit aborted'; exit 1; }

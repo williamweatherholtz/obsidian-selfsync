@@ -17,7 +17,7 @@
 # The Decision that charters this set (D0225). `keel onboard` reads it: a set without a charter is a
 # collection of switches nobody can account for. Absent is not a violation - an undeclared project
 # runs everything by default (D0138/D0164) - it just means onboarding has not been run.
-charteredBy = "d0226"
+charteredBy = "d0057"
 active = ["actor-enrollment", "agile-workflow", "decision-authoring", "deploy", "distributed-collaboration", "doc-sync", "element-critique", "issue-resolution", "knowledge-graph-memory", "render"]
 
 [viewpoints]

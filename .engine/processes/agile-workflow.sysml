@@ -51,7 +51,7 @@ package EngineAgileProcess {
         :>> id = "d0258a01-0829-4e5a-b1c2-3f4a5b6c7d8e";
         :>> title = "Assess priority against the computed signals (D0258)";
         :>> triggerCondition = "Refinement touches the backlog, or the priority-inversion guard carries a standing warning.";
-        :>> actionText = "Rank is DECLARATION ORDER (D0052) and it decays: work lands appended, so unattended order encodes arrival, not priority. Assess against the COMPUTED signals, never taste: resolver severity first (Critical > High > Medium > no-issue - the priority-inversion guard's warnings are this signal already spoken), then the human's standing direction, then stability within class. REORDER the backlog blocks; discharge every inversion warning or say in the block comment why an inversion is deliberate. The reorder comment names the signal that drove it. Found live (st035): a Critical resolver had decayed to rank 16, below two no-issue items, while the guard had been warning for weeks - a warning nobody acts on is arrival order with extra steps.";
+        :>> actionText = "Rank is DECLARATION ORDER (D0052) and it decays: work lands appended, so unattended order encodes arrival, not priority. Assess against the COMPUTED signals, never taste: resolver severity first (Critical > High > Medium > no-issue - the priority-inversion guard's warnings are this signal already spoken), then the human's standing direction, then stability within class. REORDER the backlog blocks; discharge every inversion warning by reordering, or RECORD why it is deliberate as `#PrioritizedBy dependency from <item> to <stNNN|dNNNN>;` citing the Statement or Decision that ranks it (D0429) - the guard reads the edge and `keel show priority` lists the citation; a block comment reaches neither. The reorder comment names the signal that drove it. Found live (st035): a Critical resolver had decayed to rank 16, below two no-issue items, while the guard had been warning for weeks - a warning nobody acts on is arrival order with extra steps.";
         :>> producedArtifact = "A frontier whose order is an assessed judgment, with zero undischarged inversion warnings.";
         :>> owner = Owner::either;
     }
@@ -82,6 +82,7 @@ package EngineAgileProcess {
                   + "semantic). Readiness is the COMPUTED view - never authored.";
         :>> producedArtifact = "Graph-connected, sprint-eligible Story.";
         :>> owner = Owner::either;
+        :>> checkedBy = "gate:refine";
         assert constraint enforcesPriorityInversion : priorityInversion;
         assert constraint enforcesVerificationTrace : verificationTrace;
     }
@@ -106,7 +107,7 @@ package EngineAgileProcess {
         :>> id = "f3fa7b01-4c55-4541-84dc-400bd6825f44";
         :>> title = "Pull & triage";
         :>> triggerCondition = "Goal set.";
-        :>> actionText = "Pull `keel orient` ready tasks into a coherent batch "
+        :>> actionText = "Pull `keel show orient` ready tasks into a coherent batch "
                   + "(points budget when Stories exist). Triage priority and "
                   + "antagonistically question scope.";
         :>> producedArtifact = "Populated batch/Sprint.";
@@ -133,6 +134,7 @@ package EngineAgileProcess {
                   + "Pass -> go. Fail -> resolve or invoke grill-me skill.";
         :>> producedArtifact = "Batch cleared to start, or gaps logged/resolved.";
         :>> owner = Owner::either;
+        :>> checkedBy = "gate:standup";
         assert constraint enforcesCeremony : ceremony;
         assert constraint enforcesSprintCoverage : sprintCoverage;
     }
@@ -151,6 +153,7 @@ package EngineAgileProcess {
         :>> actionText = "Write code/content + the Tests that verify it.";
         :>> producedArtifact = "Working changes; TestResults appended.";
         :>> owner = Owner::either;
+        :>> checkedBy = "gate:implement";
     }
     action implModel : ProcessStep {
         :>> id = "dba37bd4-406f-43d3-af02-8e3ef8b0c017";
@@ -169,6 +172,7 @@ package EngineAgileProcess {
                   + "computed from the commit, never authored.";
         :>> producedArtifact = "PR open.";
         :>> owner = Owner::either;
+        :>> checkedBy = "gate:review";
     }
     action implClose : ProcessStep {
         :>> id = "893dad0b-5a2a-4548-94e7-11dc07e87647";
@@ -178,6 +182,7 @@ package EngineAgileProcess {
                   + "Done is the COMPUTED view over results - never authored.";
         :>> producedArtifact = "Story done iff satisfaction == verified.";
         :>> owner = Owner::ai;
+        :>> checkedBy = "gate:closeOut";
     }
 
     // ---- Retrospective (per-sprint) ---------------------------------
@@ -197,6 +202,7 @@ package EngineAgileProcess {
         :>> actionText = "Name what went well and, specifically, what was AVOIDABLE — a defect, rework, or friction that a guard, rule, skill, doc or check could have prevented. Distinguish avoidable from merely difficult: only the avoidable class produces an obligation. State each finding plainly, including findings against this thread's own earlier work.";
         :>> producedArtifact = "A recorded retro gate (method=analyze) naming each avoidable issue.";
         :>> owner = Owner::ai;
+        :>> checkedBy = "gate:retro";
     }
     action retroTrack : ProcessStep {
         :>> id = "0d6b0002-0813-4b02-9b3e-0000001b0002";
