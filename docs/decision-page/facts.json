@@ -1,9 +1,9 @@
 {
  "generatedAt": "2026-09-13",
- "tree": "82a67080",
+ "tree": "ecb9db81",
  "facts": {
   "pendingAcceptances": {
-   "value": 39,
+   "value": 1,
    "how": "keel show authority-queue . | kind == decisionAcceptance"
   },
   "pendingDispositions": {
@@ -11,11 +11,11 @@
    "how": "keel show authority-queue . | kind == findingDisposition"
   },
   "oldestSince": {
-   "value": "2026-08-07",
+   "value": "2026-09-13",
    "how": "min waitingSince over decisionAcceptance rows"
   },
   "head": {
-   "value": "82a67080",
+   "value": "ecb9db81",
    "how": "git rev-parse --short HEAD"
   },
   "date": {
@@ -44,7 +44,7 @@
   },
   "deltaAdded": {
    "value": {
-    "Decision": 35,
+    "Decision": 36,
     "Issue": 2,
     "action": 2
    },

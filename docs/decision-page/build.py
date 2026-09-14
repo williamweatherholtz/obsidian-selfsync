@@ -65,7 +65,7 @@ e2e = fact("e2eFiles", len(glob.glob("client/e2e-obsidian/**/*.ts", recursive=Tr
 srs = fact("systemRequirements", sum(len(re.findall(r"part \w+ : SystemRequirement", io.open(f, encoding="utf-8").read())) for f in glob.glob(".tracking/requirements/*.sysml")), "count of `part … : SystemRequirement` in .tracking/requirements/*.sysml")
 dlv = io.open(".tracking/delivery/delivery.sysml", encoding="utf-8").read()
 fact("liveSubscriptionShipped", bool(re.search(r"part mountLiveSubscriptionDoDR\d+ : TestResult \{[^}]*VerdictKind::pass", dlv)), "mountLiveSubscriptionDoD carries a pass result in delivery.sysml")
-assert {"d0057", "d0040", "d0049", "d0052"} <= set(since) and all(k in since for kids in clauses.values() for _, k in kids), "the page is written for this queue"
+assert since, "nothing is pending: the decision-surfacing state test says publish nothing (D0380)"
 json.dump({"generatedAt": F["date"]["value"], "tree": head, "facts": F}, io.open("docs/decision-page/facts.json", "w", encoding="utf-8"), indent=1)
 v = lambda k: F[k]["value"]
 
@@ -131,12 +131,18 @@ members_rows = "".join(f'<tr><td>{escape(PARENTS[p][0])}</td><td>' + "".join(f'<
 members = f'<div class="tbl-wrap"><table data-members="{n_kids}"><thead><tr><th>was one record</th><th>becomes, per clause</th></tr></thead><tbody>{members_rows}</tbody></table></div>'
 rec_clauses = ", ".join(sorted(k for kids in clauses.values() for _, k in kids)) + ", decisionClauseSplit"
 
-ASKS = [("engine", "Engine update"), ("clauses", "One clause per record"), ("wording", "Signed wording"),
-        ("ci", "Typecheck browser tests"), ("timestamps", "Retire five requirements"), ("mounts", "Mount latency record"), ("page", "This page")]
-assert "d0092" in since, "the page-adoption record must be on the queue for the seventh tab"
+TAB_OF = {"d0057": "engine", "d0049": "ci", "d0052": "timestamps", "d0040": "mounts", "d0092": "page", "d0093": "ledger"}
+for kids in clauses.values():
+    for _, k in kids: TAB_OF[k] = "clauses"
+TAB_NAME = {"engine": "Engine update", "clauses": "One clause per record", "wording": "Signed wording", "ci": "Typecheck browser tests",
+            "timestamps": "Retire five requirements", "mounts": "Mount latency record", "page": "This page", "ledger": "Disposition ledger"}
+unknown = sorted(d for d in since if d not in TAB_OF)
+assert not unknown, f"pending records with no ask authored on this page: {unknown} - author a panel (decision-surfacing step 4)"
+ORDER = ["ledger", "engine", "clauses", "wording", "ci", "timestamps", "mounts", "page"]
+ASKS = [(k, TAB_NAME[k]) for k in ORDER if any(TAB_OF[d] == k for d in since)]
 K, G0, GH = v("keelVersion"), v("guardsBefore"), v("guards")
 P = {}
-P["engine"] = panel("engine", "Ratify the engine update", True,
+P["engine"] = lambda: panel("engine", "Ratify the engine update", True,
     "the engine library moves to the new vintage under a committed transform; the hook and working rules use the renamed gate commands; the process set is chartered by this record.",
     f"{GH} checks gate every commit; the tree is pinned to {K}. Reverting is a binary swap plus a tree revert.",
     [logic_lanes("Under the old pin the new engine cannot gate; under the new pin it runs every check",
@@ -150,7 +156,7 @@ P["engine"] = panel("engine", "Ratify the engine update", True,
     "<strong>Ratify:</strong> nothing moves. <strong>Revert:</strong> one commit, recorded quoting you.",
     "d0057", ["Ratify the update as applied", "Revert to the previous engine", "Do nothing yet"])
 
-P["clauses"] = panel("clauses", f"Accept {n_kids} single-clause records", True,
+P["clauses"] = lambda: panel("clauses", f"Accept {n_kids} single-clause records", True,
     "one record per clause, the parent's clause word for word, dependency edges between clauses, the first superseding the compound record.",
     f"{n_par} signed records become pointers; {n_kids} proposed records carry the clauses unchanged.",
     [logic_lanes("One edge cannot say which clause it delivered; one record per clause can",
@@ -163,7 +169,7 @@ P["clauses"] = panel("clauses", f"Accept {n_kids} single-clause records", True,
     "<strong>Accept:</strong> nothing moves. <strong>Reject:</strong> I raise the cutoff upstream. <strong>Some:</strong> name which.",
     rec_clauses, [f"Accept all {n_kids} clause records", "Reject the split; grandfather this project", "Accept some; I will name which"], members)
 
-P["wording"] = panel("wording", "Confirm the restored wording", True,
+P["wording"] = lambda: panel("wording", "Confirm the restored wording", True,
     "three signed records read again as they did at the commit their acceptance bound to; the later edits, counts and notes, moved to the requirements and delivery records.",
     "what you signed stands; the edited versions are history.",
     [logic_lanes("An edit after signature breaks the bond; restoring the signed text mends it",
@@ -176,7 +182,7 @@ P["wording"] = panel("wording", "Confirm the restored wording", True,
     "<strong>Confirm:</strong> I close the task quoting you. <strong>Re-sign:</strong> three rebinds from your terminal.",
     "d0014, d0025, d0046, rebindDriftedAcceptances", ["Confirm the restored, signed wording", "Re-sign the edited wording instead", "Do nothing yet"])
 
-P["ci"] = panel("ci", "Accept the browser-test typecheck", True,
+P["ci"] = lambda: panel("ci", "Accept the browser-test typecheck", True,
     "one step in the client CI job typechecks the browser-driven test layer on every push and pull request.",
     f"{e2e} test files with no static check get one on every push; a type error blocks the merge.",
     [logic_lanes("Without the step a type error waits for a host run; with it every push catches it",
@@ -189,7 +195,7 @@ P["ci"] = panel("ci", "Accept the browser-test typecheck", True,
     "<strong>Accept:</strong> nothing moves. <strong>Reject:</strong> one revert commit, recorded quoting you.",
     "d0049", ["Accept the CI typecheck step", "Reject: revert the step", "Do nothing yet"])
 
-P["timestamps"] = panel("timestamps", "Retire five requirements", False,
+P["timestamps"] = lambda: panel("timestamps", "Retire five requirements", False,
     "the five embedded-timestamp requirements are superseded by this record and kept as history; the surviving behaviour is covered by three verified deliveries.",
     f"the requirement tier stops counting five promises the plugin dropped in 1.9.0; {srs - 5} of {srs} stay live.",
     [logic_lanes("Five requirements promise behaviour the code dropped; superseding makes the tier truthful",
@@ -202,7 +208,7 @@ P["timestamps"] = panel("timestamps", "Retire five requirements", False,
     "<strong>Retire:</strong> nothing moves. <strong>Keep:</strong> gaps stay counted. <strong>Fresh requirement:</strong> I author it.",
     "d0052", ["Retire the five requirements", "Keep them live", "Retire them and write a masking requirement"])
 
-P["mounts"] = panel("mounts", "Accept the version-one mount record", True,
+P["mounts"] = lambda: panel("mounts", "Accept the version-one mount record", True,
     "a mounted folder is reconciled on the primary sync cycle in version one; its own real-time subscription is deferred as a latency residual.",
     f"the first release's reasoning is kept as history; the deferred subscription has since shipped. Waiting since {since['d0040']}.",
     [logic_lanes("Version one waits for the poll; the shipped subscription moves changes promptly",
@@ -216,7 +222,7 @@ P["mounts"] = panel("mounts", "Accept the version-one mount record", True,
     "d0040", ["Accept the version-one record as history", "Reject it as stale", "Do nothing yet"])
 
 # a single-clause ratification with no branch draws nothing (asi-templates §2.3, when NOT to draw)
-P["page"] = (f'<h2>Adopt this page as the decision channel<span class="ships">already in effect</span></h2>'
+P["page"] = lambda: (f'<h2>Adopt this page as the decision channel<span class="ships">already in effect</span></h2>'
     f'<p>The item: <q>the decision page is the branded executive brief, built from the tree and republished at one address whenever the queue of things awaiting you changes.</q></p>'
     f'<p><strong>Accepting binds:</strong> the document kit lives in this repository; the page is rebuilt, checked and republished on every queue change, and silence means the page is current.</p>'
     + courses([("Adopt", "nothing more", "nothing"), ("Reject", "kit removed, page deleted", "the console deck stays your only view"), ("Do nothing", "nothing", "this tab returns")])
@@ -224,12 +230,42 @@ P["page"] = (f'<h2>Adopt this page as the decision channel<span class="ships">al
     + '<p><strong>Adopt:</strong> nothing moves. <strong>Reject:</strong> one removal commit, recorded quoting you.</p>'
     + opts("ask-page", "d0092", ["Adopt this page as the decision channel", "Reject: remove the document kit", "Do nothing yet"]))
 
+# the ledger ask (D0093): a process change - the skill gains a step - so it is a real fork, drawn (asi-templates 2.3)
+P["ledger"] = lambda: panel("ledger", "Adopt the remote disposition ledger", True,
+    "finding verdicts are collected on a published ledger when you are away from the console, and recorded from the digest you paste back, word for word.",
+    f"{v('pendingDispositions')} verdicts become reachable from anywhere; nothing is recorded until you paste; a blank row stays open.",
+    [logic_lanes("Without the ledger a verdict waits for the console's machine; with it your digest lands from anywhere",
+        ("today", [("Verdict due", str(v('pendingDispositions')), "muted", ""), ("Console needs its machine", "you are away", "bad", ""), ("Verdicts wait", "", "bad", "")], ["but", "so"]),
+        ("after", [("Verdict due", str(v('pendingDispositions')), "muted", ""), ("Ledger reaches you", "one page", "ok", ""), ("Digest lands, verbatim", "checked, recorded", "ok", "")], ["and", "so"])),
+     downstream("Adopting lands on one skill, two scripts and your queue; the console deck is unchanged", ("The ledger", ""),
+        [("Surfacing skill", "one added step", "1", "accent"), ("Page scripts", "build, record", "2", "accent"), ("Your finding queue", "reachable remotely", str(v('pendingDispositions')), "ok"), ("Console deck", "unchanged", "0", "muted")])],
+    [("Adopt", "nothing more", "nothing"), ("Reject", "ledger and scripts removed", "verdicts wait for the console"), ("Do nothing", "nothing", "the skill step stays unsigned")],
+    ("the ledger is built from the lens and the records; the recorder refuses an unknown id or an unbalanced count.", "you would rather answer from a page than wait to be local."),
+    "<strong>Adopt:</strong> nothing moves; paste your digest when ready. <strong>Reject:</strong> one removal commit, recorded quoting you.",
+    "d0093", ["Adopt the remote disposition ledger", "Reject: remove the ledger", "Do nothing yet"])
+
+# per-tab frame fragments: (title clause, verdict sentence). The frame is composed from the asks present.
+FRAME = {
+    "ledger": ("accept the remote disposition ledger", "the ledger changes where your finding verdicts are collected, not what one means."),
+    "engine": ("ratify the engine update", "the engine update already holds on disk, gate green."),
+    "clauses": (f"accept the {n_kids} clause records", f"the {n_kids} clause records quote their clauses unchanged."),
+    "wording": ("confirm the restored wording", "the restored wording is what you signed."),
+    "ci": ("accept the typecheck step", "the typecheck step ratifies shipped work."),
+    "timestamps": ("retire five requirements", "retiring five requirements makes the tier truthful."),
+    "mounts": ("accept the mount record as history", "the mount record is dated reasoning, kept."),
+    "page": ("adopt this page", "this page is the channel."),
+}
 # ------------------------------------------------------------------ assemble
 tabs_html = "".join(f'<button role="tab" id="t-{k}" aria-selected="{"true" if i == 0 else "false"}" aria-controls="p-{k}"{"" if i == 0 else " tabindex=\"-1\""} type="button">{escape(n)}</button>' for i, (k, n) in enumerate(ASKS))
-panels_html = "".join(f'<section role="tabpanel" id="p-{k}" aria-labelledby="t-{k}" data-digest-tab="{escape(n)}"{"" if i == 0 else " hidden"}>{P[k]}</section>' for i, (k, n) in enumerate(ASKS))
+panels_html = "".join(f'<section role="tabpanel" id="p-{k}" aria-labelledby="t-{k}" data-digest-tab="{escape(n)}"{"" if i == 0 else " hidden"}>{P[k]()}</section>' for i, (k, n) in enumerate(ASKS))
 added = v("deltaAdded")
 added_txt = ", ".join(f"{n} {t.lower()}{'s' if n != 1 else ''}" for t, n in sorted(added.items()))
-title = f"Ratify the engine update, accept the {n_kids} clause records, confirm the restored wording; close three older proposals"
+n_asks = len(ASKS)
+WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+frags = [FRAME[k][0] for k, _ in ASKS]
+title = (frags[0][0].upper() + frags[0][1:]) if n_asks == 1 else ("; ".join(frags[:-1]) + "; " + frags[-1]).capitalize()
+verdict_lead = f"Accept {'it' if n_asks == 1 else 'all ' + WORDS.get(n_asks, str(n_asks))}."
+verdict_body = " ".join(s[0].upper() + s[1:] for s in (FRAME[k][1] for k, _ in ASKS))
 page = f"""<meta charset="utf-8">
 <title>SelfSync Decision Page</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -241,17 +277,17 @@ page = f"""<meta charset="utf-8">
   <p class="project" data-digest="project"><b>Project</b> SelfSync &middot; williamweatherholtz/obsidian-selfsync</p>
   <h1 data-digest="title">{escape(title)}</h1>
   <div class="title-row">
-    <p class="eyebrow" data-digest="subtitle">Seven asks, one tab each. Then Copy for AI.</p>
+    <p class="eyebrow" data-digest="subtitle">{"One ask" if n_asks == 1 else WORDS.get(n_asks, str(n_asks)).capitalize() + " asks, one tab each"}. Then Copy for AI.</p>
     <button class="copy" data-copy type="button" aria-label="Copy report for AI">&#8681; Copy for AI</button>
   </div>
 </header>
-<div class="ask"><p class="verdict"><strong>Accept all seven.</strong> Three already hold on disk, gate green: the engine update, the {n_kids} clause records, the restored wording. Three ratify shipped work. One retires five requirements the code dropped.</p></div>
+<div class="ask"><p class="verdict"><strong>{verdict_lead}</strong> {verdict_body}</p>
 <p class="rule">Rule: disk honest to what you signed; controls that caught drift kept; history kept; one answer per question.</p>
 <div class="chips"><span class="chip"><b>Waiting</b> {v('pendingAcceptances')}</span><span class="chip"><b>Oldest</b> {v('oldestSince')}</span><span class="chip"><b>Checks</b> {G0} &rarr; {GH}</span></div>
 <div class="tabs" role="tablist" aria-label="The asks">{tabs_html}</div>
 {panels_html}
 <label class="note-row">Anything to add<textarea data-d="note" rows="2" placeholder="optional"></textarea></label>
-<p class="delta">Since the last release: {sum(added.values())} items added ({added_txt}), {v('deltaRetired')} retired, {v('deltaResolved')} issues resolved. {v('pendingDispositions')} finding verdicts wait in the console deck.</p>
+<p class="delta">Since the last release: {sum(added.values())} items added ({added_txt}), {v('deltaRetired')} retired, {v('deltaResolved')} issues resolved. {v('pendingDispositions')} finding verdicts wait on the disposition ledger (or the console deck when you are local).</p>
 <div class="copy-bottom"><button class="copy" data-copy type="button" aria-label="Copy report for AI">&#8681; Copy for AI</button></div>
 <footer class="rpt"><span data-digest="provenance">Tree {head}, {v('date')}: counts read from the authority queue, commit delta, decision files, manifest and version report; none typed. Exhibit geometry unmeasured (no browser probe).</span></footer>
 </div>

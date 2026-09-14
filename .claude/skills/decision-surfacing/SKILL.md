@@ -110,6 +110,33 @@ the work. Once. A reader who has seen the link still has it next turn.
 An item leaves the page two ways: they answer it, or **I state that I am withdrawing it**. One that
 quietly stops being mentioned was decided by default, by me, invisibly.
 
+## Finding dispositions when the owner is away from the console (D0093)
+
+The `findingDisposition` rows of the authority queue are D0092 judgments, not acceptances, and the
+brief cannot itemise them (208 rows do not fit a 450-word tab). Locally they are the console deck
+(`keel serve .`). When the owner is not at that machine — their words, 2026-09-13: *"I'm not local,
+so can't use keel serve"* — the surface is the **disposition ledger**:
+
+```
+python docs/decision-page/dispositions.py        # docs/decision-page/dispositions.html + dispositions.json, from the tree
+```
+
+It groups every undispositioned ≥ Medium finding by what its `#Resolves` resolver has already done
+(fix shipped / mooted by an accepted Decision / resolver still open), offers act / accept-risk / dismiss
+per row and per whole group, and **writes nothing**: it composes a plain-text digest (tree, actor,
+each verdict's ids with control totals, optional notes) the owner copies and pastes into the chat.
+Then:
+
+```
+python docs/decision-page/record_dispositions.py DIGEST.txt --date YYYY-MM-DD [--dry-run]
+```
+
+records the digest verbatim as a Statement (D0216), refuses any id the lens does not list as pending
+or any count that does not balance, and writes each disposition through `keel record review --batch`
+citing the statement. Same state test as the page: republish the ledger at its own Artifact path only
+when the pending set changed and is non-empty; a row the digest does not name stays open — never
+synthesise a disposition from a blanket phrase (render skill anti-pattern 5).
+
 ## Stated residuals
 
 - **Nothing forces this to run.** No gate reads conversational output (D0151). The honest control is
