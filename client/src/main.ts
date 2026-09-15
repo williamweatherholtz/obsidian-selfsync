@@ -1930,8 +1930,13 @@ export default class SelfSyncPlugin extends Plugin {
     this.lastLightKey = key;
     if (this.statusEl) {
       this.statusEl.empty();
-      const dot = this.statusEl.createSpan({ text: "●" });
-      dot.setAttribute("style", `color:${spec.color};margin-right:4px;`);
+      // The status bar shows the SAME state glyph the ribbon/editor surfaces use, tinted with the state
+      // colour — not a bare 12px dot. A small tinted dot read as grey at status-bar size (green was not
+      // recognisable as green, field report 2026-09-15), and colour was the ONLY channel here while the
+      // ribbon already varied its glyph. A sized lucide icon is legible AND redundantly encodes the state.
+      const icon = this.statusEl.createSpan({ cls: "selfsync-statusbar-icon" });
+      icon.style.color = spec.color; // SVG uses currentColor -> tints the glyph
+      setIcon(icon, glyph);
       this.statusEl.createSpan({ text: spec.label });
       this.statusEl.setAttribute("aria-label", `SelfSync — ${tip}`);
     }

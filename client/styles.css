@@ -26,3 +26,11 @@
 .selfsync-icon-btn { display: inline-flex; align-items: center; }
 .selfsync-btn-icon { display: inline-flex; align-items: center; margin-right: 5px; }
 .selfsync-btn-icon svg { width: var(--icon-s, 15px); height: var(--icon-s, 15px); }
+
+/* Status-bar indicator: the same state glyph the ribbon shows (check / lock / refresh-cw / alert-triangle /
+   circle-slash), tinted with the state colour and sized to icon-small. A bare 12px tinted dot read as grey
+   at status-bar size, so the green "fully synced" state was not recognisable as green. The :has() rule pins
+   the item's opacity to 1 so a theme that mutes .status-bar-item cannot dim the one always-on sync signal. */
+.selfsync-statusbar-icon { display: inline-flex; align-items: center; margin-right: 4px; }
+.selfsync-statusbar-icon svg { width: var(--icon-s, 15px); height: var(--icon-s, 15px); }
+.status-bar-item:has(.selfsync-statusbar-icon) { display: flex; align-items: center; opacity: 1; }
