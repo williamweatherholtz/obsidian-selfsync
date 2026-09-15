@@ -29,6 +29,9 @@ export function fakePlugin(over: any = {}) {
     app: makeApp(),
     settings,
     saveSettings: vi.fn(async () => {}),
+    // Coalesced write for per-keystroke edits (see main.ts saveSettingsSoon) + the settings-tab flush.
+    saveSettingsSoon: vi.fn(),
+    flushSettings: vi.fn(async () => {}),
     applyConfigSyncChange: vi.fn(async () => {}),
     // Mirror the real setConfigSurface: flip the surface + kick applyConfigSyncChange (direction is
     // recorded via markPendingConfigDir, a no-op here — the modal path drives it in the real plugin).

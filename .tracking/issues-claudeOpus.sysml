@@ -293,4 +293,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from decisionClauseSplit to issueCompoundDecisionsUnderD0303;
+
+    part issue001 : Issue {
+        :>> id = "5d22ab95-5252-4af4-a56d-be4beead9c13";
+        :>> title = "Typing in a settings text field rewrote the whole base per keystroke and froze the host";
+        :>> createdAt = "2026-09-15";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Typing in a settings TEXT FIELD froze Obsidian. The three text inputs in Advanced (file-size cap, bulk-delete threshold, device name) called saveSettings() from onChange, i.e. on EVERY KEYSTROKE. saveSettings is an immediate persist(), and persist() serializes the whole data.json payload - settings plus base.toJSON(), the entire base map, every synced path with up to 1 MiB of text each, plus mountState. So each character re-stringified and rewrote the full base on the host main thread; on a large vault that is seconds of blocking work per keypress and the app stops responding. Panel H4 already coalesced the setBase write path for exactly this reason on 2026-09-11, but the settings inputs kept the immediate call. Reported from the field 2026-09-15 as 'kept open the settings page and tried to type and it basically crashed'.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from settingsFieldWriteCoalesce to issue001;
 }

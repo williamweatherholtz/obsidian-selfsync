@@ -1,15 +1,22 @@
-// The status-light DISPLAY state machine — a debounced projection of the engine's operational phase.
+// The status-light DISPLAY state machine — a minimum-show projection of the engine's operational phase.
 //
-// Bug it fixes: the light flittered "Fully synced" ⇄ "Syncing… (checking for changes)" roughly once a
-// second. A routine poll / config re-hash / path event flips the engine phase idle → syncing(0 pending) →
-// idle in well under a second, and painting each flip turned a transient CHECK into a visible STATE. As the
-// owner put it: "checking for changes is a state transition, not a state."
+// HISTORY. This reducer was born to fix a flicker (issueStatusLightFlicker): the light flitted
+// "Fully synced" ⇄ "Syncing… (checking for changes)" about once a second, because a routine poll flips the
+// engine phase idle → syncing(0 pending) → idle in well under a second, and painting each flip turned a
+// transient CHECK into a visible STATE. As the owner put it: "checking for changes is a state transition,
+// not a state." The fix then was to DELAY entering `syncing`.
 //
-// The fix, modelled as its own tiny FSM (like transportTransition / finalize): entering `syncing` is
-// DEBOUNCED. A syncing phase does not change what the light shows immediately — it only ARMS a timer. If the
-// phase settles back to a non-syncing state before the timer fires (the transient-check case), the syncing
-// display is never painted and the light stays on its steady state. Only a syncing phase that PERSISTS past
-// the debounce (a real, non-trivial transfer) commits to showing "Syncing…". Leaving syncing is immediate.
+// WHY IT INVERTED (2026-09-15). That guarantee now lives entirely UPSTREAM, on the pending gate:
+// effectivePhase() maps `syncing` with nothing queued to transfer onto `idle`, so a no-work pass never
+// reaches this reducer as `syncing` at all. With the flicker already excluded by "is there real work?",
+// the delay only hid the work the user cared about — a one-file save is genuine, reports its transfer, and
+// finishes well inside the delay, so the light stayed green for the whole upload and typing produced no
+// feedback whatsoever.
+//
+// THE RULE NOW: real work is shown IMMEDIATELY, then HELD for a minimum time so a fast transfer is
+// perceivable instead of blinking past. What gets deferred is the RETURN to a steady state — the opposite
+// of before. One exception, and it is load-bearing: an ATTENTION state (a down link — retrying / blocked /
+// lockedOut) overrides the hold at once, because a cosmetic minimum must never delay a failure.
 //
 // Pure + total so the whole table is unit-tested with no timers/DOM (statuslight.test): the caller wires a
 // real setTimeout to emit the `settle` event and paints `state.shown`; this module owns only the decision.
@@ -17,42 +24,55 @@ import { Phase } from "./syncstate";
 
 export type LightEvent =
   | { kind: "phase"; phase: Phase } // the engine's operational phase changed
-  | { kind: "settle" };             // the debounce elapsed (the caller's timer fired)
+  | { kind: "settle" };             // the minimum-show hold elapsed (the caller's timer fired)
 
 export interface LightDisplay {
-  shown: Phase;   // the phase the light is currently PAINTING (what the user sees)
-  armed: boolean; // a syncing phase is pending the debounce — not yet shown
+  shown: Phase;       // the phase the light is currently PAINTING (what the user sees)
+  held: boolean;      // `shown` is inside its minimum-show window and may not be replaced by a resting state
+  deferred?: Phase;   // the resting phase waiting for the hold to elapse (last one wins)
 }
 
-// What the caller must do to its debounce timer after a transition (the machine has no clock of its own).
+// What the caller must do to its hold timer after a transition (the machine has no clock of its own).
 export interface LightAction {
   state: LightDisplay;
-  arm: boolean;    // (re)start the debounce timer — it will emit `settle` when it fires
-  disarm: boolean; // cancel a pending debounce timer
+  arm: boolean;    // (re)start the hold timer — it will emit `settle` when it fires
+  disarm: boolean; // cancel a pending hold timer
+}
+
+// A phase the user must not wait to learn about: the link is down or held off. These jump the hold queue.
+function isAttention(p: Phase): boolean {
+  return p === "retrying" || p === "blocked" || p === "lockedOut";
 }
 
 export function lightDisplayInit(phase: Phase = "off"): LightDisplay {
-  return { shown: phase, armed: false };
+  return { shown: phase, held: false };
 }
 
 export function nextLightDisplay(s: LightDisplay, e: LightEvent): LightAction {
   switch (e.kind) {
     case "phase":
       if (e.phase === "syncing") {
-        // Already showing a sustained sync → nothing changes (don't re-arm; keep painting "Syncing…").
-        if (s.shown === "syncing") return { state: s, arm: false, disarm: false };
-        // Entering syncing from a steady state: keep showing the steady state, arm the debounce ONCE.
-        // A transient check that settles before it fires is thus never seen.
-        return { state: { shown: s.shown, armed: true }, arm: !s.armed, disarm: false };
+        // Already painting a sync: nothing to repaint. Drop any pending return-to-steady — more work
+        // arrived, so the state the light shows is still true (a second save during the first hold).
+        if (s.shown === "syncing") {
+          return { state: { shown: "syncing", held: s.held }, arm: false, disarm: false };
+        }
+        // Work started: paint it NOW and arm the minimum-show hold.
+        return { state: { shown: "syncing", held: true }, arm: true, disarm: false };
       }
-      // Any non-syncing phase is a real, stable state: show it now, and cancel a pending syncing debounce
-      // (this is the settle-before-timer case that kills the flicker).
-      return { state: { shown: e.phase, armed: false }, arm: false, disarm: s.armed };
+      // A failure is never queued behind the cosmetic hold.
+      if (isAttention(e.phase)) {
+        return { state: { shown: e.phase, held: false }, arm: false, disarm: s.held };
+      }
+      // A resting phase during the hold waits for it; the last one to arrive is the one that paints.
+      if (s.held) {
+        return { state: { shown: s.shown, held: true, deferred: e.phase }, arm: false, disarm: false };
+      }
+      return { state: { shown: e.phase, held: false }, arm: false, disarm: false };
     case "settle":
-      // The debounce elapsed. Commit to showing syncing IFF still armed (still syncing) — otherwise a
-      // stale timer (the phase already left syncing) is a no-op.
-      return s.armed
-        ? { state: { shown: "syncing", armed: false }, arm: false, disarm: false }
-        : { state: s, arm: false, disarm: false };
+      // The hold elapsed: paint whatever was waiting, or keep painting the sustained state.
+      return s.deferred !== undefined
+        ? { state: { shown: s.deferred, held: false }, arm: false, disarm: false }
+        : { state: { shown: s.shown, held: false }, arm: false, disarm: false };
   }
 }

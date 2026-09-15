@@ -2,83 +2,106 @@ import { describe, it, expect } from "vitest";
 import { nextLightDisplay, lightDisplayInit, LightDisplay, LightEvent } from "../src/statuslight";
 import { Phase } from "../src/syncstate";
 
-// The status-light DISPLAY FSM (issueStatusLightFlicker). This is the "test net" for the fix: it pins the
-// load-bearing property — a transient `syncing` that settles before the debounce NEVER becomes visible, so
-// the light can't flit "Fully synced" ⇄ "Syncing…". The plugin feeds `phase` events + a timer-driven
-// `settle`; this reducer owns the decision and the arm/disarm signals.
+// The status-light DISPLAY FSM. It used to DELAY entering `syncing` (issueStatusLightFlicker): a poll that
+// flipped idle → syncing(0 pending) → idle in under a second must never paint "Syncing…", because a check
+// is a transition, not a state. That guarantee now lives ENTIRELY on the pending gate upstream
+// (effectivePhase: syncing with 0 pending IS idle, see syncstate.test), so a no-work pass never reaches
+// this reducer as `syncing` at all — and the delay had become pure cost: a real one-file save is genuine
+// work that finishes in well under the delay, so the light sat on green while the edit uploaded and the
+// user got no feedback at all (owner report 2026-09-15).
+//
+// So the rule inverts: real work is shown IMMEDIATELY, and is then HELD for a minimum time so a fast
+// transfer is actually perceivable instead of blinking past. Leaving syncing is what gets deferred now.
+// An ATTENTION state (a down link) always overrides the hold at once — a failure must never wait behind a
+// cosmetic minimum. Pure + total, so the whole table is unit-tested with no timers/DOM.
 
 const PHASES: Phase[] = ["off", "connecting", "idle", "syncing", "retrying", "lockedOut", "blocked"];
 const step = (s: LightDisplay, e: LightEvent) => nextLightDisplay(s, e);
 const phase = (p: Phase): LightEvent => ({ kind: "phase", phase: p });
 const settle: LightEvent = { kind: "settle" };
 
-describe("nextLightDisplay — debounced status-light display FSM", () => {
-  it("init shows the given phase, unarmed", () => {
-    expect(lightDisplayInit()).toEqual({ shown: "off", armed: false });
-    expect(lightDisplayInit("idle")).toEqual({ shown: "idle", armed: false });
+describe("nextLightDisplay — show-now / hold-minimum status-light FSM", () => {
+  it("init shows the given phase, not holding", () => {
+    expect(lightDisplayInit()).toEqual({ shown: "off", held: false });
+    expect(lightDisplayInit("idle")).toEqual({ shown: "idle", held: false });
   });
 
-  it("a non-syncing phase is shown IMMEDIATELY (no debounce for real steady states)", () => {
-    for (const p of ["off", "connecting", "idle", "offline"] as Phase[]) {
-      const a = step({ shown: "off", armed: false }, phase(p));
-      expect(a.state).toEqual({ shown: p, armed: false });
+  it("a non-syncing phase is shown IMMEDIATELY", () => {
+    for (const p of ["off", "connecting", "idle", "retrying"] as Phase[]) {
+      const a = step({ shown: "off", held: false }, phase(p));
+      expect(a.state).toEqual({ shown: p, held: false });
       expect(a.arm).toBe(false);
     }
   });
 
-  it("entering syncing from a steady state KEEPS the steady state shown and ARMS the debounce", () => {
-    const a = step({ shown: "idle", armed: false }, phase("syncing"));
-    expect(a.state).toEqual({ shown: "idle", armed: true }); // still shows idle — NOT syncing
+  // THE REPORTED BUG: a save is real work, so the light must go yellow the moment it starts.
+  it("entering syncing PAINTS syncing at once and arms the minimum-show hold", () => {
+    const a = step({ shown: "idle", held: false }, phase("syncing"));
+    expect(a.state).toEqual({ shown: "syncing", held: true });
     expect(a.arm).toBe(true);
   });
 
-  it("settle while armed COMMITS to showing syncing", () => {
-    const a = step({ shown: "idle", armed: true }, settle);
-    expect(a.state).toEqual({ shown: "syncing", armed: false });
+  it("a sub-hold transfer STAYS visible: idle arrives during the hold and is deferred to settle", () => {
+    let a = step(lightDisplayInit("idle"), phase("syncing"));
+    expect(a.state.shown).toBe("syncing");
+    a = step(a.state, phase("idle"));            // upload finished in ~50ms
+    expect(a.state.shown).toBe("syncing");        // still yellow — the user gets to see it
+    expect(a.state.deferred).toBe("idle");
+    expect(a.disarm).toBe(false);                 // the hold timer keeps running
+    const done = step(a.state, settle);           // hold elapsed
+    expect(done.state).toEqual({ shown: "idle", held: false });
   });
 
-  it("THE FLICKER CASE: idle → syncing → idle (before settle) never shows syncing", () => {
-    let s = lightDisplayInit("idle");
-    s = step(s, phase("syncing")).state;   // arm; still showing idle
-    expect(s.shown).toBe("idle");
-    const back = step(s, phase("idle"));   // settles back before the timer
-    expect(back.state).toEqual({ shown: "idle", armed: false });
-    expect(back.disarm).toBe(true);        // caller cancels the pending timer
-    // a late/stale settle now must be a no-op (armed was cleared)
-    expect(step(back.state, settle).state).toEqual({ shown: "idle", armed: false });
-    // repeated sub-second syncing blips never leave "idle"
-    for (let i = 0; i < 20; i++) {
-      s = step(s, phase("syncing")).state; expect(s.shown).toBe("idle");
-      s = step(s, phase("idle")).state;    expect(s.shown).toBe("idle");
+  it("the LAST deferred phase wins when the hold elapses", () => {
+    let s = step(lightDisplayInit("idle"), phase("syncing")).state;
+    s = step(s, phase("idle")).state;
+    s = step(s, phase("connecting")).state;       // superseded before settle
+    expect(s.shown).toBe("syncing");
+    expect(step(s, settle).state).toEqual({ shown: "connecting", held: false });
+  });
+
+  it("an ATTENTION state overrides the hold IMMEDIATELY (a down link never waits)", () => {
+    for (const p of ["retrying", "blocked", "lockedOut"] as Phase[]) {
+      const held = step(lightDisplayInit("idle"), phase("syncing")).state;
+      const a = step(held, phase(p));
+      expect(a.state).toEqual({ shown: p, held: false });
+      expect(a.disarm).toBe(true);                // cancel the cosmetic hold
     }
   });
 
-  it("THE SUSTAINED CASE: syncing that outlasts the debounce shows 'syncing'", () => {
+  it("re-entering syncing while already showing it is a no-op (no re-arm), and clears a stale deferral", () => {
+    expect(step({ shown: "syncing", held: false }, phase("syncing")))
+      .toEqual({ state: { shown: "syncing", held: false }, arm: false, disarm: false });
+    // a second save arriving during the hold: still syncing, and the pending return-to-idle is dropped
+    const s = { shown: "syncing" as Phase, held: true, deferred: "idle" as Phase };
+    expect(step(s, phase("syncing")).state).toEqual({ shown: "syncing", held: true });
+  });
+
+  it("a sustained sync keeps painting syncing after the hold elapses with nothing deferred", () => {
+    const s = step(lightDisplayInit("idle"), phase("syncing")).state;
+    const after = step(s, settle);                // hold done, still syncing
+    expect(after.state).toEqual({ shown: "syncing", held: false });
+    // and leaving syncing once the hold is over is immediate
+    expect(step(after.state, phase("idle")).state).toEqual({ shown: "idle", held: false });
+  });
+
+  it("a stale settle with no hold is a no-op", () => {
+    expect(step({ shown: "idle", held: false }, settle).state).toEqual({ shown: "idle", held: false });
+  });
+
+  it("repeated saves blip yellow rather than latching it (each hold resolves to the steady state)", () => {
     let s = lightDisplayInit("idle");
-    s = step(s, phase("syncing")).state;   // arm
-    s = step(s, settle).state;             // debounce elapsed, still syncing
-    expect(s.shown).toBe("syncing");
-    // leaving syncing shows the new steady state immediately
-    expect(step(s, phase("idle")).state).toEqual({ shown: "idle", armed: false });
-  });
-
-  it("re-entering syncing while ALREADY showing it is a no-op (no re-arm)", () => {
-    const a = step({ shown: "syncing", armed: false }, phase("syncing"));
-    expect(a).toEqual({ state: { shown: "syncing", armed: false }, arm: false, disarm: false });
-  });
-
-  it("arm only fires ONCE while a debounce is pending (idempotent arm)", () => {
-    const first = step({ shown: "idle", armed: false }, phase("syncing"));
-    expect(first.arm).toBe(true);
-    const again = step(first.state, phase("syncing")); // already armed
-    expect(again.arm).toBe(false);
-    expect(again.state).toEqual({ shown: "idle", armed: true });
+    for (let i = 0; i < 20; i++) {
+      s = step(s, phase("syncing")).state; expect(s.shown).toBe("syncing");
+      s = step(s, phase("idle")).state;    expect(s.shown).toBe("syncing"); // deferred
+      s = step(s, settle).state;           expect(s.shown).toBe("idle");
+    }
   });
 
   it("is total — every (state, event) yields a valid shown phase and never throws", () => {
-    for (const shown of PHASES) for (const armed of [false, true]) {
-      for (const p of PHASES) expect(PHASES).toContain(step({ shown, armed }, phase(p)).state.shown);
-      expect(PHASES).toContain(step({ shown, armed }, settle).state.shown);
+    for (const shown of PHASES) for (const held of [false, true]) for (const deferred of [undefined, ...PHASES]) {
+      for (const p of PHASES) expect(PHASES).toContain(step({ shown, held, deferred }, phase(p)).state.shown);
+      expect(PHASES).toContain(step({ shown, held, deferred }, settle).state.shown);
     }
   });
 });

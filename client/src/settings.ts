@@ -280,7 +280,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     return this.containerEl;
   }
 
-  hide(): void { this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
+  hide(): void { void this.plugin.flushSettings(); this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
   private lastSyncedAgo(s: SelfSyncSettings): string {
@@ -693,7 +693,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       .addText((t) => {
         t.setPlaceholder("200").setValue(String(s.maxSyncMB)).onChange(async (v) => {
           const n = Math.floor(Number(v));
-          if (Number.isFinite(n) && n > 0) { s.maxSyncMB = n; await this.plugin.saveSettings(); }
+          if (Number.isFinite(n) && n > 0) { s.maxSyncMB = n; this.plugin.saveSettingsSoon(); } // coalesced: one write per character froze the host
         });
         // Validate on blur so an invalid/empty entry gives feedback + reverts, instead of silently
         // keeping the old value (the "I changed it and don't know what happened" trap).
@@ -718,7 +718,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           t.inputEl.type = "number"; t.inputEl.min = "1"; t.inputEl.step = "1"; // numeric control — prevents bad input
           t.setValue(String(s.bulkDeleteThreshold)).onChange(async (v) => {
             const n = Math.floor(Number(v));
-            if (Number.isFinite(n) && n > 0) { s.bulkDeleteThreshold = n; await this.plugin.saveSettings(); }
+            if (Number.isFinite(n) && n > 0) { s.bulkDeleteThreshold = n; this.plugin.saveSettingsSoon(); } // coalesced (see maxSyncMB)
           });
           t.inputEl.addEventListener("blur", () => {
             const n = Math.floor(Number(t.inputEl.value));
@@ -737,7 +737,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
         : "If Syncthing, Dropbox, Nextcloud, Resilio or iCloud also manage this folder, their conflict copies, version folders and markers are not synced and never treated as deletions. Nothing detected right now.")
       .addToggle((tg) => tg.setValue(s.skipForeignArtefacts).onChange(async (v) => { s.skipForeignArtefacts = v; await this.plugin.saveSettings(); this.plugin.requestFullReconcile(); }));
     new Setting(body).setName("Device name").setDesc("Shown in conflict-copy filenames.")
-      .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange(async (v) => { s.deviceName = v.trim(); await this.plugin.saveSettings(); }));
+      .addText((t) => t.setPlaceholder(this.plugin.autoDeviceName()).setValue(s.deviceName).onChange((v) => { s.deviceName = v.trim(); this.plugin.saveSettingsSoon(); })); // coalesced (see maxSyncMB)
     new Setting(body).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));

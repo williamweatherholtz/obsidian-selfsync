@@ -3470,6 +3470,18 @@ export default class SelfSyncPlugin extends Plugin {
     this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
   }
   async saveSettings() { await this.persist(); }
+  // A PER-KEYSTROKE settings edit must not write data.json. persist() serializes the whole base map
+  // (every entry, up to 1 MiB of text each - panel H4), so a text field wired to the immediate
+  // saveSettings() re-stringified the entire base on the host main thread once per character, and typing
+  // in a settings field froze Obsidian (field report 2026-09-15). The caller still applies the value to
+  // this.settings at once - only the WRITE is coalesced onto the existing trailing-edge persist, and both
+  // closing the settings tab (flushSettings) and unload flush it, so no edit can be lost.
+  saveSettingsSoon(): void { this.schedulePersist(); }
+  // Write NOW, cancelling a pending coalesced write: the settings tab calls this on close.
+  async flushSettings(): Promise<void> {
+    if (this.persistTimer !== undefined) { window.clearTimeout(this.persistTimer); this.persistTimer = undefined; }
+    await this.persist();
+  }
   // Panel H4 (2026-09-11): the base is persisted whole (every entry, up to 1 MiB of text each) and used to be written
   // on EVERY setBase — during a pass that is a continuous stringify+write loop of the entire data.json on the host's
   // main thread (and that many MB to flash per write on mobile). Coalesce into one write ~1.5 s after the last

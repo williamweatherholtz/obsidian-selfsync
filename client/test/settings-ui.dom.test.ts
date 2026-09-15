@@ -375,6 +375,30 @@ describe("SR-47 / SR-50: other sync tools + build digest (settings tab)", () => 
     // no held paths → no row at all (the Conflicts group is absent when nothing is pending)
     expect(rowByName(renderTab(fakePlugin()).containerEl, "1 file keeps changing back and forth")).toBeFalsy();
   });
+  // FIELD DEFECT 2026-09-15: the host froze while typing in a settings text field. persist() serializes
+  // the WHOLE base map (every entry, up to 1 MiB of text each), and these onChange handlers called the
+  // immediate saveSettings() on every keystroke — so each character re-stringified the entire base on the
+  // main thread. The value must still apply at once; only the WRITE is coalesced, and closing the tab flushes.
+  it("a settings text field coalesces its WRITE per keystroke instead of persisting each character", async () => {
+    const p = fakePlugin();
+    const { containerEl } = renderTab(p);
+    const size = inputByPlaceholder(containerEl, "200");
+    typeInto(size, "5"); typeInto(size, "50"); typeInto(size, "500");
+    await flush();
+    expect(p.settings.maxSyncMB).toBe(500);          // applied immediately — no behaviour change
+    expect(p.saveSettings).not.toHaveBeenCalled();   // NOT one full data.json write per character
+    expect(p.saveSettingsSoon).toHaveBeenCalled();   // coalesced instead
+  });
+
+  it("closing the settings tab FLUSHES a coalesced write (an edit is never lost on close)", async () => {
+    const p = fakePlugin();
+    const tab = renderTab(p);
+    typeInto(inputByPlaceholder(tab.containerEl, "200"), "42");
+    await flush();
+    tab.hide();
+    expect(p.flushSettings).toHaveBeenCalled();
+  });
+
   it("About shows the version and the installed main.js digest (SR-50 audit surface)", async () => {
     const { containerEl } = renderTab(fakePlugin());
     await flush();
