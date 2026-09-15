@@ -28,9 +28,31 @@
 .selfsync-btn-icon svg { width: var(--icon-s, 15px); height: var(--icon-s, 15px); }
 
 /* Status-bar indicator: the same state glyph the ribbon shows (check / lock / refresh-cw / alert-triangle /
-   circle-slash), tinted with the state colour and sized to icon-small. A bare 12px tinted dot read as grey
-   at status-bar size, so the green "fully synced" state was not recognisable as green. The :has() rule pins
-   the item's opacity to 1 so a theme that mutes .status-bar-item cannot dim the one always-on sync signal. */
-.selfsync-statusbar-icon { display: inline-flex; align-items: center; margin-right: 4px; }
-.selfsync-statusbar-icon svg { width: var(--icon-s, 15px); height: var(--icon-s, 15px); }
+   circle-slash), tinted with the state colour. A bare 12px tinted dot read as grey at status-bar size, and
+   a thin-stroked 15px glyph still read grey-green (reported twice) — at this size the problem is COLOUR
+   MASS, not hue, so the fix is area: a heavier stroke, a slightly larger box, a saturation lift, and a
+   tinted pill of the same colour behind the glyph. The pill carries most of the area; the state is still
+   identifiable by SHAPE, so colour is never the only channel. The :has() rule pins the item's opacity to 1
+   so a theme that mutes .status-bar-item cannot dim the one always-on sync signal. */
+.selfsync-statusbar-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 5px;
+  padding: 2px;
+  border-radius: 4px;
+  /* Same hue as the glyph, at low alpha — a backdrop, not a second colour to interpret. */
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  filter: saturate(1.5);
+}
+.selfsync-statusbar-icon svg {
+  width: var(--icon-m, 17px);
+  height: var(--icon-m, 17px);
+  stroke-width: 2.75; /* lucide ships 2; the extra weight is what makes the hue legible at 17px */
+}
 .status-bar-item:has(.selfsync-statusbar-icon) { display: flex; align-items: center; opacity: 1; }
+/* Dark themes mute a mid-tone green further, so lift the glyph there only — on a light background the
+   same lift would wash it out. */
+@media (prefers-color-scheme: dark) {
+  .selfsync-statusbar-icon { filter: saturate(1.5) brightness(1.2); }
+}
+.theme-dark .selfsync-statusbar-icon { filter: saturate(1.5) brightness(1.2); }
