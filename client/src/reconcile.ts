@@ -57,6 +57,19 @@ export type ReconcileEffect =
   | { kind: "deleteRemote"; version: number } // delete-remote, not guarded → executor re-probes absence, then CAS-deletes at `version`
   | { kind: "mergeOrConflict" };              // both sides diverged → three-way merge or conflict-copy
 
+// Does this effect move BYTES (or a deletion) between the vault and the server? The report-only and
+// base-bookkeeping outcomes are not work the user is waiting on, and counting them would make the status
+// light blip on passes where nothing happened.
+export function isTransferEffect(kind: ReconcileEffect["kind"]): boolean {
+  switch (kind) {
+    case "push": case "pull": case "restore": case "removeLocal": case "deleteRemote": case "mergeOrConflict":
+      return true;
+    case "noop": case "setBaseInSync": case "clearBase": case "reportReadOnly": case "reportReadOnlyCopy":
+    case "reportGuard": case "reportPushGuard": case "keptAbsentReadOnly":
+      return false;
+  }
+}
+
 // Facts the shell resolves BEFORE finalize (all synchronous booleans / counts — no IO inside finalize):
 export interface FinalizeFacts {
   readOnly: boolean;          // this vault is a read-only share (owner's version canonical; we push nothing)
@@ -335,6 +348,13 @@ export interface ReconcileDeps {
   // the start and as each pending file completes — the consumer should throttle. Files that don't need
   // syncing are never counted, so this is "work left", not "files examined". Used for the "N pending" text.
   onProgress?: (pending: number) => void;
+  // A SINGLE-PATH transfer is starting / has finished, `failed` telling the consumer the pass THREW (so a
+  // status surface can hold its state rather than flash a false resting one). onProgress
+  // counts a BULK pass and leaves a one-file save at 0 pending, which effectivePhase reads as idle - so
+  // the status light sat on green for the whole upload of your own edit. This is the one-file equivalent:
+  // true just before a real transfer effect runs, false when the route returns, THROWN OR NOT. Silent for
+  // a no-op pass, so an unchanged re-save cannot blip the light (that is the flicker the pending gate kills).
+  onPathWork?: (busy: boolean, failed?: boolean) => void;
   // Coarse SUB-PHASE of a full reconcile (fetching the remote manifest → scanning local files →
   // reconciling), so a caller can surface WHERE a long initial pass is (the connect path drives the
   // "Connecting…" detail + a timed log from this). Fires only on the paths that wire it; a no-op otherwise.
@@ -1052,16 +1072,27 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // destructive delete-remote — so confirm the file is truly gone (not just unreadable) before
   // deciding. O(1) exists check, only when the server-has-it precondition holds.
   const locallyPresent = rmeta && d.io.exists ? await d.io.exists(path) : undefined;
+  // Bracket the work signal HERE, not inside reconcileOne: the busy flag must clear on every exit —
+  // success, an isolated CAS conflict, or a thrown connectivity failure — or the light would latch on
+  // syncing forever. `signalled` keeps a no-op pass silent: only a path that actually reached a transfer
+  // effect reports, and only such a path clears.
+  let signalled = false, failed = false;
   try {
-    await reconcileOne(d, path, { rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, deletionOf, locallyPresent, localStat: d.statOf?.(path) });
+    await reconcileOne(d, path, {
+      onWork: d.onPathWork && (() => { signalled = true; d.onPathWork!(true); }),
+      rmeta: rmeta ?? undefined, guardDelete, localSize: liveSize, hasTombstone, deletionOf, locallyPresent, localStat: d.statOf?.(path),
+    });
   } catch (e) {
     // A CAS 409 (a peer committed this path first) is NOT a connectivity failure. reconcileAll
     // isolates it per-file (skip → next reconcile merges); this single-path event path had no such
     // guard, so the engine turned a routine concurrent-edit conflict into an offline+backoff flap
     // (Round-6 CONC). Isolate it the same way: leave base unchanged so the next reconcile sees the
     // advanced remote and MERGES. Any OTHER error propagates → the engine goes offline + reconnects.
-    if (e instanceof CommitConflictError) { d.onFileError?.(path, e); return; }
+    if (e instanceof CommitConflictError) { d.onFileError?.(path, e); return; } // isolated, not a failure of the pass
+    failed = true;
     throw e;
+  } finally {
+    if (signalled) d.onPathWork?.(false, failed);
   }
 }
 
@@ -1073,7 +1104,7 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
 // propagate; a disable does not (you toggle it off per device) — the correct, catastrophe-proof asymmetry.
 // Returns true if it handled the path (caller returns); false ⇒ wrong action or not a valid string[], so
 // fall through to normal opaque-config handling. (Caller pre-checks isEnabledListConfig + rmeta present.)
-async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta: FileMeta, action: Action): Promise<boolean> {
+async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta: FileMeta, action: Action, onWork?: () => void): Promise<boolean> {
   if (!(action === "pull" || action === "merge" || action === "conflict-copy" || action === "edit-wins-pull")) return false;
   const remoteBytes = await fetchVerified(d, rmeta);
   const remoteStr = new TextDecoder().decode(remoteBytes);
@@ -1081,6 +1112,9 @@ async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta:
   const localStr = liveLocal ? new TextDecoder().decode(liveLocal) : "";
   const merged = mergeEnabledPluginsJson(localStr, remoteStr);
   if (merged === null) return false; // not a valid string[] → fall through to normal opaque-config handling (applyPull records provenance there)
+  // Committed to handling this path, and every branch below writes locally (most also push), so this IS a
+  // transfer — it just bypasses finalize, which is why the switch arms cannot report it (critique F2).
+  onWork?.();
   // Provenance for the source-driven reload notice: community-plugins.json is handled HERE, not in applyPull,
   // so record the incoming change's author/device ourselves — else every plugin enable/disable (the most
   // common config event) would read as "unknown source" and notify even for your OWN change (crit finding 1).
@@ -1232,6 +1266,11 @@ async function reconcileMergeOrConflict(
 }
 
 interface ReconcileOneOpts {
+  // Called ONCE, with no argument, when this path commits to a REAL transfer (single-path route; see
+  // ReconcileDeps.onPathWork). Deliberately NOT (busy: boolean): reconcileOne never says "finished" -
+  // reconcilePath's finally owns the clear, and a symmetric signature invited a caller to wire it straight
+  // through and latch the light on a `true` with no matching `false` (critique F4).
+  onWork?: () => void;
   rmeta?: FileMeta;                            // the server's meta for this path (undefined = server-absent)
   guardDelete?: boolean;                       // this pass's incoming delete-LOCAL batch exceeded the user threshold → HOLD for confirmation (D0041)
   guardBulkPush?: boolean;                     // this pass's local-only-new push batch to a SHARED source exceeded the user threshold → HOLD (F2)
@@ -1338,7 +1377,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
   // community-plugins.json is the enabled-plugin SET — union-merge it so a sync can never disable a
   // locally-enabled plugin (issueConfigListDisable). Handled in reconcileEnabledPluginList; on false
   // (wrong action or not a valid string[]) fall through to normal opaque-config handling below.
-  if (isEnabledListConfig(path) && rmeta && await reconcileEnabledPluginList(d, path, rmeta, action)) return;
+  if (isEnabledListConfig(path) && rmeta && await reconcileEnabledPluginList(d, path, rmeta, action, opts.onWork)) return;
   // Config sync: adds, edits, and REMOVALS propagate like ordinary sync (auto-remove everywhere,
   // D0013). This is safe because the accepts() gate above guarantees only a device that genuinely
   // holds a path reaches here, so a delete is an EVIDENCED removal (a real tombstone), never a
@@ -1373,6 +1412,13 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     hasBaseEntry: !!baseEntry,
     remoteVersion: rmeta?.version ?? 0,
   });
+  // "Real work is starting" - signalled by the transferring arms THEMSELVES, after their own guards.
+  // finalize() is NOT the last gate: rejectedPushes, the SR-47 pushFlipHold, a caseRenamed removeLocal and
+  // an indeterminate deleteRemote re-probe all refuse INSIDE the switch, and signalling at the seam painted
+  // "Syncing..." for those (sticky holds re-fire per touch, so it read as a permanent sync of a file that
+  // never syncs - critique F1, probe-confirmed). The single-path caller owns the CLEAR, in its own finally,
+  // so an arm that throws mid-transfer cannot leave the light stuck.
+  const signalWork = () => opts.onWork?.();
   switch (eff.kind) {
     case "noop":
       return;
@@ -1404,6 +1450,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // advanced the server 409s → per-file skip → next reconcile merges.
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
       if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
+      signalWork(); // past every refusal — bytes are about to move
       let pushed: { hash: string; bytes: Uint8Array };
       try { pushed = await pushFile(d, path, eff.version); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
@@ -1414,6 +1461,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     }
     case "pull":
+      signalWork();
       await applyPull(d, path, requireRemote(rmeta, action), localHash, true); // guard a local edit/create racing the fetch (DI-3)
       return;
     case "restore": {
@@ -1423,6 +1471,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       d.onKeptAbsent?.(path);
       if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
       if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
+      signalWork(); // past every refusal — bytes are about to move
       let restored: { hash: string; bytes: Uint8Array };
       try { restored = await pushFile(d, path, 0); }
       catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
@@ -1438,6 +1487,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       return;
     case "removeLocal":
       if (caseRenamed) { d.base.delete(path); d.onBaseChanged?.(); return; } // the file lives on under its re-cased key (panel H1) — never remove it
+      signalWork(); // a real local removal, not a base rename
       await d.io.remove(path); d.base.delete(path); d.onBaseChanged?.();
       // Attribute an incoming CONFIG/plugin removal to WHO deleted it (issueDeletionProvenanceUnnotified) — AFTER
       // the remove SUCCEEDS (a throw above propagates → no notice, no re-fire loop; the notice tracks the real
@@ -1451,12 +1501,14 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // is the OUTGOING-delete integrity check (D0041 removed the outgoing bulk guard — this is what remains,
       // and it only ever skips a file that actually still exists, so a genuine local delete propagates exactly).
       if ((await probePresence(d.io, path)) !== "absent") return; // present OR indeterminate → keep; only definitive absence tombstones
+      signalWork(); // absence is evidenced — the tombstone is really going out
       // CAS-guarded (issueDeleteNoCasLostUpdate): send the version this delete-remote was based on. If a
       // peer edited the file since (server advanced), the delete 409s (CommitConflictError) → this file
       // is held + re-reconciled next pass, where remote≠base reads as edit-wins-pull and the edit survives.
       await d.api.deleteFile(path, eff.version); d.base.delete(path); d.onBaseChanged?.();
       return;
     case "mergeOrConflict":
+      signalWork();
       await reconcileMergeOrConflict(d, path, requireRemote(rmeta, action), action, baseEntry, localBytes);
       return;
   }

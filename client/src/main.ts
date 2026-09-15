@@ -97,7 +97,10 @@ const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers wh
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
 // (or has no pending transfer) faster than this never shows — the light holds its steady state, so a
 // sub-second poll/check can't flit the light. Only a sustained, genuine transfer paints "Syncing…".
-const SYNCING_SHOW_DELAY_MS = 600;
+// How long a visible `syncing` is HELD once painted (statuslight.ts). It used to be a delay BEFORE
+// showing syncing; the pending gate now excludes no-work passes, so the delay only hid real one-file
+// transfers, which finish in tens of milliseconds. Holding instead makes a save perceivable.
+const SYNCING_MIN_SHOW_MS = 2_500;
 // WS half-open liveness (crit-round residual): the server sends an app heartbeat every ~30s. If the
 // client sees NO frame (heartbeat or change) for this long, the socket is silently dead → re-dial.
 const WS_STALE_MS = 75 * 1000;      // ~2.5 missed heartbeats
@@ -461,9 +464,15 @@ export default class SelfSyncPlugin extends Plugin {
   // Files still PENDING transfer this reconcile pass, for the "N pending" text. 0/null when nothing is
   // outstanding. Only counts files that actually need syncing (not files examined), so it drives to 0.
   private syncPending = 0;
+  // In-flight SINGLE-PATH transfers (your own edit). onProgress counts a bulk pass and leaves a one-file
+  // save at 0, which effectivePhase reads as idle — so the light stayed green while your keystrokes
+  // uploaded. Counted, not a boolean: the engine pump serialises path events, but a count cannot be
+  // left stuck true by an interleaving.
+  private localWork = 0;
   // The status-light DISPLAY FSM (statuslight.ts) + its debounce timer + a repaint-dedupe key. Entering the
   // visible "syncing" state is debounced so a transient reconcile never flits the light (issueStatusLightFlicker).
   private lightDisplay: LightDisplay = lightDisplayInit();
+  private heldSince = 0; // wall-clock when the current minimum-show hold was armed (see dispatchLight)
   private lightTimer?: number;
   private lastLightKey = "";
   // Realtime WS channel lifecycle as an explicit FSM (transportstate.ts): offline/dialing/live/degraded —
@@ -1857,8 +1866,8 @@ export default class SelfSyncPlugin extends Plugin {
     const p = this.engine.phase();
     // `label` is what a gated button WEARS while busy (show, don't tell); `reason` rides its tooltip.
     if (p === "connecting") return { busy: true, label: "Analyzing files…", reason: `SelfSync is connecting${this.connectStage ? ` — ${this.connectStage}` : ""}` };
-    if (p === "syncing") return this.syncPending > 0
-      ? { busy: true, label: "Syncing…", reason: `SelfSync is syncing — ${this.syncPending} pending` }
+    if (p === "syncing") return this.pendingWork() > 0
+      ? { busy: true, label: "Syncing…", reason: this.syncPending > 0 ? `SelfSync is syncing — ${this.syncPending} pending` : "SelfSync is syncing your latest edit" }
       : { busy: true, label: "Analyzing files…", reason: "SelfSync is checking your files for changes" };
     return { busy: false, label: "", reason: "" };
   }
@@ -1871,12 +1880,19 @@ export default class SelfSyncPlugin extends Plugin {
   // transfer (syncPending > 0) is a real syncing phase; the debounce below then also suppresses a sub-second
   // one. Together these kill the "Fully synced" ⇄ "Syncing… checking for changes" flitter (issueStatusLightFlicker).
   private effectiveLightPhase(): Phase {
-    const primary = effectivePhase(this.engine.phase(), this.syncPending);
+    // Local single-path work counts as pending: it IS a transfer in flight, so `syncing` is the honest
+    // phase. The "N pending" DETAIL still comes from syncPending alone — a one-file save says "Syncing…",
+    // not "1 pending".
+    const primary = effectivePhase(this.engine.phase(), this.pendingWork());
     // R4-F1: fold composed-vault mount health into the ONE status light. Only ESCALATE a RESTING primary
     // (idle/off) so a silently offline/failed mount isn't hidden behind green "Fully synced"; a real primary
     // problem (syncing/connecting/retrying/blocked) already shows + dominates, and the mount note still rides
     // the tooltip via paintLight. A mount problem maps to the same attention visual the primary uses.
-    if (primary === "idle" || primary === "off") {
+    // R4-F1 + critique F4: escalate over a resting primary AND over `syncing`. A down mount is an ATTENTION
+    // state and syncing is not, so letting a one-file save outrank it made the red alert-triangle flash to
+    // the yellow spinner and back on every autosave — motion-as-state, the habituation trap recorded HIGH in
+    // issueStatusIndicatorMisleads. A real primary PROBLEM (connecting/retrying/blocked) still dominates.
+    if (primary === "idle" || primary === "off" || primary === "syncing") {
       const ms = this.mountStatusSummary();
       if (ms?.health === "error") return "blocked";
       if (ms) return "retrying"; // offline / diverged → attention
@@ -1893,6 +1909,13 @@ export default class SelfSyncPlugin extends Plugin {
     if (this.mountUiTimer !== undefined || !this.settingsRefresh) return;
     this.mountUiTimer = window.setTimeout(() => { this.mountUiTimer = undefined; this.settingsRefresh?.(); }, 400);
   }
+  // `failed` = the pass threw (a dropped socket, an expired token). Decrement, but do NOT repaint: the
+  // error is already on its way to failWith / withSyncRelogin, and repainting here painted a green "Fully
+  // synced" in the gap — across a real await on the silent-relogin path (critique F6).
+  private notePathWork(busy: boolean, failed = false): void {
+    this.localWork = Math.max(0, this.localWork + (busy ? 1 : -1));
+    if (!failed) this.renderLight();
+  }
   // The render ENTRY POINT (all callers route here): feed the effective phase into the debounced display
   // FSM. `_p` is accepted for the legacy callers that pass engine.phase() but is ignored — the FSM +
   // effectiveLightPhase are the single source of what's shown.
@@ -1901,11 +1924,27 @@ export default class SelfSyncPlugin extends Plugin {
   // says is currently shown. Entering `syncing` arms the timer (keeps the steady state visible); the timer
   // emits `settle`, which commits to `syncing` only if it's still pending — so a transient never paints.
   private dispatchLight(e: LightEvent): void {
-    const act = nextLightDisplay(this.lightDisplay, e);
+    // WALL-CLOCK first: the hold is released by elapsed TIME, with the timer as a mere prompt. Obsidian
+    // mobile pauses window.setTimeout while backgrounded (the same mechanism documented for the backoff
+    // timer in onResume), and under the inverted FSM a paused timer is fail-UNSAFE: `held` gates every
+    // resting repaint, so the light latched on "Syncing…" over a fully-synced vault until the suspended
+    // timer eventually fired (critique F1, HIGH). Checking the clock on the next dispatch cannot latch.
+    if (e.kind === "phase" && this.lightDisplay.held && Date.now() - this.heldSince >= SYNCING_MIN_SHOW_MS) {
+      this.applyLightAction(nextLightDisplay(this.lightDisplay, { kind: "settle" }));
+    }
+    this.applyLightAction(nextLightDisplay(this.lightDisplay, e));
+  }
+  private applyLightAction(act: ReturnType<typeof nextLightDisplay>): void {
     this.lightDisplay = act.state;
     if (act.disarm && this.lightTimer !== undefined) { window.clearTimeout(this.lightTimer); this.lightTimer = undefined; }
-    if (act.arm) this.lightTimer = window.setTimeout(() => { this.lightTimer = undefined; this.dispatchLight({ kind: "settle" }); }, SYNCING_SHOW_DELAY_MS);
+    if (act.arm) {
+      this.heldSince = Date.now();
+      this.lightTimer = window.setTimeout(() => { this.lightTimer = undefined; this.dispatchLight({ kind: "settle" }); }, SYNCING_MIN_SHOW_MS);
+    }
     this.paintLight(this.lightDisplay.shown);
+    // The busy gate is keyed on the RAW engine phase, which is not in paintLight's dedupe key, so a
+    // deduped repaint used to swallow the notification and leave a gated button stale (critique F4).
+    this.notifyBusy();
   }
   private paintLight(phase: Phase) {
     const spec = light(phase, "", this.realtimeConnected); // COLOUR source
@@ -1966,6 +2005,10 @@ export default class SelfSyncPlugin extends Plugin {
     if (!view || this.editorViews.has(view)) { this.renderLight(this.engine.phase()); return; }
     this.editorViews.add(view);
     this.editorActionEls.add(view.addAction("refresh-cw", "SelfSync sync status", () => this.showLog()));
+    // The new element starts on the literal `refresh-cw` spinner, untinted. paintLight's repaint-dedupe
+    // would skip it when the phase has not changed, leaving a permanent fake "syncing" spinner on a synced
+    // vault (critique F5) — so invalidate the key to force one real paint.
+    this.lastLightKey = "";
     this.renderLight(this.engine.phase());
   }
   setEditorStatus(on: boolean) {
@@ -1978,7 +2021,12 @@ export default class SelfSyncPlugin extends Plugin {
   }
   // The status card + every statusText consumer use the SAME collapsed projection as the ribbon light, so a
   // resting 0-pending reconcile never "hangs on syncing" on the card while the light shows idle (regression).
-  statusText() { return effectivePhase(this.engine.phase(), this.syncPending); }
+  // The ONE pending scalar every surface projects from: bulk-pass files still to transfer PLUS single-path
+  // local work. When the light counted localWork and statusText did not, the settings hero painted a YELLOW
+  // dot beside the words "Fully synced" (critique F1) — the card-vs-light dual truth this comment block
+  // exists to forbid. One accessor, so a future consumer cannot re-introduce the split.
+  private pendingWork(): number { return this.syncPending + this.localWork; }
+  statusText() { return effectivePhase(this.engine.phase(), this.pendingWork()); }
 
   // Applying a config-sync change (master/category/per-plugin toggle) must take effect NOW — otherwise
   // the switch looks inert for up to CONFIG_SCAN_INTERVAL_MS (~2 min), which is exactly the "I flipped
@@ -2110,6 +2158,10 @@ export default class SelfSyncPlugin extends Plugin {
       onFlipHeld: (p) => this.noteFlipHeld(p),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
       onReadOnly: (p) => this.log(`read-only shared vault: local change to '${p}' won't sync`),
+      // A single-path transfer started / finished (reconcilePath brackets it, throw or not).
+      // try/catch for the same reason notifyBusy has one: a fault in the settings card's render must not
+      // convert the user's save into a dropped push plus an offline flap (critique F3).
+      onPathWork: (busy, failed) => { try { this.notePathWork(busy, failed); } catch { /* the light never breaks the sync path */ } },
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);
@@ -3272,6 +3324,13 @@ export default class SelfSyncPlugin extends Plugin {
     // stuck with "nothing indicating it's rechecking". If we're disconnected, cancel the stale (paused)
     // backoff timer and re-attempt NOW (network/DNS is back on the foreground), and LOG it so the recheck is
     // visible. If connected, just re-assess (reconcile). ("off" = user-disconnected → leave it alone.)
+    // A hold armed just before the app was backgrounded has a FROZEN timer (same cause as the backoff
+    // timer below). Release it on resume so the light cannot come back showing "Syncing…" for a transfer
+    // that finished while suspended; a settle with nothing deferred is a no-op (critique F1).
+    if (this.lightDisplay.held) {
+      if (this.lightTimer !== undefined) { window.clearTimeout(this.lightTimer); this.lightTimer = undefined; }
+      this.dispatchLight({ kind: "settle" });
+    }
     if (resumeAction(this.engine.getState()) === "connect") {
       if (this.reconnectTimer !== undefined) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined; }
       this.log("app resumed — re-checking the connection");

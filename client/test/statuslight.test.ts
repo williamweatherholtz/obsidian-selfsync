@@ -69,12 +69,36 @@ describe("nextLightDisplay — show-now / hold-minimum status-light FSM", () => 
     }
   });
 
-  it("re-entering syncing while already showing it is a no-op (no re-arm), and clears a stale deferral", () => {
+  it("re-entering syncing RE-ARMS the quiet window and clears a stale deferral", () => {
+    // not holding any more (the window expired) but still syncing: a new save re-arms
     expect(step({ shown: "syncing", held: false }, phase("syncing")))
-      .toEqual({ state: { shown: "syncing", held: false }, arm: false, disarm: false });
-    // a second save arriving during the hold: still syncing, and the pending return-to-idle is dropped
+      .toEqual({ state: { shown: "syncing", held: true }, arm: true, disarm: false });
+    // a second save arriving DURING the hold: still syncing, the pending return-to-idle is dropped, and the
+    // window restarts (disarm cancels the in-flight timer, arm starts a fresh one)
     const s = { shown: "syncing" as Phase, held: true, deferred: "idle" as Phase };
-    expect(step(s, phase("syncing")).state).toEqual({ shown: "syncing", held: true });
+    const a = step(s, phase("syncing"));
+    expect(a.state).toEqual({ shown: "syncing", held: true });
+    expect(a.arm).toBe(true);
+    expect(a.disarm).toBe(true);
+  });
+
+  // THE FLICKER GUARD, restored at the new seam (issueStatusLightFlicker was discoveredInField; its
+  // original guard tested the DELAY that no longer exists, so the property has to be re-pinned here).
+  // Obsidian autosaves ~every 2s while you type: each save must EXTEND one continuous yellow, never
+  // produce its own blink, and green must return only after typing stops.
+  it("a save TRAIN paints ONE continuous syncing, and green returns only after the last save", () => {
+    let s = lightDisplayInit("idle");
+    let settles = 0;
+    for (let i = 0; i < 10; i++) {                 // ten autosaves, each inside the quiet window
+      const a = step(s, phase("syncing"));
+      s = a.state;
+      if (a.arm) settles++;                        // the caller (re)starts its timer
+      expect(s.shown).toBe("syncing");             // never drops back to green mid-train
+      s = step(s, phase("idle")).state;            // the save lands
+      expect(s.shown).toBe("syncing");             // still yellow — deferred, not painted
+    }
+    expect(settles).toBe(10);                      // each save re-armed, so the window tracks the LAST save
+    expect(step(s, settle).state).toEqual({ shown: "idle", held: false }); // quiet → green
   });
 
   it("a sustained sync keeps painting syncing after the hold elapses with nothing deferred", () => {
@@ -89,9 +113,9 @@ describe("nextLightDisplay — show-now / hold-minimum status-light FSM", () => 
     expect(step({ shown: "idle", held: false }, settle).state).toEqual({ shown: "idle", held: false });
   });
 
-  it("repeated saves blip yellow rather than latching it (each hold resolves to the steady state)", () => {
+  it("an ISOLATED save resolves to green on its own settle (no latch across quiet gaps)", () => {
     let s = lightDisplayInit("idle");
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 20; i++) {                 // saves separated by a settle = quiet between them
       s = step(s, phase("syncing")).state; expect(s.shown).toBe("syncing");
       s = step(s, phase("idle")).state;    expect(s.shown).toBe("syncing"); // deferred
       s = step(s, settle).state;           expect(s.shown).toBe("idle");

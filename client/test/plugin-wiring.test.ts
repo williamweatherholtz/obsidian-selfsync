@@ -192,6 +192,62 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // CRITIQUE F1 (2026-09-15, UX-honesty lens): the settings status hero paints its DOT from lightPhase()
+  // and its LABEL from statusText(). When localWork started counting toward the light's pending total but
+  // not statusText's, the card showed a YELLOW dot beside the words "Fully synced" - the card-vs-light
+  // dual truth that syncstate.ts:45-50 and main.ts's own comment say must not exist.
+  it("the status CARD phase and the ribbon light AGREE while a local edit is in flight", async () => {
+    const { p } = await bootPlugin();
+    (p as any).engine.beginReconcile();               // engine is working…
+    (p as any).notePathWork(true);                    // …on a single local path (your own save)
+    expect(p.statusText()).toBe("syncing");           // the card must not say "Fully synced"
+    expect((p as any).lightPhase()).toBe(p.statusText());
+    (p as any).notePathWork(false);
+    expect((p as any).lightPhase()).toBe(p.statusText()); // and they still agree once it lands
+    p.onunload();
+  });
+
+  // CRITIQUE F1 (HIGH, state-machine lens): the minimum-show hold gates every resting repaint, and its only
+  // release was a window.setTimeout — which Obsidian mobile PAUSES while backgrounded (the same mechanism
+  // this file already covers for the backoff timer above). Background the app within the hold and the light
+  // latched on "Syncing…" over a fully-synced vault. Two independent releases now exist: the wall clock on
+  // the next dispatch, and an explicit release on resume.
+  it("a hold whose timer was frozen by a background suspend is RELEASED on resume (no latched yellow)", async () => {
+    const { p } = await bootPlugin();
+    (p as any).engine.beginReconcile();
+    (p as any).notePathWork(true);                       // a save starts → yellow, hold armed
+    expect((p as any).lightDisplay.held).toBe(true);
+    (p as any).notePathWork(false);                      // the save lands while backgrounded…
+    expect((p as any).lightDisplay.shown).toBe("syncing"); // …still yellow (deferred behind the hold)
+    (p as any).onResume();                                // foreground again; the frozen timer never fired
+    await flush();
+    expect((p as any).lightDisplay.held).toBe(false);     // hold released, not waiting on a dead timer
+    expect((p as any).lightDisplay.shown).not.toBe("syncing");
+    p.onunload();
+  });
+
+  it("the wall clock releases the hold even if the timer never fires", async () => {
+    const { p } = await bootPlugin();
+    (p as any).engine.beginReconcile();
+    (p as any).notePathWork(true);
+    (p as any).heldSince = Date.now() - 60_000;           // pretend the hold was armed a minute ago
+    (p as any).notePathWork(false);                       // any later dispatch must notice the clock
+    expect((p as any).lightDisplay.held).toBe(false);
+    expect((p as any).lightDisplay.shown).not.toBe("syncing");
+    p.onunload();
+  });
+
+  // CRITIQUE F4 (UX-honesty lens): a down mount was only escalated over a RESTING primary, so each autosave
+  // made the red alert-triangle flash to the yellow spinner and back — motion-as-state.
+  it("an unhealthy mount still outranks a local save in the indicator", async () => {
+    const { p } = await bootPlugin();
+    (p as any).mountStatusSummary = () => ({ health: "error", reason: "a mount failed" });
+    (p as any).engine.beginReconcile();
+    (p as any).notePathWork(true);
+    expect((p as any).lightPhase()).toBe("blocked");       // the mount problem, not "Syncing…"
+    p.onunload();
+  });
+
   it("a SUPERSEDED WS socket's late open/error does NOT disturb the current live socket (issueWsSupersededOpenError)", async () => {
     const { p, api } = await bootPlugin();
     const ws1 = api.__wsSockets[0];

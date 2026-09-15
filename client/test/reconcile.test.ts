@@ -685,6 +685,93 @@ describe("reconcileAll", () => {
     expect(files.has("ok.md")).toBe(true);   // small file still syncs
   });
 
+  // The status light needs to know a LOCAL edit is in flight. reconcilePath is the single-file event
+  // route and reported nothing, so effectivePhase collapsed `syncing` (0 pending) to `idle` and the
+  // indicator stayed green through every save — typing produced no feedback at all (owner report
+  // 2026-09-15). onPathWork brackets the real transfer only: a no-op pass must stay silent, or the
+  // light would blip on every unchanged re-save and re-earn the flicker the pending gate exists to kill.
+  it("reconcilePath REPORTS work around a real push (true then false)", async () => {
+    const { api } = fakeServer();
+    const io = fakeIo({ "n.md": "hello" });
+    const seen: boolean[] = [];
+    await reconcilePath(deps(api, io, { onPathWork: (b) => seen.push(b) }), "n.md", 5);
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("reconcilePath reports work around a real PULL too", async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, "r.md", "remote only");
+    const seen: boolean[] = [];
+    await reconcilePath(deps(srv.api, fakeIo(), { onPathWork: (b) => seen.push(b) }), "r.md");
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("reconcilePath stays SILENT when there is nothing to transfer (no light blip on an unchanged save)", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "n.md": "same" });
+    const d = deps(srv.api, io, { statOf: () => ({ size: 4, mtime: 0 }) });
+    await reconcilePath(d, "n.md", 4);            // first pass pushes it
+    const seen: boolean[] = [];
+    (d as any).onPathWork = (b: boolean) => seen.push(b);
+    await reconcilePath(d, "n.md", 4);            // identical content → in-sync
+    expect(seen).toEqual([]);
+  });
+
+  it("reconcilePath clears the work flag even when the transfer THROWS (no stuck yellow light)", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "n.md": "hello" });
+    srv.api.commit = async () => { throw new Error("server down"); };
+    const seen: boolean[] = [];
+    await expect(reconcilePath(deps(srv.api, io, { onPathWork: (b) => seen.push(b) }), "n.md", 5)).rejects.toThrow();
+    expect(seen).toEqual([true, false]);
+  });
+
+  // CRITIQUE F1/F3 (2026-09-15): finalize() is not the last gate. A push held by rejectedPushes or by the
+  // SR-47 flip guard, a caseRenamed removeLocal, and an indeterminate deleteRemote re-probe all refuse
+  // INSIDE the switch. Those holds are STICKY — they re-fire on every touch — so signalling at the seam
+  // made the light claim a permanent "Syncing…" for a file that will never sync.
+  it("reconcilePath reports NOTHING for a push the flip guard holds (never yellow for a file that won't sync)", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "loop.md": "A" });
+    const seen: boolean[] = [];
+    const d = deps(srv.api, io, { pushFlipHold: () => true, onFlipHeld: () => {}, onPathWork: (b) => seen.push(b) });
+    await reconcilePath(d, "loop.md", 1);
+    expect(srv.files.has("loop.md")).toBe(false); // nothing transferred…
+    expect(seen).toEqual([]);                      // …so nothing was reported
+  });
+
+  it("reconcilePath reports NOTHING for a push the server already refused (rejectedPushes hold)", async () => {
+    const srv = fakeServer();
+    const io = fakeIo({ "n.md": "hello" });
+    const d = deps(srv.api, io, { rejectedPushes: new Map(), onPushHeld: () => {} });
+    await reconcilePath(d, "n.md", 5);              // first pass pushes and records the base
+    const localHash = d.base.get("n.md")!.hash;
+    d.rejectedPushes!.set("n.md", localHash);       // pretend the server refused exactly this content
+    io.m.set("n.md", new TextEncoder().encode("hello v2")); // a real local change, so decide() yields push
+    const seen: boolean[] = [];
+    (d as any).onPathWork = (b: boolean) => seen.push(b);
+    const { sha256hex } = await import("../src/chunker");
+    d.rejectedPushes!.set("n.md", await sha256hex(new TextEncoder().encode("hello v2")));
+    await reconcilePath(d, "n.md", 8);
+    expect(seen).toEqual([]);                       // held by the memo → no transfer, no report
+  });
+
+  // CRITIQUE F2: community-plugins.json is handled by its own union-merge route, which returns BEFORE
+  // finalize — it downloads, writes locally and usually pushes, so enabling a plugin synced under a
+  // steady green light.
+  it("reconcilePath reports work for the union-merged enabled-plugin list (its own route, before finalize)", async () => {
+    const CP = ".obsidian/community-plugins.json";
+    const { api } = fakeServer();
+    const io = guardedIo({ [CP]: JSON.stringify(["a", "b"], null, 2) });
+    const d = deps(api, io, { accepts: () => true });
+    await reconcilePath(d, CP);                                        // seed the server + base
+    await serverPut(api, CP, JSON.stringify(["a"], null, 2));          // a peer disables 'b' → union-merge path
+    const seen: boolean[] = [];
+    (d as any).onPathWork = (b: boolean) => seen.push(b);
+    await reconcilePath(d, CP);
+    expect(seen).toEqual([true, false]);
+  });
+
   it("reconcilePath (event path) gates a large local file — no push", async () => {
     const { api, files } = fakeServer();
     const io = fakeIo({ "big.md": "x".repeat(100) });

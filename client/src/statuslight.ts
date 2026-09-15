@@ -52,12 +52,16 @@ export function nextLightDisplay(s: LightDisplay, e: LightEvent): LightAction {
   switch (e.kind) {
     case "phase":
       if (e.phase === "syncing") {
-        // Already painting a sync: nothing to repaint. Drop any pending return-to-steady — more work
-        // arrived, so the state the light shows is still true (a second save during the first hold).
+        // Already painting a sync: keep painting, drop any pending return-to-steady (more work arrived, so
+        // what is shown is still true) and RE-ARM. Re-arming is what makes a save TRAIN read as ONE
+        // continuous "Syncing…" instead of a blink per save: Obsidian autosaves roughly every 2s while you
+        // type, so a hold anchored on the first save alone expires between saves and the light square-waves
+        // green/yellow at ~0.5Hz — the percept behind issueStatusLightFlicker, now in the alarm colour
+        // (critique F2). Each save pushes the quiet window out instead; green returns once typing stops.
         if (s.shown === "syncing") {
-          return { state: { shown: "syncing", held: s.held }, arm: false, disarm: false };
+          return { state: { shown: "syncing", held: true }, arm: true, disarm: s.held };
         }
-        // Work started: paint it NOW and arm the minimum-show hold.
+        // Work started: paint it NOW and arm the quiet window.
         return { state: { shown: "syncing", held: true }, arm: true, disarm: false };
       }
       // A failure is never queued behind the cosmetic hold.
