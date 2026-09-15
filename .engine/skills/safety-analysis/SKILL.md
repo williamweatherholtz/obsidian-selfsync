@@ -51,4 +51,4 @@ places things live.
 - Every element carries `id`, `createdAt`, `createdBy`; edges are typed markers, never prose.
 - A UCA that is already mitigated is still recorded — the mitigation is the SR, and the SR needs its Test.
 - Never record a verification the tests don't give (D0016/D0051): an SR without a passed Test stays a gap.
-- Validate + gate: `keel validate . && keel guard` (marker vocabulary, attribute vocabulary, verification-trace).
+- Validate + gate: `keel gate validate . && keel gate guard` (marker vocabulary, attribute vocabulary, verification-trace).

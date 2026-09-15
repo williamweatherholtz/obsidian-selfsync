@@ -4,7 +4,7 @@ This repo **is a work-tracking engine** built on SysML v2 text files. It tracks 
 building things — and is being built using its own discipline. Read this before doing anything.
 
 > **Status: sprint discipline in force (D0064).** The tracking engine exists and is the
-> authority (D0048): the Rust toolchain computes views (`keel orient`/`whats-next`/`suspect`)
+> authority (D0048): the Rust toolchain computes views (`keel show orient`/`whats-next`/`suspect`)
 > and the write API records facts (`append-result`/`add-task`/`append-gate-result`/`apply-review`); four layer
 > validators gate every change. (The indexer and GUI don't exist yet; neither is needed for the
 > discipline.) **All substantive work — CHANGE, delivery, and engine work — goes through a sprint**
@@ -33,16 +33,16 @@ Authoritative reading order: this file → `.engine/README.md` → `.engine/deci
 superseded in full by decisions 0001–0018; decisions win.)
 **Orient** (where things stand / what's next) is never read from prose — compute it.
 The **Rust toolchain is the sole authority (D0048; query.py retired at M4/D0074)**, no kernel required:
-`keel orient [ROOT]` (JSON) / `keel whats-next [ROOT]` (ready list).
+`keel show orient [ROOT]` (JSON) / `keel show whats-next [ROOT]` (ready list).
 `orient` suspect covers BOTH .sysml drift AND deliverable-source drift (D0050): a Rust
 verification task (listed in `.engine/deliverable-manifest.txt`) is suspect when the
 source changed since it was verified — re-verify at HEAD to clear it. For REPRODUCIBLE
-`method=test` drift, `keel reverify [--all-drift | --task NAME]` (D0101) re-runs the gate
+`method=test` drift, `keel record reverify [--all-drift | --task NAME]` (D0101) re-runs the gate
 declared in `.engine/contracts/reverify.toml` and, on green, stamps a fresh judged-at-HEAD
 `TestResult` per drift task (honest — never fabricated; judgment methods stay manual).
 Views are formally DECLARED (D0056/D0057, `.engine/views/viewpoint-registry.sysml`) and the
 Rust tooling computes them: `keel show orphans` renders the orphans viewpoint (needs/requirements/
-tasks/issues missing required edges); `keel view <name>`, `audit`, `attestation-coverage`,
+tasks/issues missing required edges); `keel show view <name>`, `audit`, `attestation-coverage`,
 `governing-version`, `reprocess-candidates`, `suspect`, `concern-coverage` (D0057/issue035 — which
 declared viewpoint concerns are served vs planned), `dispositions` (D0092 — which ≥Medium findings
 carry a typed ACT/ACCEPT-RISK/DISMISS verdict vs undispositioned), `sitting-coverage` (D0049/issue040
@@ -53,9 +53,9 @@ leading indicator of insufficient implementation) are the other computed lenses
 (`suspect` also flags elements with an unresolved failing critique — `critique_suspect`, D0086). Any declared view
 renders as an interactive artifact via `keel render <view> --mode graph|table|review` (D0086;
 the `diagram` is the whole-model graph preset), and a human review round-trips back as linked
-critiques via `keel apply-review` (the review viewpoint + render skill). Human-digestible
+critiques via `keel record review` (the review viewpoint + render skill). Human-digestible
 AGGREGATE scorecards (coverage %, critique %, traceability, debt, volatility, flow) come from
-`keel report <assurance|traceability|quality-debt|flow|governance|friction> [--html] [--trend]`
+`keel render report <assurance|traceability|quality-debt|flow|governance|friction> [--html] [--trend]`
 (D0087, the `report` viewpoint; health vs opportunity; `--trend` = git-derived sparklines; `friction`
 is the D0054/issue029 write-path-vs-spreadsheet benchmark). (The SysML
 viewpoint-registry stays the concern-coverage index.)
@@ -98,12 +98,12 @@ viewpoint-registry stays the concern-coverage index.)
    (`metric_value`) feeds both the indicators and the reports, so each scalar metric is computed once,
    and reports *render* the indicators (+ point-in-time structure) rather than re-defining the metrics.
    Datapoints accumulate in a `Measurement` BANK: pulled/manual observations via `record-measurement`,
-   and computed readings via `keel snapshot-indicators` (a recorded *observation*, not a cache —
+   and computed readings via `keel record indicator-snapshot` (a recorded *observation*, not a cache —
    D0091, a controlled compute-don't-store exception). `keel show indicators` is bank-first + emits the
    full series. Its data
    arrives by a measurement METHOD: `computed` (objective, repo-derived — series via the report/trend
    engine, no stored datapoints), `pulled` (objective, external API/scraper — recorded `Measurement`
-   datapoints via `keel record-measurement`), or `manual` (subjective, e.g. a survey — recorded).
+   datapoints via `keel record measurement`), or `manual` (subjective, e.g. a survey — recorded).
    `Measurement`s are irreducible point-in-time observations (authored, with provenance) for pulled/
    manual; computed series recompute from the repo. When a metric's "good enough" boundary can't yet
    be defensibly set, it stays an **indicator** — promote to a requirement/guard only when a justified
@@ -178,7 +178,7 @@ Decision only — §4). A tooling change that alters the *meaning* of a computed
 behavior as surely as editing a gate.
 
 **§3b — EXECUTE.** The core loop:
-1. **Orient** — run `keel orient [ROOT]` to
+1. **Orient** — run `keel show orient [ROOT]` to
    compute in-progress sprint ceremony status + ready/outstanding backlog frontier.
    (No cursor file — orientation is fully computed from delivery file TestResults, D0045.)
 2. **Act within the appropriate phase** — produce its defined artifact(s) as items + edges;
@@ -217,7 +217,7 @@ Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`
   `keel show critique-policy` shows the active policy; `keel show critique-coverage` + `guard critique` read it. A
   disposition is itself a TYPED recorded judgment (D0092): a `method=confirmation` verification
   carrying `disposition : DispositionKind` (`act`/`acceptRisk`/`dismiss`), `#Dispositions`-linked
-  to the finding, written via `keel apply-review` — never prose. ACCEPT-RISK/DISMISS close the
+  to the finding, written via `keel record review` — never prose. ACCEPT-RISK/DISMISS close the
   finding; ACT also needs a `#Resolves` resolver. `keel show dispositions` + `assured` read the verdict.
 - **Sprint ceremony is autonomous; the human gate is the per-sitting review (D0049).**
   Per-sprint closeOut (`method=inspect`) and retro (`method=analysis`) are AI-recorded with
@@ -226,7 +226,7 @@ Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`
   sprint review (a sitting = one work session, ≥1 sprint), where the human accepts the
   sitting's content (batchable, D0019). Do not pause to confirm individual sprint ends.
 - **Confirm only what tests can't (D0051).** `method=test/inspect/analyze` items are
-  self-evidencing — their automated runs (cargo test, clippy, `keel validate`, `keel
+  self-evidencing — their automated runs (cargo test, clippy, `keel gate validate`, `keel
   guard`) ARE the evidence; never ask a human to confirm a green test. The
   only confirmation-worthy class is non-test-verifiable judgment — Decisions / direction —
   where the evidence IS the human's word (D0016). A sitting of all-tested work with
@@ -240,7 +240,7 @@ Issue, record `#Resolves` from the Decision (for a Need/Requirement, `supersede`
 it and never mutate** — status, trace matrix, suspicion / stale set, coverage, ICD, MSRD,
 baseline are all views (§2.1).
 
-**§3f — ORIENT.** Compute from authored facts — `keel orient [ROOT]` returns in-progress sprint ceremony status (which gate each live sprint is pending) + the ready/outstanding backlog frontier + a non-blocking `burndown` block (D0098 — tier-satisfaction pcts, unrooted capabilities, orphan stories; the always-visible "what's incomplete" headline). No cursor file; no mutation.
+**§3f — ORIENT.** Compute from authored facts — `keel show orient [ROOT]` returns in-progress sprint ceremony status (which gate each live sprint is pending) + the ready/outstanding backlog frontier + a non-blocking `burndown` block (D0098 — tier-satisfaction pcts, unrooted capabilities, orphan stories; the always-visible "what's incomplete" headline). No cursor file; no mutation.
 
 The six workflows (see the spec for detail):
 **Business** (needs / "what-why") → **Architecture** (Data·Application·Technology / "how") →
@@ -251,10 +251,10 @@ The six workflows (see the spec for detail):
 
 ## 4. Working rules (sprint discipline in force, D0064)
 
-- **The write API is the sanctioned write path (Sprint 9, 2026-06-15).** Use `keel append-result`
-  to append a `TestResult` to an action task, `keel append-gate-result` to append a `TestResult`
+- **The write API is the sanctioned write path (Sprint 9, 2026-06-15).** Use `keel record result`
+  to append a `TestResult` to an action task, `keel record gate-result` to append a `TestResult`
   to a ceremony gate (`verification` — the `{gate}R{n}` form, used by sprint closeOut/retro), and
-  `keel add-task` to add a task + `DoD` to an action def — all enforce UUID generation and
+  `keel record task` to add a task + `DoD` to an action def — all enforce UUID generation and
   append-only semantics automatically. Direct editing of `.sysml` / instance files is still possible
   but is no longer the primary path; use it only when the write API does not yet cover the operation
   (schema changes, decision files).
@@ -320,14 +320,14 @@ The six workflows (see the spec for detail):
   `core.hooksPath` points there, so a new checkout MUST run `git config core.hooksPath .githooks`
   (the `pre-commit` keel gate and the `post-commit` push both depend on it). This bit once: a
   machine-global `core.hooksPath` pointing at a non-existent directory meant NO hook ran in this
-  repo at all — neither the push nor the `keel validate`/`guard` gate — while this file asserted the
+  repo at all — neither the push nor the `keel gate validate`/`guard` gate — while this file asserted the
   push hook was running (issueHooksNotInstalled). Verify with `git config --get core.hooksPath`.
 - **The meta-process is frozen:** do not use Change Request to modify the
   Change Request workflow itself — that goes through a plain Decision + human edit, out of band.
 - **There is NO prose state/handoff document — the model is the only tracker (Decision 0018).**
   `RESUME.md` was deleted 2026-06-11: it shadow-tracked the backlog (critique finding A7,
   reproduced once even after the critique). Where things stand is COMPUTED
-  (`keel orient [ROOT]` / `keel whats-next [ROOT]`); what's next is the backlog's ready frontier;
+  (`keel show orient [ROOT]` / `keel show whats-next [ROOT]`); what's next is the backlog's ready frontier;
   how to work here is THIS file; mechanics live in `.tracking/README.md`,
   `.engine/docs/` and `.engine/decisions/`. Never author a status/worklist/handoff doc —
   if resuming requires knowledge, it belongs in the model, a Decision, or these docs.
@@ -343,7 +343,7 @@ canonical validator for `.tracking/` (D0048) — fast, no JVM:**
 keel gate validate .                                                          # .tracking/*.sysml — AUTHORITY (no kernel)
 keel gate guard                                                               # EVERY enforced honest-state guard (no kernel; exit≠0 on any violation). Inventory: `keel version` + .engine/docs/guards.md — keel 0.3.1 runs ~60 checks, far more than the original 14 named below
 keel gate guard <name>                                                        # one guard by name — the names and what each enforces are in .engine/docs/guards.md (e.g. actors | process-change | issues | ownership | parser-coverage | evidence-cited | duplicate-identity | base-first-justification ...); read the FAIL/WARN lines, not the exit code alone
-keel reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
+keel record reverify --all-drift                                                 # D0101: re-run the .engine/contracts/reverify.toml gate at HEAD; on green, stamp a fresh TestResult per drift-suspect task (honest auto-re-verify; reproducible method=test only)
 ```
 **Use the `keel` on PATH — never a sibling checkout's build.** `keel --version` must match the
 binary the `.githooks/pre-commit` gate runs (it invokes plain `keel`), or you validate against a
@@ -355,7 +355,7 @@ had four failures (issueEngineVintageGateDrift). Check `keel --version` before t
 **Honest-state gates, not self-assurance gates (D0098).** A commit gate enforces only that the recorded
 model is TRUTHFUL / well-formed / traceable — never that the work is COMPLETE. Completeness (coverage,
 critique-coverage, readiness) is a NON-BLOCKING burndown surfaced in `orient` + run on demand
-(`keel assured`/`keel show critique-coverage`); incomplete implementation flagged AS incomplete is honest
+(`keel gate assured`/`keel show critique-coverage`); incomplete implementation flagged AS incomplete is honest
 state, never a commit blocker (don't fake a pass, don't block recording true state).
 The hard-blocking honest-state guards are the Rust authority (D0074 M3/M4; D0098). The CURRENT inventory is `.engine/docs/guards.md` (engine-shipped, resynced with the binary — D0050); the fourteen described next are the ORIGINAL set, still enforced, kept here for their rationale: `keel gate guard` (actors
 D0037, acceptance-events D0066, sprint-coverage D0064/issue020, ceremony D0047/issue010+011, charter
@@ -383,7 +383,7 @@ action]. The python `validate_*.py` guards, `query.py`, and `parity_check.py` we
 (sprint58, issue012 closed) — the Rust path is the sole gate.
 
 **`.engine/` changes (schema / workflows / decisions / processes / skills) go through the SAME `keel`
-path — there is NO separate kernel validator to run.** `keel validate [ROOT]` parses the `.tracking/`
+path — there is NO separate kernel validator to run.** `keel gate validate [ROOT]` parses the `.tracking/`
 `.sysml`; `keel gate guard` additionally SCANS `.engine/` (engine-lint over the schema/workflow/instance
 elements, decision-rationale over every Decision, process-skill + process-change over the process defs),
 so a green `keel gate validate` + `keel gate guard` is the full local gate for both trees. The Python kernel

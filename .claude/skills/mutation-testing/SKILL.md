@@ -21,7 +21,7 @@ suite would *fail* on a real fault. A surviving mutant = a concrete test-gap (a 
 
 ## Method
 1. **Run** cargo-mutants (server) / Stryker (client), scoped to a target module first (whole-repo is slow);
-   capture the score + surviving-mutant list. Prioritize modules by `keel arch criticality`.
+   capture the score + surviving-mutant list. Prioritize modules by `keel show arch criticality`.
 2. **Triage** each survivor: a REAL test-gap (a meaningful behavior change no test caught) vs an
    EQUIVALENT/uninteresting mutant (semantically identical, or in cosmetic/logging code).
 3. **Kill or justify**: a fail-first test that kills each real-gap mutant (re-run to confirm it dies); a

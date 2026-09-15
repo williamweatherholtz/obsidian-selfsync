@@ -23,7 +23,7 @@ package EngineArchitectureAudit {
     action aaEnumerate : ProcessStep {
         :>> id = "26c8823c-412c-46c9-a080-3ad7a370fb42";
         :>> title = "Enumerate authored code elements";
-        :>> triggerCondition = "Asked to audit the architecture, or a `keel arch drift` / `arch coverage` frontier is non-empty.";
+        :>> triggerCondition = "Asked to audit the architecture, or a `keel show arch drift` / `arch coverage` frontier is non-empty.";
         :>> actionText = "Go file-by-file over the deliverable source; author a CodeElement (id, file, name, kind, codeHash from audit_hash.py) for each separable element not yet registered.";
         :>> producedArtifact = "CodeElement rows in .tracking/architecture/.";
         :>> owner = Owner::ai;

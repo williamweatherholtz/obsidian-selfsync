@@ -21,7 +21,7 @@ Deploys `.engine/processes/property-based-testing.sysml`. Finds correctness bugs
 by testing general invariants over generated inputs (with shrinking → a minimal counterexample).
 
 ## When it's the right tool
-The PURE, total functions — highest value, cheapest to specify. Prioritize by `keel arch criticality`
+The PURE, total functions — highest value, cheapest to specify. Prioritize by `keel show arch criticality`
 (dataLoss/correctness first). For SelfSync: `decide`, `merge3`, the chunker, `sameIgnoringEol`,
 `mergeEnabledPluginsJson` (client, fast-check); the Rust chunker, `safe_rel_path`, index round-trips
 (server, proptest). Effect-heavy code is a poor fit — property-test its pure core, integration-test the shell.

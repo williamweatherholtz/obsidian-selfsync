@@ -27,7 +27,7 @@ verified against the source before they become tracked Issues. This is the answe
 ## When it's the right tool
 Asked to critique/red-team/adversarially review the code, "find bugs", "where are we weak", "another
 critique pass", or after a substantial change to a high-criticality subsystem. Prioritize the target by
-`keel arch criticality` (dataLoss/security/durability/correctness first) and by what changed most recently.
+`keel show arch criticality` (dataLoss/security/durability/correctness first) and by what changed most recently.
 
 - **NOT this skill:** critiquing a tracked Need/SystemRequirement/Decision → **element-critique** (findings
   are `method=critique` verifications on the element). Stress-testing the engine + its processes →
