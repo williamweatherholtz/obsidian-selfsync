@@ -2,9 +2,39 @@
 # keel pre-commit gate (Rust-only; no JVM kernel) — scaffolded by `keel init` (D0048/D0093).
 # Enable: git config core.hooksPath .githooks   |   bypass once: SKIP_KEEL=1 git commit ...
 [ "$SKIP_KEEL" = "1" ] && { echo 'pre-commit: SKIP_KEEL=1 — keel gate skipped'; exit 0; }
-KEEL="${KEEL:-keel}"
-command -v "$KEEL" >/dev/null 2>&1 || { echo "pre-commit: '$KEEL' not on PATH — keel gate skipped (install keel to enforce)"; exit 0; }
-echo 'pre-commit: keel gate validate .'
-"$KEEL" gate validate . || { echo 'pre-commit: keel gate validate FAILED — commit aborted'; exit 1; }
+
+# Resolve the binary the SAME way the in-loop Claude hooks do (.claude/settings.json), in the same
+# order: an explicit override, then the machine-local install under .keel/bin (gitignored, so a
+# fresh clone has none), then the engine-version-pinned directory, then PATH. Before this, the hook
+# only checked PATH — and since `keel` is installed per-machine at .keel/bin/keel.exe here, it
+# silently printed "not on PATH — keel gate skipped" on every commit, so the commit gate never ran
+# while the turn gate did. One resolution order, two callers.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
+
+K="${KEEL:-${KEEL_BIN:-}}"
+[ -n "$K" ] && [ -x "$K" ] || {
+  K=
+  for c in "$ROOT/.keel/bin/keel" "$ROOT/.keel/bin/keel.exe"; do
+    [ -x "$c" ] && { K="$c"; break; }
+  done
+}
+[ -n "$K" ] || {
+  P=$(sed -n 's/^engine *= *"\(.*\)"/\1/p' "$ROOT/.engine/contracts/engine-version.toml" 2>/dev/null | head -n1)
+  [ -n "$P" ] && for c in "$ROOT/.keel/bin/$P"/keel-*; do
+    [ -x "$c" ] && { K="$c"; break; }
+  done
+}
+[ -n "$K" ] || K=$(command -v "${KEEL:-keel}" 2>/dev/null)
+
+# Absent binary stays NON-FATAL: a contributor who has not installed keel yet must still be able to
+# commit, and the turn gate plus CI both run the same checks. It says WHERE it looked, so "skipped"
+# reads as a missing install rather than as a pass.
+[ -n "$K" ] || {
+  echo "pre-commit: keel NOT FOUND — gate skipped (looked at: \$KEEL/\$KEEL_BIN, $ROOT/.keel/bin/keel[.exe], the .engine/contracts/engine-version.toml pin, PATH)"
+  exit 0
+}
+
+echo "pre-commit: keel gate validate . ($K)"
+"$K" gate validate "$ROOT" || { echo 'pre-commit: keel gate validate FAILED — commit aborted'; exit 1; }
 echo 'pre-commit: keel gate guard'
-"$KEEL" gate guard || { echo 'pre-commit: keel gate guard FAILED — commit aborted'; exit 1; }
+"$K" gate guard "$ROOT" || { echo 'pre-commit: keel gate guard FAILED — commit aborted'; exit 1; }
