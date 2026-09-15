@@ -13,9 +13,9 @@ describe("effectivePhase — a 0-pending reconcile is a check, not a syncing sta
 
 describe("light is a pure function of phase", () => {
   it("green only when idle (up to date)", () => {
-    expect(light("idle").color).toBe("var(--color-green)");
+    expect(light("idle").color).toBe("var(--selfsync-green, var(--color-green))");
     for (const s of ["off", "connecting", "syncing", "retrying"] as Phase[]) {
-      expect(light(s).color).not.toBe("var(--color-green)");
+      expect(light(s).color).not.toBe("var(--selfsync-green, var(--color-green))");
     }
   });
   it("retrying is red", () => expect(light("retrying").color).toBe("var(--color-red)"));
@@ -29,14 +29,14 @@ describe("light is a pure function of phase", () => {
   // claim full green "Fully synced" — it reflects the polling-fallback truth instead.
   it("idle with realtime DOWN is not green and says it's polling", () => {
     const up = light("idle", "v5", true);
-    expect(up.color).toBe("var(--color-green)");
+    expect(up.color).toBe("var(--selfsync-green, var(--color-green))");
     expect(up.tip).toContain("Fully synced");
     const down = light("idle", "v5", false);
-    expect(down.color).not.toBe("var(--color-green)");
+    expect(down.color).not.toBe("var(--selfsync-green, var(--color-green))");
     expect(down.tip.toLowerCase()).toContain("polling");
   });
   it("realtime defaults to up (prior behavior) when the flag is omitted", () => {
-    expect(light("idle").color).toBe("var(--color-green)");
+    expect(light("idle").color).toBe("var(--selfsync-green, var(--color-green))");
   });
   it("the realtime flag only affects idle (syncing/retrying are unchanged)", () => {
     expect(light("syncing", "", false).color).toBe(light("syncing", "", true).color);

@@ -23,8 +23,13 @@ export function light(phase: Phase, detail = "", realtime = true): LightSpec {
   switch (phase) {
     // Colors are Obsidian CSS variables (resolved against the active theme), not
     // hardcoded hex — so the indicator matches light/dark and custom themes.
+    // The healthy state is the ONE colour a user reads at a glance, so it does not ride the theme's
+    // --color-green: that variable is a yellow-leaning green in the default themes and read as faint or
+    // yellowish at indicator size. --selfsync-green (styles.css) is an explicit kelly green with a
+    // per-theme value — deeper on light backgrounds, brighter on dark — and falls back to --color-green
+    // where the stylesheet is absent. Every other state stays on the theme variables.
     case "idle":       return realtime
-      ? { color: "var(--color-green)", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` }
+      ? { color: "var(--selfsync-green, var(--color-green))", label: "SelfSync", tip: `Fully synced${detail ? " (" + detail + ")" : ""}` }
       : { color: "var(--color-yellow)", label: "SelfSync", tip: `Synced — realtime reconnecting, polling${detail ? " (" + detail + ")" : ""}` };
     case "syncing":    return { color: "var(--color-yellow)", label: "SelfSync", tip: `Syncing…${detail ? ` ${detail}` : ""}` };
     case "connecting": return { color: "var(--color-yellow)", label: "SelfSync", tip: "Connecting…" };
