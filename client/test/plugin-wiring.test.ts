@@ -110,9 +110,11 @@ class TestPlugin extends SelfSyncPlugin {
   api_ = spyApi();
   io_: VaultIo & { files: Map<string, Uint8Array> } = memIo();
   loginCount = 0;
+  writes_ = 0; // data.json write COUNT — the hang was write volume, so the count is the thing to pin
   protected buildIo() { return this.io_; }
   protected buildApi() { return this.api_; }
   protected loginRemote() { this.loginCount++; return Promise.resolve("test-token"); }
+  async saveData(d: any) { this.writes_++; return super.saveData(d); }
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -203,9 +205,52 @@ describe("plugin wiring — producers → engine → effects", () => {
     expect(p.statusText()).toBe("syncing");           // the card must not say "Fully synced"
     expect((p as any).lightPhase()).toBe(p.statusText());
     (p as any).notePathWork(false);
-    expect((p as any).lightPhase()).toBe(p.statusText()); // and they still agree once it lands
+    expect((p as any).lightDisplay.shown).toBe(p.statusText()); // and they still agree once it lands
     p.onunload();
   });
+
+  // OWNER REPORT 2026-09-16: "Obsidian keeps hanging with our plugin. i've never seen that before."
+  // data.json carries the WHOLE base — BaseStore.toJSON() copies every mergeable file's full text (≤1 MiB
+  // each) — so one write is megabytes on a real vault (measured in perf/persist.perf.ts: ~10.5 MB for
+  // 2,000 notes × 5 KB). Every reconcile pass ended with an immediate saveSettings() for the cosmetic
+  // lastSyncedAt, so an idle poll rewrote all of it; on Windows with AV, or a cloud-synced vault, that is
+  // the stall. A write now happens only when something actually asked for one.
+  it("an IDLE reconcile pass writes data.json ZERO times (no megabyte write per poll)", async () => {
+    const { p } = await bootPlugin();
+    await flush();
+    const before = (p as TestPlugin).writes_;
+    (p as any).engine.enqueue({ kind: "remote" });          // a poll tick with nothing to do
+    await flush();
+    expect((p as TestPlugin).writes_).toBe(before);          // …and nothing was written
+    p.onunload();
+  });
+
+  it("closing the settings tab flushes a PENDING write once, then a second close writes nothing", async () => {
+    const { p } = await bootPlugin();
+    await flush();
+    // Connect stamps lastSyncedAt on the lazy carrier, so there IS one pending write to flush.
+    const before = (p as TestPlugin).writes_;
+    await (p as any).flushSettings();
+    expect((p as TestPlugin).writes_).toBe(before + 1);
+    await (p as any).flushSettings();                      // nothing dirty now
+    expect((p as TestPlugin).writes_).toBe(before + 1);     // …so closing again is free
+    p.onunload();
+  });
+
+  it("a real settings change still writes exactly once", async () => {
+    const { p } = await bootPlugin();
+    await flush();
+    const before = (p as TestPlugin).writes_;
+    p.settings.deviceName = "laptop";
+    await p.saveSettings();
+    expect((p as TestPlugin).writes_).toBe(before + 1);
+    p.onunload();
+  });
+
+  // The minimum-show hold defers the return to a resting state, and the card now renders the same held
+  // value the glyph paints - so a test that wants to see green must let the window elapse, exactly as the
+  // user does by pausing. Releases via the wall clock, the path dispatchLight uses.
+  const afterHold = (p: any) => { p.heldSince = 0; p.renderLight(); };
 
   // OWNER REPORT 2026-09-16: "colour indication is quite latent — takes a second or two when typing."
   // Obsidian autosaves ~2s after you stop, so a light driven only by transfers cannot react sooner. An
@@ -237,6 +282,7 @@ describe("plugin wiring — producers → engine → effects", () => {
     (p as any).onLocalDelete("Notes/gone.md");
     expect(p.statusText()).toBe("syncing");
     (p as any).notePathSettled("Notes/gone.md");
+    afterHold(p);
     expect(p.statusText()).toBe("idle");
     const f = new TFile(); f.path = "Notes/new.md"; (f as any).stat = { size: 1, mtime: 0 };
     (p as any).onLocalRename(f, "Notes/old.md");
@@ -258,16 +304,82 @@ describe("plugin wiring — producers → engine → effects", () => {
     fire("editor-change", {}, { file: { path: "Notes/n.md" } });
     expect(p.statusText()).toBe("syncing");
     (p as any).notePathSettled("Notes/n.md");             // what reconcilePath's finally calls
+    expect((p as any).unsyncedEdits.size).toBe(0);        // the claim is gone at once…
+    afterHold(p);
+    expect(p.statusText()).toBe("idle");                  // …and green follows once the hold elapses
+    p.onunload();
+  });
+
+  it("a BUFFER-only claim expires on read, so a keystroke Obsidian never writes cannot latch yellow", async () => {
+    const { p, fire } = await bootPlugin();
+    fire("editor-change", {}, { file: { path: "Notes/n.md" } });
+    (p as any).unsyncedEdits.set("Notes/n.md", { at: Date.now() - 60_000, onDisk: false }); // typed, never saved
+    afterHold(p);
+    expect(p.statusText()).toBe("idle");
+    expect((p as any).unsyncedEdits.size).toBe(0);         // pruned, not merely ignored
+    p.onunload();
+  });
+
+  // Expiring a claim the FILESYSTEM confirmed would put the light back to green over a change that really
+  // is unsynced — the inaccuracy st001/us001 forbids. A disk claim is cleared by evidence, never a clock.
+  it("a DISK-confirmed claim never expires on a clock — only evidence clears it", async () => {
+    const { p } = await bootPlugin();
+    const f = new TFile(); f.path = "Notes/n.md"; (f as any).stat = { size: 3, mtime: 0 };
+    (p as any).onLocalEvent(f);
+    (p as any).unsyncedEdits.set("Notes/n.md", { at: Date.now() - 600_000, onDisk: true }); // ten minutes old
+    (p as any).renderLight();
+    expect(p.statusText()).toBe("syncing");                // still true: the server has not seen it
+    expect((p as any).unsyncedEdits.size).toBe(1);
+    (p as any).notePathSettled("Notes/n.md");              // evidence: the pass compared it
+    afterHold(p);
     expect(p.statusText()).toBe("idle");
     p.onunload();
   });
 
-  it("an unsynced-edit claim EXPIRES on read, so a buffer Obsidian never writes cannot latch yellow", async () => {
+  it("a keystroke claim is UPGRADED to disk-confirmed when Obsidian writes the file", async () => {
     const { p, fire } = await bootPlugin();
     fire("editor-change", {}, { file: { path: "Notes/n.md" } });
-    (p as any).unsyncedEdits.set("Notes/n.md", Date.now() - 60_000); // keystroke a minute ago, never saved
+    expect((p as any).unsyncedEdits.get("Notes/n.md").onDisk).toBe(false);
+    const f = new TFile(); f.path = "Notes/n.md"; (f as any).stat = { size: 3, mtime: 0 };
+    (p as any).onLocalEvent(f);                            // autosave landed
+    expect((p as any).unsyncedEdits.get("Notes/n.md").onDisk).toBe(true); // no longer expirable
+    p.onunload();
+  });
+
+  // THE STUCK GLYPH (owner report 2026-09-16): a path event is DROPPED while disconnected, and a failed
+  // pass deliberately does not settle. Recovery is a reconcileAll, which never called onPathSettled — so
+  // the claim outlived the sync and, once idle again, raised a permanent "Syncing…" over a synced vault.
+  it("a whole-vault pass SETTLES claims it visited (no permanently stuck syncing)", async () => {
+    const { p } = await bootPlugin();
+    (p as any).unsyncedEdits.set("Notes/dropped-while-offline.md", { at: Date.now() - 5_000, onDisk: true });
+    (p as any).renderLight();                              // the claim survived a drop/failure; paint it
+    expect(p.statusText()).toBe("syncing");
+    (p as any).settleUnsyncedBefore(Date.now());           // what a mode==="full" pass calls on success
+    expect((p as any).unsyncedEdits.size).toBe(0);
+    afterHold(p);
     expect(p.statusText()).toBe("idle");
-    expect((p as any).unsyncedEdits.size).toBe(0);         // pruned, not merely ignored
+    p.onunload();
+  });
+
+  it("a claim made DURING a pass survives it (the scan may have listed the file first)", async () => {
+    const { p } = await bootPlugin();
+    const passStart = Date.now() - 1_000;
+    (p as any).unsyncedEdits.set("Notes/edited-mid-pass.md", { at: Date.now(), onDisk: true });
+    (p as any).settleUnsyncedBefore(passStart);
+    expect((p as any).unsyncedEdits.size).toBe(1);
+    p.onunload();
+  });
+
+  // The two surfaces are one state: the card renders what the light paints, so a minimum-show hold cannot
+  // leave the glyph on "Syncing…" while the settings pane says "Fully synced".
+  it("the settings card renders the DISPLAYED state, so it cannot disagree with the glyph mid-hold", async () => {
+    const { p } = await bootPlugin();
+    (p as any).engine.beginReconcile();
+    (p as any).notePathWork(true);
+    expect(p.statusText()).toBe("syncing");
+    (p as any).notePathWork(false);                        // transfer done, but the hold still paints yellow
+    expect((p as any).lightDisplay.shown).toBe("syncing");
+    expect(p.statusText()).toBe("syncing");                // the card follows the paint, not a live recompute
     p.onunload();
   });
 

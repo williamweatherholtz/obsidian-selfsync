@@ -304,4 +304,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from settingsFieldWriteCoalesce to issue001;
+
+    part issue002 : Issue {
+        :>> id = "0691d9a9-89db-4fb7-996c-3e4869b4145e";
+        :>> title = "Obsidian hangs: every reconcile pass rewrote the whole multi-megabyte base to data.json";
+        :>> createdAt = "2026-09-16";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Obsidian hangs while using SelfSync - reported as never having happened before with Obsidian. The owner reports the settings pane triggers it, the pane will not close without a force-close, and the main program stays hung after the pane is force-closed. Mechanism found by measurement (client/perf/persist.perf.ts): data.json carries the WHOLE base, because BaseStore.toJSON copies every mergeable file's full text (up to MAX_BASE_TEXT_BYTES = 1 MiB each) into one object which saveData then stringifies - 10.5 MB of payload for a 2,000-note vault at 5 KB per note, re-built from scratch on every write. Stringify itself is only ~30 ms, so the cost is the WRITE VOLUME, and the plugin forced one at the end of EVERY reconcile pass (reconcileAllOnce set settings.lastSyncedAt then called saveSettings, an immediate persist), on every connect, and on every settings-tab close. On Windows with an AV scanner, or a cloud-synced vault, repeated multi-megabyte writes stall the host's main thread; the writes queue and keep running after the pane is closed, which is why closing it does not recover. Aggravated by, but not caused by, the recent status-indicator work raising repaint and event frequency.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Critical;
+    }
+    #Resolves dependency from persistWriteVolume to issue002;
 }

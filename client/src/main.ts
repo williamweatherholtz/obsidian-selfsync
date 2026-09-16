@@ -91,7 +91,10 @@ const POLL_ACTIVE_MS = 4000;        // WS down/unavailable — the poll is the p
 const POLL_IDLE_MS = 60 * 1000;     // WS healthy — liveness backstop only
 const MOBILE_MAX_SYNC_MB = 100; // hard per-file ceiling on mobile (panel H3); the user setting applies below it
 const FLIP_SHAPE_MAX_BYTES = 256 * 1024; // shape-compare text up to this size (a decode + regex per push)
-const PERSIST_DEBOUNCE_MS = 1_500; // trailing-edge coalescing of base persistence (panel H4)
+const PERSIST_DEBOUNCE_MS = 1_500;
+// data.json carries the whole base, so a write is megabytes on a real vault. A field that changes every
+// pass but only matters cosmetically rides this much slower carrier instead of forcing a write per pass.
+const LAZY_PERSIST_MS = 60_000; // trailing-edge coalescing of base persistence (panel H4)
 const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
 const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers whole files (no streamed writer) — cap to avoid a WebView OOM (R6-Med2); files over this are skipped + noticed, never buffered
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
@@ -480,7 +483,8 @@ export default class SelfSyncPlugin extends Plugin {
   // the keystroke, it is cleared by the reconcile pass that settles the path (onPathSettled), and it EXPIRES
   // on read, so a buffer Obsidian never writes (typed then undone, or a crash) cannot latch a claim. No
   // timer: read-time expiry is immune to the mobile suspend that froze the hold timer.
-  private unsyncedEdits = new Map<string, number>();
+  private unsyncedEdits = new Map<string, { at: number; onDisk: boolean }>();
+  private unsyncedPrompt?: number; // one repaint prompt so a buffer-only claim expires even with no events
   // The status-light DISPLAY FSM (statuslight.ts) + its debounce timer + a repaint-dedupe key. Entering the
   // visible "syncing" state is debounced so a transient reconcile never flits the light (issueStatusLightFlicker).
   private lightDisplay: LightDisplay = lightDisplayInit();
@@ -653,7 +657,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (this.heldPushTimer !== undefined) { window.clearTimeout(this.heldPushTimer); this.heldPushTimer = undefined; }
     if (this.aliasTimer !== undefined) { window.clearTimeout(this.aliasTimer); this.aliasTimer = undefined; }
     // Panel H7: every one-shot timer this instance owns dies with it (C-44), not only the ones with side effects.
-    for (const k of ["lightTimer", "flipHeldTimer", "configScanTimer", "rawDebounce", "mountUiTimer", "mountPokeTimer"] as const) {
+    for (const k of ["lightTimer", "flipHeldTimer", "configScanTimer", "rawDebounce", "mountUiTimer", "mountPokeTimer", "unsyncedPrompt", "lazyPersistTimer"] as const) {
       const v = (this as unknown as Record<string, number | undefined>)[k];
       if (v !== undefined) { window.clearTimeout(v); (this as unknown as Record<string, number | undefined>)[k] = undefined; }
     }
@@ -1932,23 +1936,44 @@ export default class SelfSyncPlugin extends Plugin {
   // local producer, not just the editor: the owner's rule is that a surface is honest or silent, never
   // inaccurate (st001/us001), so a green "Fully synced" must not span the pre-flight of a config write or
   // a rename either. Remote-driven passes are NOT marked — nothing local is outstanding for them.
-  private noteLocalChange(path: string): void {
+  private noteLocalChange(path: string, onDisk = true): void {
     if (!this.inPrimaryScope(path)) return;
     if (isExcluded(path, this.settings.excludedFolders ?? [])) return;
-    this.unsyncedEdits.set(path, Date.now());
-    this.renderLight();
+    const prev = this.unsyncedEdits.get(path);
+    // A disk event UPGRADES a buffer-only claim: the edit is now a file, so it stops being expirable.
+    this.unsyncedEdits.set(path, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk });
+    if (!onDisk) this.armUnsyncedPrompt(); // buffer-only claims need a nudge to be re-read and aged out
+    // Repaint only when this claim can CHANGE what is shown - i.e. it is the first one. This runs on every
+    // keystroke (editor-change), and once the indicator is already showing the claim, re-deriving and
+    // re-painting the same state per character is pure cost on the host's main thread. The timestamp above
+    // still advances, so the quiet window tracks the LAST keystroke.
+    if (!prev) this.renderLight();
+  }
+  // A buffer-only claim expires on READ, and nothing reads while the app sits idle — so prompt one repaint
+  // when the window is up. The timer is only a PROMPT: read-time expiry still governs, so a suspended
+  // timer (mobile) delays the repaint without ever leaving a false state standing once anything happens.
+  private armUnsyncedPrompt(): void {
+    if (this.unsyncedPrompt !== undefined || this.unloading) return;
+    this.unsyncedPrompt = window.setTimeout(() => { this.unsyncedPrompt = undefined; this.renderLight(); }, UNSYNCED_EDIT_MAX_MS + 250);
   }
   private noteEditorEdit(file?: { path: string } | null): void {
     // inPrimaryScope mirrors the reconcile deps' `accepts`, which deliberately does NOT test excludedFolders
     // (the scan applies that separately, and narrowing `accepts` would change base/deletion semantics). The
     // listener needs the stricter question — "will this path ever sync?" — so it tests exclusion too.
     if (!file?.path) return;
-    this.noteLocalChange(file.path);
+    this.noteLocalChange(file.path, false); // a keystroke is a BUFFER claim until Obsidian writes the file
   }
   // The reconcile pass for this path finished (transfer, no-op, or refusal alike): the server has now seen
   // this path's current content, so the edit is no longer unsynced. Fact-driven, not a guess at timing.
   private notePathSettled(path: string): void {
     if (this.unsyncedEdits.delete(path)) this.renderLight();
+  }
+  // Every claim recorded BEFORE this cutoff has now been compared with the server by a whole-vault pass.
+  // Claims made DURING the pass are kept: the scan may have listed the file before that edit landed.
+  private settleUnsyncedBefore(cutoff: number): void {
+    let cleared = false;
+    for (const [path, e] of this.unsyncedEdits) if (e.at <= cutoff) { this.unsyncedEdits.delete(path); cleared = true; }
+    if (cleared) this.renderLight();
   }
   private notePathWork(busy: boolean, failed = false): void {
     this.localWork = Math.max(0, this.localWork + (busy ? 1 : -1));
@@ -2068,7 +2093,10 @@ export default class SelfSyncPlugin extends Plugin {
   private unsyncedEditCount(): number {
     if (this.unsyncedEdits.size === 0) return 0;
     const cutoff = Date.now() - UNSYNCED_EDIT_MAX_MS;
-    for (const [path, at] of this.unsyncedEdits) if (at < cutoff) this.unsyncedEdits.delete(path);
+    // Only a BUFFER-only claim ages out (typed, then undone or never written — there may be no file to
+    // sync). A claim the filesystem confirmed stands until a pass settles it or a full scan visits it:
+    // dropping it on a clock would put the light back to green over a change that really is unsynced.
+    for (const [path, e] of this.unsyncedEdits) if (!e.onDisk && e.at < cutoff) this.unsyncedEdits.delete(path);
     return this.unsyncedEdits.size;
   }
   // The ONE display projection: the engine's phase collapsed by real pending work, then raised to `syncing`
@@ -2078,7 +2106,12 @@ export default class SelfSyncPlugin extends Plugin {
     const p = effectivePhase(this.engine.phase(), this.pendingWork());
     return p === "idle" && this.unsyncedEditCount() > 0 ? "syncing" : p;
   }
-  statusText() { return this.displayPhase(); }
+  // What the SURFACES show. The light paints lightDisplay.shown (the held/deferred display state); the
+  // settings card used to recompute displayPhase() live, so during a minimum-show hold the card said
+  // "Fully synced" while the status bar and editor glyph said "Syncing…" (owner report 2026-09-16). One
+  // displayed state, every surface — the card, the status bar, the ribbon and the editor icon cannot
+  // disagree, because there is only one value to render.
+  statusText() { return this.lightDisplay.shown; }
 
   // Applying a config-sync change (master/category/per-plugin toggle) must take effect NOW — otherwise
   // the switch looks inert for up to CONFIG_SCAN_INTERVAL_MS (~2 min), which is exactly the "I flipped
@@ -2187,7 +2220,17 @@ export default class SelfSyncPlugin extends Plugin {
   // Is this path in the PRIMARY vault's sync scope? The reconcile deps' `accepts` and the editor-edit
   // listener must agree exactly — an out-of-scope edit (an excluded folder, a mount subtree, another sync
   // tool's artefact, a config surface you did not opt into) is not pending sync and must not paint one.
+  private scopeMemo?: { path: string; sig: string; in: boolean };
   private inPrimaryScope(p: string): boolean {
+    // Typing asks the same question about the same path per keystroke. Memoize on the path plus the inputs
+    // that can change the answer, so a save burst costs one evaluation rather than one per character.
+    const sig = `${this.settings.configSync.enabled}|${this.settings.skipForeignArtefacts}|${(this.settings.excludedFolders ?? []).join(",")}|${this.settings.mounts?.length ?? 0}`;
+    if (this.scopeMemo && this.scopeMemo.path === p && this.scopeMemo.sig === sig) return this.scopeMemo.in;
+    const verdict = this.inPrimaryScopeUncached(p);
+    this.scopeMemo = { path: p, sig, in: verdict };
+    return verdict;
+  }
+  private inPrimaryScopeUncached(p: string): boolean {
     return !primaryExcludes(this.activeMounts(), p)
       && shouldSync(p, this.settings.configSync, this.selfFolderId())
       && !(this.settings.skipForeignArtefacts && isForeignArtefact(p)); // SR-47: another sync tool's artefacts are out of scope
@@ -2483,12 +2526,13 @@ export default class SelfSyncPlugin extends Plugin {
     await this.flushConfigReload();
     this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
     this.lastConfigScanAt = Date.now(); this.lastFullScanAt = Date.now(); // this reconcile was a full, config-aware pass — start both scan windows now
+    this.settleUnsyncedBefore(Date.now()); // …and it visited every in-scope path, so nothing recorded before it is still outstanding
     this.spinUpWs();
     this.startPolling();
     this.backoff = 3000;
     this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
     this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
-    this.settings.lastSyncedAt = Date.now(); void this.saveSettings();
+    this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy();
     void this.refreshVaultPrivacy(); // re-evaluate the hot-load security gate (own + unshared?) each connect
     this.log(`connected @ v${this.state.version}`); // status bar/ribbon show it — no toast
   }
@@ -2704,12 +2748,13 @@ export default class SelfSyncPlugin extends Plugin {
     // above leaves them due so the next poll re-arms (rather than trusting doConnect to re-stamp). (@audit r2)
     if (forceConfigScan) this.lastConfigScanAt = now;
     if (forceFullScan) this.lastFullScanAt = now;
+    if (mode === "full") this.settleUnsyncedBefore(now); // a whole-vault pass visited every in-scope path
     await this.flushConfigReload();
     this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
     if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.setPendingBulk("primary", held, mode === "full"); // D0041: a full pass is authoritative (replace); a delta only adds (union)
-    this.settings.lastSyncedAt = Date.now(); void this.saveSettings(); // persist so "Last synced" survives a restart (the onBaseChanged snapshot ran earlier in this pass)
+    this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy(); // cosmetic: carried by the next write, never worth a 10 MB write per pass
     void this.reconcileMounts(); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
   }
 
@@ -3590,7 +3635,18 @@ export default class SelfSyncPlugin extends Plugin {
     // switch-away re-first-contacts rather than restoring a stale base. (The in-session half is switchToVault.)
     this.invalidateSelfReferentialMountBases(this.settings.vaultOwner ?? "", this.settings.vaultId ?? "");
   }
-  async saveSettings() { await this.persist(); }
+  async saveSettings() { this.persistDirty = true; await this.persist(); }
+  // For a COSMETIC field that changes on every pass (lastSyncedAt): mark it dirty and let a long
+  // debounce carry it, instead of paying a whole-data.json write per reconcile. data.json holds the base,
+  // so one write is MEGABYTES on a real vault (measured: ~10.5 MB for 2,000 notes x 5 KB) - on Windows
+  // with AV, or a cloud-synced vault, writing that every poll is what makes the host stutter and hang
+  // (owner report 2026-09-16). Nothing is lost: any base or settings change persists it along the way,
+  // and unload flushes.
+  private schedulePersistLazy(): void {
+    this.persistDirty = true;
+    if (this.unloading || this.lazyPersistTimer !== undefined) return;
+    this.lazyPersistTimer = window.setTimeout(() => { this.lazyPersistTimer = undefined; void this.persist(); }, LAZY_PERSIST_MS);
+  }
   // A PER-KEYSTROKE settings edit must not write data.json. persist() serializes the whole base map
   // (every entry, up to 1 MiB of text each - panel H4), so a text field wired to the immediate
   // saveSettings() re-stringified the entire base on the host main thread once per character, and typing
@@ -3601,14 +3657,18 @@ export default class SelfSyncPlugin extends Plugin {
   // Write NOW, cancelling a pending coalesced write: the settings tab calls this on close.
   async flushSettings(): Promise<void> {
     if (this.persistTimer !== undefined) { window.clearTimeout(this.persistTimer); this.persistTimer = undefined; }
-    await this.persist();
+    if (this.lazyPersistTimer !== undefined) { window.clearTimeout(this.lazyPersistTimer); this.lazyPersistTimer = undefined; }
+    await this.persist(); // a no-op when nothing is dirty, so closing the settings tab is free
   }
   // Panel H4 (2026-09-11): the base is persisted whole (every entry, up to 1 MiB of text each) and used to be written
   // on EVERY setBase — during a pass that is a continuous stringify+write loop of the entire data.json on the host's
   // main thread (and that many MB to flash per write on mobile). Coalesce into one write ~1.5 s after the last
   // change; unload and explicit saves flush immediately. Only the trailing-edge timing changed, not what is saved.
   private persistTimer?: number;
+  private lazyPersistTimer?: number; // long-debounce carrier for cosmetic fields (see schedulePersistLazy)
+  private persistDirty = false;      // has anything asked to be saved since the last write?
   private schedulePersist(): void {
+    this.persistDirty = true;
     if (this.unloading) return; // the unload path flushes once itself
     if (this.persistTimer !== undefined) return;
     this.persistTimer = window.setTimeout(() => { this.persistTimer = undefined; void this.persist(); }, PERSIST_DEBOUNCE_MS);
@@ -3622,11 +3682,13 @@ export default class SelfSyncPlugin extends Plugin {
   private persisting = false;
   private persistPending = false;
   private async persist(): Promise<void> {
+    if (!this.persistDirty) return; // nothing changed → do not rewrite megabytes of base for nothing
     if (this.persisting) { this.persistPending = true; return; }
     this.persisting = true;
     try {
       do {
         this.persistPending = false;
+        this.persistDirty = false;
         // Snapshot INSIDE the loop so a coalesced trailing write captures the latest base/settings.
         try { await this.saveData({ schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON(), mountState: this.mountStateStore }); }
         catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
