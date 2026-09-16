@@ -27,6 +27,7 @@ import { asSafeVaultPath, SafeVaultPath } from "./pathsafe";
 import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; // content identity + ignored-key presence for the conflict paths
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
+import { FileLog, LogAdapter } from "./filelog";
 import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
 import { FlipGuard, shapeOf } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker (+ timestamp-shape return detection)
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -463,6 +464,14 @@ export default class SelfSyncPlugin extends Plugin {
   private editorActionEls = new Set<HTMLElement>(); // optional in-editor indicators (opt-in)
   private editorViews = new WeakSet<MarkdownView>();
   private logs: string[] = [];
+  // On-disk breadcrumbs. The in-memory ring above and console.debug are BOTH lost when the host is
+  // force-killed — exactly the state a hang leaves the user in — so phase-level events also go to a file
+  // inside this plugin's own folder (never synced: shouldSync hard-excludes the self folder).
+  fileLog?: FileLog;
+  fileLogPath(): string {
+    const dir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+    return `${dir.replace(/[/\\]+$/, "")}/selfsync-debug.log`;
+  }
   private reconnectTimer?: number;
   private pollTimer?: number;
   private lastConfigScanAt = 0; // wall-clock ms of the last CONFIG-ONLY scan (see doReconcileAll)
@@ -555,6 +564,15 @@ export default class SelfSyncPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+    // Breadcrumbs BEFORE anything else can block, so even a hang during startup leaves a trail. Default ON:
+    // the cost is a few short appends per second against a data.json write that is megabytes, and a hang the
+    // user cannot capture is worth more than the I/O. Toggle in Advanced → "Write a debug log file".
+    this.fileLog = new FileLog(
+      this.app.vault.adapter as unknown as LogAdapter,
+      this.fileLogPath(),
+      this.settings.debugLog !== false,
+    );
+    this.fileLog.line(`--- onload: SelfSync ${this.manifest.version} on ${Platform.isMobile ? "mobile" : "desktop"} ---`);
     await this.ensureDeviceId(); // durably mint the provenance UUID before any commit can stamp it (crit finding 4)
     this.io = this.buildIo();
     void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
@@ -645,6 +663,8 @@ export default class SelfSyncPlugin extends Plugin {
 
   onunload() {
     this.unloading = true;
+    this.fileLog?.line("--- onunload ---");
+    void this.fileLog?.flush(); // get the queued breadcrumbs to disk before the instance goes away
     this.engine.enqueue({ kind: "unload" }); // → teardown (stops timers, closes ws), projects off
     // view.addAction() header buttons are NOT auto-cleaned by Obsidian on unload (unlike the ribbon /
     // status-bar items, which are). Without this, every plugin RELOAD/UPDATE orphans this instance's
@@ -768,6 +788,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.logs.push(line);
     if (this.logs.length > 500) this.logs.shift();
     console.debug(`[selfsync] ${line}`);
+    this.fileLog?.line(msg); // survives a force-kill, unlike the ring above and the console
     // Popups are reserved for rare, action-worthy events (conflicts, data-safety, save
     // failures) via notice=true. Sync/connection state is shown by the status icon + this
     // log — never by a toast, so a flaky connection can't spam notices.
@@ -1134,6 +1155,10 @@ export default class SelfSyncPlugin extends Plugin {
   // fresh accurate preview still runs on click. Conservative on ANY doubt (recorded conflict, unlistable
   // folder, missing stamp) → false, so a genuinely-actionable button is never wrongly greyed.
   async pluginSyncClean(id: string): Promise<boolean> {
+    const done = this.fileLog?.begin("pluginSyncClean", id);
+    try { return await this.pluginSyncCleanBody(id); } finally { done?.(); }
+  }
+  private async pluginSyncCleanBody(id: string): Promise<boolean> {
     if (isSelfPluginId(id, this.selfFolderId())) return true; // SelfSync's own folder never pushes/pulls → always "grey"
     const prefix = `.obsidian/plugins/${id}/`;
     if (this.settings.configConflicts.some((p) => p.startsWith(prefix))) return false; // a recorded divergence → actionable
@@ -2358,6 +2383,10 @@ export default class SelfSyncPlugin extends Plugin {
   }
 
   private async doConnect(): Promise<void> {
+    const done = this.fileLog?.begin("connect");
+    try { return await this.doConnectBody(); } catch (e: any) { done?.(`FAILED ${e?.message ?? e}`); throw e; } finally { done?.(); }
+  }
+  private async doConnectBody(): Promise<void> {
     this.lastIssue = undefined;
     this.connecting = true; this.connectStartedAt = Date.now(); this.connectStage = "";
     // crit-round (sync F4): a connect means the realtime socket is not (yet) live. Reset the flag up
@@ -2697,6 +2726,11 @@ export default class SelfSyncPlugin extends Plugin {
   }
   private async reconcileAllOnce(): Promise<void> {
     if (!this.api) throw new Error("not connected");
+    const donePass = this.fileLog?.begin("reconcileAll");
+    try { return await this.reconcileAllBody(donePass); } catch (e: any) { donePass?.(`FAILED ${e?.message ?? e}`); throw e; }
+  }
+  private async reconcileAllBody(donePass?: (r?: string) => void): Promise<void> {
+    if (!this.api) throw new Error("not connected"); // re-asserted: the narrowing lives in the caller
     // Local CONFIG edits fire no reliable event (mobile has no `raw` watcher) → a CONFIG-ONLY re-hash
     // runs at most every CONFIG_SCAN_INTERVAL_MS (cheap: only `.obsidian/` files). A missed local NOTE
     // edit is caught by a WHOLE-VAULT pass on the slower FULL_SCAN_INTERVAL_MS cadence. (R13)
@@ -2715,6 +2749,7 @@ export default class SelfSyncPlugin extends Plugin {
     const mode = decideReconcileMode({ forceConfigScan, forceFullScan, reset, noChange }); // pure scan-mode decision
     if (mode === "noop") {
       this.noteHistory(delta.version, delta.history_floor, []);
+      donePass?.("noop"); // an idle poll must close its own pair, or every tick would look like a hang
       void this.reconcileMounts(); // R6-Med1: mounts are POLL-driven — run them even when the PRIMARY is idle, so a source change pulls on the ~60s poll cadence (D0040) instead of waiting for a primary change / the 15-min full scan / a reconnect
       return;
     }
@@ -2755,6 +2790,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.setPendingBulk("primary", held, mode === "full"); // D0041: a full pass is authoritative (replace); a delta only adds (union)
     this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy(); // cosmetic: carried by the next write, never worth a 10 MB write per pass
+    donePass?.(`${mode} v${this.state.version}`); // the pass completed — a missing `end` here means it hung
     void this.reconcileMounts(); // composed vaults (D0039): poll each mount after the primary pass — DETACHED (B1), re-entrancy-guarded, fail-isolated
   }
 
@@ -3690,8 +3726,12 @@ export default class SelfSyncPlugin extends Plugin {
         this.persistPending = false;
         this.persistDirty = false;
         // Snapshot INSIDE the loop so a coalesced trailing write captures the latest base/settings.
-        try { await this.saveData({ schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON(), mountState: this.mountStateStore }); }
-        catch (e: any) { this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
+        const snapshot = { schemaVersion: this.dataSchemaVersion, settings: this.settings, base: this.base.toJSON(), mountState: this.mountStateStore };
+        // The breadcrumb carries the SIZE: a hang inside this write leaves a `beg persist bytes=N` with no
+        // `end`, which both names the culprit and says how much was being written.
+        const done = this.fileLog?.begin("persist", `entries=${this.base.paths().length} bytes=${JSON.stringify(snapshot).length}`);
+        try { await this.saveData(snapshot); done?.(); }
+        catch (e: any) { done?.(`FAILED ${e?.message ?? e}`); this.log(`WARNING: could not save settings/base: ${e?.message ?? e}`, true); }
       } while (this.persistPending);
     } finally { this.persisting = false; }
   }

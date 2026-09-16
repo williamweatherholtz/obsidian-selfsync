@@ -31,6 +31,9 @@ export function fakePlugin(over: any = {}) {
     saveSettings: vi.fn(async () => {}),
     // Coalesced write for per-keystroke edits (see main.ts saveSettingsSoon) + the settings-tab flush.
     saveSettingsSoon: vi.fn(),
+    // Crash-surviving breadcrumb log (filelog.ts): the Advanced section shows its path + a toggle.
+    fileLogPath: () => '.obsidian/plugins/selfsync/selfsync-debug.log',
+    fileLog: { setEnabled: vi.fn(), line: vi.fn(), begin: () => () => {}, flush: async () => {} },
     flushSettings: vi.fn(async () => {}),
     applyConfigSyncChange: vi.fn(async () => {}),
     // Mirror the real setConfigSurface: flip the surface + kick applyConfigSyncChange (direction is

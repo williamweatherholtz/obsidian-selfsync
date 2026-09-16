@@ -56,6 +56,7 @@ export interface SelfSyncSettings {
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
+  debugLog?: boolean;    // write phase-level breadcrumbs to <plugin folder>/selfsync-debug.log (default ON: the only record that survives a host force-kill)
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
@@ -126,6 +127,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   authToken: undefined,
   lastSyncedAt: undefined,
   editorStatus: false,
+  debugLog: true,
   vaultOwner: undefined,
   vaultReadOnly: false,
   // SEC-CMMC (IA.3.5.10): default to TOKEN-ONLY — do NOT persist the plaintext password on the device.
@@ -741,6 +743,17 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     new Setting(body).setName("Diagnostics")
       .addButton((b) => b.setButtonText("Show sync log").onClick(() => this.plugin.showLog()))
       .addButton((b) => b.setButtonText("Copy debug info").onClick(() => this.copyDebugInfo(s)));
+    // The sync log above lives in memory: it is gone if the host is force-killed, which is exactly the
+    // situation a hang leaves you in. This writes the same events — plus begin/end pairs around the
+    // operations that can block — to a file in the vault, so the trail survives the kill. The path is shown
+    // because reading it is the point; the file sits in SelfSync's own plugin folder and is never synced.
+    new Setting(body).setName("Write a debug log file")
+      .setDesc(`Phase-level breadcrumbs, kept to 1 MB plus one previous file. Survives a crash or force-quit, unlike the in-app log. Path: ${this.plugin.fileLogPath()}`)
+      .addToggle((tg) => tg.setValue(s.debugLog !== false).onChange(async (v) => {
+        s.debugLog = v;
+        this.plugin.fileLog?.setEnabled(v);
+        await this.plugin.saveSettings();
+      }));
     // SR-50: the running build is auditable against its GitHub release — version + the SHA-256 of the installed
     // main.js. The release's SHA256SUMS asset carries the published digest, and verify-released.yml rebuilds the tag
     // daily and compares — a match here means this device runs the PUBLISHED asset, which those checks tie to the
