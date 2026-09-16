@@ -1927,14 +1927,23 @@ export default class SelfSyncPlugin extends Plugin {
   // error is already on its way to failWith / withSyncRelogin, and repainting here painted a green "Fully
   // synced" in the gap — across a real await on the silent-relogin path (critique F6).
   // A keystroke in the editor. `file` is the note being edited; an out-of-scope path is ignored.
+  // A LOCALLY-ORIGINATED change to this path: a vault modify/create/delete/rename, a config-file write, or
+  // a keystroke. Records the unsynced-edit fact for any path that will actually sync. Called from every
+  // local producer, not just the editor: the owner's rule is that a surface is honest or silent, never
+  // inaccurate (st001/us001), so a green "Fully synced" must not span the pre-flight of a config write or
+  // a rename either. Remote-driven passes are NOT marked — nothing local is outstanding for them.
+  private noteLocalChange(path: string): void {
+    if (!this.inPrimaryScope(path)) return;
+    if (isExcluded(path, this.settings.excludedFolders ?? [])) return;
+    this.unsyncedEdits.set(path, Date.now());
+    this.renderLight();
+  }
   private noteEditorEdit(file?: { path: string } | null): void {
     // inPrimaryScope mirrors the reconcile deps' `accepts`, which deliberately does NOT test excludedFolders
     // (the scan applies that separately, and narrowing `accepts` would change base/deletion semantics). The
     // listener needs the stricter question — "will this path ever sync?" — so it tests exclusion too.
-    if (!file?.path || !this.inPrimaryScope(file.path)) return;
-    if (isExcluded(file.path, this.settings.excludedFolders ?? [])) return;
-    this.unsyncedEdits.set(file.path, Date.now());
-    this.renderLight();
+    if (!file?.path) return;
+    this.noteLocalChange(file.path);
   }
   // The reconcile pass for this path finished (transfer, no-op, or refusal alike): the server has now seen
   // this path's current content, so the edit is no longer unsynced. Fact-driven, not a guess at timing.
@@ -3448,7 +3457,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.rawDebounce = undefined;
     const paths = [...this.rawBuffer]; this.rawBuffer.clear();
     if (this.unloading) return;
-    for (const p of paths) this.engine.enqueue({ kind: "path", path: p, size: this.localSizeOf(p) });
+    for (const p of paths) { this.noteLocalChange(p); this.engine.enqueue({ kind: "path", path: p, size: this.localSizeOf(p) }); }
   }
 
   // Record that WE just wrote/removed a config path, so its "raw" echo is ignored. Prune the
@@ -3465,9 +3474,10 @@ export default class SelfSyncPlugin extends Plugin {
   // coalesce, run, and recover. (The engine drops path events until connected — the next connect's
   // full reconcile catches anything edited while offline via base comparison.)
   private onLocalEvent(f: TAbstractFile) {
-    if (f instanceof TFile) { this.engine.enqueue({ kind: "path", path: f.path, size: f.stat.size }); this.nudgeMountForLocalPath(f.path); }
+    if (f instanceof TFile) { this.noteLocalChange(f.path); this.engine.enqueue({ kind: "path", path: f.path, size: f.stat.size }); this.nudgeMountForLocalPath(f.path); }
   }
   private onLocalDelete(path: string) {
+    this.noteLocalChange(path);
     this.engine.enqueue({ kind: "path", path, size: 0 });
     this.nudgeMountForLocalPath(path);
   }
@@ -3475,6 +3485,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (file instanceof TFolder) { this.followMountPointRename(oldPath, file.path); return; }
     if (!(file instanceof TFile)) return;
     this.noteMoveIntoPullMount(oldPath, file.path);
+    this.noteLocalChange(oldPath); this.noteLocalChange(file.path);
     this.engine.enqueue({ kind: "path", path: oldPath, size: 0 });     // old path removed
     this.engine.enqueue({ kind: "path", path: file.path, size: file.stat.size }); // new path created
     this.nudgeMountForLocalPath(oldPath); this.nudgeMountForLocalPath(file.path);

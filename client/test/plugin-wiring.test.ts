@@ -220,6 +220,32 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // st001/us001 (owner, 2026-09-16): "I just want the UI to be null or honest, not inaccurate." A local
+  // change from ANY producer — a vault write by another plugin, a rename, a config write — leaves the
+  // server not yet holding it, so green would be a false claim for the whole pre-flight, not just for
+  // keystrokes. Remote-driven passes are NOT marked: nothing local is outstanding for them.
+  it("a local vault write with NO keystroke also raises the indicator (any local producer)", async () => {
+    const { p } = await bootPlugin();
+    const f = new TFile(); f.path = "Notes/written-by-another-plugin.md"; (f as any).stat = { size: 3, mtime: 0 };
+    (p as any).onLocalEvent(f);
+    expect(p.statusText()).toBe("syncing");
+    p.onunload();
+  });
+
+  it("a local DELETE and a RENAME raise it too", async () => {
+    const { p } = await bootPlugin();
+    (p as any).onLocalDelete("Notes/gone.md");
+    expect(p.statusText()).toBe("syncing");
+    (p as any).notePathSettled("Notes/gone.md");
+    expect(p.statusText()).toBe("idle");
+    const f = new TFile(); f.path = "Notes/new.md"; (f as any).stat = { size: 1, mtime: 0 };
+    (p as any).onLocalRename(f, "Notes/old.md");
+    expect(p.statusText()).toBe("syncing");
+    expect((p as any).unsyncedEdits.has("Notes/old.md")).toBe(true); // both ends of the rename
+    expect((p as any).unsyncedEdits.has("Notes/new.md")).toBe(true);
+    p.onunload();
+  });
+
   it("an OUT-OF-SCOPE keystroke raises nothing (excluded folder)", async () => {
     const { p, fire } = await bootPlugin(true, { settings: { excludedFolders: ["Private"] } });
     fire("editor-change", {}, { file: { path: "Private/secret.md" } });
