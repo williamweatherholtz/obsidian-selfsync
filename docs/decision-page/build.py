@@ -131,14 +131,15 @@ members_rows = "".join(f'<tr><td>{escape(PARENTS[p][0])}</td><td>' + "".join(f'<
 members = f'<div class="tbl-wrap"><table data-members="{n_kids}"><thead><tr><th>was one record</th><th>becomes, per clause</th></tr></thead><tbody>{members_rows}</tbody></table></div>'
 rec_clauses = ", ".join(sorted(k for kids in clauses.values() for _, k in kids)) + ", decisionClauseSplit"
 
-TAB_OF = {"d0057": "engine", "d0049": "ci", "d0052": "timestamps", "d0040": "mounts", "d0092": "page", "d0093": "ledger"}
+TAB_OF = {"d0057": "engine", "d0049": "ci", "d0052": "timestamps", "d0040": "mounts", "d0092": "page", "d0093": "ledger", "d0094": "resync", "d0095": "hook"}
 for kids in clauses.values():
     for _, k in kids: TAB_OF[k] = "clauses"
 TAB_NAME = {"engine": "Engine update", "clauses": "One clause per record", "wording": "Signed wording", "ci": "Typecheck browser tests",
-            "timestamps": "Retire five requirements", "mounts": "Mount latency record", "page": "This page", "ledger": "Disposition ledger"}
+            "timestamps": "Retire five requirements", "mounts": "Mount latency record", "page": "This page", "ledger": "Disposition ledger",
+            "resync": "Partial engine resync", "hook": "Commit gate lookup"}
 unknown = sorted(d for d in since if d not in TAB_OF)
 assert not unknown, f"pending records with no ask authored on this page: {unknown} - author a panel (decision-surfacing step 4)"
-ORDER = ["ledger", "engine", "clauses", "wording", "ci", "timestamps", "mounts", "page"]
+ORDER = ["resync", "hook", "ledger", "engine", "clauses", "wording", "ci", "timestamps", "mounts", "page"]
 ASKS = [(k, TAB_NAME[k]) for k in ORDER if any(TAB_OF[d] == k for d in since)]
 K, G0, GH = v("keelVersion"), v("guardsBefore"), v("guards")
 P = {}
@@ -244,8 +245,38 @@ P["ledger"] = lambda: panel("ledger", "Adopt the remote disposition ledger", Tru
     "<strong>Adopt:</strong> nothing moves; paste your digest when ready. <strong>Reject:</strong> one removal commit, recorded quoting you.",
     "d0093", ["Adopt the remote disposition ledger", "Reject: remove the ledger", "Do nothing yet"])
 
+# the partial resync ask (D0094): three surface layers brought current, the schema deliberately left alone
+P["resync"] = lambda: panel("resync", "Accept the partial engine resync", True,
+    "the command reference, the Claude surface and the declared command facts are brought to the installed build; the code-element schema is left alone and its vocabulary conflict stays open, decided separately.",
+    "every documented command dispatches; the 169 audited code elements keep their provenance; a full migrate stays refused until the schema question is decided.",
+    [logic_lanes("Under the old stamp the docs name commands that cannot dispatch; under the new one every documented command runs",
+        ("today", [("Docs name old commands", "45 sites", "bad", ""), ("Follower exits with usage", "", "bad", ""), ("Three checks red", "", "bad", "")], ["so", "so"]),
+        ("after", [("Three layers current", "docs, surface, facts", "accent", ""), ("Commands dispatch", "", "ok", ""), ("Schema conflict stays visible", "open, not paid for", "warn", "")], ["so", "and"])),
+     downstream("Accepting lands on the docs, the Claude surface and the command facts; the schema waits", ("Partial resync", ""),
+        [("Working rules and skills", "command names", "45", "accent"), ("Claude surface", "regenerated", "55", "accent"), ("Command facts", "match the binary", "7", "ok"), ("Code-element schema", "unchanged; conflict open", "0", "warn")])],
+    [("Accept", "nothing more", "the schema question, later"), ("Reject", "three layers reverted", "documented commands exit with usage"), ("Do nothing", "nothing", "the surface stamp stays unsigned")],
+    ("the three checks pass under the installed build; the full migrate rolled back byte for byte.", "you would rather keep audit provenance than a clean migrate."),
+    "<strong>Accept:</strong> nothing moves; the schema conflict comes back as its own ask. <strong>Reject:</strong> one revert commit, recorded quoting you.",
+    "d0094", ["Accept the partial resync", "Reject: revert the three layers", "Do nothing yet"])
+
+# the hook ask (D0095): the commit gate finds the binary the way the in-loop hooks do
+P["hook"] = lambda: panel("hook", "Accept the commit gate's binary lookup", True,
+    "the pre-commit hook finds the engine binary the way the in-loop hooks do: an explicit override, the machine-local install, the pinned directory, then PATH; a missing binary still commits, and the skip names every place it looked.",
+    "a machine with a local install gates every commit; a machine without one commits with a named skip; push and CI are untouched.",
+    [logic_lanes("A PATH-only lookup cannot see the local install, so commits land ungated; the shared lookup runs the gate",
+        ("today", [("Hook reads PATH only", "", "muted", ""), ("Local install unseen", "", "bad", ""), ("Commit lands ungated", "twice this month", "bad", "")], ["so", "so"]),
+        ("after", [("Hook reads four places", "override, local, pin, PATH", "accent", ""), ("Local install found", "", "ok", ""), ("Red tree aborts the commit", "", "ok", "")], ["so", "so"])),
+     downstream("Accepting lands on one hook; the push hook and CI are unchanged", ("Shared lookup", ""),
+        [("Pre-commit hook", "four-step lookup, named skip", "1", "accent"), ("Ungated commits", "seen before the change", "2", "warn"), ("Push hook", "unchanged", "0", "muted"), ("CI gate", "unchanged", "0", "muted")])],
+    [("Accept", "nothing more", "nothing"), ("Make a missing binary fatal", "one line", "a contributor without the binary cannot commit"), ("Reject", "PATH-only lookup restored", "local installs commit ungated again")],
+    ("two commits landed ungated under the old lookup; the new hook ran on every commit after it.", "you want the terminal gate as strict as the in-loop one, not stricter."),
+    "<strong>Accept:</strong> nothing moves. <strong>Fatal:</strong> one commit, recorded quoting you. <strong>Reject:</strong> one revert commit.",
+    "d0095", ["Accept the lookup as applied", "Also make a missing binary fatal", "Reject: PATH only"])
+
 # per-tab frame fragments: (title clause, verdict sentence). The frame is composed from the asks present.
 FRAME = {
+    "resync": ("accept the partial engine resync", "the partial resync makes documented commands dispatch and keeps audit provenance."),
+    "hook": ("accept the commit gate's binary lookup", "the hook lookup closes the gap that let two commits land ungated."),
     "ledger": ("accept the remote disposition ledger", "the ledger changes where your finding verdicts are collected, not what one means."),
     "engine": ("ratify the engine update", "the engine update already holds on disk, gate green."),
     "clauses": (f"accept the {n_kids} clause records", f"the {n_kids} clause records quote their clauses unchanged."),
@@ -264,7 +295,7 @@ n_asks = len(ASKS)
 WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
 frags = [FRAME[k][0] for k, _ in ASKS]
 title = (frags[0][0].upper() + frags[0][1:]) if n_asks == 1 else ("; ".join(frags[:-1]) + "; " + frags[-1]).capitalize()
-verdict_lead = f"Accept {'it' if n_asks == 1 else 'all ' + WORDS.get(n_asks, str(n_asks))}."
+verdict_lead = "Accept it." if n_asks == 1 else ("Accept both." if n_asks == 2 else f"Accept all {WORDS.get(n_asks, str(n_asks))}.")
 verdict_body = " ".join(s[0].upper() + s[1:] for s in (FRAME[k][1] for k, _ in ASKS))
 page = f"""<meta charset="utf-8">
 <title>SelfSync Decision Page</title>
