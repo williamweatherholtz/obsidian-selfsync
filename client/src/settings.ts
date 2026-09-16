@@ -228,7 +228,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   }
   // Bracket one render section in the breadcrumb log (no-op when the log is off).
   private section(name: string, render: () => void): void {
-    const done = this.plugin.fileLog?.begin(name);
+    const done = this.plugin.fileLog?.begin(name, "", "info");
     try { render(); } finally { done?.(); }
   }
   private statusGroup?: SettingGroup;
@@ -248,7 +248,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // card themes group settings). The Status hero is a member group so FSM ticks refresh JUST its row
   // in place (fillStatus) — no whole-tab rebuild that would drop focus/scroll in the sections below.
   display(): void {
-    const done = this.plugin.fileLog?.begin("settings.display");
+    const done = this.plugin.fileLog?.begin("settings.display", "", "info");
     try { this.displayBody(); } finally { done?.(); }
   }
   private displayBody(): void {
@@ -337,7 +337,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // sub-line, and a fix action ONLY when the link is down. A pure projection of the sync FSM — the
   // status IS the diagnosis (no separate "Diagnose" probe that could falsely say "all good", an L-5 gap).
   private fillStatus(): void {
-    const done = this.plugin.fileLog?.begin("settings.fillStatus");
+    const done = this.plugin.fileLog?.begin("settings.fillStatus", "", "debug");
     try { this.fillStatusBody(); } finally { done?.(); }
   }
   private fillStatusBody(): void {

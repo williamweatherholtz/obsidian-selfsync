@@ -95,7 +95,9 @@ const FLIP_SHAPE_MAX_BYTES = 256 * 1024; // shape-compare text up to this size (
 const PERSIST_DEBOUNCE_MS = 1_500;
 // data.json carries the whole base, so a write is megabytes on a real vault. A field that changes every
 // pass but only matters cosmetically rides this much slower carrier instead of forcing a write per pass.
-const LAZY_PERSIST_MS = 60_000; // trailing-edge coalescing of base persistence (panel H4)
+const LAZY_PERSIST_MS = 60_000;
+const STALL_TICK_MS = 1_000;  // heartbeat period for the main-thread stall detector
+const STALL_WARN_MS = 2_000;  // a tick this late means the thread was blocked, not merely busy // trailing-edge coalescing of base persistence (panel H4)
 const MOUNT_FAILED_RETRY_MS = 5 * 60 * 1000; // a FAILED composed-vault mount auto-retries this long after failing (R4-F2)
 const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers whole files (no streamed writer) — cap to avoid a WebView OOM (R6-Med2); files over this are skipped + noticed, never buffered
 // Debounce before the status light PAINTS "Syncing…" (issueStatusLightFlicker): a reconcile that settles
@@ -594,6 +596,21 @@ export default class SelfSyncPlugin extends Plugin {
     this.fileLog.line(`--- onload: SelfSync ${this.manifest.version} on ${Platform.isMobile ? "mobile" : "desktop"} ---`);
     // Nothing captured an uncaught exception or a dropped promise before this: a throw inside a render or
     // an unawaited effect vanished silently. Both now reach the file, with a stack.
+    // MAIN-THREAD STALL DETECTOR. The decisive fact in the 2026-09-16 capture was a SIX MINUTE gap with no
+    // poll pass, after which a 68-item config walk reported 109s - the walk was a victim of a starved main
+    // thread, not its cause. A 1s heartbeat measures that directly: if far more than 1s of wall clock has
+    // passed since the last tick, the thread was blocked, and the WRN line brackets the window with real
+    // numbers. Cheap (one timer, one comparison) and it is the only instrument that can see a freeze that
+    // logs nothing itself, because the stall is reported AFTER it ends.
+    let lastTick = Date.now();
+    this.stallTimer = window.setInterval(() => {
+      const now = Date.now();
+      const late = now - lastTick - STALL_TICK_MS;
+      lastTick = now;
+      if (late >= STALL_WARN_MS) {
+        this.fileLog?.warn(`main thread STALLED ${(late / 1000).toFixed(1)}s (recovered now; whatever blocked it is the line ABOVE — or nothing, if it logged nothing)`);
+      }
+    }, STALL_TICK_MS);
     this.registerDomEvent(window, "error", (e: ErrorEvent) => {
       const stack = e.error instanceof Error ? e.error.stack ?? e.error.message : String(e.message);
       this.fileLog?.error(`uncaught: ${stack} @ ${e.filename}:${e.lineno}:${e.colno}`);
@@ -693,6 +710,7 @@ export default class SelfSyncPlugin extends Plugin {
 
   onunload() {
     this.unloading = true;
+    if (this.stallTimer !== undefined) { window.clearInterval(this.stallTimer); this.stallTimer = undefined; }
     this.fileLog?.line("--- onunload ---");
     void this.fileLog?.flush(); // get the queued breadcrumbs to disk before the instance goes away
     this.engine.enqueue({ kind: "unload" }); // → teardown (stops timers, closes ws), projects off
@@ -1185,7 +1203,7 @@ export default class SelfSyncPlugin extends Plugin {
   // fresh accurate preview still runs on click. Conservative on ANY doubt (recorded conflict, unlistable
   // folder, missing stamp) → false, so a genuinely-actionable button is never wrongly greyed.
   async pluginSyncClean(id: string): Promise<boolean> {
-    const done = this.fileLog?.begin("pluginSyncClean", id);
+    const done = this.fileLog?.begin("pluginSyncClean", id, "info");
     try { return await this.pluginSyncCleanBody(id); } finally { done?.(); }
   }
   private async pluginSyncCleanBody(id: string): Promise<boolean> {
@@ -2760,7 +2778,7 @@ export default class SelfSyncPlugin extends Plugin {
   }
   private async reconcileAllOnce(): Promise<void> {
     if (!this.api) throw new Error("not connected");
-    const donePass = this.fileLog?.begin("reconcileAll");
+    const donePass = this.fileLog?.begin("reconcileAll", "", "debug");
     try { return await this.reconcileAllBody(donePass); } catch (e: any) { donePass?.(`FAILED ${e?.message ?? e}`); throw e; }
   }
   private async reconcileAllBody(donePass?: (r?: string) => void): Promise<void> {
@@ -3735,6 +3753,7 @@ export default class SelfSyncPlugin extends Plugin {
   // main thread (and that many MB to flash per write on mobile). Coalesce into one write ~1.5 s after the last
   // change; unload and explicit saves flush immediately. Only the trailing-edge timing changed, not what is saved.
   private persistTimer?: number;
+  private stallTimer?: number;        // main-thread stall heartbeat (cleared in onunload with the rest)
   private lazyPersistTimer?: number; // long-debounce carrier for cosmetic fields (see schedulePersistLazy)
   private persistDirty = false;      // has anything asked to be saved since the last write?
   private schedulePersist(): void {
