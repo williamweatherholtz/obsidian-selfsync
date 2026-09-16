@@ -221,13 +221,15 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // read-only source stays non-toggleable (correct — the grant forbids writing).
   private sharedWritable?: Set<string>;
   private async loadSharedWritable(): Promise<void> {
+    const done = this.plugin.fileLog?.begin("loadSharedWritable", "", "info"); // a NETWORK call from a render
     try {
       const shared = await this.plugin.listSharedVaults();
       const set = new Set(shared.filter((v) => v.perm === "readWrite").map((v) => `${v.owner}/${v.vault}`));
       const changed = set.size !== this.sharedWritable!.size || [...set].some((k) => !this.sharedWritable!.has(k));
       this.sharedWritable = set;
       if (changed) this.display(); // re-render so a shared-RW mount's toggle appears once the grants load
-    } catch { /* leave shared sources non-writable — the safe default */ }
+    } catch (e: any) { this.plugin.fileLog?.warn(`loadSharedWritable failed: ${e?.message ?? e}`); /* leave shared sources non-writable — the safe default */ }
+    finally { done?.(); }
   }
   // Bracket one render section in the breadcrumb log (no-op when the log is off).
   private section(name: string, render: () => void): void {
@@ -258,6 +260,15 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   display(): void {
     const done = this.plugin.fileLog?.begin("settings.display", "", "info");
     try { this.displayBody(); } finally { done?.(); }
+    // PAST the render. The 1.30.31 capture ends with settings.display completing in 54ms and then silence,
+    // so the freeze is no longer in our render - it is in what runs after it. These three markers say WHICH
+    // stage stopped turning: the microtask queue, the timer queue, or the frame (layout/paint). A microtask
+    // line with no frame line means the JS thread is fine and the host is stuck painting; no lines at all
+    // means the thread itself died. Once per pane open, so they cost nothing.
+    const log = this.plugin.fileLog;
+    void Promise.resolve().then(() => log?.info("post-render: microtask ran"));
+    window.setTimeout(() => log?.info("post-render: timer ran"), 0);
+    window.requestAnimationFrame(() => log?.info("post-render: frame painted"));
   }
   private displayBody(): void {
     const { containerEl } = this;
@@ -801,7 +812,8 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     // tag's build (panel RL3: the digest alone is not proof of origin). Computed lazily; "unavailable" when the
     // adapter can't read the plugin file.
     const about = new Setting(body).setName("About").setDesc(`SelfSync ${this.plugin.manifest.version} · reading build digest…`);
-    void this.plugin.buildDigest().then((d) => about.setDesc(`SelfSync ${this.plugin.manifest.version} · main.js sha256 ${d ? d.slice(0, 16) + "…" : "unavailable"}`));
+    const digestDone = this.plugin.fileLog?.begin("buildDigest", "", "info");
+    void this.plugin.buildDigest().then((d) => { digestDone?.(); about.setDesc(`SelfSync ${this.plugin.manifest.version} · main.js sha256 ${d ? d.slice(0, 16) + "…" : "unavailable"}`); });
     about.addButton((b) => b.setButtonText("Copy digest").onClick(async () => {
       const d = await this.plugin.buildDigest();
       if (!d) { new Notice("SelfSync: build digest unavailable on this device"); return; }

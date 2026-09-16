@@ -1250,7 +1250,7 @@ export default class SelfSyncPlugin extends Plugin {
     void (async () => {
       try {
         const name = (JSON.parse(await this.app.vault.adapter.read(`.obsidian/plugins/${id}/manifest.json`)) as { name?: unknown }).name;
-        if (typeof name === "string" && name) { this.pluginNameCache.set(id, name); this.settingsRefresh?.(); }
+        if (typeof name === "string" && name) { this.fileLog?.trace(`plugin name resolved: ${id} → ${name}`); this.pluginNameCache.set(id, name); this.settingsRefresh?.(); }
       } catch { /* not on disk (not adopted / not yet downloaded) → keep the folder id */ }
     })();
     return undefined;
