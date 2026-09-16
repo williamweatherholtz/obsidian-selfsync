@@ -40,7 +40,10 @@
   height: var(--icon-s, 15px);
   stroke-width: 2.4; /* lucide ships 2 — marginally heavier so the hue reads at 15px */
 }
-.status-bar-item:has(.selfsync-statusbar-icon) { display: flex; align-items: center; opacity: 1; }
+/* Our own class on the status-bar item, NOT :has(). A :has() rule is re-evaluated as its subtree mutates,
+   and this subtree is rewritten on every status repaint - a known Chromium style-recalc trap, and an
+   unnecessary risk when the plugin owns the element and can simply mark it (hang investigation 2026-09-16). */
+.selfsync-status-bar-item { display: flex; align-items: center; opacity: 1; }
 
 /* The healthy-state green (syncstate.ts reads it as --selfsync-green). Obsidian's --color-green is a
    yellow-leaning green, which at indicator size read as faint and yellowish; this is a kelly green —

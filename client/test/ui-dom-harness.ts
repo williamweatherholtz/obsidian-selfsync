@@ -33,7 +33,7 @@ export function fakePlugin(over: any = {}) {
     saveSettingsSoon: vi.fn(),
     // Crash-surviving breadcrumb log (filelog.ts): the Advanced section shows its path + a toggle.
     fileLogPath: () => '.obsidian/plugins/selfsync/selfsync-debug.log',
-    fileLog: { setEnabled: vi.fn(), line: vi.fn(), begin: () => () => {}, flush: async () => {} },
+    fileLog: { setEnabled: vi.fn(), setLevel: vi.fn(), getLevel: () => 'info', line: vi.fn(), error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(), trace: vi.fn(), begin: () => () => {}, flush: async () => {} },
     flushSettings: vi.fn(async () => {}),
     applyConfigSyncChange: vi.fn(async () => {}),
     // Mirror the real setConfigSurface: flip the surface + kick applyConfigSyncChange (direction is

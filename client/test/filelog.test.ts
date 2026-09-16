@@ -28,18 +28,19 @@ const LOG = "plugins/selfsync/selfsync-debug.log";
 describe("FileLog — the record that outlives the process", () => {
   it("writes lines IN ORDER even though callers never await", async () => {
     const fs = memFs();
-    const log = current = new FileLog(fs, LOG, true);
+    const log = current = new FileLog(fs, LOG, "trace");
     log.line("first"); log.line("second"); log.line("third");
     await settle();
     const lines = fs.files.get(LOG)!.trim().split("\n");
-    expect(lines.map((l) => l.split(" ").slice(2).join(" "))).toEqual(["first", "second", "third"]);
+    expect(lines.map((l) => l.split(" ").slice(3).join(" "))).toEqual(["first", "second", "third"]);
     expect(lines.map((l) => l.split(" ")[1])).toEqual(["#1", "#2", "#3"]); // monotonic, so a gap is visible
+    expect(lines.map((l) => l.split(" ")[2])).toEqual(["INF", "INF", "INF"]); // the level is on every line
   });
 
   // THE load-bearing property: a hang leaves the pair OPEN, and the dangling line names the culprit.
   it("an operation that never finishes leaves a beg with NO end", async () => {
     const fs = memFs();
-    const log = current = new FileLog(fs, LOG, true);
+    const log = current = new FileLog(fs, LOG, "trace");
     log.begin("persist", "entries=2000 bytes=10500000"); // never called back — this is the hang
     const done = log.begin("connect");
     done();
@@ -53,7 +54,7 @@ describe("FileLog — the record that outlives the process", () => {
 
   it("a finished operation reports its duration and cannot double-report", async () => {
     const fs = memFs();
-    const log = current = new FileLog(fs, LOG, true);
+    const log = current = new FileLog(fs, LOG, "trace");
     const done = log.begin("reconcileAll");
     done("full v7");
     done("full v7"); // a second call must not emit a second end (pairing would be corrupted)
@@ -63,7 +64,7 @@ describe("FileLog — the record that outlives the process", () => {
 
   it("rotates at the cap, keeping exactly one previous generation", async () => {
     const fs = memFs();
-    const log = current = new FileLog(fs, LOG, true);
+    const log = current = new FileLog(fs, LOG, "trace");
     fs.files.set(LOG, "x".repeat(FILE_LOG_MAX_BYTES - 10)); // nearly full already
     log.line("this one tips it over");
     await settle();
@@ -75,15 +76,48 @@ describe("FileLog — the record that outlives the process", () => {
   it("a failing adapter never throws into the caller, and stops trying", async () => {
     const fs = memFs();
     fs.append = async () => { throw new Error("disk full"); };
-    const log = current = new FileLog(fs, LOG, true);
+    const log = current = new FileLog(fs, LOG, "trace");
     expect(() => log.line("boom")).not.toThrow();
     await settle();
     expect(log.isEnabled()).toBe(false); // disabled itself rather than logging about logging forever
   });
 
+  it("respects the LEVEL threshold: a trace line is dropped at info, kept at trace", async () => {
+    const fs = memFs();
+    const quiet = current = new FileLog(fs, LOG, "info");
+    quiet.trace("noisy"); quiet.debug("also noisy"); quiet.info("kept"); quiet.warn("kept too"); quiet.error("definitely kept");
+    await settle();
+    const atInfo = fs.files.get(LOG)!;
+    expect(atInfo).not.toContain("noisy");
+    expect(atInfo).toContain("INF kept");
+    expect(atInfo).toContain("WRN kept too");
+    expect(atInfo).toContain("ERR definitely kept");
+
+    fs.files.clear();
+    const loud = current = new FileLog(fs, LOG, "trace");
+    loud.trace("noisy");
+    await settle();
+    expect(fs.files.get(LOG)!).toContain("TRC noisy");
+  });
+
+  // A slow operation must be visible even when the log is left at its default level.
+  it("promotes a SLOW operation to a warning so it shows at info", async () => {
+    const fs = memFs();
+    const log = current = new FileLog(fs, LOG, "info");
+    const done = log.begin("persist", "bytes=10500000"); // begins at debug — invisible at info
+    await settle();
+    expect(fs.files.get(LOG) ?? "").not.toContain("beg persist");
+    // Force the elapsed check: 1s+ promotes the end line to WRN, so the slow case is visible at info.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 5_000;
+    try { done(); } finally { Date.now = realNow; }
+    await settle();
+    expect(fs.files.get(LOG)!).toMatch(/WRN end persist ok \d+ms/);
+  });
+
   it("writes nothing at all when disabled", async () => {
     const fs = memFs();
-    const log = current = new FileLog(fs, LOG, false);
+    const log = current = new FileLog(fs, LOG, "off");
     log.line("nope"); log.begin("persist")();
     await settle();
     expect(fs.files.size).toBe(0);

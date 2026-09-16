@@ -358,6 +358,9 @@ export interface ReconcileDeps {
   // This path has been reconciled against the server - transfer, no-op or refusal alike - so whatever the
   // consumer believed was outstanding for it is now settled. Fires once per reconcilePath, on every exit.
   onPathSettled?: (path: string) => void;
+  // Per-file DECISION trace (level: trace). Without it the log could say a pass ran but never what it
+  // decided for which file - the first question anyone asks of a sync bug.
+  onDecision?: (path: string, action: string, effect: string) => void;
   // Coarse SUB-PHASE of a full reconcile (fetching the remote manifest → scanning local files →
   // reconciling), so a caller can surface WHERE a long initial pass is (the connect path drives the
   // "Connecting…" detail + a timed log from this). Fires only on the paths that wire it; a no-op otherwise.
@@ -1425,6 +1428,7 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
   // never syncs - critique F1, probe-confirmed). The single-path caller owns the CLEAR, in its own finally,
   // so an arm that throws mid-transfer cannot leave the light stuck.
   const signalWork = () => opts.onWork?.();
+  d.onDecision?.(path, action, eff.kind);
   switch (eff.kind) {
     case "noop":
       return;

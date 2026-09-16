@@ -468,6 +468,24 @@ export default class SelfSyncPlugin extends Plugin {
   // force-killed — exactly the state a hang leaves the user in — so phase-level events also go to a file
   // inside this plugin's own folder (never synced: shouldSync hard-excludes the self folder).
   fileLog?: FileLog;
+  // On desktop, hand the log a SYNCHRONOUS writer. The first two captured hangs both ended with a matched
+  // pair and then silence: the async adapter append was still queued when the main thread stopped turning,
+  // so the one line that mattered - the operation that never returned - was lost. appendFileSync puts it on
+  // disk before returning. Mobile has no Node fs; there the async path stands.
+  private syncLogAppender(): ((text: string) => void) | undefined {
+    if (!Platform.isDesktop) return undefined;
+    const req = (window as unknown as { require?: (m: string) => { appendFileSync?: (p: string, d: string) => void } }).require;
+    if (!req) return undefined;
+    const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string; basePath?: string };
+    const base = adapter.getBasePath ? adapter.getBasePath() : (adapter.basePath ?? "");
+    if (!base) return undefined;
+    try {
+      const fs = req("fs");
+      if (!fs.appendFileSync) return undefined;
+      const abs = `${base}/${this.fileLogPath()}`;
+      return (text: string) => fs.appendFileSync!(abs, text);
+    } catch { return undefined; }
+  }
   fileLogPath(): string {
     const dir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
     return `${dir.replace(/[/\\]+$/, "")}/selfsync-debug.log`;
@@ -570,9 +588,20 @@ export default class SelfSyncPlugin extends Plugin {
     this.fileLog = new FileLog(
       this.app.vault.adapter as unknown as LogAdapter,
       this.fileLogPath(),
-      this.settings.debugLog !== false,
+      this.settings.logLevel ?? "info",
+      this.syncLogAppender(), // desktop: fs.appendFileSync, so a freeze cannot swallow the decisive line
     );
     this.fileLog.line(`--- onload: SelfSync ${this.manifest.version} on ${Platform.isMobile ? "mobile" : "desktop"} ---`);
+    // Nothing captured an uncaught exception or a dropped promise before this: a throw inside a render or
+    // an unawaited effect vanished silently. Both now reach the file, with a stack.
+    this.registerDomEvent(window, "error", (e: ErrorEvent) => {
+      const stack = e.error instanceof Error ? e.error.stack ?? e.error.message : String(e.message);
+      this.fileLog?.error(`uncaught: ${stack} @ ${e.filename}:${e.lineno}:${e.colno}`);
+    });
+    this.registerDomEvent(window, "unhandledrejection", (e: PromiseRejectionEvent) => {
+      const r: unknown = e.reason;
+      this.fileLog?.error(`unhandled rejection: ${r instanceof Error ? r.stack ?? r.message : String(r)}`);
+    });
     await this.ensureDeviceId(); // durably mint the provenance UUID before any commit can stamp it (crit finding 4)
     this.io = this.buildIo();
     void this.resolveUaChModel(); // async, fire-and-forget: upgrade the auto device name to the real Android model
@@ -584,8 +613,8 @@ export default class SelfSyncPlugin extends Plugin {
       reconcilePath: (p, size) => this.doReconcilePath(p, size),
       rews: () => this.doRews(),
       teardown: () => this.doTeardown(),
-      onPhase: (p) => { this.renderLight(p); },
-      onError: (where, e: any) => this.log(`${where} FAILED: ${e?.message ?? e}`),
+      onPhase: (p) => { this.fileLog?.debug(`engine phase → ${p} (state=${this.engine.getState()})`); this.renderLight(p); },
+      onError: (where, e: any) => { this.fileLog?.error(`${where} FAILED: ${e?.stack ?? e?.message ?? e}`); this.log(`${where} FAILED: ${e?.message ?? e}`); },
       // Classify a transport failure into a typed class the engine's LinkState transitions on. Injected
       // because it needs settings context (is a password stored → can we silently re-login vs. must the
       // user reconfigure). Pure once the context is supplied.
@@ -602,6 +631,7 @@ export default class SelfSyncPlugin extends Plugin {
     } else {
       this.statusEl = this.addStatusBarItem();
       this.statusEl.addClass("mod-clickable");
+      this.statusEl.addClass("selfsync-status-bar-item"); // styles.css targets this instead of a :has() rule
       this.statusEl.onClickEvent(() => this.showLog());
     }
     this.renderLight(this.engine.phase()); // initial: off
@@ -1962,8 +1992,9 @@ export default class SelfSyncPlugin extends Plugin {
   // inaccurate (st001/us001), so a green "Fully synced" must not span the pre-flight of a config write or
   // a rename either. Remote-driven passes are NOT marked — nothing local is outstanding for them.
   private noteLocalChange(path: string, onDisk = true): void {
-    if (!this.inPrimaryScope(path)) return;
-    if (isExcluded(path, this.settings.excludedFolders ?? [])) return;
+    if (!this.inPrimaryScope(path)) { this.fileLog?.trace(`local change ignored (out of scope): ${path}`); return; }
+    if (isExcluded(path, this.settings.excludedFolders ?? [])) { this.fileLog?.trace(`local change ignored (excluded folder): ${path}`); return; }
+    this.fileLog?.trace(`local change ${onDisk ? "on disk" : "in editor"}: ${path}`);
     const prev = this.unsyncedEdits.get(path);
     // A disk event UPGRADES a buffer-only claim: the edit is now a file, so it stops being expirable.
     this.unsyncedEdits.set(path, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk });
@@ -2001,6 +2032,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (cleared) this.renderLight();
   }
   private notePathWork(busy: boolean, failed = false): void {
+    this.fileLog?.debug(`path work ${busy ? "start" : failed ? "FAILED" : "done"} (inFlight=${this.localWork})`);
     this.localWork = Math.max(0, this.localWork + (busy ? 1 : -1));
     if (!failed) this.renderLight();
   }
@@ -2054,6 +2086,7 @@ export default class SelfSyncPlugin extends Plugin {
     // Kills any residual flash from repeated identical renders (e.g. idle re-rendered on every poll settle).
     const key = `${phase}|${spec.color}|${spec.label}|${tip}|${glyph}`;
     if (key === this.lastLightKey) return;
+    this.fileLog?.trace(`paint ${phase} (${spec.label}: ${tip})`);
     this.lastLightKey = key;
     if (this.statusEl) {
       this.statusEl.empty();
@@ -2290,6 +2323,7 @@ export default class SelfSyncPlugin extends Plugin {
       // convert the user's save into a dropped push plus an offline flap (critique F3).
       onPathWork: (busy, failed) => { try { this.notePathWork(busy, failed); } catch { /* the light never breaks the sync path */ } },
       onPathSettled: (path) => { try { this.notePathSettled(path); } catch { /* ditto */ } },
+      onDecision: (path, action, effect) => this.fileLog?.trace(`decide ${path}: ${action} → ${effect}`),
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);

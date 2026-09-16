@@ -12,6 +12,7 @@ class FolderSuggest extends AbstractInputSuggest<string> {
   selectSuggestion(value: string): void { this.setValue(value); this.close(); }
 }
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
+import type { LogLevel } from "./filelog";
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal, promptModal } from "./confirm";
@@ -56,7 +57,9 @@ export interface SelfSyncSettings {
   authToken?: string;    // cached bearer token to skip re-login (B7 makes server tokens durable/revocable)
   lastSyncedAt?: number; // epoch ms of the last successful reconcile; shown in the status card
   editorStatus: boolean; // opt-in: also show a sync-status indicator in the editor view
-  debugLog?: boolean;    // write phase-level breadcrumbs to <plugin folder>/selfsync-debug.log (default ON: the only record that survives a host force-kill)
+  // Threshold for the on-disk log (filelog.ts). "info" by default: the only record that survives a host
+  // force-kill. "trace" is the live-hunt setting; "off" writes nothing.
+  logLevel?: LogLevel;
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
@@ -127,7 +130,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   authToken: undefined,
   lastSyncedAt: undefined,
   editorStatus: false,
-  debugLog: true,
+  logLevel: "info",
   vaultOwner: undefined,
   vaultReadOnly: false,
   // SEC-CMMC (IA.3.5.10): default to TOKEN-ONLY — do NOT persist the plaintext password on the device.
@@ -223,6 +226,11 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       if (changed) this.display(); // re-render so a shared-RW mount's toggle appears once the grants load
     } catch { /* leave shared sources non-writable — the safe default */ }
   }
+  // Bracket one render section in the breadcrumb log (no-op when the log is off).
+  private section(name: string, render: () => void): void {
+    const done = this.plugin.fileLog?.begin(name);
+    try { render(); } finally { done?.(); }
+  }
   private statusGroup?: SettingGroup;
   private conflictGate?: BusyGate; // the Conflicts "Resolve" buttons read "Analyzing files…" while a pass runs (busygate.ts)
   private pluginsExpanded?: boolean; // persists the synced-plugins list expand state across re-renders
@@ -240,6 +248,10 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // card themes group settings). The Status hero is a member group so FSM ticks refresh JUST its row
   // in place (fillStatus) — no whole-tab rebuild that would drop focus/scroll in the sections below.
   display(): void {
+    const done = this.plugin.fileLog?.begin("settings.display");
+    try { this.displayBody(); } finally { done?.(); }
+  }
+  private displayBody(): void {
     const { containerEl } = this;
     // PRESERVE SCROLL across the rebuild (owner-reported: toggling a control jumped the page to the top). Many
     // handlers call display() — a full containerEl.empty()+rebuild — which otherwise discards the scroll
@@ -258,11 +270,13 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     this.plugin.statusListener = () => this.fillStatus();
     this.plugin.settingsRefresh = () => this.display(); // re-render when the conflict count changes
     if (configured) {
-      this.renderConnection(containerEl, s);       // ② server / account / vault facts + manage actions
-      this.renderWhatSyncs(containerEl, s);        // ③ the opt-in .obsidian config-sync scope
-      this.renderConflicts(containerEl);           // ④ only when a manual choice is pending
-      this.renderComposedVaults(containerEl, s);   // ⑤ compose folders from other vaults (collapsed by default)
-      this.renderAdvanced(containerEl, s);         // ⑥ collapsed by default
+      // Each section is bracketed in the breadcrumb log: a freeze then names the SECTION, not just "the
+      // settings pane" (the region both captured hangs went silent in).
+      this.section("renderConnection", () => this.renderConnection(containerEl, s));       // ② server / account / vault facts + manage actions
+      this.section("renderWhatSyncs", () => this.renderWhatSyncs(containerEl, s));        // ③ the opt-in .obsidian config-sync scope
+      this.section("renderConflicts", () => this.renderConflicts(containerEl));           // ④ only when a manual choice is pending
+      this.section("renderComposedVaults", () => this.renderComposedVaults(containerEl, s));   // ⑤ compose folders from other vaults (collapsed by default)
+      this.section("renderAdvanced", () => this.renderAdvanced(containerEl, s));         // ⑥ collapsed by default
       this.renderIgnoreTimestamps(containerEl, s); // ⑦ collapsed by default — identity-only timestamp masking
     } // else unconfigured: only the Status hero + Set up / Redeem buttons
 
@@ -323,6 +337,10 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // sub-line, and a fix action ONLY when the link is down. A pure projection of the sync FSM — the
   // status IS the diagnosis (no separate "Diagnose" probe that could falsely say "all good", an L-5 gap).
   private fillStatus(): void {
+    const done = this.plugin.fileLog?.begin("settings.fillStatus");
+    try { this.fillStatusBody(); } finally { done?.(); }
+  }
+  private fillStatusBody(): void {
     const g = this.statusGroup;
     if (!g) return;
     g.listEl.empty();
@@ -747,13 +765,22 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     // situation a hang leaves you in. This writes the same events — plus begin/end pairs around the
     // operations that can block — to a file in the vault, so the trail survives the kill. The path is shown
     // because reading it is the point; the file sits in SelfSync's own plugin folder and is never synced.
-    new Setting(body).setName("Write a debug log file")
-      .setDesc(`Phase-level breadcrumbs, kept to 1 MB plus one previous file. Survives a crash or force-quit, unlike the in-app log. Path: ${this.plugin.fileLogPath()}`)
-      .addToggle((tg) => tg.setValue(s.debugLog !== false).onChange(async (v) => {
-        s.debugLog = v;
-        this.plugin.fileLog?.setEnabled(v);
-        await this.plugin.saveSettings();
-      }));
+    new Setting(body).setName("Debug log file")
+      .setDesc(`What to record in ${this.plugin.fileLogPath()} — capped at 1 MB plus one previous file, and it survives a crash or force-quit, unlike the in-app log. Use Trace while reproducing a problem.`)
+      .addDropdown((dd) => dd
+        .addOption("off", "Off — write nothing")
+        .addOption("error", "Errors only")
+        .addOption("warn", "Warnings + errors")
+        .addOption("info", "Normal (default)")
+        .addOption("debug", "Debug — every phase + decision")
+        .addOption("trace", "Trace — everything, for a live hunt")
+        .setValue(s.logLevel ?? "info")
+        .onChange(async (v) => {
+          s.logLevel = v as LogLevel;
+          this.plugin.fileLog?.setLevel(s.logLevel);
+          await this.plugin.saveSettings();
+          this.plugin.log(`debug log level set to ${v}`);
+        }));
     // SR-50: the running build is auditable against its GitHub release — version + the SHA-256 of the installed
     // main.js. The release's SHA256SUMS asset carries the published digest, and verify-released.yml rebuilds the tag
     // daily and compares — a match here means this device runs the PUBLISHED asset, which those checks tie to the
