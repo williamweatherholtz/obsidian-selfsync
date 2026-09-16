@@ -315,4 +315,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Critical;
     }
     #Resolves dependency from persistWriteVolume to issue002;
+
+    part issue003 : Issue {
+        :>> id = "e6810c6c-3b18-4a09-a110-eaa15bb02599";
+        :>> title = "Obsidian hangs: the settings pane issues one recursive plugin-folder walk per synced plugin per render";
+        :>> createdAt = "2026-09-16";
+        :>> createdBy = "claudeOpus";
+        :>> description = "Obsidian hangs when the SelfSync settings pane is open, reliably reproducible by triggering a BRAT plugin-update notification with the pane open, and requiring a force-kill; the host stays hung after the pane is force-closed. ROOT CAUSE, read from the owner's own instrumented log (C:/notes/ASI - Work, 2026-09-16 16:51, build 1.30.30): the settings tab computes per-plugin sync CONVERGENCE by calling pluginSyncClean(id) for every synced plugin on every render, fire-and-forget, with the answer cached only when the promise RESOLVES. pluginSyncClean runs walkConfigTree - a recursive adapter.list/stat walk over .obsidian/plugins/<id> - so one render of a 10-plugin selection issues TEN concurrent recursive filesystem walks. The log shows settings.display completing at 16:51:27.710 and a SECOND full render beginning 62ms later at 16:51:27.772, each fanning out ten 'beg pluginSyncClean' lines, and NOT ONE of the twenty logs an 'end'. The walks never complete because the adapter calls queue behind a main thread they themselves are starving; the earlier capture's '20 folder(s) + 48 file(s) in 109.0s' config scan and its six-minute gap with no poll pass are the same starvation seen from a different angle. A plugin update is the trigger because BRAT writes many files under .obsidian/plugins/**, each firing a config-watcher callback that called settingsRefresh, and every refresh rebuilt the whole tab and issued another full set of walks - an amplifying loop that never converges.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Critical;
+    }
+    #Resolves dependency from settingsWalkStorm to issue003;
 }

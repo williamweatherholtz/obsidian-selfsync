@@ -162,4 +162,6 @@ export function typeInto(input: any, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 // Flush pending microtasks (async render() in modals).
-export const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+// Convergence walks are SERIALISED (settings.ts: one chain, not one per plugin), so draining them takes
+// more microtask turns than a single await chain - hence the wider budget. Still instant.
+export const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };

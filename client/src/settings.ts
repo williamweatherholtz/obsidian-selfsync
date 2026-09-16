@@ -13,6 +13,9 @@ class FolderSuggest extends AbstractInputSuggest<string> {
 }
 import { ConfigSyncSelection, DEFAULT_CONFIG_SYNC, groupConfigConflicts, ConfigSurface } from "./configsync";
 import type { LogLevel } from "./filelog";
+
+// One trailing settings re-render per burst of refresh callbacks (a plugin update fires many).
+const SETTINGS_REFRESH_COALESCE_MS = 150;
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal, promptModal } from "./confirm";
@@ -238,6 +241,11 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // re-render (no flicker) and refreshed async each render; an entry is dropped after a push/pull. Cleared on
   // hide() so a re-open re-checks fresh state.
   private pluginCleanCache = new Map<string, boolean>();
+  // Convergence walks in flight, keyed by plugin id, so a re-render ATTACHES to a running walk instead of
+  // starting a duplicate; and a single chain so they run one at a time rather than ten at once.
+  private cleanInFlight = new Map<string, Promise<boolean>>();
+  private cleanQueue: Promise<void> = Promise.resolve();
+  private refreshTimer?: number; // trailing-edge coalescing for settingsRefresh
   private timestampExpanded?: boolean; // persists the (default-collapsed) Timestamp-changes section state
   private advancedExpanded?: boolean; // persists the (default-collapsed) Advanced section state
   private mountsExpanded?: boolean;   // persists the (default-collapsed) Composed vaults section state
@@ -268,7 +276,13 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     this.statusGroup = new SettingGroup(containerEl).setHeading("Status");
     this.fillStatus();
     this.plugin.statusListener = () => this.fillStatus();
-    this.plugin.settingsRefresh = () => this.display(); // re-render when the conflict count changes
+    // Coalesced: a plugin update (BRAT) writes many config files, each firing a refresh callback, and each
+    // rebuilt the entire tab. One trailing render per burst instead (the captured hang showed two full
+    // renders 62ms apart, each fanning out a walk per synced plugin).
+    this.plugin.settingsRefresh = () => {
+      if (this.refreshTimer !== undefined) return;
+      this.refreshTimer = window.setTimeout(() => { this.refreshTimer = undefined; this.display(); }, SETTINGS_REFRESH_COALESCE_MS);
+    };
     if (configured) {
       // Each section is bracketed in the breadcrumb log: a freeze then names the SECTION, not just "the
       // settings pane" (the region both captured hangs went silent in).
@@ -296,7 +310,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     return this.containerEl;
   }
 
-  hide(): void { void this.plugin.flushSettings(); this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
+  hide(): void { if (this.refreshTimer !== undefined) { window.clearTimeout(this.refreshTimer); this.refreshTimer = undefined; } void this.plugin.flushSettings(); this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); this.cleanInFlight.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
   private lastSyncedAgo(s: SelfSyncSettings): string {
@@ -994,7 +1008,9 @@ export class SelfSyncSettingTab extends PluginSettingTab {
   // and "Available from the sync" groups so the row logic lives in one place.
   private renderPluginRows(c: HTMLElement, ids: string[], cs: SelfSyncSettings["configSync"], manifests: Record<string, { id: string; name: string }>, installed: Set<string>, onServer: Set<string>, ro: boolean, summaryLabel: string, pendingAuthors?: Map<string, string>): void {
     if (!ids.length) return;
-    const body = this.collapsible(c, summaryLabel, this.pluginsExpanded ?? ids.length <= 8, (v) => { this.pluginsExpanded = v; });
+    const expanded = this.pluginsExpanded ?? ids.length <= 8;
+    // Re-render on expand so the rows that were skipped while collapsed get their convergence state.
+    const body = this.collapsible(c, summaryLabel, expanded, (v) => { this.pluginsExpanded = v; if (v) this.display(); });
     // issueGreyedNoteWrongSection: explain the greyed Push/Pull RIGHT here with the rows that carry the buttons,
     // not up in the summary group a section away. Only when this list has installed synced plugins (the ones
     // with Push/Pull) on a writable vault.
@@ -1050,8 +1066,16 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           pullB.setTooltip(clean ? "Already in sync — nothing to pull" : "Pull the server's copy to this device");
         };
         const cachedClean = this.pluginCleanCache.get(id);
-        if (cachedClean !== undefined) {
+        if (!expanded) {
+          // Collapsed: nobody can see these buttons. Leave them live (a guarded no-op if pressed) rather
+          // than paying a recursive filesystem walk per plugin for a hidden row.
+        } else if (cachedClean !== undefined) {
           applyClean(cachedClean); // instant, and NO re-walk — see below
+        } else if (this.cleanInFlight.has(id)) {
+          // A walk for this plugin is ALREADY running from an earlier render: attach to it instead of
+          // starting a second one. This is the fix for the captured hang - without it, every re-render
+          // issued another recursive walk per plugin and they piled up until the adapter starved.
+          void this.cleanInFlight.get(id)!.then(applyClean).catch(() => undefined);
         } else {
           // Walk the plugin folder ONLY when the answer isn't cached. pluginSyncClean runs
           // walkConfigTree — a recursive adapter.list/stat over .obsidian/plugins/<id> — and this
@@ -1063,7 +1087,15 @@ export class SelfSyncSettingTab extends PluginSettingTab {
           // matters: deleted per-plugin after a push/pull changes convergence, and cleared wholesale
           // on hide(), so re-opening the tab re-checks. Staleness within one tab session errs safe —
           // a button left live is a guarded no-op, never a wrong action.
-          void this.plugin.pluginSyncClean(id).then((clean) => { this.pluginCleanCache.set(id, clean); applyClean(clean); });
+          // SERIALISED through one chain, not ten in parallel: these are recursive filesystem walks over
+          // .obsidian/plugins/**, and the host has ONE main thread to service them.
+          const run = this.cleanQueue
+            .then(() => this.plugin.pluginSyncClean(id))
+            .then((clean) => { this.pluginCleanCache.set(id, clean); return clean; })
+            .finally(() => { this.cleanInFlight.delete(id); });
+          this.cleanInFlight.set(id, run);
+          this.cleanQueue = run.then(() => undefined, () => undefined); // the queue never rejects
+          void run.then(applyClean).catch(() => undefined);
         }
       }
       // NB: no per-plugin "Remove from server" button (issuePluginRemoveButtonClutter) — it took a whole

@@ -302,6 +302,35 @@ describe("settings tab renders and wires its controls", () => {
     expect(p.pluginSyncClean.mock.calls.length).toBe(afterFirst); // zero extra walks
   });
 
+  // THE CAPTURED HANG (2026-09-16, owner vault): two full renders 62ms apart each fanned out one recursive
+  // folder walk PER synced plugin, none of which completed - 20 concurrent walks saturating the adapter
+  // until the main thread starved. A re-render must ATTACH to the walk already running, never add another.
+  it("a re-render MID-WALK attaches to the running walk instead of starting another", async () => {
+    const ids = ["dataview", "templater", "quickadd", "tasks"];
+    const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ids } } });
+    p.app.plugins.manifests = Object.fromEntries(ids.map((id) => [id, { id, name: id }]));
+    let release: (() => void) | undefined;
+    p.pluginSyncClean = vi.fn(() => new Promise<boolean>((res) => { release = () => res(true); })); // never resolves until released
+    const tab = renderTab(p);
+    await flush();
+    const inFlight = p.pluginSyncClean.mock.calls.length;
+    expect(inFlight).toBe(1);            // SERIALISED: one at a time, not four at once
+    tab.display(); await flush();
+    tab.display(); await flush();
+    expect(p.pluginSyncClean.mock.calls.length).toBe(inFlight); // re-renders added NOTHING
+    release?.();
+  });
+
+  it("a COLLAPSED plugin list walks nothing at all (hidden rows are not worth a filesystem walk)", async () => {
+    const ids = Array.from({ length: 10 }, (_, i) => "plugin-" + i); // >8 ⇒ collapsed by default
+    const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ids } } });
+    p.app.plugins.manifests = Object.fromEntries(ids.map((id) => [id, { id, name: id }]));
+    p.pluginSyncClean = vi.fn(async () => true);
+    renderTab(p);
+    await flush();
+    expect(p.pluginSyncClean).not.toHaveBeenCalled();
+  });
+
   it("DISABLES Push/Pull and blocks the click when in sync (owner-directed: no real action → no button)", async () => {
     const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ["dataview"] } } });
     p.app.plugins.manifests = { dataview: { id: "dataview", name: "Dataview" } };
