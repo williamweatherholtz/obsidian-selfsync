@@ -355,6 +355,9 @@ export interface ReconcileDeps {
   // true just before a real transfer effect runs, false when the route returns, THROWN OR NOT. Silent for
   // a no-op pass, so an unchanged re-save cannot blip the light (that is the flicker the pending gate kills).
   onPathWork?: (busy: boolean, failed?: boolean) => void;
+  // This path has been reconciled against the server - transfer, no-op or refusal alike - so whatever the
+  // consumer believed was outstanding for it is now settled. Fires once per reconcilePath, on every exit.
+  onPathSettled?: (path: string) => void;
   // Coarse SUB-PHASE of a full reconcile (fetching the remote manifest → scanning local files →
   // reconciling), so a caller can surface WHERE a long initial pass is (the connect path drives the
   // "Connecting…" detail + a timed log from this). Fires only on the paths that wire it; a no-op otherwise.
@@ -1093,6 +1096,9 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
     throw e;
   } finally {
     if (signalled) d.onPathWork?.(false, failed);
+    // Settled even when nothing transferred: an in-sync pass is exactly the case where the server HAS seen
+    // this content. Not on a thrown pass - the path is still outstanding and will be retried.
+    if (!failed) d.onPathSettled?.(path);
   }
 }
 

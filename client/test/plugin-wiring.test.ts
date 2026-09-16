@@ -207,6 +207,54 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // OWNER REPORT 2026-09-16: "colour indication is quite latent — takes a second or two when typing."
+  // Obsidian autosaves ~2s after you stop, so a light driven only by transfers cannot react sooner. An
+  // in-scope keystroke is itself proof the edit is not on the server, so it raises the phase at once —
+  // and is cleared by the pass that settles the path, never by a guess at timing.
+  it("an in-scope keystroke raises the indicator IMMEDIATELY, before Obsidian's autosave", async () => {
+    const { p, fire } = await bootPlugin();
+    expect(p.statusText()).toBe("idle");
+    fire("editor-change", {}, { file: { path: "Notes/n.md" } });
+    expect(p.statusText()).toBe("syncing");              // yellow at the keystroke, no vault event yet
+    expect((p as any).lightPhase()).toBe("syncing");      // card and light agree
+    p.onunload();
+  });
+
+  it("an OUT-OF-SCOPE keystroke raises nothing (excluded folder)", async () => {
+    const { p, fire } = await bootPlugin(true, { settings: { excludedFolders: ["Private"] } });
+    fire("editor-change", {}, { file: { path: "Private/secret.md" } });
+    expect(p.statusText()).toBe("idle");
+    p.onunload();
+  });
+
+  it("the reconciled path CLEARS the unsynced-edit fact (settled by a fact, not a timer)", async () => {
+    const { p, fire } = await bootPlugin();
+    fire("editor-change", {}, { file: { path: "Notes/n.md" } });
+    expect(p.statusText()).toBe("syncing");
+    (p as any).notePathSettled("Notes/n.md");             // what reconcilePath's finally calls
+    expect(p.statusText()).toBe("idle");
+    p.onunload();
+  });
+
+  it("an unsynced-edit claim EXPIRES on read, so a buffer Obsidian never writes cannot latch yellow", async () => {
+    const { p, fire } = await bootPlugin();
+    fire("editor-change", {}, { file: { path: "Notes/n.md" } });
+    (p as any).unsyncedEdits.set("Notes/n.md", Date.now() - 60_000); // keystroke a minute ago, never saved
+    expect(p.statusText()).toBe("idle");
+    expect((p as any).unsyncedEdits.size).toBe(0);         // pruned, not merely ignored
+    p.onunload();
+  });
+
+  it("a keystroke while the link is DOWN does not claim syncing (the down link is the truer state)", async () => {
+    const { p, api, fire } = await bootPlugin();
+    api.__failChanges(true);
+    api.__poke(); await flush();
+    expect((p as any).engine.getState()).toBe("disconnected");
+    fire("editor-change", {}, { file: { path: "Notes/n.md" } });
+    expect(p.statusText()).not.toBe("syncing");
+    p.onunload();
+  });
+
   // CRITIQUE F1 (HIGH, state-machine lens): the minimum-show hold gates every resting repaint, and its only
   // release was a window.setTimeout — which Obsidian mobile PAUSES while backgrounded (the same mechanism
   // this file already covers for the backoff timer above). Background the app within the hold and the light

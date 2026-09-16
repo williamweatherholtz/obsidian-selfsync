@@ -101,6 +101,10 @@ const MOUNT_MOBILE_MAX_BYTES = 50 * 1024 * 1024; // on mobile a mount buffers wh
 // showing syncing; the pending gate now excludes no-work passes, so the delay only hid real one-file
 // transfers, which finish in tens of milliseconds. Holding instead makes a save perceivable.
 const SYNCING_MIN_SHOW_MS = 2_500;
+// How long an unsynced-edit fact is trusted without the path being reconciled. Long enough to cover
+// Obsidian's autosave (~2s) plus a slow push; short enough that a buffer that never reaches disk stops
+// claiming. Expiry is checked on READ, so a suspended app cannot leave the claim standing.
+const UNSYNCED_EDIT_MAX_MS = 15_000;
 // WS half-open liveness (crit-round residual): the server sends an app heartbeat every ~30s. If the
 // client sees NO frame (heartbeat or change) for this long, the socket is silently dead → re-dial.
 const WS_STALE_MS = 75 * 1000;      // ~2.5 missed heartbeats
@@ -469,6 +473,14 @@ export default class SelfSyncPlugin extends Plugin {
   // uploaded. Counted, not a boolean: the engine pump serialises path events, but a count cannot be
   // left stuck true by an interleaving.
   private localWork = 0;
+  // In-scope paths the user has EDITED in the editor that have not been reconciled with the server yet,
+  // each with the wall-clock of its last keystroke. This is what closes the perceived-latency gap: Obsidian
+  // autosaves ~2s after you stop typing, so a light driven only by transfers cannot react until then (owner
+  // report 2026-09-16). It is a FACT, not an optimistic flag - "this edit is not on the server" is true from
+  // the keystroke, it is cleared by the reconcile pass that settles the path (onPathSettled), and it EXPIRES
+  // on read, so a buffer Obsidian never writes (typed then undone, or a crash) cannot latch a claim. No
+  // timer: read-time expiry is immune to the mobile suspend that froze the hold timer.
+  private unsyncedEdits = new Map<string, number>();
   // The status-light DISPLAY FSM (statuslight.ts) + its debounce timer + a repaint-dedupe key. Entering the
   // visible "syncing" state is debounced so a transient reconcile never flits the light (issueStatusLightFlicker).
   private lightDisplay: LightDisplay = lightDisplayInit();
@@ -597,6 +609,8 @@ export default class SelfSyncPlugin extends Plugin {
       this.registerEvent(vaultEvents.on("raw", (path: string) => this.onRawConfigEvent(path)));
     } catch { /* "raw" unavailable on this build — periodic scan covers it */ }
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.applyEditorStatus()));
+    // Per-keystroke, so the indicator can react at the keystroke instead of waiting for Obsidian's autosave.
+    this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => this.noteEditorEdit((info as { file?: { path: string } } | undefined)?.file)));
     // Mobile suspends the app (freezing timers) when backgrounded, so a config change made just before
     // backgrounding — or on another device while this one slept — isn't caught until the next scan
     // tick. On resume, force a config re-scan immediately instead of waiting up to CONFIG_SCAN_INTERVAL_MS.
@@ -1883,7 +1897,7 @@ export default class SelfSyncPlugin extends Plugin {
     // Local single-path work counts as pending: it IS a transfer in flight, so `syncing` is the honest
     // phase. The "N pending" DETAIL still comes from syncPending alone — a one-file save says "Syncing…",
     // not "1 pending".
-    const primary = effectivePhase(this.engine.phase(), this.pendingWork());
+    const primary = this.displayPhase();
     // R4-F1: fold composed-vault mount health into the ONE status light. Only ESCALATE a RESTING primary
     // (idle/off) so a silently offline/failed mount isn't hidden behind green "Fully synced"; a real primary
     // problem (syncing/connecting/retrying/blocked) already shows + dominates, and the mount note still rides
@@ -1912,6 +1926,21 @@ export default class SelfSyncPlugin extends Plugin {
   // `failed` = the pass threw (a dropped socket, an expired token). Decrement, but do NOT repaint: the
   // error is already on its way to failWith / withSyncRelogin, and repainting here painted a green "Fully
   // synced" in the gap — across a real await on the silent-relogin path (critique F6).
+  // A keystroke in the editor. `file` is the note being edited; an out-of-scope path is ignored.
+  private noteEditorEdit(file?: { path: string } | null): void {
+    // inPrimaryScope mirrors the reconcile deps' `accepts`, which deliberately does NOT test excludedFolders
+    // (the scan applies that separately, and narrowing `accepts` would change base/deletion semantics). The
+    // listener needs the stricter question — "will this path ever sync?" — so it tests exclusion too.
+    if (!file?.path || !this.inPrimaryScope(file.path)) return;
+    if (isExcluded(file.path, this.settings.excludedFolders ?? [])) return;
+    this.unsyncedEdits.set(file.path, Date.now());
+    this.renderLight();
+  }
+  // The reconcile pass for this path finished (transfer, no-op, or refusal alike): the server has now seen
+  // this path's current content, so the edit is no longer unsynced. Fact-driven, not a guess at timing.
+  private notePathSettled(path: string): void {
+    if (this.unsyncedEdits.delete(path)) this.renderLight();
+  }
   private notePathWork(busy: boolean, failed = false): void {
     this.localWork = Math.max(0, this.localWork + (busy ? 1 : -1));
     if (!failed) this.renderLight();
@@ -2026,7 +2055,21 @@ export default class SelfSyncPlugin extends Plugin {
   // dot beside the words "Fully synced" (critique F1) — the card-vs-light dual truth this comment block
   // exists to forbid. One accessor, so a future consumer cannot re-introduce the split.
   private pendingWork(): number { return this.syncPending + this.localWork; }
-  statusText() { return effectivePhase(this.engine.phase(), this.pendingWork()); }
+  // Live count of unsynced edits, pruning any that went stale (see unsyncedEdits).
+  private unsyncedEditCount(): number {
+    if (this.unsyncedEdits.size === 0) return 0;
+    const cutoff = Date.now() - UNSYNCED_EDIT_MAX_MS;
+    for (const [path, at] of this.unsyncedEdits) if (at < cutoff) this.unsyncedEdits.delete(path);
+    return this.unsyncedEdits.size;
+  }
+  // The ONE display projection: the engine's phase collapsed by real pending work, then raised to `syncing`
+  // when an in-scope edit is known not to be on the server yet. Only a RESTING primary is raised - a down
+  // link or a connect in progress is the more important truth and stays.
+  private displayPhase(): Phase {
+    const p = effectivePhase(this.engine.phase(), this.pendingWork());
+    return p === "idle" && this.unsyncedEditCount() > 0 ? "syncing" : p;
+  }
+  statusText() { return this.displayPhase(); }
 
   // Applying a config-sync change (master/category/per-plugin toggle) must take effect NOW — otherwise
   // the switch looks inert for up to CONFIG_SCAN_INTERVAL_MS (~2 min), which is exactly the "I flipped
@@ -2132,6 +2175,14 @@ export default class SelfSyncPlugin extends Plugin {
     this.settingsRefresh?.();
   }
 
+  // Is this path in the PRIMARY vault's sync scope? The reconcile deps' `accepts` and the editor-edit
+  // listener must agree exactly — an out-of-scope edit (an excluded folder, a mount subtree, another sync
+  // tool's artefact, a config surface you did not opt into) is not pending sync and must not paint one.
+  private inPrimaryScope(p: string): boolean {
+    return !primaryExcludes(this.activeMounts(), p)
+      && shouldSync(p, this.settings.configSync, this.selfFolderId())
+      && !(this.settings.skipForeignArtefacts && isForeignArtefact(p)); // SR-47: another sync tool's artefacts are out of scope
+  }
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
@@ -2152,8 +2203,7 @@ export default class SelfSyncPlugin extends Plugin {
       // Plus the D0039 mount BOUNDARY: a mount-point path is excluded from the primary scope (synced by its
       // own mount scope) — the load-bearing invariant that a mounted file never double-syncs to the primary.
       // Uses activeMounts() (the validated in-effect set) so exclusion and scope-building agree (N1).
-      accepts: (p) => !primaryExcludes(this.activeMounts(), p) && shouldSync(p, this.settings.configSync, this.selfFolderId())
-        && !(this.settings.skipForeignArtefacts && isForeignArtefact(p)), // SR-47: another sync tool's artefacts are out of scope
+      accepts: (p) => this.inPrimaryScope(p),
       pushFlipHold: (p, h, bytes) => this.flipGuard.record(p, h, Date.now(), this.flipShape(p, bytes)).hold, // SR-47: never amplify a two-writer loop (exact OR timestamp-shape returns)
       onFlipHeld: (p) => this.noteFlipHeld(p),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
@@ -2162,6 +2212,7 @@ export default class SelfSyncPlugin extends Plugin {
       // try/catch for the same reason notifyBusy has one: a fault in the settings card's render must not
       // convert the user's save into a dropped push plus an offline flap (critique F3).
       onPathWork: (busy, failed) => { try { this.notePathWork(busy, failed); } catch { /* the light never breaks the sync path */ } },
+      onPathSettled: (path) => { try { this.notePathSettled(path); } catch { /* ditto */ } },
       onProgress: (pending) => {
         if (pending === this.syncPending) return; // only refresh the UI when the count actually changes
         this.syncPending = Math.max(0, pending);
