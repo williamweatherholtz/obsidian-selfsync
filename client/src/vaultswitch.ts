@@ -127,7 +127,7 @@ export class SwitchVaultModal extends Modal {
     try {
       await this.plugin.forkVault(name);
       new Notice(`SelfSync: now syncing your fork '${name}' (yours to edit)`);
-      this.plugin.settingsRefresh?.();
+      this.plugin.settingsRefresh?.("all", "vault switched"); // a different vault is a structural change
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
   }
 
@@ -139,7 +139,7 @@ export class SwitchVaultModal extends Modal {
       await this.plugin.leaveSharedVault(ref.owner, ref.vault);
       new Notice(`SelfSync: left ${ref.owner}/${ref.vault}`);
       this.close();
-      this.plugin.settingsRefresh?.(); // refresh the settings tab (vault may have been cleared)
+      this.plugin.settingsRefresh?.("all", "vault cleared or switched"); // structural: identity changed
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); }
   }
 

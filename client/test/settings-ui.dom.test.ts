@@ -321,6 +321,47 @@ describe("settings tab renders and wires its controls", () => {
     release?.();
   });
 
+  // OWNER, 2026-09-16: "really should be event driven, no? that's crazy." It was not: settingsRefresh was
+  // wired to display(), a full containerEl.empty() + rebuild, from seventeen call sites - so any event
+  // repainted the whole tab, and the capture showed that running every ~300ms indefinitely. A refresh now
+  // names its SCOPE and only that section re-renders.
+  it("a SCOPED refresh re-renders only its own section, not the whole tab", async () => {
+    const p = fakePlugin();
+    const tab = renderTab(p);
+    await flush();
+    const connectionBefore = rowByName(tab.containerEl, "Server");
+    expect(connectionBefore).toBeTruthy();
+    p.settingsRefresh("conflicts", "test");          // a conflicts-only event
+    await new Promise((r) => setTimeout(r, 200));      // past the coalescing window
+    // The Connection section's DOM was NOT rebuilt: the very same element object is still there.
+    expect(rowByName(tab.containerEl, "Server")).toBe(connectionBefore);
+    tab.hide();
+  });
+
+  it("an ALL-scope refresh does rebuild the tab (a structural change still needs it)", async () => {
+    const p = fakePlugin();
+    const tab = renderTab(p);
+    await flush();
+    const before = rowByName(tab.containerEl, "Server");
+    p.settingsRefresh("all", "vault switched");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(rowByName(tab.containerEl, "Server")).not.toBe(before); // rebuilt
+    tab.hide();
+  });
+
+  it("a BURST of events for one scope collapses into a single section render", async () => {
+    const p = fakePlugin();
+    const tab = renderTab(p);
+    await flush();
+    let renders = 0;
+    const realBegin = p.fileLog.begin;
+    p.fileLog.begin = (op: string, ...rest: any[]) => { if (op === "section.conflicts") renders++; return realBegin(op, ...rest); };
+    for (let i = 0; i < 20; i++) p.settingsRefresh("conflicts", "burst " + i);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(renders).toBe(1);
+    tab.hide();
+  });
+
   it("a COLLAPSED plugin list walks nothing at all (hidden rows are not worth a filesystem walk)", async () => {
     const ids = Array.from({ length: 10 }, (_, i) => "plugin-" + i); // >8 ⇒ collapsed by default
     const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ids } } });

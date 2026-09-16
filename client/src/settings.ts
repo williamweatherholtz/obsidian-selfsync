@@ -16,6 +16,10 @@ import type { LogLevel } from "./filelog";
 
 // One trailing settings re-render per burst of refresh callbacks (a plugin update fires many).
 const SETTINGS_REFRESH_COALESCE_MS = 150;
+
+// Which part of the tab an event actually affects. A scope keeps an event-driven refresh PROPORTIONAL to
+// what changed; "all" is reserved for a structural change (sign-out, vault switch, config sync on/off).
+export type RefreshScope = "status" | "connection" | "config" | "conflicts" | "mounts" | "advanced" | "all";
 import { DEFAULT_IGNORED_TIMESTAMP_KEYS, validateTimestampKey } from "./frontmatter";
 import { ConfigDirectionModal } from "./configdir";
 import { confirmModal, promptModal } from "./confirm";
@@ -231,10 +235,44 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     } catch (e: any) { this.plugin.fileLog?.warn(`loadSharedWritable failed: ${e?.message ?? e}`); /* leave shared sources non-writable — the safe default */ }
     finally { done?.(); }
   }
-  // Bracket one render section in the breadcrumb log (no-op when the log is off).
-  private section(name: string, render: () => void): void {
-    const done = this.plugin.fileLog?.begin(name, "", "info");
-    try { render(); } finally { done?.(); }
+  // ---- section-scoped rendering (event-driven) ----------------------------------------------------
+  // Each section lives in its own child element with its renderer kept beside it, so an event that only
+  // affects one section costs ONE small render instead of a whole-tab rebuild. Keyed, so a burst of events
+  // for the same scope collapses to a single render of that scope.
+  private sections = new Map<RefreshScope, { el: HTMLElement; render: (el: HTMLElement) => void }>();
+  private pendingScopes = new Set<RefreshScope>();
+
+  private mountSection(key: RefreshScope, parent: HTMLElement, render: (el: HTMLElement) => void): void {
+    const el = parent.createDiv({ cls: `selfsync-section selfsync-section-${key}` });
+    this.sections.set(key, { el, render });
+    this.renderSection(key);
+  }
+
+  private renderSection(key: RefreshScope): void {
+    const sec = this.sections.get(key);
+    // Gate on the tab being OPEN (hide() clears the registry), not on el.isConnected: a settings container
+    // is not necessarily attached to the document, so isConnected would silently skip every render.
+    if (!sec) return;
+    const done = this.plugin.fileLog?.begin(`section.${key}`, "", "info");
+    try { sec.el.empty(); sec.render(sec.el); } finally { done?.(); }
+  }
+
+  /**
+   * A change happened; re-render the affected SCOPE only. Coalesced on a trailing timer so a burst (a
+   * plugin update writes many config files, each firing a callback) costs one render per scope, not one
+   * per event. `all` means a structural change and falls back to the whole tab.
+   */
+  private requestRefresh(scope: RefreshScope, reason: string): void {
+    this.plugin.fileLog?.debug(`settings refresh requested: ${scope} (${reason})`);
+    this.pendingScopes.add(scope);
+    if (this.refreshTimer !== undefined) return;
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = undefined;
+      const scopes = [...this.pendingScopes];
+      this.pendingScopes.clear();
+      if (scopes.includes("all")) { this.plugin.fileLog?.info(`settings rebuild (all): ${reason}`); this.display(); return; }
+      for (const key of scopes) this.renderSection(key);
+    }, SETTINGS_REFRESH_COALESCE_MS);
   }
   private statusGroup?: SettingGroup;
   private conflictGate?: BusyGate; // the Conflicts "Resolve" buttons read "Analyzing files…" while a pass runs (busygate.ts)
@@ -290,18 +328,20 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     // Coalesced: a plugin update (BRAT) writes many config files, each firing a refresh callback, and each
     // rebuilt the entire tab. One trailing render per burst instead (the captured hang showed two full
     // renders 62ms apart, each fanning out a walk per synced plugin).
-    this.plugin.settingsRefresh = () => {
-      if (this.refreshTimer !== undefined) return;
-      this.refreshTimer = window.setTimeout(() => { this.refreshTimer = undefined; this.display(); }, SETTINGS_REFRESH_COALESCE_MS);
-    };
+    // EVENT-DRIVEN, SCOPED. This used to be `() => this.display()`: any of seventeen callbacks rebuilt the
+    // WHOLE tab, and the 1.30.32 capture caught the consequence — settings.display running every ~300ms at
+    // 85ms a time, indefinitely, which is what made an otherwise trivial modal take seconds to appear. A
+    // refresh now names its SCOPE, and only that section's container is re-rendered; `all` remains for a
+    // genuine structural change (sign-out, vault switch, config-sync turned on/off).
+    this.plugin.settingsRefresh = (scope, reason) => this.requestRefresh(scope, reason);
     if (configured) {
-      // Each section is bracketed in the breadcrumb log: a freeze then names the SECTION, not just "the
-      // settings pane" (the region both captured hangs went silent in).
-      this.section("renderConnection", () => this.renderConnection(containerEl, s));       // ② server / account / vault facts + manage actions
-      this.section("renderWhatSyncs", () => this.renderWhatSyncs(containerEl, s));        // ③ the opt-in .obsidian config-sync scope
-      this.section("renderConflicts", () => this.renderConflicts(containerEl));           // ④ only when a manual choice is pending
-      this.section("renderComposedVaults", () => this.renderComposedVaults(containerEl, s));   // ⑤ compose folders from other vaults (collapsed by default)
-      this.section("renderAdvanced", () => this.renderAdvanced(containerEl, s));         // ⑥ collapsed by default
+      // Each section owns its own container element, so it can be re-rendered alone. The bracket in the
+      // breadcrumb log names the section, so a slow or hung render localises to one of them.
+      this.mountSection("connection", containerEl, (el) => this.renderConnection(el, s));   // ② server / account / vault facts + manage actions
+      this.mountSection("config", containerEl, (el) => this.renderWhatSyncs(el, s));        // ③ the opt-in .obsidian config-sync scope
+      this.mountSection("conflicts", containerEl, (el) => this.renderConflicts(el));        // ④ only when a manual choice is pending
+      this.mountSection("mounts", containerEl, (el) => this.renderComposedVaults(el, s));   // ⑤ compose folders from other vaults (collapsed by default)
+      this.mountSection("advanced", containerEl, (el) => this.renderAdvanced(el, s));       // ⑥ collapsed by default
       this.renderIgnoreTimestamps(containerEl, s); // ⑦ collapsed by default — identity-only timestamp masking
     } // else unconfigured: only the Status hero + Set up / Redeem buttons
 
@@ -321,7 +361,7 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     return this.containerEl;
   }
 
-  hide(): void { if (this.refreshTimer !== undefined) { window.clearTimeout(this.refreshTimer); this.refreshTimer = undefined; } void this.plugin.flushSettings(); this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); this.cleanInFlight.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
+  hide(): void { if (this.refreshTimer !== undefined) { window.clearTimeout(this.refreshTimer); this.refreshTimer = undefined; } void this.plugin.flushSettings(); this.conflictGate?.dispose(); this.conflictGate = undefined; this.plugin.statusListener = undefined; this.plugin.settingsRefresh = undefined; this.pluginCleanCache.clear(); this.cleanInFlight.clear(); this.sections.clear(); this.pendingScopes.clear(); } // stop live-refreshing once closed; re-check convergence on re-open
 
   // Just the relative time ("2m ago" / "just now" / a clock time), or "—".
   private lastSyncedAgo(s: SelfSyncSettings): string {

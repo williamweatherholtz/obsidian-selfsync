@@ -326,4 +326,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::Critical;
     }
     #Resolves dependency from settingsWalkStorm to issue003;
+
+    part issue004 : Issue {
+        :>> id = "97b60460-51c1-41cd-985f-0b61d5558c4f";
+        :>> title = "The settings tab rebuilt itself wholesale on every event, looping ~3x a second and starving the UI";
+        :>> createdAt = "2026-09-16";
+        :>> createdBy = "claudeOpus";
+        :>> description = "The settings tab re-rendered ITSELF on a loop: the owner's 1.30.32 log shows settings.display running every ~300ms, 85ms a time, indefinitely, with the post-render microtask/timer/frame probes all firing - so the thread was healthy and simply spending roughly a third of itself rebuilding the pane. The consequence the owner reported is that the first-contact direction modal (a trivial DOM modal that does NO work before opening) took five seconds or more to appear: it was starved. ROOT DESIGN FAULT, in the owner's words - 'really should be event driven, no? that's crazy' - settingsRefresh was wired to display(), a full containerEl.empty() plus rebuild, and it was called from SEVENTEEN sites, so any event anywhere repainted the entire tab including every section, every plugin row and the About digest read. Anything that fires repeatedly (a config-watcher callback, a resolved plugin display name, a mount event) therefore becomes a render loop.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from scopedEventDrivenSettings to issue004;
 }

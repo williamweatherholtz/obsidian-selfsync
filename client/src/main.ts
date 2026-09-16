@@ -28,6 +28,7 @@ import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; 
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { FileLog, LogAdapter } from "./filelog";
+import type { RefreshScope } from "./settings";
 import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
 import { FlipGuard, shapeOf } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker (+ timestamp-shape return detection)
 import { LightDisplay, LightEvent, lightDisplayInit, nextLightDisplay } from "./statuslight";
@@ -462,7 +463,9 @@ export default class SelfSyncPlugin extends Plugin {
   private statusEl?: HTMLElement;
   private ribbonEl?: HTMLElement; // state-colored ribbon icon (the sync indicator on mobile)
   statusListener?: () => void;    // settings tab registers this to live-refresh its status card
-  settingsRefresh?: () => void;   // settings tab registers this to re-render (e.g. when the conflict count changes)
+  // The settings tab registers this to re-render. The REASON is required: it is logged, so a repeating
+  // refresh names its own trigger instead of leaving a render loop anonymous (owner report 2026-09-16).
+  settingsRefresh?: (scope: RefreshScope, reason: string) => void;
   private editorActionEls = new Set<HTMLElement>(); // optional in-editor indicators (opt-in)
   private editorViews = new WeakSet<MarkdownView>();
   private logs: string[] = [];
@@ -826,7 +829,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.uiRefreshTimer = window.setTimeout(() => {
       this.uiRefreshTimer = undefined;
       if (this.unloading) return;
-      this.settingsRefresh?.(); this.statusListener?.();
+      this.settingsRefresh?.("conflicts", "conflict set changed"); this.statusListener?.();
     }, 50);
   }
 
@@ -1113,7 +1116,7 @@ export default class SelfSyncPlugin extends Plugin {
     try { for (const p of paths) { await resolveConfigConflict(d, p, choice); done++; } }
     catch (e) { failed = e; }
     void this.persist(); // the base changed
-    this.settingsRefresh?.();
+    this.settingsRefresh?.("conflicts", "config conflict resolved");
     if (failed) {
       new Notice(`SelfSync: ${choice === "local" ? "push" : "pull"} of ${nm} stopped after ${done}/${paths.length} file(s): ${(failed as { message?: string })?.message ?? failed}. The rest will reconcile on the next sync — you can retry.`, 10000);
       return done;
@@ -1234,7 +1237,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.serverPluginAuthors = authors; // always refresh (author can change even when the id set doesn't)
     if (next.size === this.serverPluginIds.size && [...next].every((id) => this.serverPluginIds.has(id))) return; // id set unchanged
     this.serverPluginIds = next;
-    this.settingsRefresh?.(); // a newly-discovered server plugin should appear in the list
+    this.settingsRefresh?.("config", "server plugin set changed"); // a newly-discovered server plugin should appear in the list
   }
   // Best-effort DISPLAY NAME for a synced-but-not-yet-loaded plugin (issuePluginSyncFolderIdNotName):
   // Obsidian's app.plugins.manifests only has INSTALLED (loaded-at-startup) plugins, so an ADOPTED plugin
@@ -1250,7 +1253,7 @@ export default class SelfSyncPlugin extends Plugin {
     void (async () => {
       try {
         const name = (JSON.parse(await this.app.vault.adapter.read(`.obsidian/plugins/${id}/manifest.json`)) as { name?: unknown }).name;
-        if (typeof name === "string" && name) { this.fileLog?.trace(`plugin name resolved: ${id} → ${name}`); this.pluginNameCache.set(id, name); this.settingsRefresh?.(); }
+        if (typeof name === "string" && name) { this.fileLog?.trace(`plugin name resolved: ${id} → ${name}`); this.pluginNameCache.set(id, name); this.settingsRefresh?.("config", "plugin display name resolved"); }
       } catch { /* not on disk (not adopted / not yet downloaded) → keep the folder id */ }
     })();
     return undefined;
@@ -1327,7 +1330,7 @@ export default class SelfSyncPlugin extends Plugin {
       } else {
         await this.saveSettings(); // persist the observed set even when nothing was added
       }
-      this.settingsRefresh?.();
+      this.settingsRefresh?.("config", "plugin purged from server");
     } finally { this.autopilotBusy = false; }
   }
   // Explicit PURGE (issuePluginSyncStaleServerState): a DELIBERATE, user-initiated removal of ONE plugin's
@@ -1355,7 +1358,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.serverPluginIds.delete(id); // drop from the synced-plugins view immediately
     void this.persist(); // the base changed (entries dropped)
     await this.saveSettings();
-    this.settingsRefresh?.();
+    this.settingsRefresh?.("all", "config sync change applied");
     return paths.length;
   }
 
@@ -1379,7 +1382,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.settings.configConflicts.push(path);
     void this.saveSettings();
     this.log(`config differs across devices: '${path}' (${reason}) — kept as-is on each device; resolve in Settings → Conflicts`, true);
-    this.settingsRefresh?.(); this.statusListener?.();
+    this.settingsRefresh?.("config", "plugin sync toggled"); this.statusListener?.();
   }
   // C2 guard fired for a path (server manifest empty while we hold it in history — refused to
   // delete). Log each path, but COALESCE the toast: a bulk empty-manifest read (e.g. a transient
@@ -1427,7 +1430,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (!this.settings.configConflicts.includes(path)) return;
     this.settings.configConflicts = this.settings.configConflicts.filter((p) => p !== path);
     void this.saveSettings();
-    this.settingsRefresh?.(); this.statusListener?.();
+    this.settingsRefresh?.("conflicts", "bulk deletions kept"); this.statusListener?.();
   }
   // Apply the user's adjudication for a whole GROUP of paths (a plugin = all its files) in one go,
   // then drop them from the queue and refresh the settings badge so it can't show a stale count.
@@ -1437,7 +1440,7 @@ export default class SelfSyncPlugin extends Plugin {
     const done = new Set(paths);
     this.settings.configConflicts = this.settings.configConflicts.filter((p) => !done.has(p));
     await this.saveSettings();
-    this.settingsRefresh?.(); this.statusListener?.();
+    this.settingsRefresh?.("conflicts", "bulk pushes kept"); this.statusListener?.();
   }
 
   // Size + mtime of a vault file, or null if it isn't there — the conflict modal decides from this whether a
@@ -1903,7 +1906,7 @@ export default class SelfSyncPlugin extends Plugin {
     const src = this.notifiableConfigSource(paths); // null ⇒ your own change ⇒ stay silent (log only)
     const who = src ? changeSourceLabel(src, this.selfIdentity()) : "";
     if (hotLoaded.length) {
-      this.settingsRefresh?.();
+      this.settingsRefresh?.("config", "plugins hot-loaded");
       if (src) new Notice(`SelfSync: ${who} added ${hotLoaded.length} synced plugin(s) — now active here, no restart needed.`);
       else this.log(`activated ${hotLoaded.length} synced plugin(s) — no restart needed`);
     }
@@ -1998,7 +2001,7 @@ export default class SelfSyncPlugin extends Plugin {
   private mountUiTimer?: number;
   private bumpMountUi(): void {
     if (this.mountUiTimer !== undefined || !this.settingsRefresh) return;
-    this.mountUiTimer = window.setTimeout(() => { this.mountUiTimer = undefined; this.settingsRefresh?.(); }, 400);
+    this.mountUiTimer = window.setTimeout(() => { this.mountUiTimer = undefined; this.settingsRefresh?.("mounts", "mount state changed"); }, 400);
   }
   // `failed` = the pass threw (a dropped socket, an expired token). Decrement, but do NOT repaint: the
   // error is already on its way to failWith / withSyncRelogin, and repainting here painted a green "Fully
@@ -2290,7 +2293,7 @@ export default class SelfSyncPlugin extends Plugin {
   async setExcludedFolders(list: string[]): Promise<void> {
     this.settings.excludedFolders = [...new Set(list)].sort();
     await this.saveSettings();
-    this.settingsRefresh?.();
+    this.settingsRefresh?.("advanced", "excluded folders changed");
   }
 
   // Is this path in the PRIMARY vault's sync scope? The reconcile deps' `accepts` and the editor-edit
@@ -2350,7 +2353,7 @@ export default class SelfSyncPlugin extends Plugin {
         this.statusListener?.(); // refresh the settings status row if open
       },
       // The conflict copy file IS the record (derived from the vault) — just log + refresh the count.
-      onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.settingsRefresh?.(); this.statusListener?.(); },
+      onConflict: (p, c) => { this.log(`conflict on ${p} → kept your copy as ${c}`, true); this.settingsRefresh?.("conflicts", "new conflict copy"); this.statusListener?.(); },
       onConfigConflict: (p, reason) => this.recordConfigConflict(p, reason),
       onConfigResolved: (p) => this.clearConfigConflict(p),
       onRemoteConfig: (p, meta) => this.recordIncomingConfig(p, meta), // record who/which-device for the source-driven reload notice
@@ -2871,7 +2874,7 @@ export default class SelfSyncPlugin extends Plugin {
     const cur = this.pendingBulkDeletes.get(scope) ?? [];
     const next = authoritative ? held : [...new Set([...cur, ...held])];
     if (next.length) this.pendingBulkDeletes.set(scope, next); else this.pendingBulkDeletes.delete(scope);
-    if (next.length !== cur.length) { this.settingsRefresh?.(); this.statusListener?.(); this.renderLight(); }
+    if (next.length !== cur.length) { this.settingsRefresh?.("mounts", "mount list changed"); this.statusListener?.(); this.renderLight(); }
     if (next.length > cur.length) this.toastBulkHeld(); // toast ONLY when the set grew — no re-nag on a re-hold of the same paths
   }
   private toastBulkHeld(): void {
@@ -2921,7 +2924,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; } // R11-F7: scope not live (e.g. mid-reconnect)
     this.clearHeldPaths(this.pendingBulkDeletes, scope, paths); // subtract only what we applied (concurrency critique)
     this.refreshMountPersist(scope);
-    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    await this.persist(); this.settingsRefresh?.("mounts", "mount configuration changed"); this.statusListener?.(); this.renderLight();
     this.log(`applied ${paths.length} held deletion${paths.length === 1 ? "" : "s"} for ${scope === "primary" ? "this vault" : "a mount"}`);
   }
   // Keep = drop the base ancestor so the scope re-pushes (writable) / keeps-local (read-only). R11-F2: a
@@ -2935,7 +2938,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.clearHeldPaths(this.pendingBulkDeletes, scope, paths); // subtract only what we kept (concurrency critique)
     this.refreshMountPersist(scope);
-    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    await this.persist(); this.settingsRefresh?.("mounts", "mount configuration changed"); this.statusListener?.(); this.renderLight();
     if (scope === "primary") { this.lastFullScanAt = 0; this.engine.enqueue({ kind: "remote" }); } // force a full pass → re-push the base-less files
     else { const s = this.mountScopes.find((x) => x.runtime.key === scope); if (s) s.forceFull = true; void this.reconcileMounts(); }
     this.log(`kept ${paths.length} file${paths.length === 1 ? "" : "s"} the ${scope === "primary" ? "server" : "source"} deleted — re-syncing them`);
@@ -2948,7 +2951,7 @@ export default class SelfSyncPlugin extends Plugin {
     const cur = this.pendingBulkPushes.get(scope) ?? [];
     const next = authoritative ? held : [...new Set([...cur, ...held])];
     if (next.length) this.pendingBulkPushes.set(scope, next); else this.pendingBulkPushes.delete(scope);
-    if (next.length !== cur.length) { this.settingsRefresh?.(); this.statusListener?.(); this.renderLight(); }
+    if (next.length !== cur.length) { this.settingsRefresh?.("mounts", "mount list changed"); this.statusListener?.(); this.renderLight(); }
     if (next.length > cur.length) { const n = [...this.pendingBulkPushes.values()].reduce((s, a) => s + a.length, 0); this.log(`${n} local file${n === 1 ? "" : "s"} awaiting your OK to add to a shared vault (Settings → SelfSync → Conflicts)`, true); }
   }
   // One group per mount scope with held bulk-pushes: { scope key, human label, count }.
@@ -2970,7 +2973,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.clearHeldPaths(this.pendingBulkPushes, scope, paths); // subtract only what we pushed (concurrency critique)
     this.refreshMountPersist(scope);
-    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    await this.persist(); this.settingsRefresh?.("mounts", "mount configuration changed"); this.statusListener?.(); this.renderLight();
     this.log(`pushed ${paths.length} local file${paths.length === 1 ? "" : "s"} to the shared source for a mount`);
   }
   // KEEP-LOCAL = a peer deleted them → don't resurrect. Stamp a base so each becomes an established kept-local
@@ -2982,7 +2985,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (!ok) { new Notice("SelfSync: reconnecting — try that again in a moment."); return; }
     this.clearHeldPaths(this.pendingBulkPushes, scope, paths); // subtract only what we kept (concurrency critique)
     this.refreshMountPersist(scope);
-    await this.persist(); this.settingsRefresh?.(); this.statusListener?.(); this.renderLight();
+    await this.persist(); this.settingsRefresh?.("mounts", "mount configuration changed"); this.statusListener?.(); this.renderLight();
     this.log(`kept ${paths.length} local file${paths.length === 1 ? "" : "s"} local-only (not added to the shared source)`);
   }
 

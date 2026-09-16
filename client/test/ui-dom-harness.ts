@@ -120,7 +120,7 @@ export function fakePlugin(over: any = {}) {
     selfFolderId: () => "obsidian-selfsync",
     statusText: () => "idle",
     statusListener: undefined,
-    settingsRefresh: undefined,
+    settingsRefresh: undefined as undefined | ((scope: string, reason: string) => void), // the tab assigns this in display(); tests call it to drive a scoped refresh
     changePassword: vi.fn(async () => {}),
     myVaultShares: vi.fn(async () => []),
     shareVault: vi.fn(async () => {}),
