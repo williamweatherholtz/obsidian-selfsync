@@ -1,37 +1,37 @@
 {
- "generatedAt": "2026-09-13",
- "tree": "ecb9db81",
+ "generatedAt": "2026-09-16",
+ "tree": "8d4d742b",
  "facts": {
   "pendingAcceptances": {
-   "value": 1,
+   "value": 2,
    "how": "keel show authority-queue . | kind == decisionAcceptance"
   },
   "pendingDispositions": {
-   "value": 208,
+   "value": 209,
    "how": "keel show authority-queue . | kind == findingDisposition"
   },
   "oldestSince": {
-   "value": "2026-09-13",
+   "value": "2026-09-15",
    "how": "min waitingSince over decisionAcceptance rows"
   },
   "head": {
-   "value": "ecb9db81",
+   "value": "8d4d742b",
    "how": "git rev-parse --short HEAD"
   },
   "date": {
-   "value": "2026-09-13",
+   "value": "2026-09-16",
    "how": "git log -1 --format=%cs (HEAD commit date)"
   },
   "pluginVersion": {
-   "value": "1.30.19",
+   "value": "1.30.24",
    "how": "manifest.json version"
   },
   "guards": {
-   "value": 73,
+   "value": 75,
    "how": "keel version"
   },
   "guardsHard": {
-   "value": 64,
+   "value": 66,
    "how": "keel version"
   },
   "keelVersion": {
@@ -44,9 +44,9 @@
   },
   "deltaAdded": {
    "value": {
-    "Decision": 36,
-    "Issue": 2,
-    "action": 2
+    "Decision": 39,
+    "Issue": 3,
+    "action": 4
    },
    "how": "keel show commit-delta . --range 43a10f4b..HEAD | added, grouped by type"
   },
@@ -55,7 +55,7 @@
    "how": "commit-delta: retired by a supersede edge"
   },
   "deltaResolved": {
-   "value": 2,
+   "value": 3,
    "how": "commit-delta: issues resolved"
   },
   "clauseChildren": {
