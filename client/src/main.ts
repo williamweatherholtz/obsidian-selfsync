@@ -28,6 +28,7 @@ import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; 
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { FileLog, LogAdapter } from "./filelog";
+import { stallVerdict } from "./stall";
 import type { RefreshScope } from "./settings";
 import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
 import { FlipGuard, shapeOf } from "./flipguard"; // SR-47: two-writer rewrite-loop breaker (+ timestamp-shape return detection)
@@ -300,6 +301,11 @@ class ObsidianVaultIo implements VaultIo {
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     // Embedded-timestamp: drive Obsidian's stored mtime/ctime (Dataview's file.mtime/ctime, and the real
     // FS mtime on desktop) from a managed note's embedded updated/created. Undefined for anything else.
+    // EVERY local write is recorded, at the one chokepoint all twelve reconcile write sites pass through.
+    // Obsidian reports an adapter-level write to an OPEN note as "File has been modified externally" - which
+    // reads as false when the user believes the note is brand new (owner report 2026-09-18). It is our write,
+    // so the log must be able to say so, with the path and size, at the second it happened.
+    this.plugin.fileLog?.info(`local write ${path} (${bytes.byteLength} bytes) - Obsidian may report this as an external modification if the file is open`);
     await this.plugin.app.vault.adapter.writeBinary(p, buf);
     // R23-DI: fsync the note (and its parent dir) BEFORE returning so it is durable before the caller
     // records base + persists data.json. Round 8 gave the ≥8 MiB STREAMED path this guarantee; the
@@ -610,9 +616,12 @@ export default class SelfSyncPlugin extends Plugin {
       const now = Date.now();
       const late = now - lastTick - STALL_TICK_MS;
       lastTick = now;
-      if (late >= STALL_WARN_MS) {
-        this.fileLog?.warn(`main thread STALLED ${(late / 1000).toFixed(1)}s (recovered now; whatever blocked it is the line ABOVE — or nothing, if it logged nothing)`);
-      }
+      // A hidden window is THROTTLED, not stalled: the host clamps timers to about once a minute there, so
+      // a late tick says nothing about the main thread. The distinction is a pure function (stall.ts) and
+      // unit-tested, because conflating the two produced ~1000 false warnings (owner log, 2026-09-18).
+      const verdict = stallVerdict(late, typeof document !== "undefined" && document.hidden, STALL_WARN_MS);
+      if (verdict === "throttled") this.fileLog?.trace(`timer throttled ${(late / 1000).toFixed(1)}s while the window was hidden (not a stall)`);
+      else if (verdict === "stalled") this.fileLog?.warn(`main thread STALLED ${(late / 1000).toFixed(1)}s (window visible; whatever blocked it is the line ABOVE — or nothing, if it logged nothing)`);
     }, STALL_TICK_MS);
     this.registerDomEvent(window, "error", (e: ErrorEvent) => {
       const stack = e.error instanceof Error ? e.error.stack ?? e.error.message : String(e.message);
@@ -2381,10 +2390,16 @@ export default class SelfSyncPlugin extends Plugin {
         this.log(`'${p}' can't be downloaded — the server's copy failed its integrity check ${MAX_PULL_RETRIES} times (corrupt / bit-rotted). It needs a server reindex; other files keep syncing.`, true);
       },
       onSkip: (p, bytes) => {
-        if (this.skipNotified.has(p)) { this.log(`skipped '${p}' — too large to sync`); return; } // notice once/session
-        this.skipNotified.add(p);
         const cap = this.maxSyncBytes();
-        this.log(`skipped '${p}' — ${Math.round(bytes / 1048576)} MB, over this device's ${Math.round(cap / 1048576)} MB sync limit (raise it in settings${this.io.appendWrite ? "" : "; larger files also sync on desktop"})`, true);
+        const detail = `skipped '${p}' — ${Math.round(bytes / 1048576)} MB, over this device's ${Math.round(cap / 1048576)} MB sync limit (raise it in settings${this.io.appendWrite ? "" : "; larger files also sync on desktop"})`;
+        // The LOG always records it (that is what the log is for). The TOAST is the user's call: a size skip
+        // is a standing condition, not an event - on mobile, where the cap is lowest, the same file trips it
+        // on every pass and every plugin reload, so an unconditional notice is a recurring interruption
+        // about something the user already knows (owner report 2026-09-18). Default: never.
+        const policy = this.settings.sizeSkipNotice ?? "never";
+        const first = !this.skipNotified.has(p);
+        this.skipNotified.add(p);
+        this.log(detail, policy === "always" || (policy === "once" && first));
       },
     };
   }

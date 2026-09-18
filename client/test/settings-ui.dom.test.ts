@@ -362,6 +362,19 @@ describe("settings tab renders and wires its controls", () => {
     tab.hide();
   });
 
+  // OWNER, 2026-09-18: "I get repeated messages about artifact size being too large to sync when I'm on
+  // mobile. I don't really want messages like this ever." A size skip is a standing CONDITION, not an event:
+  // the same file trips the cap on every pass and every plugin reload. Default never; the log keeps it.
+  it("Advanced offers never/once/always for the size-skip notice, defaulting to never", () => {
+    const { containerEl } = renderTab(fakePlugin());
+    const row = rowByName(containerEl, "Tell me when a file is too large to sync");
+    expect(row).toBeTruthy();
+    const dd = row.querySelector("select") as HTMLSelectElement;
+    expect(dd).toBeTruthy();
+    expect(dd.value).toBe("never");
+    expect(Array.from(dd.options).map((o) => o.value)).toEqual(["never", "once", "always"]);
+  });
+
   it("a COLLAPSED plugin list walks nothing at all (hidden rows are not worth a filesystem walk)", async () => {
     const ids = Array.from({ length: 10 }, (_, i) => "plugin-" + i); // >8 ⇒ collapsed by default
     const p = fakePlugin({ settings: { configSync: { enabled: true, core: true, hotkeys: true, appearance: true, snippets: true, community: true, pluginAllow: ids } } });

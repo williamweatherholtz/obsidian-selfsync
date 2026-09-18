@@ -393,6 +393,37 @@ describe("plugin wiring — producers → engine → effects", () => {
     p.onunload();
   });
 
+  // OWNER, 2026-09-18: repeated "too large to sync" toasts on mobile, wanted gone by default. The skip is
+  // a standing condition — the same file trips the cap on every pass — so the LOG always records it and the
+  // toast is policy: never (default) / once per file per session / always.
+  it("a size skip is LOGGED but does not toast by default", async () => {
+    const { p } = await bootPlugin();
+    __notices.length = 0;
+    (p as any).deps().onSkip("Big/video.mp4", 250 * 1024 * 1024);
+    (p as any).deps().onSkip("Big/video.mp4", 250 * 1024 * 1024);
+    expect(__notices).toEqual([]);                                  // silent by default…
+    expect(p.getLogText()).toContain("Big/video.mp4");              // …but never hidden
+    p.onunload();
+  });
+
+  it("'once' toasts the first skip of a file only; 'always' toasts every time", async () => {
+    const { p } = await bootPlugin(true, { settings: { sizeSkipNotice: "once" } });
+    __notices.length = 0;
+    (p as any).deps().onSkip("Big/a.mp4", 250 * 1024 * 1024);
+    (p as any).deps().onSkip("Big/a.mp4", 250 * 1024 * 1024);
+    expect(__notices.length).toBe(1);                               // once per file, not per pass
+    (p as any).deps().onSkip("Big/b.mp4", 250 * 1024 * 1024);
+    expect(__notices.length).toBe(2);                               // a DIFFERENT file is its own first time
+    p.onunload();
+
+    const { p: loud } = await bootPlugin(true, { settings: { sizeSkipNotice: "always" } });
+    __notices.length = 0;
+    (loud as any).deps().onSkip("Big/a.mp4", 250 * 1024 * 1024);
+    (loud as any).deps().onSkip("Big/a.mp4", 250 * 1024 * 1024);
+    expect(__notices.length).toBe(2);
+    loud.onunload();
+  });
+
   // CRITIQUE F1 (HIGH, state-machine lens): the minimum-show hold gates every resting repaint, and its only
   // release was a window.setTimeout — which Obsidian mobile PAUSES while backgrounded (the same mechanism
   // this file already covers for the backoff timer above). Background the app within the hold and the light

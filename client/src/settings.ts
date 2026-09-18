@@ -67,6 +67,9 @@ export interface SelfSyncSettings {
   // Threshold for the on-disk log (filelog.ts). "info" by default: the only record that survives a host
   // force-kill. "trace" is the live-hunt setting; "off" writes nothing.
   logLevel?: LogLevel;
+  // How to announce a file skipped for being over this device's size cap: never (default - the log still
+  // records it), once per file per session, or every time it is skipped.
+  sizeSkipNotice?: "never" | "once" | "always";
   vaultOwner?: string;   // set when the current vault is shared BY someone else (their username); empty/undefined = own vault
   vaultReadOnly?: boolean; // the current (shared) vault is read-only for us — pull only, never push
   storePassword: boolean; // keep the password on this device for silent re-login; off = token-only (re-enter when the session expires)
@@ -138,6 +141,7 @@ export const DEFAULT_SETTINGS: SelfSyncSettings = {
   lastSyncedAt: undefined,
   editorStatus: false,
   logLevel: "info",
+  sizeSkipNotice: "never",
   vaultOwner: undefined,
   vaultReadOnly: false,
   // SEC-CMMC (IA.3.5.10): default to TOKEN-ONLY — do NOT persist the plaintext password on the device.
@@ -830,6 +834,14 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     // situation a hang leaves you in. This writes the same events — plus begin/end pairs around the
     // operations that can block — to a file in the vault, so the trail survives the kill. The path is shown
     // because reading it is the point; the file sits in SelfSync's own plugin folder and is never synced.
+    new Setting(body).setName("Tell me when a file is too large to sync")
+      .setDesc("A file over this device's size cap is skipped and recorded in the sync log either way. This is only about whether it also interrupts you - the same file trips the cap on every pass, so 'always' repeats.")
+      .addDropdown((dd) => dd
+        .addOption("never", "Never (default) — log only")
+        .addOption("once", "Once per file, per session")
+        .addOption("always", "Every time it is skipped")
+        .setValue(s.sizeSkipNotice ?? "never")
+        .onChange(async (v) => { s.sizeSkipNotice = v as "never" | "once" | "always"; await this.plugin.saveSettings(); }));
     new Setting(body).setName("Debug log file")
       .setDesc(`What to record in ${this.plugin.fileLogPath()} — capped at 1 MB plus one previous file, and it survives a crash or force-quit, unlike the in-app log. Use Trace while reproducing a problem.`)
       .addDropdown((dd) => dd
