@@ -37,4 +37,24 @@ package ProjectIntake20260929 {
     }
     #DerivedFrom dependency from us003 to st002;
     #Implicates dependency from us002 to issue005;
+
+    part st003 : Statement {
+        :>> id = "da1f4c80-1f93-49dd-8558-8a15d1ff43e6";
+        :>> title = "1.30.35 seemed to solve the Syncing latch";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> text = "seemed to sovle the issue. nj";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-09-29"; :>> channel = StatementChannel::console;
+    }
+
+    part us004 : UserStory {
+        :>> id = "009e932e-7ea4-419e-ab1e-056d69a64e4a";
+        :>> title = "Owner reports 1.30.35 stopped the Syncing latch";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> asA = "SelfSync owner";
+        :>> iWant = "the Syncing latch to be gone on my own vault after installing 1.30.35";
+        :>> implication = ImplicationKind::attestation;
+        :>> triageNote = "attestation, not correction or bug: the owner reports field behaviour after installing 1.30.35 on the vault where they saw the latch. 'seemed to' is their hedge and is kept - this is an observation that the symptom stopped, not a sign-off on any specific claim, so it records no confirmation TestResult. It is the first field evidence that the case-alias mechanism in issue005 was the cause on their vault, which the Issue recorded as not verified.";
+    }
+    #DerivedFrom dependency from us004 to st003;
+    #Implicates dependency from us004 to issue005;
 }
