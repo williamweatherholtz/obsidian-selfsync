@@ -2130,6 +2130,19 @@ describe("case-aware path identity on a case-insensitive filesystem (issueCasePa
     expect(s.errors).toEqual([]);
   });
 
+  it("the event path is SETTLED under the spelling the event named, not only the canonical one (issue005)", async () => {
+    // The plugin keys its unsynced-edit claim by the path the vault event reported. reconcilePath works on the
+    // canonical (base) spelling, so settling only that spelling left the claim open and the status light held
+    // "Syncing…" over a synced vault until the next whole-vault pass (real Obsidian: statuslatch ARM 3).
+    const s = await seeded(ciIo(), true);
+    const settled: string[] = [];
+    s.d.onPathSettled = (p) => settled.push(p);
+    s.io.m.set("4 Archive/plans.md", enc("# plans\nedited\n"));
+    await reconcilePath(s.d, "4 Archive/plans.md");
+    expect(settled).toContain("4 Archive/plans.md");
+    expect(settled).toContain("4 archive/plans.md"); // the canonical spelling still settles as before
+  });
+
   it("a server tombstone for the canonical key removes the locally re-capitalised file", async () => {
     const s = await seeded(ciIo(), true);
     await reconcileAll(s.d); // alias established, base current

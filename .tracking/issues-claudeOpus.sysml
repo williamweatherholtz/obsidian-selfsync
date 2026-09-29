@@ -337,4 +337,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from scopedEventDrivenSettings to issue004;
+
+    part issue005 : Issue {
+        :>> id = "4cb38f30-425e-4bb8-81a4-233eff56c932";
+        :>> title = "Status light latches on Syncing after a save when the note's folder case differs from the synced spelling (claim and settle keyed by different spellings)";
+        :>> createdAt = "2026-09-29";
+        :>> createdBy = "claudeOpus";
+        :>> description = "OBSERVATION (owner, st002, 2026-09-29; first reported 2026-09-25): after a save, the status indicator stays on a bare Syncing (no count) while the vault is fully synced, with nothing in the debug log for minutes. REPEATABLE RESULT (3 of 3 runs, real Obsidian 1.12.4 on Windows 11, plugin built from HEAD e490b2dc, 2026-09-29): client/e2e-obsidian/statuslatch.pwspec.ts ARM 3. Steps: (1) seed Folder/note.md, let it sync so the base records Folder/note.md; (2) close Obsidian and re-case the folder on disk to folder/; (3) relaunch and wait for idle; (4) modify folder/note.md. Result: the light enters syncing and is still syncing 45 s later. The plugin's unsyncedEdits map holds folder/note.md. A spy on notePathSettled shows the settle for that pass was issued under Folder/note.md. Control arms: ARM 1 (plain save) and ARM 2 (save plus a second write 120 ms later, the update-time-on-edit shape) both return to idle in 3.1 s. MECHANISM, as read in the code at e490b2dc: noteLocalChange keys the claim by the path Obsidian reports (main.ts:2030). reconcilePath replaces the path with canonicalLocalPath(d, path) (reconcile.ts:1044), which returns the base's case-fold sibling when caseInsensitivePaths holds (reconcile.ts:832-838, set for Windows, macOS and iOS at main.ts:2377). It then fires onPathSettled with the canonical path (reconcile.ts:1104). notePathSettled deletes only an exact key (main.ts:2055), so the claim survives. onDisk claims never age out (main.ts:2187), so the light holds until a whole-vault pass runs settleUnsyncedBefore. NOT VERIFIED: whether the owner's vault currently has a case-divergent folder. issueCasePathDivergence records that it had one. So this is a confirmed latch mechanism; it is not yet confirmed as the cause of the owner's latch. Other open suspects, not reproduced: a localWork bracket left un-decremented, and the skipped repaint on a failed per-path pass (main.ts:2067). RECOMMENDATION (for the implementer; not a prescribed fix): make settlement key-consistent with claim recording, for example by folding case on both sides where caseInsensitivePaths holds, or by settling under both the reported and the canonical spelling. Also found on the way (fixed in the same commit): the e2e harness never answered Obsidian 1.12's trust-author modal, because Playwright's isVisible() ignores its timeout option. Every real-Obsidian spec failed with plugin enabled but never loaded.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from statusLatchCaseAliasedSettle to issue005;
 }

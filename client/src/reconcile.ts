@@ -1041,6 +1041,9 @@ export async function keepHeldPushes(d: ReconcileDeps, paths: readonly string[])
 // but now immediate. (Was delayed up to FULL_SCAN_INTERVAL_MS.)
 // @audit-hash sha256:e9a08a0dfa9d3dbf
 export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 0): Promise<void> {
+  // Kept so the settle below can also name the spelling the EVENT reported: the caller's unsynced-edit claim
+  // is keyed by that spelling, and settling only the canonical one left the claim open (issue005).
+  const reported = path;
   path = canonicalLocalPath(d, path); // a case-only spelling difference is the SAME file here (see caseInsensitivePaths)
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);
@@ -1100,8 +1103,14 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   } finally {
     if (signalled) d.onPathWork?.(false, failed);
     // Settled even when nothing transferred: an in-sync pass is exactly the case where the server HAS seen
-    // this content. Not on a thrown pass - the path is still outstanding and will be retried.
-    if (!failed) d.onPathSettled?.(path);
+    // this content. Not on a thrown pass - the path is still outstanding and will be retried. An isolated
+    // CAS conflict RETURNS rather than throws, so it does settle; the next reconcile merges the advanced remote.
+    if (!failed) {
+      d.onPathSettled?.(path);
+      // Same on-disk file under both spellings (canonicalLocalPath only aliases on a case-folding filesystem),
+      // so this pass settled the reported spelling too.
+      if (reported !== path) d.onPathSettled?.(reported);
+    }
   }
 }
 

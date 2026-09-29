@@ -301,13 +301,18 @@ export async function waitForVaultReady(page: Page): Promise<void> {
   for (let round = 0; round < 4; round++) {
     let acted = false;
     const trust = page.getByRole("button", { name: /trust author and enable plugins/i });
-    if (await trust.isVisible({ timeout: round === 0 ? 15_000 : 1_500 }).catch(() => false)) {
+    // waitFor, NOT isVisible: Playwright's isVisible() ignores its `timeout` option and samples once,
+    // immediately. Obsidian 1.12 raises the trust modal after the workspace starts loading, so an
+    // instant sample missed it, the vault stayed in Restricted Mode, and every spec failed with
+    // "plugin enabled but never loaded" (2026-09-29).
+    const trustShown = await trust.waitFor({ state: "visible", timeout: round === 0 ? 15_000 : 1_500 }).then(() => true, () => false);
+    if (trustShown) {
       await trust.click();
       acted = true;
       await sleep(1_000);
     }
     const anyModal = page.locator(".modal-container");
-    if (await anyModal.first().isVisible({ timeout: 1_500 }).catch(() => false)) {
+    if (await anyModal.first().waitFor({ state: "visible", timeout: 1_500 }).then(() => true, () => false)) {
       await page.keyboard.press("Escape");
       acted = true;
       await sleep(250);
