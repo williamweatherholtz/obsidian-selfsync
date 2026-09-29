@@ -34,7 +34,7 @@ export function normMountFolder(p: string): string {
 // a benign over-claim on a genuinely case-sensitive FS (rare on Obsidian desktop), far preferable to the
 // split-brain LEAK where case drift routes one physical folder to both the mount AND the primary scope.
 function segsOf(folder: string): string[] { return normFolder(folder).split("/").filter(Boolean); }
-function canonSeg(s: string): string { return s.normalize("NFC").toLowerCase(); }
+function canonSeg(s: string): string { return s.normalize("NFC").toLowerCase(); } // identity-exempt: a scope-BOUNDARY compare that over-claims on purpose on every filesystem (see above), not a same-file decision
 // Is `pathSegs` equal to, or nested under, `prefixSegs` — compared segment-wise + canonically? An empty
 // prefix ("whole vault") is under-or-equal to everything. Segment-wise so a name-prefix sibling ("Work/ASIx"
 // vs "Work/ASI") is NOT a match.

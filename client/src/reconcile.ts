@@ -1,6 +1,7 @@
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk, mapPool } from "./sync";
 import { sha256hex } from "./chunker";
 import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
+import { PathFs, identityIndex, identityKey, identityGroups, pathViolation } from "./pathidentity";
 import { isMergeable, merge3 } from "./merge";
 import { ChangesResponse, CommitConflictError, CommitRejectedError, Deletion, FileMeta } from "./protocol";
 import { isEnabledListConfig, mergeEnabledPluginsJson } from "./configsync";
@@ -186,7 +187,7 @@ export function sameIgnoringEol(a: Uint8Array, b: Uint8Array): boolean {
 // full disk), which must stay isolated. Kept deliberately narrow (no bare "timeout"/"socket": a
 // single huge-file read timeout is a per-file problem, not a whole-connection outage).
 export function isConnectionError(e: unknown): boolean {
-  const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase(); // identity-exempt: an error message, not a path
   return /unknownhostexception|unable to resolve host|no address associated with hostname|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|enetunreach|network is unreachable|failed to fetch|fetch failed|err_name_not_resolved|err_internet_disconnected|err_connection_(refused|reset)|err_address_unreachable/.test(m);
 }
 
@@ -391,6 +392,7 @@ export interface ReconcileDeps {
   // (onPushHeld) instead of re-chunked, re-uploaded and re-refused on every pass: with ~500 such files a
   // no-op reconcile took minutes and starved the UI (owner report 2026-09-07). Owned by the caller so it
   // spans passes and resets on plugin reload; an edit changes the hash and the push is tried again.
+  // Keyed by pathidentity.identityKey, so a hold survives a change of spelling for the same file.
   rejectedPushes?: Map<string, string>;
   onPushHeld?: (path: string) => void;
   // CASE-AWARE PATH IDENTITY (issueCasePathDivergence). On a case-insensitive filesystem (Windows, macOS, iOS)
@@ -404,7 +406,14 @@ export interface ReconcileDeps {
   // adapter, which resolves either spelling on such a filesystem); nothing is renamed anywhere. Off on a
   // case-SENSITIVE filesystem (Linux, Android), where the two spellings really are two files.
   caseInsensitivePaths?: boolean;
+  // NFC and NFD spellings of one name are ONE file (macOS / iOS). Never set on Windows: NTFS keeps both forms
+  // as distinct files. Read together with caseInsensitivePaths through pathFs(d) — see pathidentity.ts.
+  normalizationInsensitivePaths?: boolean;
   onPathAliased?: (localPath: string, canonicalPath: string) => void;
+  // Identity keys (pathidentity.identityKey) of files held because the server or the base holds two spellings of
+  // them. The caller owns the Set so it outlives a pass: a full pass REBUILDS it (it sees the whole truth), a delta
+  // pass only adds, and the event path only reads — an event on a held file is refused, never reconciled.
+  ambiguousPaths?: Set<string>;
   // Remote files present on the server that this device is set NOT to sync (a config surface is off, or
   // a community plugin isn't in the allowlist). Reported so the UI can tell the user WHAT is waiting and
   // how to adopt it — otherwise these look like "stuck" pending work that never transfers.
@@ -792,35 +801,42 @@ async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Arr
 
 // Returns the ChangesResponse it fetched (version + history_floor) so the caller can run the D0019
 // reset detection on the CONNECT path too, not just the poll path.
-// Map lower-cased path -> the canonical (server/base) spelling. Built per pass; ~2k entries is microseconds.
-function foldIndex(keys: Iterable<string>): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const k of keys) { const f = k.toLowerCase(); if (!m.has(f)) m.set(f, k); }
-  return m;
+// This device's filesystem identity rules, read from the two deps flags. The ONLY way reconcile asks "is this the
+// same file" — see pathidentity.ts for why a raw `.toLowerCase()` must not reappear here.
+export function pathFs(d: ReconcileDeps): PathFs {
+  return { caseInsensitive: !!d.caseInsensitivePaths, normInsensitive: !!d.normalizationInsensitivePaths };
 }
+function aliasing(fs: PathFs): boolean { return fs.caseInsensitive || fs.normInsensitive; }
 
-// The tombstoned paths that are really case-only RENAMES this pass: a fold-sibling of theirs is a remote key (the
-// re-cased upsert). Only on a case-insensitive filesystem, where both spellings are one on-disk file (panel H1).
+// The tombstoned paths that are really spelling-only RENAMES this pass: a same-file sibling of theirs is a remote key
+// (the re-spelled upsert). Only where both spellings are one on-disk file (panel H1).
 function caseRenamedTombstones(d: ReconcileDeps, tombstoned: Iterable<string>, remoteKeys: Iterable<string>): Set<string> {
   const out = new Set<string>();
-  if (!d.caseInsensitivePaths) return out;
-  const fold = foldIndex(remoteKeys);
-  for (const p of tombstoned) { const k = fold.get(p.toLowerCase()); if (k && k !== p) out.add(p); }
+  const fs = pathFs(d);
+  if (!aliasing(fs)) return out;
+  const fold = identityIndex(remoteKeys, fs);
+  for (const p of tombstoned) { const k = fold.get(identityKey(p, fs)); if (k && k !== p) out.add(p); }
   return out;
 }
 
-// Re-key the LOCAL listing onto the canonical spelling wherever a local path has no exact canonical match but
-// a case-fold one (caseInsensitivePaths only). A local path that already IS a canonical key is untouched, and
-// if the listing somehow carries both spellings (impossible on such a filesystem) nothing is merged.
+// Re-key the LOCAL listing onto the canonical spelling wherever a local path has no exact canonical match but a
+// same-file one. A local path that already IS a canonical key is untouched.
 function aliasLocalPaths<T>(d: ReconcileDeps, local: Map<string, T>, canonical: Iterable<string>): Map<string, T> {
-  if (!d.caseInsensitivePaths) return local;
+  const fs = pathFs(d);
+  if (!aliasing(fs)) return local;
   const exact = new Set(canonical);
-  const fold = foldIndex(exact);
+  const fold = identityIndex(exact, fs);
   let out: Map<string, T> | null = null;
   for (const [p, v] of local) {
     if (exact.has(p)) continue;
-    const k = fold.get(p.toLowerCase());
-    if (!k || k === p || local.has(k)) continue;
+    const k = fold.get(identityKey(p, fs));
+    if (!k || k === p) continue;
+    if (local.has(k)) {
+      // The listing names BOTH spellings of one file — a filesystem with these rules cannot hold that, so either
+      // the rules are wrong for this device or the adapter lies. Merging would silently pick one; say so instead.
+      pathViolation({ kind: "listing-two-spellings", site: "aliasLocalPaths", paths: [p, k], detail: "the local listing reports both spellings of one file; neither is re-keyed" });
+      continue;
+    }
     if (!out) out = new Map(local);
     out.delete(p); out.set(k, v);
     d.onPathAliased?.(p, k);
@@ -828,13 +844,31 @@ function aliasLocalPaths<T>(d: ReconcileDeps, local: Map<string, T>, canonical: 
   return out ?? local;
 }
 
-// The single-path (event) form: a locally reported path adopts the base's spelling when only case differs.
+// The single-path (event) form: a locally reported path adopts the base's spelling when it names the same file.
 export function canonicalLocalPath(d: ReconcileDeps, path: string): string {
-  if (!d.caseInsensitivePaths || d.base.get(path)) return path;
-  const k = d.base.foldSibling(path); // memoized on the BaseStore (panel H6)
+  const fs = pathFs(d);
+  if (!aliasing(fs) || d.base.get(path)) return path;
+  const k = d.base.foldSibling(path, fs); // memoized on the BaseStore (panel H6)
   if (!k || k === path) return path;
   d.onPathAliased?.(path, k);
   return k;
+}
+
+// Groups of distinct spellings in `keys` that are ONE file on this device. Each group is reported (loud) and its
+// identity returned, so the caller HOLDS every spelling in it: writing or deleting one of them would silently
+// decide which of two server/base records owns the single file on disk (owner choice 2026-09-29: refuse the risky
+// write, keep syncing everything else). Also recorded in d.ambiguousPaths so the event path holds them too.
+function holdAmbiguous(d: ReconcileDeps, site: string, keys: Iterable<string>, into: Set<string>): void {
+  const fs = pathFs(d);
+  for (const g of identityGroups(keys, fs)) {
+    const id = identityKey(g[0], fs);
+    if (into.has(id)) continue;
+    into.add(id);
+    pathViolation({ kind: "duplicate-identity", site, paths: g, detail: "these are one file on this device, so none of them is written or deleted until only one spelling remains" });
+  }
+}
+function isHeldAmbiguous(d: ReconcileDeps, held: Set<string>, path: string): boolean {
+  return held.size > 0 && held.has(identityKey(path, pathFs(d)));
 }
 
 export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
@@ -855,6 +889,13 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
     }
     d.onRemotePlugins([...byId].map(([id, author]) => ({ id, author })));
   }
+  // Two live server/base records that are ONE file here: reported and held for the whole pass (holdAmbiguous).
+  // A tombstoned base key is excluded — the tombstone + re-spelled upsert pair is the legitimate rename that
+  // caseRenamedTombstones handles (panel H1), not an ambiguity.
+  const held = new Set<string>();
+  const tombstonedNow = new Set(resp.deletes.map((x) => x.path));
+  holdAmbiguous(d, "reconcileAll", [...remote.keys(), ...d.base.paths().filter((p) => !tombstonedNow.has(p))], held);
+  if (d.ambiguousPaths) { d.ambiguousPaths.clear(); for (const id of held) d.ambiguousPaths.add(id); }
   d.onStage?.("scanning local files"); // enumerate + (below) hash the local vault — the other big initial cost
   const local = aliasLocalPaths(d, await d.io.list(), [...remote.keys(), ...d.base.paths()]);
   // INCOMING bulk-delete CONFIRMATION (D0041): count the base paths this pass would delete-LOCAL (missing
@@ -878,7 +919,9 @@ export async function reconcileAll(d: ReconcileDeps): Promise<ChangesResponse> {
   // would RESURRECT the peer's whole deletion set; the same guard also confirms a legitimate large seed. Held
   // via the SAME user threshold as incoming deletes. Only on a noResurrect (shared) source; own vaults seed freely.
   const guardBulkPush = computeBulkPushHold(d, local, remote, tombstoned);
-  const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])];
+  // Held paths are dropped HERE, before pending is counted, so a held file is neither reconciled nor left as a
+  // phantom pending count that never drains (which would itself latch the light on "Syncing…").
+  const paths = [...new Set<string>([...local.keys(), ...remote.keys(), ...d.base.paths()])].filter((p) => !isHeldAmbiguous(d, held, p));
   const failedRemote: number[] = []; // server versions whose PULL failed this pass (R14 sync#1)
   // Progress = files that actually need TRANSFER, not files examined (a 900-file vault with 3 changes
   // should show "3 pending", not "897"). Cheaply pre-classify from the maps we already have (remote
@@ -952,7 +995,12 @@ export async function reconcileDelta(d: ReconcileDeps, delta: ChangesResponse): 
   // it here keeps "pending" honest (no phantom count). The DECLINED notice is NOT fired from the delta —
   // a delta sees only the CHANGED declined subset, so firing here churns the "N plugins not synced" notice
   // (a different subset each poll). The FULL pass (reconcileAll) has the complete set + fires it once.
-  const changed = changedAll.filter((p) => accepts(d, p)); // the delta IS the pending set (accepted-only)
+  // Same ambiguity hold as reconcileAll, over what this delta can see: its upserts against the live base. Adds to
+  // d.ambiguousPaths (a delta never sees the whole truth, so it never clears a hold — the next full pass does).
+  const held = new Set<string>(d.ambiguousPaths ?? []);
+  holdAmbiguous(d, "reconcileDelta", [...remote.keys(), ...d.base.paths().filter((p) => !tombstoned.has(p))], held);
+  if (d.ambiguousPaths) for (const id of held) d.ambiguousPaths.add(id);
+  const changed = changedAll.filter((p) => accepts(d, p) && !isHeldAmbiguous(d, held, p)); // the delta IS the pending set (accepted-only, unheld)
   const caseRenamed = caseRenamedTombstones(d, tombstoned, remote.keys()); // panel H1
   let pending = changed.length; d.onProgress?.(pending);
   await isolatedPass(d, changed, failed,
@@ -1045,6 +1093,14 @@ export async function reconcilePath(d: ReconcileDeps, path: string, localSize = 
   // is keyed by that spelling, and settling only the canonical one left the claim open (issue005).
   const reported = path;
   path = canonicalLocalPath(d, path); // a case-only spelling difference is the SAME file here (see caseInsensitivePaths)
+  // A file held for ambiguity (two server/base spellings of it, see holdAmbiguous) is REFUSED here, before any
+  // read, write or network call: the full pass already reported it loudly. Settled like any other refusal, so the
+  // unsynced-edit claim does not latch the light on a path that no pass will ever transfer.
+  if (d.ambiguousPaths && isHeldAmbiguous(d, d.ambiguousPaths, path)) {
+    d.onPathSettled?.(path);
+    if (reported !== path) d.onPathSettled?.(reported);
+    return;
+  }
   // Single-path fetch — no whole-manifest pull per file event.
   const rmeta = await d.api.fileMeta(path);
   const liveSize = d.localSizeOf?.(path) ?? localSize; // refresh from the live stat; the queued hint can be coalesce-stale
@@ -1467,13 +1523,13 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // timestamp-only change was already recognized in-sync by the content-identity override above and never
       // reaches here). CAS on the remote version we saw (0 for a local-only create); a concurrent commit that
       // advanced the server 409s → per-file skip → next reconcile merges.
-      if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      if (localHash && d.rejectedPushes?.get(identityKey(path, pathFs(d))) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
       if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       signalWork(); // past every refusal — bytes are about to move
       let pushed: { hash: string; bytes: Uint8Array };
       try { pushed = await pushFile(d, path, eff.version); }
-      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
-      d.rejectedPushes?.delete(path);
+      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(identityKey(path, pathFs(d)), localHash); throw e; }
+      d.rejectedPushes?.delete(identityKey(path, pathFs(d)));
       const { hash: h, bytes } = pushed;
       setBase(d, path, bytes, h); // base from the COMMITTED bytes, never a separate read (DI-5)
       if (eff.allowStamp && localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint
@@ -1488,13 +1544,13 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       // RESTORE to the server, never destroy local data. onKeptAbsent is observational (D0019). CAS base = 0
       // (expected-absent): a peer that created it meanwhile 409s → next reconcile merges, no lost update.
       d.onKeptAbsent?.(path);
-      if (localHash && d.rejectedPushes?.get(path) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
+      if (localHash && d.rejectedPushes?.get(identityKey(path, pathFs(d))) === localHash) { d.onPushHeld?.(path); return; } // same content the server refused — hold
       if (localHash && d.pushFlipHold?.(path, localHash, localBytes ?? undefined)) { d.onFlipHeld?.(path); return; } // SR-47: content bouncing between versions — don't feed the loop
       signalWork(); // past every refusal — bytes are about to move
       let restored: { hash: string; bytes: Uint8Array };
       try { restored = await pushFile(d, path, 0); }
-      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(path, localHash); throw e; }
-      d.rejectedPushes?.delete(path);
+      catch (e) { if (e instanceof CommitRejectedError && localHash) d.rejectedPushes?.set(identityKey(path, pathFs(d)), localHash); throw e; }
+      d.rejectedPushes?.delete(identityKey(path, pathFs(d)));
       const { hash: rh, bytes: rb } = restored;
       setBase(d, path, rb, rh);
       return;

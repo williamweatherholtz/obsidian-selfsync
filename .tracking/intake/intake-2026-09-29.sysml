@@ -57,4 +57,45 @@ package ProjectIntake20260929 {
     }
     #DerivedFrom dependency from us004 to st003;
     #Implicates dependency from us004 to issue005;
+
+    part st004 : Statement {
+        :>> id = "5d426c9b-1fe3-43c6-8699-a81a1db94a97";
+        :>> title = "Path case handling: assert, log, fail early and loud";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> text = "this issue, case mismatching between server and client, and intelligent handlign of it, has bitten us multiple times now.  Identify relevant functions that handle pathnames, put in proper debugigng logs to indicate if assertiosn are failing (or just !assert ?), and otherwise make our program fail early and fail loud to issues.";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-09-29"; :>> channel = StatementChannel::console;
+    }
+
+    part us005 : UserStory {
+        :>> id = "b7dadf7a-69ac-40b7-bd0f-b67853069613";
+        :>> title = "Path identity checks itself and fails loud";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> asA = "SelfSync owner";
+        :>> iWant = "every function that decides path identity (case folding, aliasing, keying) to check its own assumptions, log a violated one loudly, and fail early instead of carrying a silent mismatch";
+        :>> soThat = "a path-identity mismatch shows up the moment it happens, with the path and the site named, instead of surfacing weeks later as a latch, a phantom delete or a duplicate";
+        :>> implication = ImplicationKind::implementationChange;
+        :>> triageNote = "implementationChange, not bug or designChange: no single new defect is reported. The ask is instrumentation and fail-fast behaviour across existing path-handling code, and the recurrence it cites is real: about ten recorded case or path-identity issues (issueCasePathDivergence, issueCaseRenamePairDeletesOnFoldingPeer, issueFoldBackfillAsciiOnly, issueMountCaseSensitiveClaimMismatch, issueNoncanonicalPath, issueSelfFolderCase, issueUnicodeCaseCollision, issueUserCaseCollision, issueUsernameNotCanonicalized, issueBootstrapSyncUserNotLowercased) plus issue005. 'fail early and fail loud' is a direction; how loud in production (throw, halt the pass, or log plus surface) is left open for the owner, since halting sync on a detected mismatch trades one failure for another.";
+    }
+    #DerivedFrom dependency from us005 to st004;
+
+    part st005 : Statement {
+        :>> id = "13c3d681-b816-4538-b06a-608d44f0f5ce";
+        :>> title = "Path-identity violation policy on a device";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> text = "Loud, halt only risky writes (Recommended)";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-09-29"; :>> channel = StatementChannel::console;
+    }
+
+    part us006 : UserStory {
+        :>> id = "30474354-c948-41ad-a8d4-c73ad7ce2193";
+        :>> title = "Violation policy: loud, halt only the risky write";
+        :>> createdAt = "2026-09-29"; :>> createdBy = "claudeOpus";
+        :>> asA = "SelfSync owner";
+        :>> iWant = "a path-identity violation on a real device to be logged as an ERROR and shown once, with sync continuing except for the delete or overwrite of the ambiguous path, while tests and CI throw";
+        :>> implication = ImplicationKind::designChange;
+        :>> triageNote = "designChange, not attestation: the owner picked one of three offered failure policies (the labelled option text is recorded verbatim, including its Recommended tag, since that is exactly what they selected). It fixes how loud and how blocking the us005 checks are on a device. The option description they selected read: Tests and CI throw on every violation. On a device: log an ERROR naming the site and both spellings, and show it once on the status card. Sync continues, except that a delete or overwrite on an ambiguous path is refused for that path only. Deviation to record: the once-only surface is a Notice, not the status card, because the card shows link state (lastIssue) and a held file is not a link failure.";
+    }
+    #DerivedFrom dependency from us006 to st005;
+    #Implicates dependency from us005 to pathIdentityFailLoud;
+    #Implicates dependency from us006 to pathIdentityFailLoud;
 }

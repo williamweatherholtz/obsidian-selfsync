@@ -348,4 +348,15 @@ package IssuesClaudeOpus {
         :>> severity = Severity::High;
     }
     #Resolves dependency from statusLatchCaseAliasedSettle to issue005;
+
+    part issue006 : Issue {
+        :>> id = "a9b8f024-b9b5-412d-95eb-1d44c86db08a";
+        :>> title = "The server folds path case but not Unicode normalisation, so an NFC and an NFD spelling of one name both commit as separate files";
+        :>> createdAt = "2026-09-29";
+        :>> createdBy = "claudeOpus";
+        :>> description = "OBSERVATION (found 2026-09-29 while inventorying path identity for st004): the server's same-file rule folds case but not Unicode normalisation. insert_file stores fold = path.to_lowercase() (server/src/index_store.rs:218) and colliding_key compares on that column (index_store.rs:373-376), which vault.rs:596 uses to refuse a colliding commit. An NFC spelling and an NFD spelling of the same name therefore both commit as separate files. The server has no Unicode normalisation dependency (server/Cargo.toml). REPEATABLE RESULT: not yet exercised against the real server. The client now detects this state: when the manifest holds both spellings, a macOS/iOS device, whose filesystem treats them as one file, reports a duplicate-identity violation and holds both paths (client/test/reconcile.test.ts, path identity NFC/NFD suite, against the fake server, which accepts both). So the failure is loud and non-destructive on the client, but the server still admits the state. IMPACT: two devices, one writing NFC (Windows, Linux) and one writing NFD (a name first created on macOS), can put two records of one note on the server. A Mac then holds that note until one spelling is removed. RECOMMENDATION (for the implementer; not a prescribed fix): fold NFC before lower-casing on the server too, with a migration of the existing fold column, which the fold backfill at index_store.rs:130 already does once for case. It is a server change, so it needs a server-image redeploy.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from serverFoldNormalisation to issue006;
 }

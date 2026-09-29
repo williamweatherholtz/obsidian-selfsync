@@ -28,6 +28,7 @@ import { normalizedContent, ignoredTimestampKeysPresent } from "./frontmatter"; 
 import { isTextExt, strictDecode } from "./merge"; // text gating for the cosmetic-conflict sweep
 import { isExcluded } from "./excludedFolders";
 import { FileLog, LogAdapter } from "./filelog";
+import { PathFs, PathViolation, describePathViolation, identityKey, setPathViolationHandler } from "./pathidentity";
 import { stallVerdict } from "./stall";
 import type { RefreshScope } from "./settings";
 import { isForeignArtefact, summarizeForeign, describeForeign, FOREIGN_ROOT_MARKERS } from "./foreigntools"; // SR-47: other sync tools' artefacts
@@ -521,7 +522,13 @@ export default class SelfSyncPlugin extends Plugin {
   // the keystroke, it is cleared by the reconcile pass that settles the path (onPathSettled), and it EXPIRES
   // on read, so a buffer Obsidian never writes (typed then undone, or a crash) cannot latch a claim. No
   // timer: read-time expiry is immune to the mobile suspend that froze the hold timer.
+  // Keyed by pathidentity.identityKey, NOT the raw path: a claim recorded under the spelling a vault event reported
+  // must be found again by a settle issued under the base's spelling of the same file (issue005).
   private unsyncedEdits = new Map<string, { at: number; onDisk: boolean }>();
+  // Identity keys of files held because the server or base holds two spellings of them (reconcile holdAmbiguous).
+  private ambiguousPaths = new Set<string>();
+  private prevPathViolationHandler?: (v: PathViolation) => void;
+  private pathViolationsShown = new Set<string>(); // one Notice per distinct violation per session
   private unsyncedPrompt?: number; // one repaint prompt so a buffer-only claim expires even with no events
   // The status-light DISPLAY FSM (statuslight.ts) + its debounce timer + a repaint-dedupe key. Entering the
   // visible "syncing" state is debounced so a transient reconcile never flits the light (issueStatusLightFlicker).
@@ -603,6 +610,10 @@ export default class SelfSyncPlugin extends Plugin {
       this.syncLogAppender(), // desktop: fs.appendFileSync, so a freeze cannot swallow the decisive line
     );
     this.fileLog.line(`--- onload: SelfSync ${this.manifest.version} on ${Platform.isMobile ? "mobile" : "desktop"} ---`);
+    // PATH IDENTITY violations (pathidentity.ts). Tests keep the default THROWING handler; a device logs every one
+    // as an ERROR and shows each distinct one once, loud but never a sync-stopping throw (owner choice 2026-09-29 -
+    // the detecting site also refuses the risky write). Installed before any pass can run.
+    this.prevPathViolationHandler = setPathViolationHandler((v) => this.notePathViolation(v));
     // Nothing captured an uncaught exception or a dropped promise before this: a throw inside a render or
     // an unawaited effect vanished silently. Both now reach the file, with a stack.
     // MAIN-THREAD STALL DETECTOR. The decisive fact in the 2026-09-16 capture was a SIX MINUTE gap with no
@@ -724,6 +735,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.unloading = true;
     if (this.stallTimer !== undefined) { window.clearInterval(this.stallTimer); this.stallTimer = undefined; }
     this.fileLog?.line("--- onunload ---");
+    setPathViolationHandler(this.prevPathViolationHandler ?? null); // a reloaded instance installs its own
     void this.fileLog?.flush(); // get the queued breadcrumbs to disk before the instance goes away
     this.engine.enqueue({ kind: "unload" }); // → teardown (stops timers, closes ws), projects off
     // view.addAction() header buttons are NOT auto-cleaned by Obsidian on unload (unlike the ribbon /
@@ -814,7 +826,25 @@ export default class SelfSyncPlugin extends Plugin {
   private aliasedPaths = 0;
   private aliasedExample?: string;
   private aliasTimer?: number;
+  // The filesystem's same-file rules. Windows, macOS and iOS resolve case-insensitively; Linux and Android do not
+  // (issueCasePathDivergence). Only macOS and iOS also treat NFC and NFD spellings as one file — NTFS keeps both.
+  pathFs(): PathFs {
+    return { caseInsensitive: Platform.isWin || Platform.isMacOS || Platform.isIosApp, normInsensitive: Platform.isMacOS || Platform.isIosApp };
+  }
+  // A violated path-identity invariant (pathidentity.ts): ERROR in the debug log every time, with the site and every
+  // spelling, and a Notice the first time this exact violation is seen this session. The detecting site has already
+  // refused whatever write the ambiguity made unsafe; this is what makes the refusal visible.
+  private notePathViolation(v: PathViolation): void {
+    const msg = describePathViolation(v);
+    this.fileLog?.error(msg);
+    console.error(`SelfSync: ${msg}`);
+    const key = `${v.kind}|${[...v.paths].sort().join("|")}`;
+    if (this.pathViolationsShown.has(key)) return;
+    this.pathViolationsShown.add(key);
+    this.log(`Sync held for ${v.paths.map((p) => `'${p}'`).join(" and ")}: these are the same file on this device, but the server or this device's sync record holds them as separate files. Nothing is written or deleted for them until one spelling is removed (rename or delete one on a device that shows both). Details in the debug log.`, true);
+  }
   private notePathAliased(localPath: string, canonicalPath: string): void {
+    this.fileLog?.debug(`path alias: '${localPath}' is the same file as '${canonicalPath}' here - syncing it under the server's spelling`);
     this.aliasedPaths++;
     this.aliasedExample ??= `'${localPath}' is synced as '${canonicalPath}'`;
     if (this.aliasTimer !== undefined) return;
@@ -1709,8 +1739,8 @@ export default class SelfSyncPlugin extends Plugin {
   // lowercase (auth.rs to_ascii_lowercase) but the client persists what the user typed, so a capitalized
   // username ("Alice") must still match its own vault ("alice"). Empty owner ⇒ false (an OWN vault carries "").
   isOwnAccount(owner: string | undefined): boolean {
-    const a = (owner ?? "").trim().toLowerCase();
-    return a !== "" && a === (this.settings.username ?? "").trim().toLowerCase();
+    const a = (owner ?? "").trim().toLowerCase(); // identity-exempt: an account name, not a path
+    return a !== "" && a === (this.settings.username ?? "").trim().toLowerCase(); // identity-exempt: an account name, not a path
   }
   private async refreshShareGrant(token: string): Promise<void> {
     if (!this.settings.vaultOwner) return;
@@ -2025,9 +2055,10 @@ export default class SelfSyncPlugin extends Plugin {
     if (!this.inPrimaryScope(path)) { this.fileLog?.trace(`local change ignored (out of scope): ${path}`); return; }
     if (isExcluded(path, this.settings.excludedFolders ?? [])) { this.fileLog?.trace(`local change ignored (excluded folder): ${path}`); return; }
     this.fileLog?.trace(`local change ${onDisk ? "on disk" : "in editor"}: ${path}`);
-    const prev = this.unsyncedEdits.get(path);
+    const id = identityKey(path, this.pathFs()); // same key whichever spelling the settle later uses (issue005)
+    const prev = this.unsyncedEdits.get(id);
     // A disk event UPGRADES a buffer-only claim: the edit is now a file, so it stops being expirable.
-    this.unsyncedEdits.set(path, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk });
+    this.unsyncedEdits.set(id, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk });
     if (!onDisk) this.armUnsyncedPrompt(); // buffer-only claims need a nudge to be re-read and aged out
     // Repaint only when this claim can CHANGE what is shown - i.e. it is the first one. This runs on every
     // keystroke (editor-change), and once the indicator is already showing the claim, re-deriving and
@@ -2052,7 +2083,7 @@ export default class SelfSyncPlugin extends Plugin {
   // The reconcile pass for this path finished (transfer, no-op, or refusal alike): the server has now seen
   // this path's current content, so the edit is no longer unsynced. Fact-driven, not a guess at timing.
   private notePathSettled(path: string): void {
-    if (this.unsyncedEdits.delete(path)) this.renderLight();
+    if (this.unsyncedEdits.delete(identityKey(path, this.pathFs()))) this.renderLight();
   }
   // Every claim recorded BEFORE this cutoff has now been compared with the server by a whole-vault pass.
   // Claims made DURING the pass are kept: the scan may have listed the file before that edit landed.
@@ -2344,6 +2375,8 @@ export default class SelfSyncPlugin extends Plugin {
       // own mount scope) — the load-bearing invariant that a mounted file never double-syncs to the primary.
       // Uses activeMounts() (the validated in-effect set) so exclusion and scope-building agree (N1).
       accepts: (p) => this.inPrimaryScope(p),
+      // FlipGuard stays keyed by the RAW spelling, deliberately: its keys are shown to the user and released by
+      // name (heldFlipPaths), and reconcile only ever hands it the canonical (base/server) spelling of a file.
       pushFlipHold: (p, h, bytes) => this.flipGuard.record(p, h, Date.now(), this.flipShape(p, bytes)).hold, // SR-47: never amplify a two-writer loop (exact OR timestamp-shape returns)
       onFlipHeld: (p) => this.noteFlipHeld(p),
       localSizeOf: (p) => this.localSizeOf(p), // O(1) size for the incremental (RS-3) size gate
@@ -2373,8 +2406,10 @@ export default class SelfSyncPlugin extends Plugin {
         : `couldn't sync '${p}': ${e instanceof Error ? e.message : String(e)} — skipped it, other files continue`),
       rejectedPushes: this.rejectedPushes,
       onPushHeld: () => this.notePushHeld(),
-      // Windows, macOS and iOS resolve paths case-insensitively; Linux and Android do not (issueCasePathDivergence).
-      caseInsensitivePaths: Platform.isWin || Platform.isMacOS || Platform.isIosApp,
+      // Same-file rules for this device (pathFs). ONE source for reconcile and for the plugin's own key-spaces.
+      caseInsensitivePaths: this.pathFs().caseInsensitive,
+      normalizationInsensitivePaths: this.pathFs().normInsensitive,
+      ambiguousPaths: this.ambiguousPaths,
       onPathAliased: (p, k) => this.notePathAliased(p, k),
       onDeclined: (paths) => this.noteDeclined(paths),
       onRemotePlugins: (plugins) => { this.setServerPlugins(plugins); void this.runPluginAutopilot().catch((e) => this.log(`plugin autopilot: ${e instanceof Error ? e.message : e}`)); }, // auto-sync own new plugins, gate peers
@@ -3388,7 +3423,7 @@ export default class SelfSyncPlugin extends Plugin {
     const folder = normMountFolder(keeperFolder) || "Read-only edits";
     // F6: the keeper folder must be a plain vault folder — never .obsidian and never inside a mount point
     // (which would re-report the kept notes as fresh read-only edits, a self-perpetuating loop).
-    if (folder.split("/")[0].toLowerCase() === ".obsidian" || primaryExcludes(this.activeMounts(), folder)) {
+    if (folder.split("/")[0].toLowerCase() === ".obsidian" || primaryExcludes(this.activeMounts(), folder)) { // identity-exempt: deliberately conservative - refuses any spelling of the config dir on every filesystem
       new Notice("SelfSync: choose a plain folder (not .obsidian or inside a mount) to keep your edits."); return 0;
     }
     await this.ensureMountFolder(folder);
@@ -3480,8 +3515,8 @@ export default class SelfSyncPlugin extends Plugin {
   // overwrite the other's local files on a repoint — fix ③). Host only (scheme/port aside) stays stable
   // across an http/https or trailing-slash edit. (fix ③ 2026-08-01)
   private serverHost(): string {
-    try { return new URL(this.settings.serverUrl).host.toLowerCase(); }
-    catch { return (this.settings.serverUrl ?? "").toLowerCase(); }
+    try { return new URL(this.settings.serverUrl).host.toLowerCase(); } // identity-exempt: a host name, not a path
+    catch { return (this.settings.serverUrl ?? "").toLowerCase(); } // identity-exempt: a server address, not a path
   }
   // The D0047 guard's vault-identity key: server-qualified `host|owner/vault`. The `|` delimiter can occur
   // in neither a host (URL.host = alnum/dot/colon/hyphen) nor a vault name (lowercase/digits/dots/dash/

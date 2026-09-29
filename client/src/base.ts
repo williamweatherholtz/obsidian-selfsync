@@ -1,3 +1,5 @@
+import { PathFs, identityIndex, identityKey } from "./pathidentity";
+
 // `size`/`mtime` are an OPTIONAL scan-skip hint (perf, Finding 2): the file's on-disk
 // (size, mtime) at the last time we confirmed it equals this base. A whole-vault reconcile
 // can then skip the read+SHA-256 for a file whose (size, mtime) are unchanged — the standard
@@ -36,13 +38,16 @@ export class BaseStore {
   set(path: string, entry: BaseEntry): void { if (!this.m.has(path)) this.fold = undefined; this.m.set(path, entry); }
   delete(path: string): void { if (this.m.delete(path)) this.fold = undefined; }
   paths(): string[] { return [...this.m.keys()]; }
-  // Case-fold lookup (caseInsensitivePaths): the base key whose lower-cased form equals `path`'s, if any. Memoized —
-  // it used to be rebuilt from every key on EVERY single-path event whose path was not an exact key (a folder rename
-  // of N files fired 2N rebuilds), which is O(N) synchronous work on the host's main thread per event (panel H6).
+  // Same-file lookup: the base key that is the same on-disk file as `path` on `fs` (pathidentity.identityKey), if
+  // any. Memoized — it used to be rebuilt from every key on EVERY single-path event whose path was not an exact key
+  // (a folder rename of N files fired 2N rebuilds), which is O(N) synchronous work on the host's main thread per
+  // event (panel H6). The memo is per-fs so a caller asking under different rules never reads a stale index.
   private fold?: Map<string, string>;
-  foldSibling(path: string): string | undefined {
-    if (!this.fold) { this.fold = new Map(); for (const k of this.m.keys()) { const f = k.toLowerCase(); if (!this.fold.has(f)) this.fold.set(f, k); } }
-    return this.fold.get(path.toLowerCase());
+  private foldFs?: string;
+  foldSibling(path: string, fs: PathFs): string | undefined {
+    const fsTag = `${fs.caseInsensitive}|${fs.normInsensitive}`;
+    if (!this.fold || this.foldFs !== fsTag) { this.fold = identityIndex(this.m.keys(), fs); this.foldFs = fsTag; }
+    return this.fold.get(identityKey(path, fs));
   }
   // Record the on-disk (size, mtime) of a file we've just confirmed equals its base, so the next
   // whole-vault pass can skip re-hashing it. Persisted (see toJSON) so the skip survives a reload

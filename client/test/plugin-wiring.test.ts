@@ -8,6 +8,9 @@ import { EMBEDDED_SIGNATURE, Signature } from "../src/wiresignature";
 import { TFile, TFolder } from "obsidian";
 import { mountKey as mountKeyOf } from "../src/mountengine";
 import { isConflictCopy, keptBothName } from "../src/base"; // fixture-name sanity for the conflict-sweep tests
+import { identityKey, pathViolation, PathIdentityError } from "../src/pathidentity";
+// The claim map is keyed by path IDENTITY on this device's rules (issue005), not by the raw spelling.
+const claimKey = (p: unknown, path: string) => identityKey(path, (p as { pathFs(): Parameters<typeof identityKey>[1] }).pathFs());
 import { __notices } from "./obsidian-stub"; // Notice-message record (same module instance as the "obsidian" alias)
 
 // In-memory VaultIo (enough for reconcile to run).
@@ -287,8 +290,8 @@ describe("plugin wiring — producers → engine → effects", () => {
     const f = new TFile(); f.path = "Notes/new.md"; (f as any).stat = { size: 1, mtime: 0 };
     (p as any).onLocalRename(f, "Notes/old.md");
     expect(p.statusText()).toBe("syncing");
-    expect((p as any).unsyncedEdits.has("Notes/old.md")).toBe(true); // both ends of the rename
-    expect((p as any).unsyncedEdits.has("Notes/new.md")).toBe(true);
+    expect((p as any).unsyncedEdits.has(claimKey(p, "Notes/old.md"))).toBe(true); // both ends of the rename
+    expect((p as any).unsyncedEdits.has(claimKey(p, "Notes/new.md"))).toBe(true);
     p.onunload();
   });
 
@@ -313,7 +316,7 @@ describe("plugin wiring — producers → engine → effects", () => {
   it("a BUFFER-only claim expires on read, so a keystroke Obsidian never writes cannot latch yellow", async () => {
     const { p, fire } = await bootPlugin();
     fire("editor-change", {}, { file: { path: "Notes/n.md" } });
-    (p as any).unsyncedEdits.set("Notes/n.md", { at: Date.now() - 60_000, onDisk: false }); // typed, never saved
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/n.md"), { at: Date.now() - 60_000, onDisk: false }); // typed, never saved
     afterHold(p);
     expect(p.statusText()).toBe("idle");
     expect((p as any).unsyncedEdits.size).toBe(0);         // pruned, not merely ignored
@@ -322,11 +325,27 @@ describe("plugin wiring — producers → engine → effects", () => {
 
   // Expiring a claim the FILESYSTEM confirmed would put the light back to green over a change that really
   // is unsynced — the inaccuracy st001/us001 forbids. A disk claim is cleared by evidence, never a clock.
+  it("a path-identity violation on a device is an ERROR every time and a Notice once; unload restores the throw", async () => {
+    const { p } = await bootPlugin();
+    const errors: string[] = [];
+    const log = (p as any).fileLog;
+    expect(log).toBeDefined(); // the ERROR half of the assertion must not be vacuous
+    const orig = log.error.bind(log); log.error = (m: string) => { errors.push(m); orig(m); };
+    __notices.length = 0;
+    const v = { kind: "duplicate-identity" as const, site: "test", paths: ["Note.md", "note.md"] };
+    expect(() => pathViolation(v)).not.toThrow();                 // the plugin's handler, not the default throw
+    pathViolation({ ...v, paths: ["note.md", "Note.md"] });        // the same pair in another order: not a second Notice
+    expect(__notices.filter((n) => n.includes("Note.md"))).toHaveLength(1);
+    expect(errors).toHaveLength(2);
+    p.onunload();
+    expect(() => pathViolation(v)).toThrow(PathIdentityError);   // restored: a later unconfigured caller fails loud
+  });
+
   it("a DISK-confirmed claim never expires on a clock — only evidence clears it", async () => {
     const { p } = await bootPlugin();
     const f = new TFile(); f.path = "Notes/n.md"; (f as any).stat = { size: 3, mtime: 0 };
     (p as any).onLocalEvent(f);
-    (p as any).unsyncedEdits.set("Notes/n.md", { at: Date.now() - 600_000, onDisk: true }); // ten minutes old
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/n.md"), { at: Date.now() - 600_000, onDisk: true }); // ten minutes old
     (p as any).renderLight();
     expect(p.statusText()).toBe("syncing");                // still true: the server has not seen it
     expect((p as any).unsyncedEdits.size).toBe(1);
@@ -339,10 +358,10 @@ describe("plugin wiring — producers → engine → effects", () => {
   it("a keystroke claim is UPGRADED to disk-confirmed when Obsidian writes the file", async () => {
     const { p, fire } = await bootPlugin();
     fire("editor-change", {}, { file: { path: "Notes/n.md" } });
-    expect((p as any).unsyncedEdits.get("Notes/n.md").onDisk).toBe(false);
+    expect((p as any).unsyncedEdits.get(claimKey(p, "Notes/n.md")).onDisk).toBe(false);
     const f = new TFile(); f.path = "Notes/n.md"; (f as any).stat = { size: 3, mtime: 0 };
     (p as any).onLocalEvent(f);                            // autosave landed
-    expect((p as any).unsyncedEdits.get("Notes/n.md").onDisk).toBe(true); // no longer expirable
+    expect((p as any).unsyncedEdits.get(claimKey(p, "Notes/n.md")).onDisk).toBe(true); // no longer expirable
     p.onunload();
   });
 
@@ -351,7 +370,7 @@ describe("plugin wiring — producers → engine → effects", () => {
   // the claim outlived the sync and, once idle again, raised a permanent "Syncing…" over a synced vault.
   it("a whole-vault pass SETTLES claims it visited (no permanently stuck syncing)", async () => {
     const { p } = await bootPlugin();
-    (p as any).unsyncedEdits.set("Notes/dropped-while-offline.md", { at: Date.now() - 5_000, onDisk: true });
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/dropped-while-offline.md"), { at: Date.now() - 5_000, onDisk: true });
     (p as any).renderLight();                              // the claim survived a drop/failure; paint it
     expect(p.statusText()).toBe("syncing");
     (p as any).settleUnsyncedBefore(Date.now());           // what a mode==="full" pass calls on success
@@ -364,7 +383,7 @@ describe("plugin wiring — producers → engine → effects", () => {
   it("a claim made DURING a pass survives it (the scan may have listed the file first)", async () => {
     const { p } = await bootPlugin();
     const passStart = Date.now() - 1_000;
-    (p as any).unsyncedEdits.set("Notes/edited-mid-pass.md", { at: Date.now(), onDisk: true });
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/edited-mid-pass.md"), { at: Date.now(), onDisk: true });
     (p as any).settleUnsyncedBefore(passStart);
     expect((p as any).unsyncedEdits.size).toBe(1);
     p.onunload();

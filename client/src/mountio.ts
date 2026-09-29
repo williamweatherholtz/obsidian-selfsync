@@ -23,7 +23,7 @@ import { FileMeta, ChangesResponse, CommitRequest, Deletion } from "./protocol";
 // so a case variant must not slip through as "data".
 export function isDataPath(rel: string): boolean {
   const segs = rel.split("/").filter(Boolean);
-  return segs.length > 0 && segs[0].toLowerCase() !== ".obsidian";
+  return segs.length > 0 && segs[0].toLowerCase() !== ".obsidian"; // identity-exempt: deliberately conservative - refuses any spelling of the config dir on every filesystem
 }
 
 // A VaultIo scoped to ONE mount: mount-relative `<rel>` <-> local `<mountPoint>/<rel>`. list() returns only

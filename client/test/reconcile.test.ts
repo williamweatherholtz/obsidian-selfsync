@@ -6,6 +6,7 @@ import { sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitConflictError, CommitRejectedError, CommitRequest, FileMeta } from "../src/protocol";
 import { isSafeVaultPath } from "../src/pathsafe";
 import { FlipGuard, shapeOf } from "../src/flipguard";
+import { PathIdentityError, PathViolation, setPathViolationHandler } from "../src/pathidentity";
 
 const H = (h: string) => ({ hash: h });
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -2366,5 +2367,148 @@ describe("a monotonic stamper loop is broken by the shape-aware FlipGuard (panel
     for (let i = 1; i <= 10; i++) { now += 1000; await reconcileAll(d); io.m.set("s.md", enc(stamp(i))); } // the stamper re-stamps after each pass
     expect(pushes).toBeLessThanOrEqual(4);   // first push + up to 3 shape-returns, then held
     expect(guard.held(now)).toEqual(["s.md"]);
+  });
+});
+
+// ---- Path identity (st004, 2026-09-29): an ambiguity is reported LOUD and the risky write is refused ----
+
+describe("path identity: two spellings of one file are reported and held, never silently resolved", () => {
+  const collect = () => { const got: PathViolation[] = []; setPathViolationHandler((v) => got.push(v)); return got; };
+  const restore = () => setPathViolationHandler(null);
+  // The fake server accepts both spellings (the real one refuses a CASE collision, but not an NFC/NFD pair, and an
+  // older server refused neither) - which is exactly the state this device must not guess its way through.
+  const twoSpellings = async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, "Note.md", "upper\n");
+    await serverPut(srv.api, "note.md", "lower\n");
+    await serverPut(srv.api, "ok.md", "fine\n");
+    const io = foldingIo({});
+    const held = new Set<string>();
+    const progress: number[] = [];
+    const d = deps(srv.api, io, { caseInsensitivePaths: true, ambiguousPaths: held, onProgress: (n) => progress.push(n) });
+    return { srv, io, d, held, progress };
+  };
+
+  it("a full pass reports the pair once, writes neither spelling, keeps it out of pending, and syncs everything else", async () => {
+    const got = collect();
+    try {
+      const s = await twoSpellings();
+      await reconcileAll(s.d);
+      expect(got).toHaveLength(1);
+      expect(got[0].kind).toBe("duplicate-identity");
+      expect(got[0].site).toBe("reconcileAll");
+      expect([...got[0].paths].sort()).toEqual(["Note.md", "note.md"]);
+      expect([...s.io.m.keys()]).toEqual(["ok.md"]);   // the unrelated file synced; the ambiguous one was not guessed
+      expect(s.held.size).toBe(1);
+      expect(s.progress[0]).toBe(1);                   // pending counted ok.md only: no phantom count that never drains
+    } finally { restore(); }
+  });
+
+  it("with NO handler installed the violation THROWS - a test or unconfigured caller fails at the site", async () => {
+    const s = await twoSpellings();
+    await expect(reconcileAll(s.d)).rejects.toBeInstanceOf(PathIdentityError);
+  });
+
+  it("the event path refuses a held file before any network call, and settles both spellings", async () => {
+    collect();
+    try {
+      const s = await twoSpellings();
+      await reconcileAll(s.d);
+      let metaCalls = 0; const real = s.srv.api.fileMeta.bind(s.srv.api);
+      s.srv.api.fileMeta = async (p: string) => { metaCalls++; return real(p); };
+      const settled: string[] = []; s.d.onPathSettled = (p) => settled.push(p);
+      s.io.m.set("NOTE.md", enc("typed here\n"));
+      await reconcilePath(s.d, "NOTE.md");
+      expect(metaCalls).toBe(0);
+      expect(settled).toContain("NOTE.md");
+      expect(s.srv.files.get("Note.md")!.hash).toBe(await sha256hex(enc("upper\n"))); // neither server record touched
+      expect(s.srv.files.get("note.md")!.hash).toBe(await sha256hex(enc("lower\n")));
+    } finally { restore(); }
+  });
+
+  it("the hold is rebuilt by the next full pass: once one spelling is gone the file syncs again", async () => {
+    collect();
+    try {
+      const s = await twoSpellings();
+      await reconcileAll(s.d);
+      await s.srv.api.deleteFile("note.md");
+      await reconcileAll(s.d);
+      expect(s.held.size).toBe(0);
+      expect(dec([...s.io.m.entries()].find(([k]) => k.toLowerCase() === "note.md")![1])).toBe("upper\n");
+    } finally { restore(); }
+  });
+
+  it("a delta pass holds a pair it can see, and does not clear an existing hold", async () => {
+    const got = collect();
+    try {
+      const srv = fakeServer();
+      await serverPut(srv.api, "Note.md", "upper\n");
+      await serverPut(srv.api, "note.md", "lower\n");
+      const io = foldingIo({});
+      const held = new Set<string>(["stale-hold-id"]);
+      const d = deps(srv.api, io, { caseInsensitivePaths: true, ambiguousPaths: held });
+      await reconcileDelta(d, await srv.api.changes(0));
+      expect(got.map((v) => v.site)).toEqual(["reconcileDelta"]);
+      expect(io.m.size).toBe(0);
+      expect(held.has("stale-hold-id")).toBe(true);
+      expect(held.size).toBe(2);
+    } finally { restore(); }
+  });
+
+  it("a local listing that names both spellings of one file is reported, not merged", async () => {
+    const got = collect();
+    try {
+      const srv = fakeServer();
+      await serverPut(srv.api, "a.md", "x\n");
+      const io = fakeIo({ "a.md": "x\n", "A.md": "x\n" }); // an adapter that lies about a folding filesystem
+      await reconcileAll(deps(srv.api, io, { caseInsensitivePaths: true }));
+      const v = got.find((x) => x.kind === "listing-two-spellings");
+      expect(v?.paths).toEqual(["A.md", "a.md"]);
+    } finally { restore(); }
+  });
+});
+
+describe("path identity: NFC and NFD spellings are one file on macOS/iOS only", () => {
+  const NFC = "Café.md".normalize("NFC"), NFD = "Café.md".normalize("NFD");
+  // A normalization-insensitive, case-insensitive io (APFS): lookups fold both ways, keys keep their first spelling.
+  const apfsIo = (seed: Record<string, string>) => {
+    const m = new Map<string, Uint8Array>(Object.entries(seed).map(([k, v]) => [k, enc(v)]));
+    const fold = (p: string) => p.normalize("NFC").toLowerCase();
+    const keyOf = (p: string) => [...m.keys()].find((k) => fold(k) === fold(p));
+    const io: VaultIo & { m: Map<string, Uint8Array> } = {
+      m,
+      async list() { const r = new Map<string, { mtime: number; size: number }>(); for (const k of m.keys()) r.set(k, { mtime: 0, size: m.get(k)!.length }); return r; },
+      async read(p) { const k = keyOf(p); if (!k) throw new Error("ENOENT"); return m.get(k)!; },
+      async write(p, b) { m.set(keyOf(p) ?? p, b); },
+      async remove(p) { const k = keyOf(p); if (k) m.delete(k); },
+      async exists(p) { return keyOf(p) !== undefined; },
+    };
+    return io;
+  };
+
+  it("on macOS rules an NFD event for an NFC-synced note syncs to the EXISTING key and settles both spellings", async () => {
+    expect(NFC).not.toBe(NFD);
+    const srv = fakeServer();
+    await serverPut(srv.api, NFC, "v1\n");
+    const io = apfsIo({ [NFC]: "v1\n" });
+    const d = deps(srv.api, io, { caseInsensitivePaths: true, normalizationInsensitivePaths: true });
+    await reconcileAll(d);
+    const settled: string[] = []; d.onPathSettled = (p) => settled.push(p);
+    io.m.set(NFC, enc("v2\n"));
+    await reconcilePath(d, NFD);
+    expect(srv.files.get(NFC)!.hash).toBe(await sha256hex(enc("v2\n")));
+    expect(srv.files.has(NFD)).toBe(false);          // never a second key for one file
+    expect(settled).toEqual(expect.arrayContaining([NFC, NFD]));
+  });
+
+  it("on Windows rules the NFD spelling is a DIFFERENT file and is not aliased onto the NFC one", async () => {
+    const srv = fakeServer();
+    await serverPut(srv.api, NFC, "v1\n");
+    const io = fakeIo({ [NFC]: "v1\n", [NFD]: "other\n" }); // NTFS stores both forms as distinct names
+    const aliased: string[] = [];
+    const d = deps(srv.api, io, { caseInsensitivePaths: true, normalizationInsensitivePaths: false, onPathAliased: (p, k) => aliased.push(`${p}->${k}`) });
+    await reconcileAll(d);
+    expect(aliased).toEqual([]);
+    expect(srv.files.has(NFD)).toBe(true);           // pushed as its own file
   });
 });
