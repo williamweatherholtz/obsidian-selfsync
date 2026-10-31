@@ -114,6 +114,29 @@ const SYNCING_MIN_SHOW_MS = 2_500;
 // Obsidian's autosave (~2s) plus a slow push; short enough that a buffer that never reaches disk stops
 // claiming. Expiry is checked on READ, so a suspended app cannot leave the claim standing.
 const UNSYNCED_EDIT_MAX_MS = 15_000;
+// A DISK-backed claim never expires on a clock (evidence clears it), so one that no pass settles holds the
+// light yellow until the next whole-vault scan. Past this age it is logged ONCE at warn with its path, so an
+// info-level log names the holder (statusLightSelfExplaining, owner report st006 2026-10-30). Obsidian's
+// autosave plus a slow push settles well inside this; a claim older than it is a question, not a transfer.
+const CLAIM_STALE_WARN_MS = 60_000;
+
+// How the pass log names WHERE a delta came from. The line used to read "remote change → reconciled" for
+// every version advance, including this device's OWN pushes echoing back through the WS poke, which sent
+// the st006 investigation looking for a peer that did not exist (339 such lines on 2026-10-30, every upsert
+// this laptop's). Pure, so the label is unit-tested without a pass. Absent provenance is said to be absent,
+// never guessed as "own": an older server omits deviceId on every row.
+export function passProvenanceLabel(
+  delta: { upserts: { deviceId?: string; deviceName?: string }[]; deletes: { deviceId?: string; deviceName?: string }[] },
+  ownDeviceId: string,
+): string {
+  const rows = [...delta.upserts, ...delta.deletes];
+  const foreign = rows.filter((r) => r.deviceId !== ownDeviceId);
+  if (rows.length > 0 && foreign.length === 0) return "own changes acknowledged by the server";
+  const names = [...new Set(foreign.map((r) => r.deviceName ?? (r.deviceId ? r.deviceId.slice(0, 8) : undefined)).filter((n): n is string => !!n))];
+  const who = names.length > 0 ? `from ${names.join(", ")}` : "(unknown device)";
+  const own = rows.length > foreign.length ? " plus own changes acknowledged" : "";
+  return `remote change ${who}${own} → reconciled`;
+}
 // WS half-open liveness (crit-round residual): the server sends an app heartbeat every ~30s. If the
 // client sees NO frame (heartbeat or change) for this long, the socket is silently dead → re-dial.
 const WS_STALE_MS = 75 * 1000;      // ~2.5 missed heartbeats
@@ -524,7 +547,9 @@ export default class SelfSyncPlugin extends Plugin {
   // timer: read-time expiry is immune to the mobile suspend that froze the hold timer.
   // Keyed by pathidentity.identityKey, NOT the raw path: a claim recorded under the spelling a vault event reported
   // must be found again by a settle issued under the base's spelling of the same file (issue005).
-  private unsyncedEdits = new Map<string, { at: number; onDisk: boolean }>();
+  // `path` is the spelling the producer reported (the key is folded); `warned` marks the one stale warn per claim.
+  private unsyncedEdits = new Map<string, { at: number; onDisk: boolean; path?: string; warned?: boolean }>();
+  private staleClaimPrompt?: number; // one repaint prompt per disk claim, so an idle window still logs a stale holder
   // Identity keys of files held because the server or base holds two spellings of them (reconcile holdAmbiguous).
   private ambiguousPaths = new Set<string>();
   private prevPathViolationHandler?: (v: PathViolation) => void;
@@ -749,7 +774,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (this.heldPushTimer !== undefined) { window.clearTimeout(this.heldPushTimer); this.heldPushTimer = undefined; }
     if (this.aliasTimer !== undefined) { window.clearTimeout(this.aliasTimer); this.aliasTimer = undefined; }
     // Panel H7: every one-shot timer this instance owns dies with it (C-44), not only the ones with side effects.
-    for (const k of ["lightTimer", "flipHeldTimer", "configScanTimer", "rawDebounce", "mountUiTimer", "mountPokeTimer", "unsyncedPrompt", "lazyPersistTimer"] as const) {
+    for (const k of ["lightTimer", "flipHeldTimer", "configScanTimer", "rawDebounce", "mountUiTimer", "mountPokeTimer", "unsyncedPrompt", "staleClaimPrompt", "lazyPersistTimer"] as const) {
       const v = (this as unknown as Record<string, number | undefined>)[k];
       if (v !== undefined) { window.clearTimeout(v); (this as unknown as Record<string, number | undefined>)[k] = undefined; }
     }
@@ -1974,7 +1999,9 @@ export default class SelfSyncPlugin extends Plugin {
     switch (phase) {
       // A shown "syncing" always has real transfer work (effectivePhase collapses a 0-pending check to
       // idle), so the detail is the pending count — never "checking for changes" (a transition, not a state).
-      case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : "" };
+      // A claim-raised syncing (no bulk transfer) names WHICH edits hold the light and for how long, so a
+      // latch can be attributed from the tooltip or the settings card instead of inferred (st006/us009).
+      case "syncing":    return { label: "Syncing…", detail: this.syncPending > 0 ? `${this.syncPending} pending` : this.unsyncedEditDetail() };
       case "idle":       return this.settings.vaultReadOnly
         // Read-only vault: Obsidian still lets you EDIT, but those edits never upload — so a plain green
         // "Fully synced" is a mode error (it implies your changes are safe on the server). Say so.
@@ -2058,8 +2085,10 @@ export default class SelfSyncPlugin extends Plugin {
     const id = identityKey(path, this.pathFs()); // same key whichever spelling the settle later uses (issue005)
     const prev = this.unsyncedEdits.get(id);
     // A disk event UPGRADES a buffer-only claim: the edit is now a file, so it stops being expirable.
-    this.unsyncedEdits.set(id, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk });
+    // A fresh timestamp is a fresh claim: the stale warn (see unsyncedEditCount) may fire again for it.
+    this.unsyncedEdits.set(id, { at: Date.now(), onDisk: onDisk || !!prev?.onDisk, path });
     if (!onDisk) this.armUnsyncedPrompt(); // buffer-only claims need a nudge to be re-read and aged out
+    else this.armStaleClaimPrompt();       // disk claims need one too, or an idle window never logs a stale holder
     // Repaint only when this claim can CHANGE what is shown - i.e. it is the first one. This runs on every
     // keystroke (editor-change), and once the indicator is already showing the claim, re-deriving and
     // re-painting the same state per character is pure cost on the host's main thread. The timestamp above
@@ -2072,6 +2101,27 @@ export default class SelfSyncPlugin extends Plugin {
   private armUnsyncedPrompt(): void {
     if (this.unsyncedPrompt !== undefined || this.unloading) return;
     this.unsyncedPrompt = window.setTimeout(() => { this.unsyncedPrompt = undefined; this.renderLight(); }, UNSYNCED_EDIT_MAX_MS + 250);
+  }
+  // The disk-claim twin: a repaint re-reads the claims (unsyncedEditCount), which is where a claim past
+  // CLAIM_STALE_WARN_MS gets its one warn line. Re-arms while any disk claim is still open, so a claim that
+  // outlives one window is still named when it crosses the bound. Same prompt-not-authority rule as above.
+  private armStaleClaimPrompt(): void {
+    if (this.staleClaimPrompt !== undefined || this.unloading) return;
+    this.staleClaimPrompt = window.setTimeout(() => {
+      this.staleClaimPrompt = undefined;
+      this.renderLight();
+      for (const e of this.unsyncedEdits.values()) if (e.onDisk) { this.armStaleClaimPrompt(); break; }
+    }, CLAIM_STALE_WARN_MS + 250);
+  }
+  // The detail behind a claim-raised "Syncing…": how many edits the server has not seen, the oldest first
+  // with its age, at most three named. Empty when nothing is claimed (silent, not inaccurate).
+  private unsyncedEditDetail(): string {
+    const n = this.unsyncedEditCount();
+    if (n === 0) return "";
+    const now = Date.now();
+    const oldest = [...this.unsyncedEdits.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, 3)
+      .map(([key, e]) => `${e.path ?? key} (${Math.max(0, Math.round((now - e.at) / 1000))}s)`);
+    return `${n} unsynced edit${n === 1 ? "" : "s"}: ${oldest.join(", ")}${n > 3 ? ", …" : ""}`;
   }
   private noteEditorEdit(file?: { path: string } | null): void {
     // inPrimaryScope mirrors the reconcile deps' `accepts`, which deliberately does NOT test excludedFolders
@@ -2216,6 +2266,15 @@ export default class SelfSyncPlugin extends Plugin {
     // sync). A claim the filesystem confirmed stands until a pass settles it or a full scan visits it:
     // dropping it on a clock would put the light back to green over a change that really is unsynced.
     for (const [path, e] of this.unsyncedEdits) if (!e.onDisk && e.at < cutoff) this.unsyncedEdits.delete(path);
+    // A disk claim past the stale bound is named ONCE in the log (warn, so an info-level log carries it). It is
+    // not cleared: the server still has not seen it. The line is what the next latch report cites.
+    const stale = Date.now() - CLAIM_STALE_WARN_MS;
+    for (const [key, e] of this.unsyncedEdits) {
+      if (e.onDisk && !e.warned && e.at < stale) {
+        e.warned = true;
+        this.fileLog?.warn(`unsynced edit on ${e.path ?? key} has waited ${Math.round((Date.now() - e.at) / 1000)}s with no pass settling it - the status light is yellow for this path (a latch if nothing is in flight)`);
+      }
+    }
     return this.unsyncedEdits.size;
   }
   // The ONE display projection: the engine's phase collapsed by real pending work, then raised to `syncing`
@@ -2891,7 +2950,7 @@ export default class SelfSyncPlugin extends Plugin {
     if (mode === "full") this.settleUnsyncedBefore(now); // a whole-vault pass visited every in-scope path
     await this.flushConfigReload();
     this.flushConfigDeletions(); // issueDeletionProvenanceUnnotified: notify on a peer's synced-config removal
-    if (this.state.version !== before) this.log(`remote change → reconciled (v${before} → v${this.state.version})`);
+    if (this.state.version !== before) this.log(`${passProvenanceLabel(delta, this.deviceId())} (v${before} → v${this.state.version})`);
     this.noteHistory(this.state.version, delta.history_floor, kept);
     this.setPendingBulk("primary", held, mode === "full"); // D0041: a full pass is authoritative (replace); a delta only adds (union)
     this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy(); // cosmetic: carried by the next write, never worth a 10 MB write per pass

@@ -1020,6 +1020,81 @@ describe("plugin wiring — producers → engine → effects", () => {
 // The modal ACTION bodies were previously exercised only against vi.fn() spies (the DOM tests assert
 // "the button calls X(args)"; they never ran X). These drive the REAL main.ts methods over the
 // in-memory io + spy api, so the actual promote/remove/switch/adjudicate logic is covered.
+// statusLightSelfExplaining (st006 / us008-us010, owner 2026-10-30): "the glyph is [...] always yellow ...
+// can we differentiate whether it's accurate or whether it's wrong?" A claim-raised "Syncing…" painted a
+// bare label with an empty detail, logged nothing at info, and the pass log called the device's OWN echoed
+// saves a "remote change". None of that let the owner, or the investigation, name what held the light.
+// Rule (st001/us001): honest or silent, never inaccurate. A yellow light must say WHICH edit holds it.
+describe("status light self-explaining — a yellow light names its holder (statusLightSelfExplaining)", () => {
+  it("a claim-raised Syncing… detail names the count and the claimed path; a bulk transfer still says N pending", async () => {
+    const { p } = await bootPlugin();
+    expect(p.statusDisplay("syncing").detail).toBe(""); // nothing claimed, nothing pending: silent is honest
+    const f = new TFile(); f.path = "Notes/held.md"; (f as any).stat = { size: 3, mtime: 0 };
+    (p as any).onLocalEvent(f);
+    const d = p.statusDisplay("syncing");
+    expect(d.label).toBe("Syncing…");
+    expect(d.detail).toMatch(/^1 unsynced edit/);
+    expect(d.detail).toContain("Notes/held.md");
+    expect(d.detail).toMatch(/\(\d+s\)/); // and how long it has waited
+    // A bulk transfer in flight keeps the established count, because that is the larger fact.
+    (p as any).syncPending = 3;
+    expect(p.statusDisplay("syncing").detail).toBe("3 pending");
+    p.onunload();
+  });
+
+  it("a disk-backed claim older than the stale bound is logged ONCE at warn with its path and age, at info level", async () => {
+    const { p } = await bootPlugin();
+    const log = (p as any).fileLog;
+    expect(log).toBeDefined();
+    const warns: string[] = [];
+    const orig = log.warn.bind(log); log.warn = (m: string) => { warns.push(m); orig(m); };
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/stale.md"), { at: Date.now() - 90_000, onDisk: true, path: "Notes/stale.md" });
+    (p as any).renderLight();
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("Notes/stale.md");
+    expect(warns[0]).toMatch(/9\ds/);
+    (p as any).renderLight();
+    (p as any).renderLight();
+    expect(warns).toHaveLength(1);                         // once per claim, not once per repaint
+    (p as any).notePathSettled("Notes/stale.md");
+    (p as any).unsyncedEdits.set(claimKey(p, "Notes/stale.md"), { at: Date.now() - 90_000, onDisk: true, path: "Notes/stale.md" });
+    (p as any).renderLight();
+    expect(warns).toHaveLength(2);                         // a NEW claim on the same path warns again
+    p.onunload();
+  });
+
+  it("a disk-backed claim arms a stale-check prompt, so an idle window still produces the warn; unload clears it", async () => {
+    const { p } = await bootPlugin();
+    expect((p as any).staleClaimPrompt).toBeUndefined();
+    const f = new TFile(); f.path = "Notes/held.md"; (f as any).stat = { size: 3, mtime: 0 };
+    (p as any).onLocalEvent(f);
+    expect((p as any).staleClaimPrompt).toBeDefined();
+    p.onunload();
+    expect((p as any).staleClaimPrompt).toBeUndefined();
+  });
+
+  it("the pass log tells this device's OWN echoed saves apart from a change made elsewhere", async () => {
+    const { p, api } = await bootPlugin();
+    const own = p.deviceId();
+    const lines = () => ((p as any).logs as string[]).filter((l) => /v\d+ → v\d+/.test(l));
+    const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256 of zero bytes, what the spy's getChunk returns
+    api.__setChanges({ version: 7, upserts: [{ path: "n.md", hash: empty, size: 0, mtime: 0, version: 7, chunks: [], deviceId: own, deviceName: "ASI Laptop" }], deletes: [] });
+    await (p as any).reconcileAllOnce();
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]).toMatch(/own change.*acknowledged.*v0 → v7/);
+    expect(lines()[0]).not.toMatch(/remote change/);
+    api.__setChanges({ version: 9, upserts: [{ path: "m.md", hash: empty, size: 0, mtime: 0, version: 9, chunks: [], deviceId: "dev-other", deviceName: "Phone" }], deletes: [] });
+    await (p as any).reconcileAllOnce();
+    expect(lines()).toHaveLength(2);
+    expect(lines()[1]).toMatch(/remote change from Phone.*v7 → v9/);
+    // No provenance at all (older server): say so, never guess "own".
+    api.__setChanges({ version: 11, upserts: [], deletes: [{ path: "m.md", version: 11 }] });
+    await (p as any).reconcileAllOnce();
+    expect(lines()[2]).toMatch(/remote change \(unknown device\).*v9 → v11/);
+    p.onunload();
+  });
+});
+
 describe("real modal action bodies (not spies): resolveNoteConflict / switchToVault / forkVault / resolveConfigGroup", () => {
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (b: Uint8Array) => new TextDecoder().decode(b);

@@ -417,3 +417,14 @@ export function pluginStatus(page: Page): Promise<string | null> {
     return instance?.statusText?.() ?? null;
   });
 }
+
+/** The label + detail SelfSync renders for the phase it currently shows — what the status-bar tooltip, the
+ * ribbon tooltip and the settings card all display (statusDisplay(statusText())). Null if the plugin is absent. */
+export function pluginStatusDetail(page: Page): Promise<{ label: string; detail: string } | null> {
+  return page.evaluate(() => {
+    const instance = (globalThis as unknown as { app: VaultApp }).app.plugins.plugins["selfsync"] as
+      { statusText?: () => string; statusDisplay?: (phase: string) => { label: string; detail: string } } | undefined;
+    if (!instance?.statusText || !instance.statusDisplay) return null;
+    return instance.statusDisplay(instance.statusText());
+  });
+}

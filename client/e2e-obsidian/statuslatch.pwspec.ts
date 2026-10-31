@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   launchObsidian, getMainWindow, waitForVaultReady, obsidianAvailable,
-  obsidianBelowMinAppVersion, OBSIDIAN_EXECUTABLE, createNote, modifyNote, pluginStatus,
+  obsidianBelowMinAppVersion, OBSIDIAN_EXECUTABLE, createNote, modifyNote, pluginStatus, pluginStatusDetail,
   type ObsidianHandle,
 } from "./helpers/obsidianDriver";
 import { isPluginLoaded } from "./helpers/rendererFunctions";
@@ -138,6 +138,42 @@ test("ARM 2 — a save that a second writer rewrites 120ms later (the owner's up
   console.log(`[latch] ARM2 trail: ${JSON.stringify(trail)} | final=${JSON.stringify(final)}`);
 
   expect(final, `the light latched on "Syncing…" after a save a second plugin rewrote. trail=${JSON.stringify(trail)}`).not.toMatch(/Syncing/i);
+});
+
+// statusLightSelfExplaining (st006/us009, owner 2026-10-30): the owner asked for a way to tell an accurate
+// yellow from a wrong one. A claim-raised "Syncing…" used to paint an EMPTY detail, so neither the owner nor the
+// 2026-10-30 investigation could name what held the light. This arm reads the same label+detail every
+// surface renders (statusDisplay(statusText())) and asserts that, while the save holds the light, the detail
+// NAMES the saved note — then that the light settles as ARM 1 requires. The sampling is tight: the claim is
+// recorded at the vault event and cleared once the push lands (about 3 s on the other arms), while the paint
+// itself is held 2.5 s, so a slow sampler would only ever see the held label with its (honest) empty detail.
+test("ARM 4 — while a save holds the light, the status detail NAMES the saved note; then it settles", async () => {
+  const page = await bootVault({});
+  await createNote(page, NOTE, "# latch probe\n\nbody\n");
+  await awaitIdleBaseline(page);
+
+  await modifyNote(page, NOTE, "# latch probe\n\nbody edited for the detail arm\n");
+  const seen: string[] = [];
+  let named = false;
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const d = await pluginStatusDetail(page);
+    if (d === null) throw new Error("statusDisplay() unreachable — the selfsync instance is absent, so the reading is meaningless");
+    const s = `${d.label} ${d.detail}`.trim();
+    if (seen[seen.length - 1] !== s) seen.push(s);
+    if (/Syncing/i.test(d.label) && d.detail.includes(NOTE)) { named = true; break; }
+    await page.waitForTimeout(25);
+  }
+  // eslint-disable-next-line no-console
+  console.log(`[latch] ARM4 seen: ${JSON.stringify(seen)} | named=${named}`);
+  expect(named, `the yellow light never named ${NOTE} in its detail. seen=${JSON.stringify(seen)}`).toBe(true);
+
+  const trail = await settleTrail(page, SETTLE_MS);
+  const final = await pluginStatus(page);
+  expect(final, "statusText() unreachable at the end of the arm - reading is vacuous").not.toBeNull();
+  // eslint-disable-next-line no-console
+  console.log(`[latch] ARM4 trail: ${JSON.stringify(trail)} | final=${JSON.stringify(final)}`);
+  expect(final, `the light never left "Syncing…" after the save. trail=${JSON.stringify(trail)}`).not.toMatch(/Syncing/i);
 });
 
 test("ARM 3 — a save to a note whose folder case differs from the synced spelling (Windows/macOS)", async () => {
