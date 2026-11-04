@@ -22,7 +22,7 @@
     "happy-dom": "^20.10.6",
     "obsidian": "^1.5.0",
     "typescript": "^5.4.0",
-    "vitest": "^3.2.7",
+    "vitest": "^5.0.0",
     "ws": "^8.18.0"
   },
   "dependencies": {
