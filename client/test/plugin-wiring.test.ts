@@ -1073,6 +1073,39 @@ describe("status light self-explaining — a yellow light names its holder (stat
     expect((p as any).staleClaimPrompt).toBeUndefined();
   });
 
+  // st008 (owner, 2026-11-04): "selfsync keeps regurgitating the same 11 unsynced items over and over again".
+  // Every one of the eleven was a FOLDER (.obsidian/plugins/<id>, .obsidian/themes/<name>). Measured in
+  // e2e-obsidian/configclaim.pwspec.ts ARM B on Windows 11 / Obsidian 1.12: listing a synced folder whose
+  // stored NTFS last-access time is more than an hour old makes Obsidian emit "raw" with the FOLDER path
+  // (eight events for five listings), with no write anywhere. A folder is never a synced item, so the
+  // claim it produced could not be settled by any pass, and the config scan re-lists every synced folder
+  // every 30 s. The producer must ask what the path IS before recording that it changed.
+  it("a raw event for a FOLDER records no claim and enqueues nothing; a raw event for a file still does", async () => {
+    const { p, api } = await bootPlugin(true, { settings: { configSync: { enabled: true, core: false, hotkeys: false, appearance: false, snippets: false, community: true, pluginAllow: ["quickadd"] } } });
+    (p as any).app.vault.adapter.stat = async (path: string) => path.endsWith(".json") ? { type: "file", size: 3, mtime: 0, ctime: 0 } : { type: "folder", size: 0, mtime: 0, ctime: 0 };
+    const enqueued: string[] = [];
+    const claimed: string[] = [];
+    const engine = (p as any).engine;
+    const origEnqueue = engine.enqueue.bind(engine);
+    engine.enqueue = (ev: any) => { if (ev.kind === "path") enqueued.push(ev.path); return origEnqueue(ev); };
+    const origNote = (p as any).noteLocalChange.bind(p);
+    (p as any).noteLocalChange = (path: string, onDisk?: boolean) => { claimed.push(path); return origNote(path, onDisk); };
+    (p as any).onRawConfigEvent(".obsidian/plugins/quickadd");
+    await new Promise((r) => setTimeout(r, 700)); // past RAW_DEBOUNCE_MS
+    await flush();
+    expect(claimed).toEqual([]);
+    expect(enqueued).toEqual([]);
+    expect(p.statusText()).toBe("idle");
+    // A FILE under the same folder still flows: claimed, then enqueued (the spy api settles it at once).
+    (p as any).onRawConfigEvent(".obsidian/plugins/quickadd/data.json");
+    await new Promise((r) => setTimeout(r, 700));
+    await flush();
+    expect(claimed).toEqual([".obsidian/plugins/quickadd/data.json"]);
+    expect(enqueued).toEqual([".obsidian/plugins/quickadd/data.json"]);
+    void api;
+    p.onunload();
+  });
+
   it("the pass log tells this device's OWN echoed saves apart from a change made elsewhere", async () => {
     const { p, api } = await bootPlugin();
     const own = p.deviceId();

@@ -3678,9 +3678,31 @@ export default class SelfSyncPlugin extends Plugin {
       this.recentSelfWrites.delete(path);
       if (Date.now() - wrote < SELF_WRITE_WINDOW_MS) return; // within the window: this is our echo
     }
-    this.rawBuffer.add(path);
-    if (this.rawDebounce !== undefined) window.clearTimeout(this.rawDebounce);
-    this.rawDebounce = window.setTimeout(() => void this.flushRawConfig(), RAW_DEBOUNCE_MS);
+    // A raw event names a path; it does not say the path is a FILE. On Windows the watcher reports a
+    // synced plugin or theme FOLDER whenever NTFS persists its last-access time (hourly, on any listing —
+    // the config scan lists every synced folder every 30 s), with no write anywhere: measured in
+    // e2e-obsidian/configclaim.pwspec.ts ARM B, eight folder events for five read-only listings. A folder is
+    // never a synced item, so a claim recorded for it could not be settled by any pass; the owner saw the
+    // same eleven folders "regurgitated" for weeks (st008 / issue007). Ask the adapter what the path is,
+    // and buffer only a file (or an absent path, which is a deletion). The stat is async, so the decision
+    // lands on the buffer when it resolves; the debounce absorbs the delay.
+    void this.rawPathIsFolder(path).then((isFolder) => {
+      if (isFolder || this.unloading) { if (isFolder) this.fileLog?.trace(`raw event ignored (folder, not a file): ${path}`); return; }
+      this.rawBuffer.add(path);
+      if (this.rawDebounce !== undefined) window.clearTimeout(this.rawDebounce);
+      this.rawDebounce = window.setTimeout(() => void this.flushRawConfig(), RAW_DEBOUNCE_MS);
+    });
+  }
+  // True only when the adapter POSITIVELY reports a folder. Absent (deleted) or unknown reads as "not a
+  // folder" so a deletion still flows, and a stat fault degrades to the old behaviour rather than dropping
+  // a real change.
+  private async rawPathIsFolder(path: string): Promise<boolean> {
+    try {
+      const adapter = this.app.vault.adapter as unknown as { stat?: (p: string) => Promise<{ type?: string } | null> };
+      if (!adapter.stat) return false;
+      const st = await adapter.stat(path);
+      return st?.type === "folder";
+    } catch { return false; }
   }
 
   // EFFECT: reconcile one path, then apply any live config reload it triggered. flushConfigReload
