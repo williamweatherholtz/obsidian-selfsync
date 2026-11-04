@@ -1102,7 +1102,150 @@ describe("status light self-explaining — a yellow light names its holder (stat
     await flush();
     expect(claimed).toEqual([".obsidian/plugins/quickadd/data.json"]);
     expect(enqueued).toEqual([".obsidian/plugins/quickadd/data.json"]);
+    // The settle half (panel 2026-11-04, PEDANT-3 T5): the connected spy api settles the file claim. The light
+    // itself may still sit in its SYNCING_MIN_SHOW_MS hold here; the claim map is the fact under test.
+    expect((p as any).unsyncedEdits.size).toBe(0);
     void api;
+    p.onunload();
+  });
+
+  // Panel 2026-11-04 (PEDANT-1 T1/T2/T5, PEDANT-3 T1-T4, PESSIMIST-2): the three degrade branches the
+  // rawPathIsFolder comment promises, the unload race, the scope filter order, and a mixed burst.
+  const rawSpies = (p: any) => {
+    const enqueued: string[] = [];
+    const claimed: string[] = [];
+    const engine = p.engine;
+    const origEnqueue = engine.enqueue.bind(engine);
+    engine.enqueue = (ev: any) => { if (ev.kind === "path") enqueued.push(ev.path); return origEnqueue(ev); };
+    const origNote = p.noteLocalChange.bind(p);
+    p.noteLocalChange = (path: string, onDisk?: boolean) => { claimed.push(path); return origNote(path, onDisk); };
+    const traces: string[] = [];
+    const log = p.fileLog; const origTrace = log.trace.bind(log); log.trace = (m: string) => { traces.push(m); origTrace(m); };
+    return { enqueued, claimed, traces };
+  };
+  const RAW_CFG = { settings: { configSync: { enabled: true, core: false, hotkeys: false, appearance: false, snippets: false, community: true, pluginAllow: ["quickadd"] } } };
+  const FILE = ".obsidian/plugins/quickadd/data.json";
+
+  it("a raw event for an ABSENT path (stat null, a deletion) still flows: claimed and enqueued", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    (p as any).app.vault.adapter.stat = async () => null;
+    const s = rawSpies(p);
+    (p as any).onRawConfigEvent(FILE);
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(s.claimed).toEqual([FILE]);
+    expect(s.enqueued).toEqual([FILE]);
+    p.onunload();
+  });
+
+  it("a stat FAULT degrades to the old behaviour (the path flows) and names itself in the trace", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    (p as any).app.vault.adapter.stat = async () => { throw new Error("EPERM"); };
+    const s = rawSpies(p);
+    (p as any).onRawConfigEvent(FILE);
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(s.claimed).toEqual([FILE]);
+    expect(s.enqueued).toEqual([FILE]);
+    expect(s.traces.some((m) => m.includes("stat failed for " + FILE) && m.includes("EPERM"))).toBe(true);
+    p.onunload();
+  });
+
+  it("an adapter WITHOUT stat still flows the path and names the missing capability once per event", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    delete (p as any).app.vault.adapter.stat;
+    const s = rawSpies(p);
+    (p as any).onRawConfigEvent(FILE);
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(s.claimed).toEqual([FILE]);
+    expect(s.enqueued).toEqual([FILE]);
+    expect(s.traces.filter((m) => m.includes("the adapter has no stat"))).toHaveLength(1);
+    p.onunload();
+  });
+
+  it("an unload while the stat is in flight buffers nothing, arms no timer and records no claim", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    let release!: (v: { type: string }) => void;
+    (p as any).app.vault.adapter.stat = () => new Promise<{ type: string }>((r) => { release = r; });
+    const s = rawSpies(p);
+    (p as any).onRawConfigEvent(FILE);
+    await flush();
+    p.onunload();
+    release({ type: "file" });
+    await flush();
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect((p as any).rawBuffer.size).toBe(0);
+    expect((p as any).rawDebounce).toBeUndefined();
+    expect(s.claimed).toEqual([]);
+    expect(s.enqueued).toEqual([]);
+  });
+
+  it("the scope filter runs BEFORE the stat: a path outside the allowlist never reaches the adapter", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    const stats: string[] = [];
+    (p as any).app.vault.adapter.stat = async (path: string) => { stats.push(path); return { type: "file" }; };
+    const s = rawSpies(p);
+    (p as any).onRawConfigEvent(".obsidian/plugins/notallowed/data.json");
+    (p as any).onRawConfigEvent("Notes/outside.md");
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(stats).toEqual([]);
+    expect(s.claimed).toEqual([]);
+    expect(s.enqueued).toEqual([]);
+    p.onunload();
+  });
+
+  it("a mixed burst (folder + two files in one tick) keeps only the files and flushes once", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    (p as any).app.vault.adapter.stat = async (path: string) => path.endsWith(".json") ? { type: "file" } : { type: "folder" };
+    const s = rawSpies(p);
+    let flushes = 0;
+    const origFlush = (p as any).flushRawConfig.bind(p);
+    (p as any).flushRawConfig = () => { flushes++; return origFlush(); };
+    (p as any).onRawConfigEvent(".obsidian/plugins/quickadd");
+    (p as any).onRawConfigEvent(FILE);
+    (p as any).onRawConfigEvent(".obsidian/plugins/quickadd/manifest.json");
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect([...s.claimed].sort()).toEqual([FILE, ".obsidian/plugins/quickadd/manifest.json"].sort());
+    expect([...s.enqueued].sort()).toEqual([FILE, ".obsidian/plugins/quickadd/manifest.json"].sort());
+    expect(flushes).toBe(1);
+    p.onunload();
+  });
+
+  // Panel 2026-11-04 (SE F1, PEDANT-1 F1/T3, PEDANT-3 F2): the mechanism the record got wrong. A folder claim
+  // IS settled by a connected per-path pass. What holds a claim past the 60 s stale bound is a path event
+  // raised while the engine is NOT connected: syncengine drops it, so nothing settles the claim until the
+  // connect's full pass. These two tests make the record executable.
+  it("a folder claim raised while CONNECTED is settled by the per-path pass (the old behaviour, documented)", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    delete (p as any).app.vault.adapter.stat; // no stat: the pre-fix path, a folder claim is raised
+    const s = rawSpies(p);
+    const settled: string[] = [];
+    const origSettled = (p as any).notePathSettled.bind(p);
+    (p as any).notePathSettled = (path: string) => { settled.push(path); return origSettled(path); };
+    (p as any).onRawConfigEvent(".obsidian/plugins/quickadd");
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(s.claimed).toEqual([".obsidian/plugins/quickadd"]);
+    expect(settled).toContain(".obsidian/plugins/quickadd");
+    expect((p as any).unsyncedEdits.size).toBe(0);
+    p.onunload();
+  });
+
+  it("a claim raised while the engine is NOT connected stands (the path event is dropped) until a full pass settles it", async () => {
+    const { p } = await bootPlugin(true, RAW_CFG);
+    (p as any).app.vault.adapter.stat = async () => ({ type: "file" });
+    const s = rawSpies(p);
+    // Take the engine off the link the way a failed pass does: the engine drops path events until reconnected.
+    (p as any).engine.enqueue({ kind: "disconnect" });
+    await flush();
+    expect((p as any).engine.getState()).not.toMatch(/idle|reconciling/);
+    (p as any).onRawConfigEvent(FILE);
+    await new Promise((r) => setTimeout(r, 700)); await flush();
+    expect(s.claimed).toEqual([FILE]);
+    expect(s.enqueued).toEqual([FILE]);
+    expect((p as any).unsyncedEdits.size).toBe(1); // dropped by the engine: nothing settled it
+    expect(p.statusText()).not.toBe("idle");
+    // The connect's full pass visits every in-scope path and settles everything recorded before it.
+    (p as any).engine.enqueue({ kind: "connect" });
+    await flush(); await new Promise((r) => setTimeout(r, 200)); await flush();
+    expect((p as any).unsyncedEdits.size).toBe(0);
     p.onunload();
   });
 

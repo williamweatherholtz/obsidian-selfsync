@@ -2292,7 +2292,7 @@ export default class SelfSyncPlugin extends Plugin {
   statusText() { return this.lightDisplay.shown; }
 
   // Applying a config-sync change (master/category/per-plugin toggle) must take effect NOW — otherwise
-  // the switch looks inert for up to CONFIG_SCAN_INTERVAL_MS (~2 min), which is exactly the "I flipped
+  // the switch looks inert for up to a poll tick (CONFIG_SCAN_INTERVAL_MS is a 30 s floor; the idle poll is 60 s), which is exactly the "I flipped
   // it and nothing happened" complaint. Persist, then (if connected) force a CONFIG scan on the next
   // reconcile and kick one immediately, so a newly-enabled category/plugin syncs right away (and a
   // newly-disabled one stops being pushed). If not connected, it applies on the next connect.
@@ -3682,9 +3682,12 @@ export default class SelfSyncPlugin extends Plugin {
     // synced plugin or theme FOLDER whenever NTFS persists its last-access time (hourly, on any listing —
     // the config scan lists every synced folder every 30 s), with no write anywhere: measured in
     // e2e-obsidian/configclaim.pwspec.ts ARM B, eight folder events for five read-only listings. A folder is
-    // never a synced item, so a claim recorded for it could not be settled by any pass; the owner saw the
-    // same eleven folders "regurgitated" for weeks (st008 / issue007). Ask the adapter what the path is,
-    // and buffer only a file (or an absent path, which is a deletion). The stat is async, so the decision
+    // never a synced item, so a claim for it is noise: a connected per-path pass settles it in about a second
+    // as "in-sync" (reconcilePath's finally block) and the light blinks yellow for a change nobody made, while
+    // a claim raised when no per-path pass runs (the engine not connected: syncengine drops path events) stands
+    // until the next full or config pass. The owner saw ten such folders named again and again (st008 /
+    // issue007; panel 2026-11-04 corrected the earlier "no pass can settle it"). Ask the adapter what the path
+    // is, and buffer only a file (or an absent path, which is a deletion). The stat is async, so the decision
     // lands on the buffer when it resolves; the debounce absorbs the delay.
     void this.rawPathIsFolder(path).then((isFolder) => {
       if (isFolder || this.unloading) { if (isFolder) this.fileLog?.trace(`raw event ignored (folder, not a file): ${path}`); return; }
@@ -3695,14 +3698,18 @@ export default class SelfSyncPlugin extends Plugin {
   }
   // True only when the adapter POSITIVELY reports a folder. Absent (deleted) or unknown reads as "not a
   // folder" so a deletion still flows, and a stat fault degrades to the old behaviour rather than dropping
-  // a real change.
+  // a real change. Each degrade names itself in the trace (panel 2026-11-04, PEDANT-3 F3): a silent fallback
+  // on an adapter without stat, or one whose stat throws, would make a recurrence of issue007 unattributable.
   private async rawPathIsFolder(path: string): Promise<boolean> {
+    const adapter = this.app.vault.adapter as unknown as { stat?: (p: string) => Promise<{ type?: string } | null> };
+    if (typeof adapter.stat !== "function") { this.fileLog?.trace(`raw event: the adapter has no stat; ${path} is treated as a file`); return false; }
     try {
-      const adapter = this.app.vault.adapter as unknown as { stat?: (p: string) => Promise<{ type?: string } | null> };
-      if (!adapter.stat) return false;
       const st = await adapter.stat(path);
       return st?.type === "folder";
-    } catch { return false; }
+    } catch (e) {
+      this.fileLog?.trace(`raw event: stat failed for ${path} (${(e as Error)?.message ?? e}); treated as a file`);
+      return false;
+    }
   }
 
   // EFFECT: reconcile one path, then apply any live config reload it triggered. flushConfigReload
