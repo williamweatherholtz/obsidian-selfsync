@@ -73,4 +73,29 @@ package ProjectIndicators {
     #Measures dependency from serverMutationScoreM4 to serverMutationScore;
     part serverMutationScoreM5 : Measurement { :>> id = "c0f1a5cc-1d08-4a10-9b20-a1b2c3d41d08"; :>> value = "83.6"; :>> measuredAt = "2026-07-18"; :>> source = "cargo-mutants v27.1 --file src/vault.rs --timeout 300, AFTER the 3 reindex corrupt-rebuild killing tests (mutationTestingVaultReindex): 107 caught / 21 missed / 10 unviable = 107/128 viable (83.6%). Up from M4's 79.7% (5 reindex survivors killed). All 21 residual are the documented equivalent/impractical accepts (constants, log-only, time-gated best-effort, Windows-redundant) — 0 real survivors, so 100% of non-accepted mutants are caught."; :>> createdBy = "claudeOpus"; }
     #Measures dependency from serverMutationScoreM5 to serverMutationScore;
+    // ---- End-to-end encryption KDF cost on real phones (D0112, 2026-11-10): owner-run, subjective stopwatch
+    // and OS memory readout per docs/architecture/93-real-device-perf-protocol.md. E4 cites one Measurement
+    // under each; until both exist the E4 result is fail and Encrypt ships hidden behind SELFSYNC_E2EE_CREATE.
+    part e2eePhoneKdfWallTime : Indicator {
+        :>> id = "1862e6d4-d9e0-4749-ada9-de6e0def9972";
+        :>> title = "E2EE Argon2id wall time on a real phone";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> measures = "Seconds from password entry to the unwrapped vault key on a real iOS and a real Android device at the shipped KDF parameters.";
+        :>> goal = IndicatorGoal::minimize;
+        :>> unit = "s";
+        :>> method = MeasurementMethod::manual;
+        :>> collectionRef = "docs/architecture/93-real-device-perf-protocol.md, KDF row (stopwatch)";
+    }
+    part e2eePhoneKdfPeakMemory : Indicator {
+        :>> id = "71a506d3-40ef-4e02-8bb1-0b9d073dc098";
+        :>> title = "E2EE Argon2id peak memory on a real phone";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> measures = "Peak resident memory of the Obsidian process during the KDF on a real iOS and a real Android device at the shipped parameters.";
+        :>> goal = IndicatorGoal::minimize;
+        :>> unit = "MiB";
+        :>> method = MeasurementMethod::manual;
+        :>> collectionRef = "docs/architecture/93-real-device-perf-protocol.md, KDF row (OS memory readout)";
+    }
 }

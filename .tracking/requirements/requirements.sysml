@@ -494,6 +494,14 @@ package ProjectRequirements {
         :>> rationale = "A pre-E2EE client must fail at its first call, visibly, instead of writing ciphertext into the user's vault or plaintext into the server. The D0042 fail-closed posture, applied to content encoding (D0103).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
+    requirement srE2eeRolledBackServerRefuses : SystemRequirement {
+        :>> id = "05dfab54-75a3-4ae9-9fcc-0739620492b2";
+        :>> title = "A pre-E2EE server build refuses to open a vault the E2EE server opened";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "When a server build that predates E2EE opens a vault whose index the E2EE server wrote, the server shall refuse to open it and serve nothing from it.";
+        :>> rationale = "An encrypted vault's frames are addressed and hashed exactly like plaintext chunks, so a rolled-back server would hand frames to an old client as content and accept plaintext commits. The existing newer-schema refusal carries this, through the schema bump to 4 (D0102). Panel round 4, SE finding 1.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
     requirement srE2eePlaintextChunkRefused : SystemRequirement {
         :>> id = "5b523b9a-ed01-44e4-a24e-47a25e16c0fc";
         :>> title = "An encrypted vault refuses a chunk that is not an encrypted frame";
@@ -535,6 +543,7 @@ package ProjectRequirements {
     satisfy nE2eeContentPrivacy by srE2eeIntegrityDetected;
     satisfy nE2eeContentPrivacy by srE2eeDedupPreserved;
     satisfy nE2eeContentPrivacy by srE2eeDowngradeGuard;
+    satisfy nE2eeContentPrivacy by srE2eeRolledBackServerRefuses;
     satisfy nE2eeContentPrivacy by srE2eePlaintextChunkRefused;
     satisfy nE2eeContentPrivacy by srE2eeWrongPasswordDistinct;
     satisfy nE2eeContentPrivacy by srE2eeCreateFailsClosed;
