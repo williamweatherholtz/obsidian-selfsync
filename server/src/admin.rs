@@ -415,7 +415,11 @@ pub async fn reindex(
         let mut v = crate::error::wlock(&h.vault)?;
         // A forced reindex that still can't complete is a genuine BadRequest (unsafe/colliding
         // names on disk), not an internal error; surface the message so the operator can act.
-        v.reindex(force).map_err(|e| if force { AppError::BadRequest(e.to_string()) } else { AppError::Internal(e.to_string()) })?;
+        v.reindex(force).map_err(|e| if force || e.kind() == std::io::ErrorKind::InvalidData {
+            // force: unsafe/colliding names on disk. InvalidData: an E2EE rebuild abort with its named remedy
+            // (spec section 4.5), vault-relative paths only. Both are operator-actionable, so surface them.
+            AppError::BadRequest(e.to_string())
+        } else { AppError::Internal(e.to_string()) })?;
         let version = v.version();
         drop(v);
         let _ = h.tx.send(version); // broadcast the rebuilt version so connected clients re-sync

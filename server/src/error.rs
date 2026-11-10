@@ -46,6 +46,10 @@ pub const E2EE_MIXED_MSG: &str =
 pub const E2EE_NO_MIRROR_MSG: &str =
     "this vault has a .keyring.json but its index predates encryption and holds no files. Move .sync-index.db* aside if the vault is encrypted, or move .keyring.json aside if it is not.";
 
+// Refusal TWO, the file walk itself failed: no diagnosis, so no remedy is named.
+pub const E2EE_SCAN_FAILED_MSG: &str =
+    "this vault has a .keyring.json but its index predates encryption, and the server could not read the vault's files to tell which is stale. Check the permissions on the vault directory and retry.";
+
 // An E2EE open refusal carried inside an io::Error (Vault::open keeps its io::Result signature). The body is
 // one of the consts above plus any counts; vault_open_error downcasts it to a 503 with THAT body.
 #[derive(Debug)]
@@ -186,10 +190,13 @@ mod tests {
         }
         assert_eq!(status_of(vault_open_error(e2ee_refusal("x".into()))).await, StatusCode::SERVICE_UNAVAILABLE);
         for (name, body) in [("required", E2EE_REQUIRED_MSG), ("missing", E2EE_KEYRING_MISSING_MSG), ("stale index", E2EE_STALE_INDEX_MSG),
-                             ("stale keyring", E2EE_STALE_KEYRING_MSG), ("mixed", E2EE_MIXED_MSG), ("no mirror", E2EE_NO_MIRROR_MSG)] {
+                             ("stale keyring", E2EE_STALE_KEYRING_MSG), ("mixed", E2EE_MIXED_MSG), ("no mirror", E2EE_NO_MIRROR_MSG), ("scan failed", E2EE_SCAN_FAILED_MSG)] {
             assert!(body.chars().count() <= 260, "{name} body must stay under the client cap with headroom: {}", body.chars().count());
             assert!(!body.contains('/') || body.contains("/admin"), "{name} body is path-free");
         }
+        // The mixed body is the const plus two counts: pin the FORMATTED worst case under the hard cap.
+        let worst = format!("{E2EE_MIXED_MSG} ({0} encrypted, {0} plaintext)", usize::MAX);
+        assert!(worst.chars().count() <= 300, "the formatted mixed body must stay under the client cap: {}", worst.chars().count());
         // The downgrade-guard body must never read as the password-change state (connstate.ts:95).
         let pw = regex_lite(E2EE_REQUIRED_MSG);
         assert!(!pw, "the E2EE 403 body must not match /password.?change|change.?password/i");

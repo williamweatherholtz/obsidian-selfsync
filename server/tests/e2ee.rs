@@ -83,6 +83,10 @@ async fn create_with_keyring_stores_it_verbatim_and_get_keyring_answers_on_both_
     let h = st.vault("admin", "enc").unwrap();
     assert!(h.vault.read().unwrap().encrypted());
     assert!(!st.vault("admin", "plain").unwrap().vault.read().unwrap().encrypted());
+    // A sidecar dropped beside the PLAINTEXT warm handle: the server's encrypted test is the flag, so GET
+    // keyring answers 404, never 200 (a joiner must not push frames into a plaintext handle).
+    std::fs::write(_root.join("admin").join("plain").join(".keyring.json"), KEYRING).unwrap();
+    assert_eq!(c.get(format!("{base}/api/v/plain/keyring")).bearer_auth(&tok).send().await.unwrap().status(), 404);
 }
 
 // (6) The downgrade guard over the WHOLE signed route list: every vault-scoped route answers a grantee
@@ -239,7 +243,11 @@ fn create_vault_409_restores_the_tombstone_state_and_purge_then_create_works() {
     assert!(st.create_vault("admin", "enc", Some(KEYRING.as_bytes())).is_ok());
     assert!(st.vault("admin", "enc").unwrap().vault.read().unwrap().encrypted());
     assert_eq!(kind(st.create_vault("admin", "enc", Some(KEYRING.as_bytes()))), Some(std::io::ErrorKind::AlreadyExists));
-    assert!(st.vault("admin", "enc").is_ok(), "the live vault is not tombstoned by a 409");
+    // A COLD open sees the tombstone, a warm one does not: a second AppState over the same root is cold.
+    let cold = AppState::for_test(dir.path());
+    assert!(cold.vault("admin", "enc").is_ok(), "the live vault is not tombstoned by a 409 (cold open)");
+    assert!(st.vault("admin", "enc").is_ok());
+    drop(cold); // release its SQLite handle, or Windows refuses the purge's directory removal
     st.purge_vault("admin", "enc").unwrap();
     assert_eq!(kind(st.vault("admin", "enc")), Some(std::io::ErrorKind::NotFound), "purged: tombstoned, a raced open gets NotFound");
     // a deliberate same-name create after a purge succeeds and clears the tombstone, as plaintext here
@@ -251,4 +259,43 @@ fn create_vault_409_restores_the_tombstone_state_and_purge_then_create_works() {
     std::fs::create_dir_all(dir.path().join("admin").join("enc")).unwrap();
     assert_eq!(kind(st.create_vault("admin", "enc", None)), Some(std::io::ErrorKind::AlreadyExists));
     assert_eq!(kind(st.vault("admin", "enc")), Some(std::io::ErrorKind::NotFound), "the purge tombstone survived the 409");
+}
+
+// (4) The status detail carries the named abort reason of a rebuild that aborted on the no-sidecar pre-pass,
+// and GET keyring on that handle answers the refusal-one 503 (the handle holds the no-sidecar abort reason).
+#[tokio::test]
+async fn status_detail_carries_the_abort_reason_and_keyring_answers_503_on_that_handle() {
+    let (base, _st, root) = spawn().await;
+    let tok = login(&base, "admin", "admin").await;
+    assert_eq!(create(&base, &tok, "plain", None).await, 200);
+    let c = reqwest::Client::new();
+    // a frame stream with a trailer dropped into vault/ of a plaintext vault, and the index lost
+    let mut dropped = frame(300, 2);
+    dropped.extend_from_slice(b"SSEM");
+    dropped.extend_from_slice(&[0xabu8; 32]);
+    let vdir = root.join("admin").join("plain");
+    std::fs::write(vdir.join("vault").join("dropped.md"), &dropped).unwrap();
+    // evict the warm handle by purging the cache: a fresh AppState over a copy sees a cold open
+    let root2 = tempdir().unwrap();
+    let root2 = Box::leak(Box::new(root2)).path().to_path_buf();
+    copy_dir(&root, &root2);
+    for s in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(root2.join("admin").join("plain").join(format!(".sync-index.db{s}"))); }
+    let base2 = serve(AppState::for_test(&root2)).await;
+    let tok2 = login(&base2, "admin", "admin").await;
+    let r = c.get(format!("{base2}/api/v/plain/status")).bearer_auth(&tok2).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let s: selfsync_server::protocol::StatusResponse = r.json().await.unwrap();
+    assert_eq!(s.status, "error");
+    assert!(s.detail.starts_with("rebuild aborted: no .keyring.json"), "{}", s.detail);
+    assert!(s.detail.contains("dropped.md"));
+    let r = c.get(format!("{base2}/api/v/plain/keyring")).bearer_auth(&tok2).send().await.unwrap();
+    assert_eq!((r.status().as_u16(), r.text().await.unwrap().as_str()), (503, E2EE_KEYRING_MISSING_MSG));
+    // the exit: restore a sidecar and reindex, the vault is encrypted and ready, the reason is cleared
+    std::fs::write(root2.join("admin").join("plain").join(".keyring.json"), KEYRING).unwrap();
+    let r = c.post(format!("{base2}/api/v/plain/reindex")).bearer_auth(&tok2).header("x-selfsync-e2ee", "1").send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let s: selfsync_server::protocol::StatusResponse = c.get(format!("{base2}/api/v/plain/status")).bearer_auth(&tok2).header("x-selfsync-e2ee", "1").send().await.unwrap().json().await.unwrap();
+    assert_eq!((s.status.as_str(), s.detail.as_str()), ("ready", ""));
+    let r = c.get(format!("{base2}/api/v/plain/keyring")).bearer_auth(&tok2).send().await.unwrap();
+    assert_eq!(r.status(), 200);
 }

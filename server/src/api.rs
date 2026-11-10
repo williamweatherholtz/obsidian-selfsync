@@ -88,9 +88,14 @@ async fn scoped_with(
             AppError::NotFound
         } else { crate::error::vault_open_error(e) })?;
     // E2EE downgrade guard, after authorized() and vault_exists(): a grantee without the header on a
-    // keyring vault gets 403 with the fixed body. Reads the in-memory flag only (a corrupt vault still answers).
-    if guard == Guard::Enforce && !e2ee.0 && rlock(&h.vault)?.encrypted() {
-        return Err(AppError::E2eeRequired);
+    // keyring vault gets 403 with the fixed body. Reads the in-memory flag only (a corrupt vault still
+    // answers). The flag read takes the per-vault read lock, so it runs on the blocking pool like every
+    // other lock in this file (R10-D3): a commit or reindex holding the write lock must never stall an
+    // async worker. A request that carries the header pays nothing, so a plaintext vault is unchanged.
+    if guard == Guard::Enforce && !e2ee.0 {
+        let h2 = h.clone();
+        let encrypted = blocking(move || Ok(rlock(&h2.vault)?.encrypted())).await?;
+        if encrypted { return Err(AppError::E2eeRequired); }
     }
     Ok((owner, vault, h))
 }
@@ -108,7 +113,11 @@ pub async fn get_keyring(
     let bytes = blocking(move || {
         let v = rlock(&h.vault)?;
         match v.keyring_bytes().map_err(|e| AppError::Internal(format!("keyring read failed: {e}")))? {
-            Some(b) => Ok(Some(b)),
+            Some(b) if v.encrypted() => Ok(Some(b)),
+            // A sidecar beside a handle the server holds as PLAINTEXT (dropped in mid-run): the server's
+            // encrypted test is the flag, never the sidecar, so this answers as a plaintext vault. The next
+            // restart meets refusal two, which names the stale part.
+            Some(_) => { log::warn!("[keyring] a .keyring.json sits beside a plaintext handle; answering 404 until a restart diagnoses it"); Ok(None) }
             None if v.encrypted() || v.aborted_for_no_sidecar() => Err(AppError::Unavailable(crate::error::E2EE_KEYRING_MISSING_MSG.into())),
             None => Ok(None),
         }
@@ -397,7 +406,10 @@ pub async fn reindex(
     // reindex walks the whole vault dir + rehashes — always on the blocking pool.
     let version = blocking(move || {
         let mut v = wlock(&h.vault)?;
-        v.reindex(false).map_err(|e| AppError::Internal(e.to_string()))?;
+        // E2EE (spec section 4.5): a rebuild that aborted for a named reason returns that reason as a 503
+        // (the vault stays ERROR with its remedy), never a masked 500. The reason carries vault-relative
+        // note paths only. Every other failure stays a generic 500 (SEC-6).
+        v.reindex(false).map_err(|e| if e.kind() == std::io::ErrorKind::InvalidData { AppError::Unavailable(e.to_string()) } else { AppError::Internal(e.to_string()) })?;
         Ok(v.version())
     }).await?;
     log::info!("[{owner}/{vault} reindex by {user}] rebuilt manifest -> v{version}");
@@ -429,4 +441,29 @@ pub async fn delete_own_vault(
     log::info!("[{user} delete-own-vault] {vault}");
     audit(action::VAULT_DELETE, &user, &format!("{user}/{vault}"), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
+}
+
+#[cfg(test)]
+mod tests {
+    // issue012 (D0047, a correction becomes a guard): every per-vault lock in this file runs on the blocking
+    // pool (R10-D3, critique-R8 H1), because a commit or reindex holding the write lock would otherwise stall
+    // an async worker for its whole hold. The rule lived in comments only, and Sprint 2 broke it once. This
+    // test reads the source and fails on any rlock( or wlock( outside a blocking(...) or spawn_blocking(...)
+    // closure, named by line. Text-level on purpose: it needs no runtime and runs on every cargo test.
+    #[test]
+    fn every_vault_lock_in_api_rs_runs_on_the_blocking_pool() {
+        let src = include_str!("api.rs");
+        let mut inside = false;
+        let mut offenders: Vec<String> = Vec::new();
+        for (i, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains("blocking(move ||") || code.contains("spawn_blocking(") { inside = true; }
+            let locks = code.contains("rlock(&") || code.contains("wlock(&");
+            if locks && !inside { offenders.push(format!("line {}: {}", i + 1, line.trim())); }
+            if code.contains("}).await") || (inside && code.contains(").await") && !code.contains("blocking(")) { inside = false; }
+        }
+        assert!(offenders.is_empty(), "a vault lock outside the blocking pool (R10-D3, issue012): {}", offenders.join(" | "));
+        // The scanner is live: its first run caught a self-test line that named a lock in a string literal.
+        assert!(src.contains("blocking(move ||"), "the pool idiom this guard keys on still exists");
+    }
 }

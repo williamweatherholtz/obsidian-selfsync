@@ -107,6 +107,11 @@ pub struct AppState {
     pub login_throttle: Arc<Mutex<crate::throttle::LoginThrottle>>,
 }
 
+// Test-only failpoint: make the next sidecar write in create_vault fail, so the "directory removed, tombstone
+// kept, a parked open gets NotFound" arm is pinned (spec section 4.4). Never compiled into the binary.
+#[cfg(test)]
+pub(crate) static FAIL_SIDECAR_WRITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // Max concurrent password-hash operations across all login/register requests. (SEC-2)
 pub const MAX_CONCURRENT_AUTH_HASHES: usize = 8;
 // At most this many LARGE-file reassemblies (req.size > COMMIT_LARGE_BYTES) run at once. Worst-case
@@ -416,7 +421,10 @@ impl AppState {
             }
         };
         let dir = self.ns_dir(&ownern, &vaultn);
-        std::fs::create_dir_all(self.cfg.data_root.join(ownern.as_str()))?;
+        if let Err(e) = std::fs::create_dir_all(self.cfg.data_root.join(ownern.as_str())) {
+            restore_tombstone(self); // a user-directory failure on a live name must not leave it tombstoned
+            return Err(e);
+        }
         if let Err(e) = std::fs::create_dir(&dir) {
             restore_tombstone(self);
             return Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
@@ -426,6 +434,10 @@ impl AppState {
         if let Some(bytes) = keyring {
             let write = (|| -> std::io::Result<()> {
                 use std::io::Write;
+                #[cfg(test)]
+                if FAIL_SIDECAR_WRITE.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(std::io::Error::other("test failpoint: sidecar write failed"));
+                }
                 let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(Vault::keyring_path(&dir))?;
                 f.write_all(bytes)?;
                 f.sync_all()?;
@@ -508,6 +520,30 @@ mod tests {
         st.allow_vault_recreate("alice", "notes");
         st.vault("alice", "notes").unwrap();
         assert!(st.vault_exists("alice", "notes"));
+    }
+
+    // E2EE (spec section 4.4): a sidecar write failure inside create_vault removes the directory under the lock
+    // and leaves the tombstone set, so a parked open on that NEVER-PURGED name wakes to NotFound, never to an
+    // empty plaintext vault. A later deliberate create clears it.
+    #[test]
+    fn create_vault_sidecar_failure_removes_the_directory_and_keeps_the_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = AppState::for_test(dir.path());
+        FAIL_SIDECAR_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let r = st.create_vault("admin", "fresh", Some(b"{}"));
+        FAIL_SIDECAR_WRITE.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(r.is_err(), "the create fails");
+        assert!(!dir.path().join("admin").join("fresh").exists(), "the directory is removed under the lock");
+        assert!(!st.vault_exists("admin", "fresh"));
+        match st.vault("admin", "fresh") {
+            Ok(_) => panic!("a raced open must not materialize the name"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "the tombstone stands"),
+        }
+        assert!(!dir.path().join("admin").join("fresh").exists(), "and the open did not recreate it");
+        // a retried create succeeds and clears the tombstone
+        let h = st.create_vault("admin", "fresh", Some(b"{}")).unwrap();
+        assert!(h.vault.read().unwrap().encrypted());
+        assert!(st.vault("admin", "fresh").is_ok());
     }
 
     // RS-1: the eviction predicate keeps a subscribed or recently-accessed handle and drops an

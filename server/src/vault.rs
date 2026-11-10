@@ -191,13 +191,15 @@ enum MirrorMagic {
     AllFrames,
     NoFrames,
     Mixed { frames: usize, plain: usize, first: Vec<String> },
+    // The walk itself failed (permissions): no diagnosis, so no remedy is named.
+    Unreadable,
 }
 
 // Read the four-byte magic of every file under `vault_dir` (the collect_files walk). A file that cannot be
 // read counts as plaintext: the scan is a diagnosis for an operator, and an unreadable file is not a frame.
 fn mirror_magic_scan(vault_dir: &Path) -> MirrorMagic {
     let mut rels: Vec<(String, PathBuf)> = Vec::new();
-    let _ = collect_files(vault_dir, vault_dir, &mut rels);
+    if collect_files(vault_dir, vault_dir, &mut rels).is_err() { return MirrorMagic::Unreadable; }
     if rels.is_empty() { return MirrorMagic::NoFile; }
     rels.sort();
     let (mut frames, mut plain, mut first) = (0usize, 0usize, Vec::new());
@@ -246,6 +248,9 @@ pub struct Vault {
 // The named abort reason starts with this when the cause is a missing sidecar over frame-shaped files, so
 // GET keyring can answer refusal one on a handle whose rebuild aborted for that reason (spec section 4.4).
 pub const ABORT_NO_SIDECAR_PREFIX: &str = "rebuild aborted: no .keyring.json";
+// The flag is off but a sidecar exists beside a non-fresh index: the index predates encryption. Not a missing
+// sidecar, so GET keyring must not answer refusal one for it.
+pub const ABORT_SIDECAR_OVER_OLD_INDEX_PREFIX: &str = "rebuild aborted: .keyring.json present but the index predates encryption";
 
 impl Vault {
     pub fn keyring_path(root: &Path) -> PathBuf { root.join(".keyring.json") }
@@ -323,6 +328,7 @@ impl Vault {
                 MirrorMagic::AllFrames => crate::error::E2EE_STALE_INDEX_MSG.to_string(),
                 MirrorMagic::NoFrames => crate::error::E2EE_STALE_KEYRING_MSG.to_string(),
                 MirrorMagic::NoFile => crate::error::E2EE_NO_MIRROR_MSG.to_string(),
+                MirrorMagic::Unreadable => crate::error::E2EE_SCAN_FAILED_MSG.to_string(),
                 MirrorMagic::Mixed { frames, plain, first } => {
                     log::error!("[vault] {}: mixed mirror, {frames} frame file(s), {plain} plaintext file(s); first: {}", root.display(), first.join(", "));
                     format!("{} ({frames} encrypted, {plain} plaintext)", crate::error::E2EE_MIXED_MSG)
@@ -471,6 +477,9 @@ impl Vault {
         // Corrupt (a full rebuild next time). (was_corrupt was captured above as false for DanglingRecovery,
         // so this reindex still TRUSTS the intact index; only an abort leaves it Corrupt.)
         self.state = self.state.next(VaultEvent::ReindexStarted);
+        // Every failed rebuild reports its OWN cause: a stale E2EE reason must not outlive a later rebuild that
+        // fails for an unrelated reason (a lost file, an unsafe name), or /status and GET keyring would lie.
+        self.abort_reason = None;
         // The current manifest (empty when the DB was corrupt/blank). Also note whether the index
         // still HOLDS tombstones: replace_files preserves the deletions table, so a rebuild that keeps
         // them (e.g. a dangling-chunk auto-repair on an otherwise-intact index) must NOT raise the
@@ -532,6 +541,10 @@ impl Vault {
         //    and when unindexed it aborts a fresh or quarantined rebuild (write_mirror_for wrote every mirror
         //    file, so a stray is a restore mismatch) or is `foreign` on a healthy reindex: warn and skip.
         let mut foreign: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // A FRESH rebuild (spec section 4.4): the index was absent or quarantined, or it holds zero files and
+        // deletions rows (the warm-handle reindex after the operator restored the sidecar). On a fresh rebuild
+        // with a sidecar every mirror file must be a frame stream, because write_mirror_for wrote them all.
+        let fresh_rebuild = was_corrupt || (old_files.is_empty() && !had_tombstones);
         {
             let mut offenders: Vec<String> = Vec::new();
             let mut nonframe: Vec<String> = Vec::new();
@@ -543,7 +556,7 @@ impl Vault {
                 if self.encrypted {
                     if parsed.is_none() {
                         if old_files.contains_key(rel) { lost.push(rel.clone()); }
-                        else if was_corrupt { nonframe.push(rel.clone()); }
+                        else if fresh_rebuild { nonframe.push(rel.clone()); }
                         else { foreign.insert(rel.clone()); }
                     }
                 } else if parsed.is_some() && !crate::chunker::chunk(&body).iter().all(|(h, _)| self.store.has(h)) {
@@ -554,7 +567,14 @@ impl Vault {
                 offenders.sort();
                 let n = offenders.len();
                 let shown: Vec<&String> = offenders.iter().take(20).collect();
-                let reason = format!("{ABORT_NO_SIDECAR_PREFIX}, and {n} file(s) under vault/ are encrypted frame streams this vault never committed. Restore .keyring.json, or move the listed files out of vault/ and reindex. First {}: {}", shown.len(), shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                // The flag is off. Without a sidecar the exit is to restore it. With a sidecar beside an unflagged
+                // non-fresh index the index predates encryption, and the exit is the refusal-two remedy at the
+                // next open, so the reason says so and GET keyring does not read it as a missing sidecar.
+                let reason = if self.has_sidecar() {
+                    format!("{ABORT_SIDECAR_OVER_OLD_INDEX_PREFIX}, and {n} file(s) under vault/ are encrypted frame streams this index never committed. Restart the server to diagnose the stale part, or move the listed files out of vault/ and reindex. First {}: {}", shown.len(), shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                } else {
+                    format!("{ABORT_NO_SIDECAR_PREFIX}, and {n} file(s) under vault/ are encrypted frame streams this vault never committed. Restore .keyring.json, or move the listed files out of vault/ and reindex. First {}: {}", shown.len(), shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                };
                 self.state = self.state.next(VaultEvent::RebuildAborted);
                 self.abort_reason = Some(reason.clone());
                 return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, reason));
@@ -895,7 +915,9 @@ impl Vault {
             author: (!author.is_empty()).then(|| author.to_string()),
             device_id: req.device_id.filter(|s| !s.is_empty()),
             device_name: req.device_name.filter(|s| !s.is_empty()),
-            cid: req.cid.filter(|s| !s.is_empty()),
+            // Only an encrypted vault carries cid (validated above). A plaintext vault is unchanged: a client-sent
+            // cid is dropped, never stored or echoed (spec section 4.6).
+            cid: if self.encrypted { req.cid.filter(|s| !s.is_empty()) } else { None },
         };
         let dereferenced = self.index.put(&meta)?;
         self.version = new_version;

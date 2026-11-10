@@ -278,7 +278,10 @@ fn with_sidecar_a_fresh_rebuild_aborts_on_a_non_frame_file_and_a_healthy_reindex
     let mut v = Vault::open(dir.path()).unwrap();
     assert!(v.is_corrupt(), "a fresh rebuild with a sidecar aborts on the non-frame file");
     assert!(v.abort_reason().unwrap().contains("stray.md"));
+    assert!(!v.aborted_for_no_sidecar(), "the sidecar is present: not the refusal-one class");
+    let before = v.store.list_hashes().unwrap().len();
     assert!(v.reindex(true).is_err(), "force does not override");
+    assert_eq!(v.store.list_hashes().unwrap().len(), before, "nothing stored before the abort");
     std::fs::remove_file(&stray).unwrap();
     v.reindex(false).unwrap();
     assert!(!v.is_corrupt());
@@ -322,6 +325,65 @@ fn warm_handle_reindex_derives_the_flag_from_a_restored_sidecar() {
     assert_eq!(v.file_meta("n.md").unwrap().size, 12);
 }
 
+// (4)(5) The warm zero-row reindex with a restored sidecar is a FRESH rebuild: a plaintext stray aborts it with
+// its path, exactly as the absent-index case does, and force does not override.
+#[test]
+fn warm_zero_row_reindex_with_a_sidecar_aborts_on_a_plaintext_stray() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    sidecar(dir.path());
+    std::fs::write(dir.path().join("vault").join("stray.md"), b"plaintext").unwrap();
+    let e = v.reindex(false).unwrap_err();
+    assert!(e.to_string().contains("stray.md"), "{e}");
+    assert!(v.is_corrupt());
+    assert!(v.encrypted(), "the flag derived before the abort, so the next rebuild is an encrypted one");
+    assert!(v.reindex(true).is_err());
+    std::fs::remove_file(dir.path().join("vault").join("stray.md")).unwrap();
+    v.reindex(false).unwrap();
+    assert!(!v.is_corrupt());
+}
+
+// (5) The flag is off, a sidecar sits beside a NON-fresh index, and a frame-stream stray appears on a warm
+// handle: the abort names the index as the stale part (a distinct prefix), never a missing sidecar, so GET
+// keyring does not answer refusal one for it. Every later failed rebuild reports its own cause.
+#[test]
+fn unflagged_handle_with_a_sidecar_names_the_old_index_not_a_missing_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    let b = b"plain"; let h = sha256_hex(b);
+    v.put_chunk(&h, b).unwrap();
+    v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 5, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None, cid: None }, "").unwrap();
+    sidecar(dir.path());
+    let mut f = frame(10, 14); f.extend_from_slice(&trailer_for(&cid(2)).unwrap());
+    std::fs::write(dir.path().join("vault").join("f.md"), &f).unwrap();
+    let e = v.reindex(false).unwrap_err();
+    assert!(e.to_string().starts_with(ABORT_SIDECAR_OVER_OLD_INDEX_PREFIX), "{e}");
+    assert!(!v.aborted_for_no_sidecar());
+    assert!(!v.encrypted(), "a non-fresh index never derives the flag");
+    // a later rebuild that fails for an unrelated reason reports ITS cause, not the stale one
+    std::fs::remove_file(dir.path().join("vault").join("f.md")).unwrap();
+    // lose a.md from disk AND the store: a lost-file abort, a different cause
+    std::fs::remove_file(dir.path().join("vault").join("a.md")).unwrap();
+    let ha = sha256_hex(b"plain");
+    std::fs::remove_file(dir.path().join(".chunks").join(&ha[0..2]).join(&ha)).unwrap();
+    let e = v.reindex(false).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+    assert!(v.abort_reason().is_none(), "the E2EE reason did not outlive the next rebuild");
+}
+
+// (7) A plaintext vault never stores or echoes a client-sent cid.
+#[test]
+fn plaintext_vault_drops_a_client_sent_cid() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut v = Vault::open(dir.path()).unwrap();
+    let b = b"plain"; let h = sha256_hex(b);
+    v.put_chunk(&h, b).unwrap();
+    let m = v.commit(CommitRequest { path: "a.md".into(), hash: h.clone(), size: 5, mtime: 1, chunks: vec![h], expected_version: None, device_id: None, device_name: None, cid: Some(cid(1)) }, "").unwrap();
+    assert_eq!(m.cid, None);
+    assert_eq!(v.file_meta("a.md").unwrap().cid, None);
+    assert_eq!(v.changes(0).upserts[0].cid, None);
+}
+
 // issue011 (e2eeMirrorScanCap): the refusal-two magic scan walks every mirror file per refused request. This
 // records the measured walk time for 2000 small files so the follow-up task has a number to cap against.
 #[test]
@@ -339,4 +401,22 @@ fn mirror_magic_scan_walk_time_over_2000_files() {
     match r { MirrorMagic::Mixed { frames, plain, first } => { assert_eq!((frames, plain), (1000, 1000)); assert_eq!(first.len(), 20); }, other => panic!("{other:?}") }
     eprintln!("mirror_magic_scan over 2000 files: {elapsed:?}");
     assert!(elapsed < std::time::Duration::from_secs(10), "the scan must stay far under the client's slow retry");
+}
+
+// (4) A QUARANTINED index with a sidecar is flagged before its rebuild, so the rebuild goes through the frame
+// splitter and the vault opens encrypted with the committed row intact.
+#[test]
+fn quarantined_index_with_a_sidecar_is_flagged_before_its_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    sidecar(dir.path());
+    let frames = vec![frame(64, 13)];
+    let committed = { let mut v = Vault::open(dir.path()).unwrap(); commit_frames(&mut v, "q.md", &frames, 8) };
+    remove_index(dir.path());
+    std::fs::write(dir.path().join(".sync-index.db"), b"this is not a sqlite database").unwrap();
+    let v = Vault::open(dir.path()).unwrap();
+    assert!(dir.path().join(".sync-index.db.corrupt").exists(), "quarantined");
+    assert!(v.encrypted());
+    assert!(!v.is_corrupt());
+    let row = v.file_meta("q.md").unwrap();
+    assert_eq!((row.hash, row.size, row.cid), (committed.hash, committed.size, committed.cid));
 }

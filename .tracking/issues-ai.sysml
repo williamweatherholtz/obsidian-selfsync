@@ -60,4 +60,15 @@ package IssuesAi {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from e2eeMirrorScanCap to issue011;
+
+    part issue012 : Issue {
+        :>> id = "2c52a0d7-1f01-4784-8fee-3a2a4b466dc0";
+        :>> title = "A vault lock taken on the async worker in api.rs, a comment-only rule";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "Sprint 2 review pass 1 found the E2EE header guard in api.rs scoped_with taking the per-vault read lock on the async worker. The same file documents the rule that every vault lock runs on the blocking pool (R10-D3, critique-R8 H1). A commit or reindex holding the write lock stalls async workers for its whole hold. The rule was enforced by comment only, so the class can recur with any new handler. Fix: the flag read moved into blocking. Guard: a test in api.rs scans the source and fails on any rlock or wlock call outside a blocking or spawn_blocking closure.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from apiLockDisciplineGuard to issue012;
 }

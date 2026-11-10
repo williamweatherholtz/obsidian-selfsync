@@ -135,7 +135,8 @@ mod tests {
         let p = parse_mirror(&m).unwrap();
         assert_eq!(p.cid, cid);
         assert_eq!(p.pt_len, 3);
-        assert!(trailer_for("AB").is_none());
+        assert!(trailer_for(&"AB".repeat(32)).is_none(), "uppercase hex is refused");
+        assert!(trailer_for("ab").is_none(), "wrong length is refused");
         assert!(trailer_for(&"zz".repeat(32)).is_none());
         // a trailer alone, or a trailer after garbage, is not a mirror
         assert!(parse_mirror(&t).is_none());
