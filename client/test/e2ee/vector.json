@@ -1,0 +1,137 @@
+{
+  "about": "E2EE test vector, spec sections 4.1, 4.2, 4.3, 4.4. Fixed entropy, small KDF cost for test speed.",
+  "password": "correct horse battery staple!",
+  "keyring": {
+    "version": 1,
+    "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+    "kdf": {
+      "alg": "argon2id",
+      "m_kib": 64,
+      "t": 1,
+      "p": 1,
+      "salt": "oKGio6SlpqeoqaqrrK2urw=="
+    },
+    "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+    "wrap": {
+      "alg": "A256GCM",
+      "nonce": "0NHS09TV1tfY2drb",
+      "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+    }
+  },
+  "vk_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "vault_id_hex": "101112131415161718191a1b1c1d1e1f",
+  "tag": "5101d1075e643685",
+  "path": "Notes/Café ΟΔΥΣΣΕΥΣ/Ünïcödé.md",
+  "folded_path": "notes/café οδυσσευς/ünïcödé.md",
+  "pt_hex": "2320c39c6ec3af63c3b664c3a90a0a6e6f746520626f647920666f7220746865204532454520766563746f722c20303132333435363738390a",
+  "frame_hex": "535345312b847d7ac652a2db4f954bfa69000000960300ab4f7aa45fc6a9843854055ec29bf40148874432a23a67b31b81439c58af88ea1684d5bd1c7e1c58eba8158088648e101a7c3eecdf019fafa934e08e40cce03898b4e198b424432e1012a45e4bcd8b49cef740dbb99640f76dabdbdcc1018bd768ecd65a488d",
+  "frame_sha256": "ad47dfc6cafaa26a3736f9890a751c9a1b6309535b83765e8731aef037a13316",
+  "cid": "4271aad80d2ace18241c0ee7277697a6398ae807c39d916f557b3c4cf9ae26e7",
+  "tampered": [
+    {
+      "cell": "parse fails: version 2",
+      "outcome": "corrupt",
+      "keyring": {
+        "version": 2,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+        }
+      }
+    },
+    {
+      "cell": "above the ceiling: m_kib 131073",
+      "outcome": "unsupported",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 131073,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+        }
+      }
+    },
+    {
+      "cell": "check mismatch: salt byte flipped",
+      "outcome": "wrongPassword",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oaGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+        }
+      }
+    },
+    {
+      "cell": "check mismatch: vault_id byte flipped",
+      "outcome": "wrongPassword",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQUFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+        }
+      }
+    },
+    {
+      "cell": "tag fails after a check match: nonce byte flipped",
+      "outcome": "corrupt",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0dHS09TV1tfY2drb",
+          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+        }
+      }
+    }
+  ]
+}
