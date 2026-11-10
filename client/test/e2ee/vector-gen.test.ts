@@ -5,7 +5,7 @@
 import { describe, it } from "vitest";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createKeyring, type Keyring } from "../../src/e2ee/keyring";
+import { unsafeCreateKeyringWithFixedEntropy, type Keyring } from "../../src/e2ee/keyring";
 import { deriveSubkeys } from "../../src/e2ee/subkeys";
 import { encodeChunk } from "../../src/e2ee/frame";
 import { fileIdentity, fileHash, foldPath } from "../../src/e2ee/identity";
@@ -15,10 +15,12 @@ const seq = (n: number, start: number) => new Uint8Array(n).map((_, i) => (start
 
 describe.skipIf(!process.env.E2EE_VECTOR_WRITE)("vector generator", () => {
   it("writes vector.json", async () => {
-    const password = "correct horse battery staple!";
+    // Non-ASCII, precomposed (NFC) password: the KEK is Argon2id over the raw UTF-8 of the string as
+    // typed, with no normalisation (spec section 4.9), and this pins every engine to that mapping.
+    const password = "correct horse Café battery staple!";
     const entropy = { vaultId: seq(16, 0x10), vk: seq(32, 0x40), salt: seq(16, 0xa0), nonce: seq(12, 0xd0) };
     const kdf = { m_kib: 64, t: 1, p: 1 };
-    const { keyring, vk, vaultId } = await createKeyring(password, { kdf, entropy });
+    const { keyring, vk, vaultId } = await unsafeCreateKeyringWithFixedEntropy(password, entropy, { kdf });
     const keys = await deriveSubkeys(vk, vaultId);
     const path = "Notes/Café ΟΔΥΣΣΕΥΣ/Ünïcödé.md";
     const pt = new TextEncoder().encode("# Ünïcödé\n\nnote body for the E2EE vector, 0123456789\n");
@@ -30,10 +32,13 @@ describe.skipIf(!process.env.E2EE_VECTOR_WRITE)("vector generator", () => {
       { cell: "above the ceiling: m_kib 131073", outcome: "unsupported", keyring: mutate((k) => ({ ...k, kdf: { ...k.kdf, m_kib: 131073 } })) },
       { cell: "check mismatch: salt byte flipped", outcome: "wrongPassword", keyring: mutate((k) => ({ ...k, kdf: { ...k.kdf, salt: flip(k.kdf.salt, 0) } })) },
       { cell: "check mismatch: vault_id byte flipped", outcome: "wrongPassword", keyring: mutate((k) => ({ ...k, vault_id: flip(k.vault_id, 5) })) },
+      { cell: "check mismatch: check byte flipped", outcome: "wrongPassword", keyring: mutate((k) => ({ ...k, check: (k.check[0] === "0" ? "1" : "0") + k.check.slice(1) })) },
+      { cell: "check mismatch: KDF t raised by one, within the ceiling", outcome: "wrongPassword", keyring: mutate((k) => ({ ...k, kdf: { ...k.kdf, t: k.kdf.t + 1 } })) },
       { cell: "tag fails after a check match: nonce byte flipped", outcome: "corrupt", keyring: mutate((k) => ({ ...k, wrap: { ...k.wrap, nonce: flip(k.wrap.nonce, 0) } })) },
+      { cell: "tag fails after a check match: wrap.ct byte flipped", outcome: "corrupt", keyring: mutate((k) => ({ ...k, wrap: { ...k.wrap, ct: flip(k.wrap.ct, 40) } })) },
     ];
     const vector = {
-      about: "E2EE test vector, spec sections 4.1, 4.2, 4.3, 4.4. Fixed entropy, small KDF cost for test speed.",
+      about: "E2EE test vector, spec sections 4.1, 4.2, 4.3, 4.4. Fixed entropy, small KDF cost for test speed. The password is the raw UTF-8 of the string as typed, no normalisation.",
       password,
       keyring,
       vk_hex: hex(vk),

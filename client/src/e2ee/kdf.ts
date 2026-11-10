@@ -20,7 +20,7 @@ const INFO_WRAP = utf8("selfsync/e2ee/v1/keyring-wrap");
 const INFO_CHECK = utf8("selfsync/e2ee/v1/keyring-check");
 
 export class UnsupportedKdfError extends Error {
-  constructor(detail: string) { super(`unsupported KDF parameters: ${detail}`); this.name = "UnsupportedKdfError"; }
+  constructor(public readonly detail: string) { super(`unsupported KDF parameters: ${detail}`); this.name = "UnsupportedKdfError"; }
 }
 
 const isPosInt = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 1;
@@ -42,7 +42,8 @@ export async function deriveKek(password: string, params: KdfParams, onProgress?
   assertKdfSupported(params);
   return argon2idAsync(utf8(password), params.salt, {
     t: params.t, m: params.m_kib, p: params.p, dkLen: KEK_LEN,
-    maxmem: KDF_CEILING.m_kib * 1024, onProgress,
+    // noble compares maxmem against m * 256 u32 WORDS (argon2.js:230), not bytes: the ceiling in words.
+    maxmem: KDF_CEILING.m_kib * 256, onProgress,
   });
 }
 

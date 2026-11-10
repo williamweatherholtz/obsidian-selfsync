@@ -1,6 +1,6 @@
 {
-  "about": "E2EE test vector, spec sections 4.1, 4.2, 4.3, 4.4. Fixed entropy, small KDF cost for test speed.",
-  "password": "correct horse battery staple!",
+  "about": "E2EE test vector, spec sections 4.1, 4.2, 4.3, 4.4. Fixed entropy, small KDF cost for test speed. The password is the raw UTF-8 of the string as typed, no normalisation.",
+  "password": "correct horse Café battery staple!",
   "keyring": {
     "version": 1,
     "vault_id": "EBESExQVFhcYGRobHB0eHw==",
@@ -11,11 +11,11 @@
       "p": 1,
       "salt": "oKGio6SlpqeoqaqrrK2urw=="
     },
-    "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+    "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
     "wrap": {
       "alg": "A256GCM",
       "nonce": "0NHS09TV1tfY2drb",
-      "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+      "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
     }
   },
   "vk_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
@@ -41,11 +41,11 @@
           "p": 1,
           "salt": "oKGio6SlpqeoqaqrrK2urw=="
         },
-        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
         "wrap": {
           "alg": "A256GCM",
           "nonce": "0NHS09TV1tfY2drb",
-          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
         }
       }
     },
@@ -62,11 +62,11 @@
           "p": 1,
           "salt": "oKGio6SlpqeoqaqrrK2urw=="
         },
-        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
         "wrap": {
           "alg": "A256GCM",
           "nonce": "0NHS09TV1tfY2drb",
-          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
         }
       }
     },
@@ -83,11 +83,11 @@
           "p": 1,
           "salt": "oaGio6SlpqeoqaqrrK2urw=="
         },
-        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
         "wrap": {
           "alg": "A256GCM",
           "nonce": "0NHS09TV1tfY2drb",
-          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
         }
       }
     },
@@ -104,11 +104,53 @@
           "p": 1,
           "salt": "oKGio6SlpqeoqaqrrK2urw=="
         },
-        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
         "wrap": {
           "alg": "A256GCM",
           "nonce": "0NHS09TV1tfY2drb",
-          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
+        }
+      }
+    },
+    {
+      "cell": "check mismatch: check byte flipped",
+      "outcome": "wrongPassword",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "0feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
+        }
+      }
+    },
+    {
+      "cell": "check mismatch: KDF t raised by one, within the ceiling",
+      "outcome": "wrongPassword",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 2,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
         }
       }
     },
@@ -125,11 +167,32 @@
           "p": 1,
           "salt": "oKGio6SlpqeoqaqrrK2urw=="
         },
-        "check": "e0c94956847fdfdd823d5f98fa25b55f512dcc04cae20d175e038725f7d1a9ed",
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
         "wrap": {
           "alg": "A256GCM",
           "nonce": "0dHS09TV1tfY2drb",
-          "ct": "WHzvOytuI5FCRX2L0MhtHOQtuRq1IXHFTbvyJENv7RJV2tqoOm/IB43X4hNSixsd1pI8XFYeDMosqX8pO+oFG47wMm42Q0jm+eb4bmWdegU="
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6geO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
+        }
+      }
+    },
+    {
+      "cell": "tag fails after a check match: wrap.ct byte flipped",
+      "outcome": "corrupt",
+      "keyring": {
+        "version": 1,
+        "vault_id": "EBESExQVFhcYGRobHB0eHw==",
+        "kdf": {
+          "alg": "argon2id",
+          "m_kib": 64,
+          "t": 1,
+          "p": 1,
+          "salt": "oKGio6SlpqeoqaqrrK2urw=="
+        },
+        "check": "3feb496ff31b6a023aea15263acc32155c58e7692b4dfb49560f5ca2d7c90150",
+        "wrap": {
+          "alg": "A256GCM",
+          "nonce": "0NHS09TV1tfY2drb",
+          "ct": "kiI/KE4obLmCZ4rQG2EH4trrtZEpKn2fQDC6lzN1fVW6quWm3jwq6gaO0VinSFrGoLjQ+oddOct9IUEuqen6OamPQMMHE9Sl2b72GIzwrhs="
         }
       }
     }

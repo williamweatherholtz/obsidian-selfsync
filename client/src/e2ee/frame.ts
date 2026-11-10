@@ -59,7 +59,8 @@ export async function decodeChunk(keys: Subkeys, frame: Uint8Array): Promise<Uin
   let pad = 0;
   for (let i = 0; i < PAD_LEN; i++) pad |= body[i];
   if (pad !== 0) throw new FrameError("commitment pad is not zero");
-  const pt = body.subarray(PAD_LEN);
+  // A copy, not a view: pt.buffer is the plaintext alone, never the pad (review pass 1, finding 4).
+  const pt = body.slice(PAD_LEN);
   if (!equalBytes(syntheticIv(keys.kIv, pt), h.iv)) throw new FrameError("iv does not match the plaintext");
   return pt;
 }

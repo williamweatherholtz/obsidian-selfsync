@@ -36,7 +36,6 @@ const LABEL = utf8("selfsync-keyring-v1");
 const AAD_VERSION = 1;
 
 const corrupt = (detail: string) => new KeyringError("corrupt", detail);
-const isPosInt = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 1;
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
 function bytesField(obj: Record<string, unknown>, key: string, len: number, where: string): Uint8Array {
@@ -64,8 +63,10 @@ export function parseKeyring(input: unknown): Keyring {
   if (!isObj(raw.kdf)) throw corrupt("kdf missing");
   const kdf = raw.kdf;
   if (typeof kdf.alg !== "string" || kdf.alg.length === 0 || kdf.alg.length > 64) throw corrupt("kdf.alg");
+  // Shape only: a number. Range (positive integer, at or under the ceiling) is assertKdfSupported's, so
+  // an absurd cost lands in the `unsupported` cell, never in `corrupt` (spec section 4.4).
   for (const k of ["m_kib", "t", "p"] as const) {
-    if (!isPosInt(kdf[k]) || (kdf[k] as number) > 0xffffffff) throw corrupt(`kdf.${k} is not a positive u32`);
+    if (typeof kdf[k] !== "number" || !Number.isFinite(kdf[k])) throw corrupt(`kdf.${k} is not a number`);
   }
   const salt = bytesField(kdf, "salt", SALT_LEN, "kdf");
   if (typeof raw.check !== "string" || raw.check.length !== 64) throw corrupt("check is not 64 hex chars");
@@ -111,17 +112,26 @@ async function importWrapKey(kWrap: Uint8Array, usage: KeyUsage): Promise<Crypto
 
 export interface CreateOptions {
   kdf?: KdfCost;
-  /** Test-vector hook only: fixed entropy instead of random. Never set in product code. */
-  entropy?: { vaultId: Uint8Array; vk: Uint8Array; salt: Uint8Array; nonce: Uint8Array };
   onProgress?: (p: number) => void;
 }
 
 export interface CreatedKeyring { keyring: Keyring; vk: Uint8Array; vaultId: Uint8Array }
 
+export interface KeyringEntropy { vaultId: Uint8Array; vk: Uint8Array; salt: Uint8Array; nonce: Uint8Array }
+
 /** Mint vault_id, salt, VK and nonce, derive the KEK, write check, wrap VK. The result is the stored record. */
 export async function createKeyring(password: string, opts: CreateOptions = {}): Promise<CreatedKeyring> {
+  const entropy = { vaultId: randomBytes(VAULT_ID_LEN), vk: randomBytes(VK_LEN), salt: randomBytes(SALT_LEN), nonce: randomBytes(NONCE_LEN) };
+  return unsafeCreateKeyringWithFixedEntropy(password, entropy, opts);
+}
+
+/**
+ * The test-vector generator only. A fixed vault_id, VK, salt or nonce in product code voids the
+ * construction (spec section 4.1: VK and nonce are random). A test pins that no file under src/ other
+ * than this one names this function.
+ */
+export async function unsafeCreateKeyringWithFixedEntropy(password: string, e: KeyringEntropy, opts: CreateOptions = {}): Promise<CreatedKeyring> {
   const cost = opts.kdf ?? KDF_DEFAULT;
-  const e = opts.entropy ?? { vaultId: randomBytes(VAULT_ID_LEN), vk: randomBytes(VK_LEN), salt: randomBytes(SALT_LEN), nonce: randomBytes(NONCE_LEN) };
   if (e.vaultId.length !== VAULT_ID_LEN || e.vk.length !== VK_LEN || e.salt.length !== SALT_LEN || e.nonce.length !== NONCE_LEN) throw new Error("createKeyring: entropy lengths");
   const params = { alg: "argon2id", ...cost, salt: e.salt };
   const kek = await deriveKek(password, params, opts.onProgress);
@@ -134,10 +144,13 @@ export async function createKeyring(password: string, opts: CreateOptions = {}):
     wrap: { alg: "A256GCM", nonce: b64(e.nonce), ct: "" },
   };
   const body = concat(new Uint8Array(PAD_LEN), e.vk);
-  const key = await importWrapKey(kWrap, "encrypt");
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: buf(e.nonce), additionalData: buf(aadKeyring(keyring)), tagLength: 128 }, key, buf(body)));
-  keyring.wrap.ct = b64(ct);
-  kek.fill(0); kWrap.fill(0); kCheck.fill(0);
+  try {
+    const key = await importWrapKey(kWrap, "encrypt");
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: buf(e.nonce), additionalData: buf(aadKeyring(keyring)), tagLength: 128 }, key, buf(body)));
+    keyring.wrap.ct = b64(ct);
+  } finally {
+    kek.fill(0); kWrap.fill(0); kCheck.fill(0); body.fill(0);
+  }
   return { keyring, vk: e.vk, vaultId: e.vaultId };
 }
 
@@ -148,7 +161,7 @@ export async function openKeyring(password: string, input: unknown, onProgress?:
   const keyring = parseKeyring(input);
   const params = { alg: keyring.kdf.alg, m_kib: keyring.kdf.m_kib, t: keyring.kdf.t, p: keyring.kdf.p, salt: fromB64(keyring.kdf.salt) };
   try { assertKdfSupported(params); } catch (err) {
-    if (err instanceof UnsupportedKdfError) throw new KeyringError("unsupported", err.message);
+    if (err instanceof UnsupportedKdfError) throw new KeyringError("unsupported", err.detail);
     throw err;
   }
   const vaultId = fromB64(keyring.vault_id);
@@ -170,5 +183,8 @@ export async function openKeyring(password: string, input: unknown, onProgress?:
   let pad = 0;
   for (let i = 0; i < PAD_LEN; i++) pad |= body[i];
   if (pad !== 0) throw corrupt("commitment pad is not zero");
-  return { vk: body.subarray(PAD_LEN), vaultId, keyring };
+  // A copy, not a view: a consumer that reaches for .buffer must not see the pad, and the body is zeroed.
+  const vk = body.slice(PAD_LEN);
+  body.fill(0);
+  return { vk, vaultId, keyring };
 }

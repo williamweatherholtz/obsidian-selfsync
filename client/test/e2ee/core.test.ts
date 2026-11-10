@@ -1,8 +1,11 @@
 // E1 e2eeCryptoCore — RED first (sprint1_e1CryptoCore). Every clause of the e2eeCryptoCore DoD has a
 // test here; the modules under client/src/e2ee are written to make them green. The construction is
 // D0099 (keys), D0100 (frames), D0101 (file identity); the byte layouts are spec §4.2 and §4.4.
-import { describe, it, expect } from "vitest";
-import { deriveKek, assertKdfSupported, KDF_CEILING, KDF_DEFAULT, UnsupportedKdfError } from "../../src/e2ee/kdf";
+import { describe, it, expect, vi } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { deriveKek, deriveWrapKeys, assertKdfSupported, KDF_CEILING, KDF_DEFAULT, UnsupportedKdfError } from "../../src/e2ee/kdf";
 import { createKeyring, openKeyring, parseKeyring, aadKeyring, KeyringError, type Keyring } from "../../src/e2ee/keyring";
 import { deriveSubkeys } from "../../src/e2ee/subkeys";
 import { encodeChunk, decodeChunk, parseFrameHeader, FRAME_OVERHEAD, FrameError } from "../../src/e2ee/frame";
@@ -37,11 +40,16 @@ describe("E1 (1) deriveKek", () => {
 
   it("refuses parameters above the ceiling as unsupported before any derivation", async () => {
     const salt = new Uint8Array(16);
-    for (const bad of [{ m_kib: 131073, t: 1, p: 1 }, { m_kib: 64, t: 7, p: 1 }, { m_kib: 64, t: 1, p: 3 }]) {
+    for (const bad of [{ m_kib: 131073, t: 1, p: 1 }, { m_kib: 64, t: 7, p: 1 }, { m_kib: 64, t: 1, p: 3 }, { m_kib: 8, t: 1, p: 2 }]) {
       expect(() => assertKdfSupported({ alg: "argon2id", ...bad, salt })).toThrow(UnsupportedKdfError);
       await expect(deriveKek(PW, { alg: "argon2id", ...bad, salt })).rejects.toBeInstanceOf(UnsupportedKdfError);
     }
+    expect(() => assertKdfSupported({ alg: "scrypt", ...FAST, salt })).toThrow(UnsupportedKdfError);
     expect(() => assertKdfSupported({ alg: "argon2id", ...KDF_CEILING, salt })).not.toThrow();
+    // the message carries the outcome once, then the detail
+    try { assertKdfSupported({ alg: "argon2id", m_kib: 131073, t: 1, p: 1, salt }); } catch (e) {
+      expect((e as Error).message).toBe("unsupported KDF parameters: m_kib 131073 above the ceiling 131072");
+    }
   });
 });
 
@@ -60,6 +68,8 @@ describe("E1 (2) keyring create and open", () => {
     expect(hex(vaultId)).toBe(hex(fromB64(keyring.vault_id)));
     const opened = await openKeyring(PW, keyring);
     expect(hex(opened.vk)).toBe(hex(vk));
+    expect(opened.vk.byteOffset).toBe(0);
+    expect(opened.vk.buffer.byteLength).toBe(32);
     expect(hex(opened.vaultId)).toBe(hex(vaultId));
     // Two creates never share a vault_id or a VK.
     const second = await freshKeyring();
@@ -82,14 +92,25 @@ describe("E1 (2) keyring create and open", () => {
   it("decides by the outcome table: parse failure is corrupt, ceiling is unsupported, check mismatch is wrong password, tag failure after a match is corrupt", async () => {
     const { keyring } = await freshKeyring();
     // parse failure
-    expect(() => parseKeyring("{not json")).toThrow(KeyringError);
-    try { parseKeyring("{not json"); } catch (e) { expect((e as KeyringError).outcome).toBe("corrupt"); }
-    try { parseKeyring({ ...keyring, version: 2 }); } catch (e) { expect((e as KeyringError).outcome).toBe("corrupt"); }
-    // ceiling
+    expect(() => parseKeyring("{not json")).toThrow(expect.objectContaining({ outcome: "corrupt" }));
+    expect(() => parseKeyring({ ...keyring, version: 2 })).toThrow(expect.objectContaining({ outcome: "corrupt" }));
+    expect(() => parseKeyring({ ...keyring, wrap: { ...keyring.wrap, ct: keyring.wrap.ct.slice(4) } })).toThrow(expect.objectContaining({ outcome: "corrupt" }));
+    // ceiling, and an absurd cost: both the unsupported cell, never corrupt
     const ceiling: Keyring = { ...keyring, kdf: { ...keyring.kdf, m_kib: 131073 } };
     await expect(openKeyring(PW, ceiling)).rejects.toMatchObject({ outcome: "unsupported" });
-    // wrong password: check mismatch, no unwrap runs
+    await expect(openKeyring(PW, { ...keyring, kdf: { ...keyring.kdf, t: 2 ** 40 } })).rejects.toMatchObject({ outcome: "unsupported" });
+    await expect(openKeyring(PW, { ...keyring, kdf: { ...keyring.kdf, p: 1.5 } })).rejects.toMatchObject({ outcome: "unsupported" });
+    await expect(openKeyring(PW, { ...keyring, kdf: { ...keyring.kdf, alg: "scrypt" } })).rejects.toMatchObject({ outcome: "unsupported", message: "unsupported KDF parameters: alg scrypt" });
+    // non-canonical base64 is a different text for the same bytes: the strict parse refuses it
+    const nc = keyring.vault_id.slice(0, -2) + (keyring.vault_id.endsWith("==") ? "R==" : keyring.vault_id.slice(-2));
+    if (nc !== keyring.vault_id) expect(() => parseKeyring({ ...keyring, vault_id: nc })).toThrow(expect.objectContaining({ outcome: "corrupt" }));
+    expect(() => fromB64("AR==")).toThrow(/canonical/);
+    expect(hex(fromB64("AQ=="))).toBe("01");
+    // wrong password: check mismatch, and no unwrap runs
+    const decrypt = vi.spyOn(crypto.subtle, "decrypt");
     await expect(openKeyring(PW + "!", keyring)).rejects.toMatchObject({ outcome: "wrongPassword" });
+    expect(decrypt).not.toHaveBeenCalled();
+    decrypt.mockRestore();
     // altered salt or KDF field: the KEK changes, reads as wrong password
     const salt = new Uint8Array(fromB64(keyring.kdf.salt)); salt[0] ^= 1;
     await expect(openKeyring(PW, { ...keyring, kdf: { ...keyring.kdf, salt: b64(salt) } })).rejects.toMatchObject({ outcome: "wrongPassword" });
@@ -105,6 +126,36 @@ describe("E1 (2) keyring create and open", () => {
     await expect(openKeyring(PW, { ...keyring, wrap: { ...keyring.wrap, nonce: b64(nonce) } })).rejects.toMatchObject({ outcome: "corrupt" });
     const ct = new Uint8Array(fromB64(keyring.wrap.ct)); ct[40] ^= 1;
     await expect(openKeyring(PW, { ...keyring, wrap: { ...keyring.wrap, ct: b64(ct) } })).rejects.toMatchObject({ outcome: "corrupt" });
+  });
+
+  it("a wrapped blob with a valid tag but a non-zero pad is corrupt (the wrap pad check runs after the tag)", async () => {
+    const { keyring, vk } = await freshKeyring();
+    const vaultId = fromB64(keyring.vault_id);
+    const kek = await deriveKek(PW, { alg: "argon2id", m_kib: keyring.kdf.m_kib, t: keyring.kdf.t, p: keyring.kdf.p, salt: fromB64(keyring.kdf.salt) });
+    const { kWrap } = deriveWrapKeys(kek, vaultId);
+    const key = await crypto.subtle.importKey("raw", kWrap as BufferSource, { name: "AES-GCM" }, false, ["encrypt"]);
+    const body = new Uint8Array(64); body[31] = 1; body.set(vk, 32);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: fromB64(keyring.wrap.nonce) as BufferSource, additionalData: aadKeyring(keyring) as BufferSource, tagLength: 128 }, key, body as BufferSource));
+    await expect(openKeyring(PW, { ...keyring, wrap: { ...keyring.wrap, ct: b64(ct) } })).rejects.toMatchObject({ outcome: "corrupt" });
+    // the control: the same wrap with a zero pad opens
+    body[31] = 0;
+    const ok = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: fromB64(keyring.wrap.nonce) as BufferSource, additionalData: aadKeyring(keyring) as BufferSource, tagLength: 128 }, key, body as BufferSource));
+    expect(hex((await openKeyring(PW, { ...keyring, wrap: { ...keyring.wrap, ct: b64(ok) } })).vk)).toBe(hex(vk));
+  });
+
+  it("no file under src/ other than keyring.ts names the fixed-entropy constructor", () => {
+    const dir = fileURLToPath(new URL("../../src", import.meta.url));
+    const offenders: string[] = [];
+    const walk = (d: string) => {
+      for (const name of readdirSync(d)) {
+        const p = join(d, name);
+        if (statSync(p).isDirectory()) { walk(p); continue; }
+        if (!p.endsWith(".ts") || p.endsWith(join("e2ee", "keyring.ts"))) continue;
+        if (readFileSync(p, "utf8").includes("unsafeCreateKeyringWithFixedEntropy")) offenders.push(name);
+      }
+    };
+    walk(dir);
+    expect(offenders).toEqual([]);
   });
 });
 
@@ -171,6 +222,33 @@ describe("E1 (4) (5) frames", () => {
     await expect(decodeChunk(okeys, frame)).rejects.toBeInstanceOf(FrameError);
   });
 
+  it("rejects a valid-tag frame whose pad is not zero, and a valid-tag frame whose IV was not derived from the plaintext", async () => {
+    // Review pass 3 finding: clause (4) names the pad check and the IV recomputation, and the earlier
+    // tests only reached the tag check. kEnc is usable for encrypt, so a forged body with a good tag
+    // can be built here without the IV key.
+    const { vk, vaultId } = await freshKeyring();
+    const keys = await deriveSubkeys(vk, vaultId);
+    const pt = enc("forged");
+    const good = await encodeChunk(keys, pt);
+    const iv = good.subarray(4, 16);
+    const build = async (body: Uint8Array, useIv: Uint8Array) => {
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: useIv as BufferSource, additionalData: keys.frameAad as BufferSource, tagLength: 128 }, keys.kEnc, body as BufferSource));
+      const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0, ct.length, true);
+      const out = new Uint8Array(20 + ct.length);
+      out.set(enc("SSE1")); out.set(useIv, 4); out.set(len, 16); out.set(ct, 20);
+      return out;
+    };
+    // pad byte 31 set, same iv: the tag verifies, the pad check must refuse
+    const badPad = new Uint8Array(32 + pt.length); badPad[31] = 1; badPad.set(pt, 32);
+    await expect(decodeChunk(keys, await build(badPad, iv))).rejects.toThrow(/pad/);
+    // zero pad, foreign iv: the tag verifies, the pad passes, the recomputed iv must refuse
+    const foreignIv = new Uint8Array(iv); foreignIv[0] ^= 0x80;
+    const zeroPad = new Uint8Array(32 + pt.length); zeroPad.set(pt, 32);
+    await expect(decodeChunk(keys, await build(zeroPad, foreignIv))).rejects.toThrow(/iv/);
+    // the control: the same builder with the honest body and iv reproduces the encoder's frame
+    expect(hex(await build(zeroPad, iv))).toBe(hex(good));
+  });
+
   it("parseFrameHeader computes the plaintext length without the key and refuses an inconsistent ct_len", async () => {
     const { vk, vaultId } = await freshKeyring();
     const keys = await deriveSubkeys(vk, vaultId);
@@ -235,6 +313,7 @@ describe("E1 (9) committed test vector", () => {
     for (const t of vector.tampered) {
       await expect(openKeyring(vector.password, t.keyring as Keyring)).rejects.toMatchObject({ outcome: t.outcome });
     }
-    expect(vector.tampered.map((t) => t.outcome).sort()).toEqual(["corrupt", "corrupt", "unsupported", "wrongPassword", "wrongPassword"]);
+    expect(vector.tampered.map((t) => t.outcome).sort()).toEqual(["corrupt", "corrupt", "corrupt", "unsupported", "wrongPassword", "wrongPassword", "wrongPassword", "wrongPassword"]);
+    expect(vector.password.normalize("NFD")).not.toBe(vector.password);
   });
 });

@@ -30,6 +30,9 @@ export function fromB64(s: string): Uint8Array {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  // Canonical only: "AR==" and "AQ==" both decode to 0x01, and the server stores the text verbatim,
+  // so one record must have one spelling (review pass 1, finding 7).
+  if (b64(out) !== s) throw new Error("bytes: not canonical base64");
   return out;
 }
 

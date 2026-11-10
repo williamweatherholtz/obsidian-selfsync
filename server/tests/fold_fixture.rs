@@ -55,7 +55,8 @@ fn fold_fixture_matches_rust_to_lowercase() {
         std::fs::write(&path, &text).unwrap();
         return;
     }
-    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    // A Windows clone with core.autocrlf=true checks the fixture out as CRLF. Compare line content.
+    let committed = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert!(
         committed == text,
         "fold-fixture.json differs from Rust to_lowercase on this toolchain. \
