@@ -246,6 +246,9 @@ async function renderMfa(appendHtml) {
 function healthChip(status) {
   if (status === "ready") return `<span class="perm read">OK</span>`;
   if (status === "missing") return `<span class="perm">no data yet</span>`;
+  // E2EE: the server refused to open the vault (its .keyring.json is missing, or it sits over an index that
+  // predates encryption). A reindex cannot fix that: the server log names the files to restore or move aside.
+  if (status === "refused") return `<span class="perm readWrite">refused: see server log</span>`;
   return `<span class="perm readWrite">needs repair</span>`;
 }
 
@@ -268,7 +271,7 @@ async function renderVaults() {
   let h = "";
   for (const v of vaults) {
     // Repair only for a genuinely degraded vault ("ready"/"missing" show none — chip and action agree).
-    const repairBtn = (v.status === "ready" || v.status === "missing") ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
+    const repairBtn = (v.status === "ready" || v.status === "missing" || v.status === "refused") ? "" : `<button style="float:right;margin-right:6px" data-reindex="${esc(v.vault)}">Repair</button>`;
     const used = v.last_used ? `<span class="lastused">last used ${esc(relTime(v.last_used))}</span>` : `<span class="lastused">no activity yet</span>`;
     h += `<div style="margin-bottom:10px"><div class="vault">${esc(v.vault)} ${healthChip(v.status)} ${used}
         <button class="danger" style="float:right" data-delvault="${esc(v.vault)}">Delete vault</button>
@@ -437,7 +440,7 @@ function renderOwnerVaults(name, vaults, cell) {
   if (!vaults.length) { cell.innerHTML = `<div class="empty">No vaults.</div>`; return; }
   // Status-driven Repair (matches the own-vaults panel): only a genuinely degraded vault gets a Repair
   // button + force option. "ready" needs none; "missing" has nothing to repair (reindex 404s on it).
-  const repairable = (s) => s !== "ready" && s !== "missing";
+  const repairable = (s) => s !== "ready" && s !== "missing" && s !== "refused";
   cell.innerHTML = vaults.map(v => `<div class="row" style="margin:5px 0">
       <span class="vault" style="flex:1;min-width:120px">${esc(v.vault)} ${healthChip(v.status)}</span>
       ${repairable(v.status) ? `<label class="inline"><input type="checkbox" class="ovforce" /> force</label>

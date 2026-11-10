@@ -385,6 +385,76 @@ impl AppState {
         if let Ok(mut d) = self.deleted_vaults.lock() { d.remove(&(owner.to_string(), vault.to_string())); }
     }
 
+    // Create a vault and, when given, its keyring sidecar ATOMICALLY under the per-key open lock (D0102,
+    // spec section 4.4). The sequence, all in one hold: insert the tombstone for the name (so a parked open
+    // wakes to NotFound, never to an empty plaintext vault), create_dir_all the user directory, create_dir
+    // the vault directory where AlreadyExists is the 409 (the 409 arm restores the tombstone state it found,
+    // so a retried create never tombstones a live vault and a half-purged name keeps its purge tombstone),
+    // write the sidecar with create_new and fsync it, clear the tombstone, open the vault inline (never via
+    // vault(): the mutex is not re-entrant) and publish the handle. A sidecar failure removes the directory
+    // and leaves the tombstone set. No request reaches a cached handle before the sidecar exists.
+    pub fn create_vault(&self, owner: &str, vault: &str, keyring: Option<&[u8]>) -> std::io::Result<VaultHandle> {
+        let (ownern, vaultn) = match (SafeName::parse(owner), SafeName::parse(vault)) {
+            (Some(o), Some(v)) => (o, v),
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid user/vault name")),
+        };
+        let key = (owner.to_string(), vault.to_string());
+        let open_lock = {
+            let mut opens = self.opens.lock().map_err(|_| std::io::Error::other("opens lock poisoned"))?;
+            Arc::clone(opens.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))))
+        };
+        let _reaper = OpenLockReaper { opens: Arc::clone(&self.opens), key: key.clone(), lock: open_lock };
+        let _open_guard = _reaper.lock.lock().map_err(|_| std::io::Error::other("open lock poisoned"))?;
+        // Tombstone first, remembering what was there, so the 409 arm can put it back.
+        let was_tombstoned = {
+            let mut d = self.deleted_vaults.lock().map_err(|_| std::io::Error::other("deleted_vaults lock poisoned"))?;
+            !d.insert(key.clone())
+        };
+        let restore_tombstone = |st: &AppState| {
+            if !was_tombstoned {
+                if let Ok(mut d) = st.deleted_vaults.lock() { d.remove(&key); }
+            }
+        };
+        let dir = self.ns_dir(&ownern, &vaultn);
+        std::fs::create_dir_all(self.cfg.data_root.join(ownern.as_str()))?;
+        if let Err(e) = std::fs::create_dir(&dir) {
+            restore_tombstone(self);
+            return Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "vault exists")
+            } else { e });
+        }
+        if let Some(bytes) = keyring {
+            let write = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(Vault::keyring_path(&dir))?;
+                f.write_all(bytes)?;
+                f.sync_all()?;
+                if let Ok(d) = std::fs::File::open(&dir) { let _ = d.sync_all(); }
+                Ok(())
+            })();
+            if let Err(e) = write {
+                log::error!("[create_vault] {owner}/{vault}: keyring sidecar not written ({e}); removing the directory, tombstone kept");
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        }
+        // The vault exists on disk, sidecar first. Clear the tombstone, open and publish in the same hold.
+        if let Ok(mut d) = self.deleted_vaults.lock() { d.remove(&key); }
+        let v = Vault::open(&dir)?;
+        let (tx, _rx) = broadcast::channel(256);
+        let handle = VaultHandle { vault: Arc::new(RwLock::new(v)), tx, last_access: Arc::new(Mutex::new(Instant::now())) };
+        let cached = {
+            let mut map = self.ns.lock().map_err(|_| std::io::Error::other("namespace lock poisoned"))?;
+            if map.len() >= MAX_CACHED_VAULTS {
+                let now = Instant::now();
+                map.retain(|_, h| handle_in_use(h, now));
+            }
+            map.insert(key.clone(), handle.clone());
+            handle
+        };
+        Ok(cached)
+    }
+
     pub fn for_test(data_root: &Path) -> Self { Self::for_test_cfg(data_root, false, false) }
     // MFA is deprecated + OFF by default (D0038); the MFA tests opt it back ON via these helpers so the
     // retained feature stays exercised. for_test_mfa: MFA on. for_test_admin_mfa: MFA on + admin-required.

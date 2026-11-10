@@ -32,11 +32,29 @@ pub async fn create_vault(
     if existing.contains(&req.name) {
         return Err(AppError::Conflict("vault exists".into()));
     }
-    // A deliberate (re)create clears any delete-tombstone for this key, so vault() will materialize it
-    // (crit R+1, issueVaultDeleteOpenRace: the tombstone refuses only AUTO recreation via a raced open).
-    st.allow_vault_recreate(&user, &req.name);
-    st.vault(&user, &req.name).map_err(|e| AppError::BadRequest(e.to_string()))?;
-    log::info!("[vault create] user='{}' vault='{}'", user, req.name);
-    audit(action::VAULT_CREATE, &user, &format!("{user}/{}", req.name), outcome::SUCCESS, &ip);
+    // E2EE (D0102): the keyring is stored VERBATIM, so the only checks are a size cap and that it is one
+    // JSON object. The server never parses the fields and cannot open it.
+    const MAX_KEYRING_BYTES: usize = 8 * 1024;
+    let keyring = match req.keyring.as_deref() {
+        None => None,
+        Some(k) if k.len() > MAX_KEYRING_BYTES => return Err(AppError::BadRequest("keyring exceeds 8 KiB".into())),
+        Some(k) => match serde_json::from_str::<serde_json::Value>(k) {
+            Ok(serde_json::Value::Object(_)) => Some(k.as_bytes().to_vec()),
+            _ => return Err(AppError::BadRequest("keyring is not a JSON object".into())),
+        },
+    };
+    let encrypted = keyring.is_some();
+    // One atomic sequence under the per-key open lock: tombstone, directories (AlreadyExists is the 409),
+    // sidecar with create_new and fsync, clear the tombstone, open, publish (state.rs create_vault).
+    let (st2, user2, name2) = (st.clone(), user.clone(), req.name.clone());
+    tokio::task::spawn_blocking(move || st2.create_vault(&user2, &name2, keyring.as_deref()))
+        .await.map_err(|e| AppError::Internal(format!("vault create join failed: {e}")))?
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => AppError::Conflict("vault exists".into()),
+            std::io::ErrorKind::InvalidInput => AppError::BadRequest(e.to_string()),
+            _ => AppError::Internal(format!("vault create failed: {e}")),
+        })?;
+    log::info!("[vault create] user='{}' vault='{}' encrypted={encrypted}", user, req.name);
+    audit(action::VAULT_CREATE, &user, &format!("{user}/{} encrypted={encrypted}", req.name), outcome::SUCCESS, &ip);
     Ok(StatusCode::OK)
 }

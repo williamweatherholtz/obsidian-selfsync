@@ -68,6 +68,7 @@ const ENDPOINTS: &[&str] = &[
     "GET /api/v/:vault/status",
     "POST /api/v/:vault/reindex",
     "DELETE /api/v/:vault/file",
+    "GET /api/v/:vault/keyring",
     "GET /api/u/:owner/:vault/changes",
     "GET /api/u/:owner/:vault/meta",
     "POST /api/u/:owner/:vault/chunks/missing",
@@ -76,6 +77,7 @@ const ENDPOINTS: &[&str] = &[
     "POST /api/u/:owner/:vault/commit",
     "GET /api/u/:owner/:vault/status",
     "DELETE /api/u/:owner/:vault/file",
+    "GET /api/u/:owner/:vault/keyring",
     "GET /api/ws",
 ];
 

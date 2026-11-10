@@ -13,10 +13,12 @@
     "GET /api/shared",
     "GET /api/u/:owner/:vault/changes",
     "GET /api/u/:owner/:vault/chunk/:hash",
+    "GET /api/u/:owner/:vault/keyring",
     "GET /api/u/:owner/:vault/meta",
     "GET /api/u/:owner/:vault/status",
     "GET /api/v/:vault/changes",
     "GET /api/v/:vault/chunk/:hash",
+    "GET /api/v/:vault/keyring",
     "GET /api/v/:vault/meta",
     "GET /api/v/:vault/status",
     "GET /api/vaults",
@@ -81,6 +83,11 @@
         "type": "array<string>"
       },
       {
+        "name": "cid",
+        "required": false,
+        "type": "string"
+      },
+      {
         "name": "device_id",
         "required": false,
         "type": "string"
@@ -117,6 +124,11 @@
       }
     ],
     "CreateVaultRequest": [
+      {
+        "name": "keyring",
+        "required": false,
+        "type": "string"
+      },
       {
         "name": "name",
         "required": true,
@@ -160,6 +172,11 @@
         "name": "chunks",
         "required": true,
         "type": "array<string>"
+      },
+      {
+        "name": "cid",
+        "required": false,
+        "type": "string"
       },
       {
         "name": "device_id",

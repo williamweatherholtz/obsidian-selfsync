@@ -13,6 +13,7 @@ pub mod config;
 pub mod hash;
 pub mod index_store;
 pub mod error;
+pub mod frame;
 pub mod mfa;
 pub mod protocol;
 pub mod registration;
@@ -115,6 +116,9 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             .route("/api/v/:vault/status", get(api::status))
             .route("/api/v/:vault/reindex", post(api::reindex))
             .route("/api/v/:vault/file", axum::routing::delete(api::delete_file))
+            // E2EE (D0102): the per-vault keyring the server stores but cannot open. Read grant; the one
+            // route inside scoped() that is exempt from the x-selfsync-e2ee downgrade guard.
+            .route("/api/v/:vault/keyring", get(api::get_keyring))
             // Owner-qualified sync routes: /api/u/{owner}/{vault}/... — reach a vault owned by
             // someone else, gated by the share ACL. A distinct `/api/u/` prefix (not
             // `/api/v/{owner}/...`) avoids a matchit param-name conflict.
@@ -125,6 +129,7 @@ fn build(state: AppState, include_public: bool, include_admin: bool) -> Router {
             .route("/api/u/:owner/:vault/commit", post(api::commit))
             .route("/api/u/:owner/:vault/status", get(api::status))
             .route("/api/u/:owner/:vault/file", axum::routing::delete(api::delete_file))
+            .route("/api/u/:owner/:vault/keyring", get(api::get_keyring))
             .route("/api/ws", get(ws::ws_handler));
     }
     if include_admin {

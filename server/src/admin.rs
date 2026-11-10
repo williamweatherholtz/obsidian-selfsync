@@ -90,6 +90,9 @@ fn vault_health(st: &AppState, owner: &str, vault: &str) -> String {
 // the admin view doesn't mislabel it "missing" (and never nudges "reindex", which would destroy tombstones —
 // the exact thing the downgrade guard prevents) — issueAdminHealthMislabelsRollback.
 fn open_err_health(e: &std::io::Error) -> &'static str {
+    // E2EE (spec section 4.4): an open refusal (missing sidecar, or a sidecar over a non-fresh index) needs
+    // the operator's hands on files, not a reindex, so it is "refused", neither "missing" nor "incompatible".
+    if crate::error::e2ee_refusal_body(e).is_some() { return "refused"; }
     if e.kind() == std::io::ErrorKind::Unsupported { "incompatible" } else { "missing" }
 }
 
@@ -102,6 +105,8 @@ mod health_tests {
         // A genuine absence / other IO error stays "missing" (its remedy is different — not "your server is old").
         assert_eq!(open_err_health(&std::io::Error::from(std::io::ErrorKind::NotFound)), "missing");
         assert_eq!(open_err_health(&std::io::Error::other("db locked")), "missing");
+        // E2EE: an open refusal is its own class, with a file-level remedy the server log and the 503 body name.
+        assert_eq!(open_err_health(&crate::error::e2ee_refusal(crate::error::E2EE_KEYRING_MISSING_MSG.into())), "refused");
     }
 }
 

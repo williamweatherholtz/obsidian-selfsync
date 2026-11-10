@@ -77,7 +77,10 @@ impl SqliteIndex {
     // change to the `files`/`file_chunks`/`deletions` columns.
     //   v2: add author_user / author_device_id / author_device_name to `files` (change provenance).
     //   v3: add the same author_user / author_device_id / author_device_name to `deletions` (deletion provenance).
-    const CURRENT_SCHEMA: u64 = 3;
+    //   v4: add `cid` to `files` (E2EE keyed file identity, D0101) and the `encrypted` meta key (D0102). Bumped for
+    //       EVERY vault, plaintext too, so a rolled-back pre-E2EE binary refuses any vault this server opened and
+    //       can never serve frames as content or accept plaintext into an encrypted vault (spec section 4.4).
+    pub const CURRENT_SCHEMA: u64 = 4;
 
     // Open (creating if absent) the per-vault index DB, apply the schema (idempotent), seed the
     // version + history_floor. WAL makes concurrent readers + a single writer crash-safe.
@@ -142,6 +145,8 @@ impl SqliteIndex {
         // provenance row/tombstone keeps '' (honest unknown author).
         Self::ensure_provenance_columns(conn, "files")?;
         Self::ensure_provenance_columns(conn, "deletions")?;
+        // v4: the opaque E2EE file identity. Probe-idempotent like the provenance columns; '' = absent.
+        Self::ensure_column(conn, "files", "cid")?;
         if v != Self::CURRENT_SCHEMA {
             conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
         }
@@ -155,14 +160,48 @@ impl SqliteIndex {
     // user input, so the format! interpolation carries no injection risk.
     fn ensure_provenance_columns(conn: &Connection, table: &str) -> std::io::Result<()> {
         for col in ["author_user", "author_device_id", "author_device_name"] {
-            let has: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'"), [], |r| r.get(0))
-                .map_err(io)?;
-            if has == 0 {
-                conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []).map_err(io)?;
-            }
+            Self::ensure_column(conn, table, col)?;
         }
         Ok(())
+    }
+
+    // One TEXT NOT NULL DEFAULT '' column, added iff its own pragma_table_info probe says it is missing.
+    // `table` and `col` are hardcoded literals, never user input.
+    fn ensure_column(conn: &Connection, table: &str, col: &str) -> std::io::Result<()> {
+        let has: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'"), [], |r| r.get(0))
+            .map_err(io)?;
+        if has == 0 {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"), []).map_err(io)?;
+        }
+        Ok(())
+    }
+
+    // E2EE (D0102): the `encrypted` meta flag. Absent reads as 0. The ONLY writer is set_encrypted, which Vault
+    // calls when a zero-row index opens or rebuilds with a sidecar present (spec section 4.4).
+    pub fn encrypted(&self) -> std::io::Result<bool> {
+        let conn = self.conn.lock().map_err(io)?;
+        Ok(Self::meta_get(&conn, "encrypted").unwrap_or(0) == 1)
+    }
+
+    pub fn set_encrypted(&self) -> std::io::Result<()> {
+        let conn = self.conn.lock().map_err(io)?;
+        conn.execute("INSERT INTO meta(key, value) VALUES ('encrypted', 1) ON CONFLICT(key) DO UPDATE SET value=1", []).map_err(io)?;
+        Ok(())
+    }
+
+    // The schema version stamped on this index (tests pin the v4 stamp + the v3 upgrade).
+    pub fn schema_version(&self) -> std::io::Result<u64> {
+        let conn = self.conn.lock().map_err(io)?;
+        Self::meta_get(&conn, "schema_version")
+    }
+
+    // files rows + deletions rows: zero means a FRESH index for the encrypted-flag derivation.
+    pub fn row_count(&self) -> std::io::Result<u64> {
+        let conn = self.conn.lock().map_err(io)?;
+        let f: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).map_err(io)?;
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM deletions", [], |r| r.get(0)).map_err(io)?;
+        Ok((f + d) as u64)
     }
 
     fn meta_get(conn: &Connection, key: &str) -> std::io::Result<u64> {
@@ -211,11 +250,12 @@ impl SqliteIndex {
             meta.device_id.clone().unwrap_or_default(),
             meta.device_name.clone().unwrap_or_default(),
         );
-        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold, author_user, author_device_id, author_device_name)
-                    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        let cid = meta.cid.clone().unwrap_or_default();
+        tx.execute("INSERT INTO files(path, hash, size, mtime, version, fold, author_user, author_device_id, author_device_name, cid)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                     ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6,
-                    author_user=?7, author_device_id=?8, author_device_name=?9",
-                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase(), au, ad, an]).map_err(io)?;
+                    author_user=?7, author_device_id=?8, author_device_name=?9, cid=?10",
+                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase(), au, ad, an, cid]).map_err(io)?;
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
         let mut ins = tx.prepare_cached("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)").map_err(io)?;
         for (i, c) in meta.chunks.iter().enumerate() {
@@ -239,29 +279,30 @@ impl SqliteIndex {
         Ok(out)
     }
 
-    #[allow(clippy::too_many_arguments)] // a flat row tuple (cols + provenance) — grouping into a struct would only obscure it
+    #[allow(clippy::too_many_arguments)] // a flat row tuple (cols + provenance + cid) — grouping into a struct would only obscure it
     fn row_to_meta(conn: &Connection, path: String, hash: String, size: i64, mtime: i64, version: i64,
-                   author_user: String, author_device_id: String, author_device_name: String) -> std::io::Result<FileMeta> {
+                   author_user: String, author_device_id: String, author_device_name: String, cid: String) -> std::io::Result<FileMeta> {
         let chunks = Self::chunks_of(conn, &path)?;
         Ok(FileMeta {
             path, hash, size: size as u64, mtime, version: version as u64, chunks,
             author: empty_to_none(author_user),
             device_id: empty_to_none(author_device_id),
             device_name: empty_to_none(author_device_name),
+            cid: empty_to_none(cid),
         })
     }
 
     pub fn file_meta(&self, path: &str) -> std::io::Result<Option<FileMeta>> {
         let conn = self.conn.lock().map_err(io)?;
         let row = conn.query_row(
-            "SELECT hash, size, mtime, version, author_user, author_device_id, author_device_name FROM files WHERE path=?1",
+            "SELECT hash, size, mtime, version, author_user, author_device_id, author_device_name, cid FROM files WHERE path=?1",
             params![path],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
-                    r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?)))
+                    r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?)))
             .optional().map_err(io)?;
         match row {
-            Some((hash, size, mtime, version, au, ad, an)) =>
-                Ok(Some(Self::row_to_meta(&conn, path.to_string(), hash, size, mtime, version, au, ad, an)?)),
+            Some((hash, size, mtime, version, au, ad, an, cid)) =>
+                Ok(Some(Self::row_to_meta(&conn, path.to_string(), hash, size, mtime, version, au, ad, an, cid)?)),
             None => Ok(None),
         }
     }
@@ -288,13 +329,13 @@ impl SqliteIndex {
         }
         let mut upserts = Vec::new();
         {
-            let mut stmt = conn.prepare_cached("SELECT path, hash, size, mtime, version, author_user, author_device_id, author_device_name FROM files WHERE version > ?1").map_err(io)?;
-            let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?))).map_err(io)?;
+            let mut stmt = conn.prepare_cached("SELECT path, hash, size, mtime, version, author_user, author_device_id, author_device_name, cid FROM files WHERE version > ?1").map_err(io)?;
+            let rows = stmt.query_map(params![since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?, r.get::<_, String>(8)?))).map_err(io)?;
             for row in rows {
-                let (p, h, s, m, v, au, ad, an) = row.map_err(io)?;
+                let (p, h, s, m, v, au, ad, an, cid) = row.map_err(io)?;
                 let chunks = chunks_by_path.remove(&p).unwrap_or_default();
                 upserts.push(FileMeta { path: p, hash: h, size: s as u64, mtime: m, version: v as u64, chunks,
-                    author: empty_to_none(au), device_id: empty_to_none(ad), device_name: empty_to_none(an) });
+                    author: empty_to_none(au), device_id: empty_to_none(ad), device_name: empty_to_none(an), cid: empty_to_none(cid) });
             }
         }
         let mut deletes = Vec::new();
@@ -469,6 +510,45 @@ mod tests {
         assert_eq!(v, SqliteIndex::CURRENT_SCHEMA as i64, "migrate must stamp a below-current schema_version up to CURRENT");
     }
 
+    // E2EE (D0101/D0102, schema v4): a fresh index is stamped 4; a v3 index (provenance present, no cid) opens,
+    // gains the probe-idempotent `cid` column with '' on its old row (read back as None), and is stamped 4. The
+    // encrypted meta key is absent (false) until set_encrypted, and then reads true across a reopen.
+    #[test]
+    fn schema_v4_stamps_fresh_and_upgrades_v3_with_cid() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = SqliteIndex::open(&dir.path().join("fresh.db")).unwrap();
+        assert_eq!(fresh.schema_version().unwrap(), 4);
+        assert_eq!(SqliteIndex::CURRENT_SCHEMA, 4);
+        assert!(!fresh.encrypted().unwrap());
+        let p = dir.path().join("v3.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);\n\
+                 CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, version INTEGER NOT NULL, fold TEXT NOT NULL,\n\
+                   author_user TEXT NOT NULL DEFAULT '', author_device_id TEXT NOT NULL DEFAULT '', author_device_name TEXT NOT NULL DEFAULT '');\n\
+                 CREATE TABLE file_chunks (path TEXT NOT NULL, seq INTEGER NOT NULL, chunk TEXT NOT NULL, PRIMARY KEY(path, seq));\n\
+                 CREATE TABLE deletions (path TEXT NOT NULL, version INTEGER NOT NULL, author_user TEXT NOT NULL DEFAULT '', author_device_id TEXT NOT NULL DEFAULT '', author_device_name TEXT NOT NULL DEFAULT '');\n\
+                 INSERT INTO meta(key,value) VALUES ('schema_version',3),('version',2),('history_floor',1);\n\
+                 INSERT INTO files(path,hash,size,mtime,version,fold) VALUES ('old.md','h',1,1,2,'old.md');",
+            ).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 4, "a v3 index is stamped 4");
+        let old = s.file_meta("old.md").unwrap().unwrap();
+        assert_eq!(old.cid, None, "a pre-v4 row reads cid as absent");
+        s.put(&FileMeta { path: "enc.md".into(), hash: "h2".into(), size: 1, mtime: 1, version: 3, chunks: vec![], cid: Some("ab".repeat(32)), ..Default::default() }).unwrap();
+        assert_eq!(s.file_meta("enc.md").unwrap().unwrap().cid.as_deref(), Some("abababababababababababababababababababababababababababababababab"));
+        assert!(s.changes(0).unwrap().upserts.iter().any(|m| m.path == "enc.md" && m.cid.is_some()));
+        assert_eq!(s.row_count().unwrap(), 2);
+        s.set_encrypted().unwrap();
+        drop(s);
+        let again = SqliteIndex::open(&p).unwrap();
+        assert!(again.encrypted().unwrap(), "the encrypted flag survives a reopen");
+        again.set_encrypted().unwrap(); // idempotent
+        assert!(again.encrypted().unwrap());
+    }
+
     // v2 (change provenance): opening a pre-v2 `files` table (fold present, but no author_* columns) must
     // ADD the three provenance columns (NOT NULL DEFAULT ''), leave the existing row's author UNKNOWN
     // (None on read — never a bogus ""), keep the write path intact, and record provenance on a fresh put.
@@ -492,7 +572,7 @@ mod tests {
         assert_eq!(SqliteIndex::meta_get(&s.conn.lock().unwrap(), "schema_version").unwrap(), SqliteIndex::CURRENT_SCHEMA);
         // Write path works on the migrated table and records provenance.
         s.put(&FileMeta { path: "new.md".into(), hash: "h2".into(), size: 1, mtime: 1, version: 2, chunks: vec![],
-            author: Some("will".into()), device_id: Some("dev-uuid".into()), device_name: Some("Desktop".into()) }).unwrap();
+            author: Some("will".into()), device_id: Some("dev-uuid".into()), device_name: Some("Desktop".into()), cid: None }).unwrap();
         let n = s.file_meta("new.md").unwrap().unwrap();
         assert_eq!((n.author.as_deref(), n.device_id.as_deref(), n.device_name.as_deref()), (Some("will"), Some("dev-uuid"), Some("Desktop")));
     }
@@ -520,7 +600,7 @@ mod tests {
         assert_eq!((d.author, d.device_id, d.device_name), (None, None, None), "pre-v3 tombstone survives with unknown provenance");
         assert_eq!(SqliteIndex::meta_get(&s.conn.lock().unwrap(), "schema_version").unwrap(), SqliteIndex::CURRENT_SCHEMA);
         // Delete path works on the migrated table and records provenance.
-        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None }).unwrap();
+        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None, cid: None }).unwrap();
         s.delete("x.md", 5, "alice", "dev-9", "Phone").unwrap();
         let dx = s.changes(3).unwrap().deletes.into_iter().find(|d| d.path == "x.md").unwrap();
         assert_eq!((dx.author.as_deref(), dx.device_id.as_deref(), dx.device_name.as_deref()), (Some("alice"), Some("dev-9"), Some("Phone")));
@@ -544,7 +624,7 @@ mod tests {
             ).unwrap();
         }
         let s = SqliteIndex::open(&p).unwrap(); // migrate() runs every open → re-adds the two missing columns
-        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None }).unwrap();
+        s.put(&FileMeta { path: "x.md".into(), hash: "h".into(), size: 1, mtime: 1, version: 4, chunks: vec![], author: None, device_id: None, device_name: None, cid: None }).unwrap();
         // The delete INSERT references all five columns — it would '500: no such column' on the bricked DB.
         s.delete("x.md", 5, "alice", "dev-9", "Phone").unwrap();
         let d = s.changes(3).unwrap().deletes.into_iter().find(|d| d.path == "x.md").unwrap();

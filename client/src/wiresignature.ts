@@ -87,7 +87,9 @@ export const NON_GATING_TYPES = new Set(["SharedVault", "VaultShares", "GrantVie
 // redeem*, and /api/admin/* — a server dropping one degrades the share UI (a caught fetch error), never sync.
 export function isNonGatingEndpoint(entry: string): boolean {
   const path = entry.split(" ")[1] ?? "";
-  return path.startsWith("/api/share") || path.startsWith("/api/admin");
+  // E2EE (D0102, spec section 4.4): the two GET keyring routes are additive. A new plugin keeps syncing a
+  // plaintext vault on an old server that lacks them, and reads their absence as "no keyring" (404).
+  return path.startsWith("/api/share") || path.startsWith("/api/admin") || path.endsWith("/keyring");
 }
 
 export interface Delta {

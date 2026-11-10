@@ -15,7 +15,55 @@ pub enum AppError {
     Conflict(String),
     Unavailable(String), // 503 — vault not writable / lock poisoned (propagate, don't resume)
     TooManyRequests(u64), // 429 — login throttle tripped; payload = Retry-After seconds (SEC-AUTH)
+    // 422 — the body is well-formed HTTP but not an SSE1 frame on a keyring vault (E2EE, spec section 4.6).
+    // Distinct from 400 so a client can tell "plaintext into an encrypted vault" from a malformed request.
+    Unprocessable(String),
+    // 403 — a grantee reached a keyring vault without the x-selfsync-e2ee header: an old plugin build. The
+    // body is the fixed E2EE_REQUIRED_MSG, never matched by the client's password-change regex (spec 4.6).
+    E2eeRequired,
     Internal(String),
+}
+
+// The downgrade-guard body (spec section 4.6, srE2eeDowngradeGuard). Path-free, under the client cap. The
+// old client maps any 403 to its Forbidden card; this text reaches only the plugin log.
+pub const E2EE_REQUIRED_MSG: &str =
+    "vault is end-to-end encrypted. This client version does not support it. Update the plugin.";
+
+// Refusal ONE (spec section 4.4): the index says encrypted=1 but `.keyring.json` is gone. Path-free: names
+// the sidecar by its basename only. Also the body of GET keyring on an encrypted handle with no sidecar.
+pub const E2EE_KEYRING_MISSING_MSG: &str =
+    "this vault is end-to-end encrypted but its .keyring.json is missing. Restore .keyring.json from backup. A vault that never synced can be deleted from the plugin. Operators: see /admin.";
+// Refusal TWO, all mirror files are SSE1 frames: the index is the stale part.
+pub const E2EE_STALE_INDEX_MSG: &str =
+    "this vault has a .keyring.json but its index predates encryption. Every file is encrypted, so move .sync-index.db* aside and retry. That resets deletion history and can re-push deleted notes from lagging devices: restore the matching index from backup first.";
+// Refusal TWO, no mirror file is a frame: the keyring is the stale part.
+pub const E2EE_STALE_KEYRING_MSG: &str =
+    "this vault has a .keyring.json but its index and files predate encryption. No file is encrypted, so move .keyring.json aside and retry.";
+// Refusal TWO, mixed: the counts follow this prefix; the first 20 paths go to the server log.
+pub const E2EE_MIXED_MSG: &str =
+    "this vault has a .keyring.json, an index that predates encryption, and a mix of encrypted and plaintext files. Restore the index, the files and .keyring.json from one point in time. The server log lists the first 20 paths.";
+// Refusal TWO, no mirror file at all: both remedies.
+pub const E2EE_NO_MIRROR_MSG: &str =
+    "this vault has a .keyring.json but its index predates encryption and holds no files. Move .sync-index.db* aside if the vault is encrypted, or move .keyring.json aside if it is not.";
+
+// An E2EE open refusal carried inside an io::Error (Vault::open keeps its io::Result signature). The body is
+// one of the consts above plus any counts; vault_open_error downcasts it to a 503 with THAT body.
+#[derive(Debug)]
+pub struct E2eeRefusal {
+    pub body: String,
+}
+impl std::fmt::Display for E2eeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.body) }
+}
+impl std::error::Error for E2eeRefusal {}
+
+pub fn e2ee_refusal(body: String) -> std::io::Error {
+    std::io::Error::other(E2eeRefusal { body })
+}
+
+/// The refusal body carried by an open error, if it is one.
+pub fn e2ee_refusal_body(e: &std::io::Error) -> Option<&str> {
+    e.get_ref().and_then(|r| r.downcast_ref::<E2eeRefusal>()).map(|r| r.body.as_str())
 }
 
 impl IntoResponse for AppError {
@@ -39,6 +87,8 @@ impl IntoResponse for AppError {
             AppError::MfaRequired => (StatusCode::UNAUTHORIZED, "mfa required".to_string()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, m),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            AppError::E2eeRequired => (StatusCode::FORBIDDEN, E2EE_REQUIRED_MSG.to_string()),
             AppError::TooManyRequests(_) => unreachable!("handled above"),
             // SEC-6: never return the raw internal error (std::io messages can carry absolute
             // server paths) to the client — log it server-side, hand back a generic 500 body.
@@ -58,6 +108,11 @@ impl IntoResponse for AppError {
 // server log (issueSchemaRollbackOpaque500). Any other open failure (IO/SQLite) stays a generic 500 — its raw
 // message can carry an absolute server path, so it must NOT be surfaced (SEC-6).
 pub fn vault_open_error(e: std::io::Error) -> AppError {
+    // E2EE (spec section 4.4): both open refusals route to 503 with their OWN bodies, never the
+    // schema-rollback body and never a 500. The bodies are path-free consts (plus counts).
+    if let Some(body) = e2ee_refusal_body(&e) {
+        return AppError::Unavailable(body.to_string());
+    }
     if e.kind() == std::io::ErrorKind::Unsupported {
         // Kept comfortably UNDER the client's 300-char plain-text-body cap (transport.ts errText) so it always
         // surfaces to the operator rather than falling back to an opaque "HTTP 503" — vault_open_error_message_
@@ -118,5 +173,37 @@ mod tests {
         // A generic IO failure stays a 500 (its raw message may carry a server path → not surfaced).
         assert_eq!(status_of(vault_open_error(std::io::Error::other("/abs/server/path/db locked"))).await, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(vault_open_error(std::io::Error::other("boom")), AppError::Internal(_)));
+    }
+
+    // E2EE: an open refusal is a 503 with its own body (never the rollback body, never a 500), and every
+    // const body stays under the client's 300-char errText cap so the remedy is shown, not "HTTP 503".
+    #[tokio::test]
+    async fn e2ee_refusals_map_to_503_with_their_own_body_and_fit_the_client_cap() {
+        let e = e2ee_refusal(E2EE_KEYRING_MISSING_MSG.to_string());
+        match vault_open_error(e) {
+            AppError::Unavailable(m) => assert_eq!(m, E2EE_KEYRING_MISSING_MSG),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        assert_eq!(status_of(vault_open_error(e2ee_refusal("x".into()))).await, StatusCode::SERVICE_UNAVAILABLE);
+        for (name, body) in [("required", E2EE_REQUIRED_MSG), ("missing", E2EE_KEYRING_MISSING_MSG), ("stale index", E2EE_STALE_INDEX_MSG),
+                             ("stale keyring", E2EE_STALE_KEYRING_MSG), ("mixed", E2EE_MIXED_MSG), ("no mirror", E2EE_NO_MIRROR_MSG)] {
+            assert!(body.chars().count() <= 260, "{name} body must stay under the client cap with headroom: {}", body.chars().count());
+            assert!(!body.contains('/') || body.contains("/admin"), "{name} body is path-free");
+        }
+        // The downgrade-guard body must never read as the password-change state (connstate.ts:95).
+        let pw = regex_lite(E2EE_REQUIRED_MSG);
+        assert!(!pw, "the E2EE 403 body must not match /password.?change|change.?password/i");
+        assert_eq!(status_of(AppError::E2eeRequired).await, StatusCode::FORBIDDEN);
+        assert_eq!(status_of(AppError::Unprocessable("not a frame".into())).await, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // The client's regex, transliterated: /password.?change|change.?password/i.
+    fn regex_lite(s: &str) -> bool {
+        let l = s.to_ascii_lowercase();
+        let hit = |a: &str, b: &str| l.match_indices(a).any(|(i, _)| {
+            let rest = &l[i + a.len()..];
+            rest.starts_with(b) || (rest.len() > 1 && rest[1..].starts_with(b))
+        });
+        hit("password", "change") || hit("change", "password")
     }
 }

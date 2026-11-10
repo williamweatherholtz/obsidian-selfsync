@@ -29,6 +29,11 @@ pub struct FileMeta {
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    // E2EE (D0101, schema v4): the client-computed keyed file identity of an encrypted vault, HMAC over the
+    // folded path and the plaintext, hex. Stored and returned OPAQUELY: only clients compute and verify it.
+    // Absent on a plaintext vault's rows and on rows from a pre-E2EE server. Additive on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default, schemars::JsonSchema)]
@@ -117,6 +122,11 @@ pub struct CommitRequest {
     pub device_id: Option<String>,
     #[serde(default)]
     pub device_name: Option<String>,
+    // E2EE (D0101): the keyed file identity. Required on a commit to a keyring vault (refused without it),
+    // stored opaquely, ignored for integrity by the server. Optional so an older client's commit to a
+    // plaintext vault is unchanged.
+    #[serde(default)]
+    pub cid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
@@ -145,6 +155,11 @@ pub struct VaultListResponse {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 pub struct CreateVaultRequest {
     pub name: String,
+    // E2EE (D0102): the keyring record as the client serialised it, stored VERBATIM as the sidecar
+    // `.keyring.json` and returned byte for byte by GET keyring. The server never re-serialises it and
+    // cannot open it. Absent ⇒ a plaintext vault, exactly as before. An old server ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<String>,
 }
 
 // Per-vault health, surfaced so a client never treats a degraded/empty manifest as

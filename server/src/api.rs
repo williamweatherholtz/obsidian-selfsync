@@ -23,8 +23,35 @@ const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 // via vault_exists below); a genuine open failure AFTER that check is an unexpected server
 // condition (IO / DB open error) → 500, not 404 (which would mislead the client into thinking
 // the vault was deleted and hide the real fault).
+// E2EE downgrade guard (D0103, spec section 4.6): a plugin that understands encrypted vaults sends
+// `x-selfsync-e2ee: 1` on every vault-scoped request. Every sync handler threads this extractor into
+// scoped(), which checks it AFTER authorization and existence against the handle's encrypted flag, so a
+// non-grantee still gets the bare 403 and no caller learns whether a vault exists or is encrypted. The
+// one exemption inside scoped() is GET keyring. Infallible: an absent header reads as false.
+#[derive(Clone, Copy, Debug)]
+pub struct E2eeHeader(pub bool);
+
+#[axum::async_trait]
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for E2eeHeader {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, _st: &S) -> Result<Self, Self::Rejection> {
+        let on = parts.headers.get("x-selfsync-e2ee").and_then(|v| v.to_str().ok()).map(|s| s.trim() == "1").unwrap_or(false);
+        Ok(E2eeHeader(on))
+    }
+}
+
+// Whether a request may reach a keyring vault without the header: only GET keyring.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guard { Enforce, KeyringExempt }
+
 async fn scoped(
-    st: &AppState, pp: &HashMap<String, String>, user: &str, access: Access,
+    st: &AppState, pp: &HashMap<String, String>, user: &str, access: Access, e2ee: E2eeHeader,
+) -> Result<(String, String, VaultHandle), AppError> {
+    scoped_with(st, pp, user, access, e2ee, Guard::Enforce).await
+}
+
+async fn scoped_with(
+    st: &AppState, pp: &HashMap<String, String>, user: &str, access: Access, e2ee: E2eeHeader, guard: Guard,
 ) -> Result<(String, String, VaultHandle), AppError> {
     let vault = pp.get("vault").cloned().ok_or_else(|| AppError::BadRequest("missing vault".into()))?;
     let owner = pp.get("owner").cloned().unwrap_or_else(|| user.to_string());
@@ -54,8 +81,42 @@ async fn scoped(
         // binary opening a newer index after a rollback) DISTINCTLY as a 503 with a clear body, and anything
         // else as a generic 500 (issueSchemaRollbackOpaque500) — /status routes through here too, so a rolled-
         // back server self-diagnoses on the client instead of an opaque "internal error".
-        .map_err(crate::error::vault_open_error)?;
+        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+            // A request that passed vault_exists() and then met the delete tombstone under the open lock (a
+            // purge whose best-effort directory removal is still pending, or a create that failed its
+            // sidecar write): the vault is gone, so 404, never a 500 (spec section 4.4).
+            AppError::NotFound
+        } else { crate::error::vault_open_error(e) })?;
+    // E2EE downgrade guard, after authorized() and vault_exists(): a grantee without the header on a
+    // keyring vault gets 403 with the fixed body. Reads the in-memory flag only (a corrupt vault still answers).
+    if guard == Guard::Enforce && !e2ee.0 && rlock(&h.vault)?.encrypted() {
+        return Err(AppError::E2eeRequired);
+    }
     Ok((owner, vault, h))
+}
+
+// GET keyring (D0102, spec section 4.4): the sidecar bytes, verbatim. 200 with the bytes; 404 when the
+// vault is absent (from scoped) or the handle is plaintext with no sidecar; the refusal-one 503 when the
+// handle is encrypted and the sidecar is gone, or its rebuild aborted for the no-sidecar reason, so a
+// running server and a restarted one give one answer. Reads the sidecar and the in-memory flag only,
+// never ensure_ready and never SQLite. A cold cache gets its handle through Vault::open first, whose own
+// refusals map to the same 503 bodies. Exempt from the x-selfsync-e2ee guard: it is how a client learns.
+pub async fn get_keyring(
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader, Path(pp): Path<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (_owner, _vault, h) = scoped_with(&st, &pp, &user, Access::Read, e2ee, Guard::KeyringExempt).await?;
+    let bytes = blocking(move || {
+        let v = rlock(&h.vault)?;
+        match v.keyring_bytes().map_err(|e| AppError::Internal(format!("keyring read failed: {e}")))? {
+            Some(b) => Ok(Some(b)),
+            None if v.encrypted() || v.aborted_for_no_sidecar() => Err(AppError::Unavailable(crate::error::E2EE_KEYRING_MISSING_MSG.into())),
+            None => Ok(None),
+        }
+    }).await?;
+    match bytes {
+        Some(b) => Ok((StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json")], b).into_response()),
+        None => Err(AppError::NotFound),
+    }
 }
 
 // Vaults shared WITH the caller (owned-by-others), so the client can offer them in its
@@ -99,10 +160,10 @@ fn ensure_ready(v: &crate::vault::Vault) -> Result<(), AppError> {
 }
 
 pub async fn changes(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<ChangesResponse>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Read, e2ee).await?;
     let since = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     // R10-D3: offload the SQLite read to the blocking pool. A changes(0) full-manifest scan (issued
     // on every initial pull + periodic re-scan) must not run inline on an async worker — it holds the
@@ -122,10 +183,10 @@ pub async fn changes(
 // meta?path=… — metadata for one file (or 404), so a client can reconcile a single
 // path without pulling the whole manifest.
 pub async fn file_meta(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<FileMeta>, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read, e2ee).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
     blocking(move || { let v = rlock(&h.vault)?; ensure_ready(&v)?; v.file_meta(&path).map(Json).ok_or(AppError::NotFound) }).await // R10-D3: off the async worker
 }
@@ -142,7 +203,7 @@ where
 }
 
 pub async fn chunks_missing(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<MissingRequest>,
 ) -> Result<Json<MissingResponse>, AppError> {
     // Cap the batch: an unbounded hash list drives one `exists()` stat syscall per hash under the
@@ -152,7 +213,7 @@ pub async fn chunks_missing(
     if req.hashes.len() > MAX_MISSING_HASHES {
         return Err(AppError::BadRequest("too many hashes in one request".into()));
     }
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read, e2ee).await?;
     let missing = blocking(move || {
         let v = rlock(&h.vault)?;
         ensure_ready(&v)?;
@@ -162,10 +223,10 @@ pub async fn chunks_missing(
 }
 
 pub async fn put_chunk(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Write, e2ee).await?;
     let hash = pp.get("hash").cloned().ok_or_else(|| AppError::BadRequest("missing hash".into()))?;
     // A CDC chunk is bounded (~64 KiB); reject anything wildly larger so a client
     // can't store giant blobs to defeat chunking / fill disk.
@@ -176,16 +237,20 @@ pub async fn put_chunk(
     // temp names) and don't block other reads. Commit takes the write lock later.
     // The disk write runs on the blocking pool so it can't stall an async worker.
     blocking(move || {
-        rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| AppError::BadRequest(e.to_string()))
+        rlock(&h.vault)?.put_chunk(&hash, &body).map_err(|e| match e.kind() {
+            // E2EE (spec section 4.6): a non-frame on a keyring vault is 422 with a body naming the cause.
+            std::io::ErrorKind::Unsupported => AppError::Unprocessable(e.to_string()),
+            _ => AppError::BadRequest(e.to_string()),
+        })
     }).await?;
     Ok(StatusCode::OK)
 }
 
 pub async fn get_chunk(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read, e2ee).await?;
     let hash = pp.get("hash").cloned().ok_or_else(|| AppError::BadRequest("missing hash".into()))?;
     let result = blocking(move || {
         rlock(&h.vault)?.get_chunk(&hash).map_err(|e| AppError::Internal(e.to_string()))
@@ -202,10 +267,10 @@ pub async fn get_chunk(
 // their tight pool. (Sibling put_chunk's ≤16 MiB pre-check-buffer is a separate low item, still // @audit.)
 // @audit-hash sha256:49bebda97232adf1
 pub async fn commit(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, Json(req): Json<CommitRequest>,
 ) -> Result<Json<FileMeta>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write, e2ee).await?;
     // Configurable per-file ceiling (env MAX_FILE_MB, default 512). Reject an over-limit file early
     // with a clear message so the client can surface it, before taking a permit or touching the vault.
     if req.size > st.cfg.max_file_bytes {
@@ -266,10 +331,10 @@ pub async fn commit(
 }
 
 pub async fn delete_file(
-    AuthToken(user): AuthToken, State(st): State<AppState>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader,
     Path(pp): Path<HashMap<String, String>>, Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<Deletion>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write, e2ee).await?;
     let path = q.get("path").cloned().ok_or_else(|| AppError::BadRequest("missing path".into()))?;
     // Optional optimistic-concurrency precondition (issueDeleteNoCasLostUpdate): the reconcile-driven
     // delete-remote sends the version it based the tombstone on; a deliberate/authoritative delete omits
@@ -307,13 +372,14 @@ pub async fn delete_file(
 // status — per-vault health (skips the corrupt-index 503 so a client can LEARN a vault
 // is in ERROR); still ACL-gated (read access), so it never leaks a vault to a non-grantee.
 pub async fn status(
-    AuthToken(user): AuthToken, State(st): State<AppState>, Path(pp): Path<HashMap<String, String>>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
-    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read).await?;
+    let (_owner, _vault, h) = scoped(&st, &pp, &user, Access::Read, e2ee).await?;
     blocking(move || { // R10-D3: SQLite read off the async worker
         let v = rlock(&h.vault)?;
         let (status, detail) = if v.is_corrupt() {
-            ("error".to_string(), "index corrupt; run reindex".to_string())
+            // E2EE (spec section 4.5): a rebuild that aborted for a named reason reports that reason.
+            ("error".to_string(), v.abort_reason().map(|r| r.to_string()).unwrap_or_else(|| "index corrupt; run reindex".to_string()))
         } else {
             ("ready".to_string(), String::new())
         };
@@ -324,9 +390,9 @@ pub async fn status(
 // reindex — operator repair (rebuild the manifest from materialized files). Registered
 // only on the legacy own-vault route, so owner is always the caller (owner-scoped repair).
 pub async fn reindex(
-    AuthToken(user): AuthToken, State(st): State<AppState>, ClientIp(ip): ClientIp, Path(pp): Path<HashMap<String, String>>,
+    AuthToken(user): AuthToken, State(st): State<AppState>, e2ee: E2eeHeader, ClientIp(ip): ClientIp, Path(pp): Path<HashMap<String, String>>,
 ) -> Result<Json<StatusResponse>, AppError> {
-    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write).await?;
+    let (owner, vault, h) = scoped(&st, &pp, &user, Access::Write, e2ee).await?;
     let tx = h.tx.clone();
     // reindex walks the whole vault dir + rehashes — always on the blocking pool.
     let version = blocking(move || {

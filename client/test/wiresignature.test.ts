@@ -121,6 +121,7 @@ describe("signatureVerdict / diffSignature — directional classification", () =
       "LoginResponse.must_change_password", // undefined → falsy → no forced change (acceptable degradation)
       "StatusResponse.api_version",         // cosmetic epoch label (the wire gate carries the real epoch)
       "StatusResponse.schema_hash",         // undefined → the wire gate fails CLOSED (never silently trusted)
+      "FileMeta.cid",                       // undefined → a plaintext row; E3a reads it only on an encrypted vault, where absent fails CLOSED (spec 4.3)
     ]);
     const stray: string[] = [];
     for (const [t, fields] of Object.entries(EMBEDDED_SIGNATURE.types)) {
