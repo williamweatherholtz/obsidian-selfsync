@@ -525,7 +525,7 @@ package ProjectRequirements {
         :>> id = "940d459a-8312-4ca0-9f9b-a0f4b6bb70a8";
         :>> title = "Creating an encrypted vault on a server that cannot hold its key record fails before any upload";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "When a user creates an encrypted vault and the server does not return the key record the client wrote, the client shall remove the vault it created, discard the key, upload no file, and name the minimum server version.";
+        :>> statement = "When a user creates an encrypted vault and the server reports no key record for the vault it created, the client shall remove that vault, discard the key, upload no file, and name the minimum server version. When the returned key record's identifier differs from the one the client sent, the client shall fail closed with a named reason, upload no file, and delete nothing.";
         :>> rationale = "An old server ignores the keyring field and creates a plaintext vault. Without this the client would upload frames into a vault with no keyring, which locks every other device out (SE finding 3, D0102).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }

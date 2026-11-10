@@ -49,4 +49,15 @@ package IssuesAi {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from rusqliteAuditBump to issue010;
+
+    part issue011 : Issue {
+        :>> id = "e9d2a793-5287-452d-a93b-0ba2177a266f";
+        :>> title = "E2EE refusal-two mirror scan runs unbounded on every refused open";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "Design residual from E2EE panel round 8, PESSIMIST-2 finding 3. The second refusal of Vault::open reads the four-byte magic of every file under vault/ to tell which stale file the operator must move aside. A refused open is never cached. So the scan runs on every request that reaches the vault while the refusal holds, at the client's slow retry. The walk has no size bound. On a large vault with many devices the cost is a full directory walk per retry. Acceptable for v1, because the state is an operator error that the body names and the retry is slow. The E2 sprint records the cost in its result. A later change caps the walk or memoises it on the directory mtime if a fleet ever hits it.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from e2eeServerKeyringAndGuard to issue011;
 }
