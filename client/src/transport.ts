@@ -165,7 +165,10 @@ export class HttpTransport implements SyncApi {
   // `owner` empty ⇒ your own vault (legacy /api/v route); set ⇒ a shared vault. `deviceId`/`deviceName`
   // are this device's change-provenance identity, stamped onto every commit (the server pairs them with
   // the authenticated user). Default "" ⇒ unattributed (older/injected transport in tests).
-  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "", private deviceId = "", private deviceName = "") {
+  // `e2ee` (D0104): true when this vault's codec is encrypted, so every vault-scoped request carries
+  // `x-selfsync-e2ee: 1` (the server's downgrade guard, spec section 4.6). Set by the connect effect once
+  // the pin is known; a plaintext vault never sends it, so its wire is byte-identical to today.
+  constructor(private baseUrl: string, private token: string, private vault: string, private owner = "", private deviceId = "", private deviceName = "", private e2ee = false) {
     // SEC-CMMC (SC.3.13.8, defense-in-depth): refuse the WHOLE data channel over cleartext http:// to a
     // remote host, not just login/register. Login already blocks establishing such a session, so this
     // only fires if a cleartext-remote baseUrl were somehow persisted — then every sync op refuses too,
@@ -309,7 +312,11 @@ export class HttpTransport implements SyncApi {
     }, "redeem & register"));
   }
 
-  private auth() { return bearer(this.token); }
+  // The headers of a VAULT-SCOPED request: bearer auth plus the E2EE header when the codec is encrypted.
+  private auth(): Record<string, string> { return this.e2ee ? { ...bearer(this.token), "x-selfsync-e2ee": "1" } : bearer(this.token); }
+  /** Flip the E2EE header on or off (the connect effect decides the codec after the transport exists). */
+  setEncrypted(on: boolean): void { this.e2ee = on; }
+  isEncrypted(): boolean { return this.e2ee; }
   private v(suffix: string): string {
     const scope = this.owner
       ? `/api/u/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.vault)}`
@@ -334,6 +341,18 @@ export class HttpTransport implements SyncApi {
   // for shape before it's trusted. A 404 (server too old) throws → the gate fails closed.
   async schema(): Promise<SchemaResponse> {
     return validateSchemaResponse(await apiJson<unknown>({ url: `${this.baseUrl}/schema`, method: "GET" }, "schema", { endpoint: Endpoint.Other }));
+  }
+
+  // E2EE (D0105, spec section 4.4): the per-vault keyring the server stores but cannot open. The client
+  // CONSUMES 200 (the record's JSON text, verbatim) and 404 (no keyring: a plaintext vault, or an old server
+  // that lacks the route), so neither becomes a retry through the classifier. Every other answer throws a
+  // tagged ConnError exactly as status() does (a 401 drives the one-shot re-login, a 503 the degraded path
+  // with the server's body verbatim). Never carries the E2EE header: it is how a client learns.
+  async keyring(): Promise<{ found: true; text: string } | { found: false }> {
+    const r = await httpReq({ url: this.v("/keyring"), method: "GET", headers: bearer(this.token), throw: false });
+    if (r.status === 200) return { found: true, text: r.text ?? "" };
+    if (r.status === 404) return { found: false };
+    throw httpFail(r, { endpoint: Endpoint.Keyring }, "keyring");
   }
 
   async changes(since: number): Promise<ChangesResponse> {
@@ -376,6 +395,7 @@ export class HttpTransport implements SyncApi {
     const dname = req.deviceName ?? this.deviceName;
     if (did) body.device_id = did;
     if (dname) body.device_name = dname;
+    if (req.cid !== undefined) body.cid = req.cid; // E2EE (D0101): the keyed identity, only on an encrypted vault
     const r = await httpReq({
       url: this.v("/commit"), method: "POST", contentType: "application/json",
       headers: this.auth(), body: JSON.stringify(body), throw: false,

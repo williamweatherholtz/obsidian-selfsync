@@ -103,6 +103,12 @@ export interface SelfSyncSettings {
   // force a safe merge-switch (clears the base). Stamped after each successful connect. Per-device (settings
   // never sync); omitted from DEFAULT_SETTINGS.
   baseVaultKey?: string;
+  // E2EE custody (D0105, spec section 4.8): per vault (key = `owner/vaultId`, like historyFloors), the pinned
+  // {e2eeVaultId, vk} this device enrolled with. `vk` presence IS the encrypted flag. The encryption password is
+  // never stored, and no digest of the keyring is pinned (a future re-wrap must not force a re-enrol). The codec
+  // is never changed by a server answer: a different vault_id or a 404 under a pinned name blocks the link.
+  // Per-device (settings never sync); omitted from DEFAULT_SETTINGS. vk is 64 hex chars, e2eeVaultId base64.
+  e2ee?: Record<string, { e2eeVaultId: string; vk: string }>;
   // This device's STABLE provenance UUID (change attribution). Minted once (crypto.randomUUID) and stamped
   // on every commit so peers can tell WHO wrote a change; identity is this UUID, not the mutable deviceName,
   // so a rename can't impersonate another device. Per-device (settings never sync); omitted from
@@ -186,6 +192,21 @@ export function parseSettings(raw: unknown): SelfSyncSettings {
   // lazily) and the notify mode (only the two known values; anything else → the safe "user" default).
   out.deviceId = typeof s.deviceId === "string" && s.deviceId ? s.deviceId : undefined;
   out.configChangeNotify = s.configChangeNotify === "userDevice" ? "userDevice" : "user";
+  // E2EE pins (D0105): keep only well-formed entries (a 64-hex vk and a non-empty id); anything else is dropped,
+  // never half-trusted. A fresh object per instance, like the other per-vault maps.
+  {
+    const pins: Record<string, { e2eeVaultId: string; vk: string }> = {};
+    const raw = s.e2ee;
+    if (raw && typeof raw === "object") {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        const e = v as { e2eeVaultId?: unknown; vk?: unknown } | undefined;
+        if (e && typeof e.e2eeVaultId === "string" && e.e2eeVaultId && typeof e.vk === "string" && /^[0-9a-f]{64}$/.test(e.vk)) {
+          pins[k] = { e2eeVaultId: e.e2eeVaultId, vk: e.vk };
+        }
+      }
+    }
+    out.e2ee = Object.keys(pins).length ? pins : undefined;
+  }
   // Canonicalize the username to lowercase (issueUsernameNotCanonicalized): the SERVER lowercases usernames
   // (auth.rs to_ascii_lowercase), but the client persisted them as-typed — so every `x === settings.username`
   // comparison against a server-authenticated value (the plugin-autopilot "is this plugin mine?" gate, the

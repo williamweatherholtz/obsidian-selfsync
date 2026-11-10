@@ -16,10 +16,15 @@ import { Phase } from "./syncstate"; // the display-projection alphabet (light) 
 // gone (terminal), but a chunk/meta/commit 404 is a normal/transient miss (retryable, never "vault gone").
 import { defineMachine } from "./fsm";
 
-export enum Endpoint { Login = "login", VaultStatus = "vaultStatus", Chunk = "chunk", Meta = "meta", Commit = "commit", Other = "other" }
+export enum Endpoint { Login = "login", VaultStatus = "vaultStatus", Chunk = "chunk", Meta = "meta", Commit = "commit", Keyring = "keyring", Other = "other" }
 
 // Client-SYNTHESIZED conditions (no HTTP status of their own) — minted as typed errors, not string-matched.
-export enum SyntheticKind { VersionMismatch = "versionMismatch", SessionExpired = "sessionExpired", ServerDegraded = "serverDegraded" }
+// The four E2EE kinds (D0105): every E2EE decision is made by the connect effect AFTER status and the wire
+// check, from a consumed 200/404 on GET keyring, so each is synthetic by construction.
+export enum SyntheticKind {
+  VersionMismatch = "versionMismatch", SessionExpired = "sessionExpired", ServerDegraded = "serverDegraded",
+  E2eeJoinRequired = "e2eeJoinRequired", E2eeKeyringChanged = "e2eeKeyringChanged", E2eeKeyringMissing = "e2eeKeyringMissing", E2eeUnsupportedBuild = "e2eeUnsupportedBuild",
+}
 
 // The failure taxonomy — the classifier's output alphabet.
 export enum FailureKind {
@@ -33,6 +38,14 @@ export enum FailureKind {
   MustChangePassword = "mustChangePassword",// 403 — password change required
   VersionMismatch = "versionMismatch",     // client/server protocol mismatch
   VaultGone = "vaultGone",                 // vault-scope 404 — vault deleted/renamed server-side
+  // E2EE (D0105): four block reasons, each AwaitUser. The vault is encrypted and this device is not enrolled;
+  // the keyring on the server is not the one this device pinned (a different vault_id, or unparseable); a
+  // pinned device met a plaintext vault under its name (404 then a ready status); this build has the E2EE
+  // entry points compiled out and met an encrypted vault.
+  E2eeJoinRequired = "e2eeJoinRequired",
+  E2eeKeyringChanged = "e2eeKeyringChanged",
+  E2eeKeyringMissing = "e2eeKeyringMissing",
+  E2eeUnsupportedBuild = "e2eeUnsupportedBuild",
 }
 
 // The recovery policy alphabet.
@@ -66,7 +79,11 @@ export type FailureClass =
   | { kind: FailureKind.Forbidden }
   | { kind: FailureKind.MustChangePassword }
   | { kind: FailureKind.VersionMismatch }
-  | { kind: FailureKind.VaultGone };
+  | { kind: FailureKind.VaultGone }
+  | { kind: FailureKind.E2eeJoinRequired }
+  | { kind: FailureKind.E2eeKeyringChanged }
+  | { kind: FailureKind.E2eeKeyringMissing }
+  | { kind: FailureKind.E2eeUnsupportedBuild };
 
 // `AwaitUser` still arms a SLOW self-heal re-probe so a TRANSIENT server-side cause (a mid-deploy 401, a
 // reindex 404) recovers without the user having to act — pure no-timer would strand. `Slow` is the bounded
@@ -87,6 +104,10 @@ export function classifyConnectError(info: ConnErrorInfo): FailureClass {
   if (synthetic === SyntheticKind.VersionMismatch) return { kind: FailureKind.VersionMismatch };
   if (synthetic === SyntheticKind.SessionExpired) return { kind: FailureKind.SessionExpired };
   if (synthetic === SyntheticKind.ServerDegraded) return { kind: FailureKind.ServerDegraded };
+  if (synthetic === SyntheticKind.E2eeJoinRequired) return { kind: FailureKind.E2eeJoinRequired };
+  if (synthetic === SyntheticKind.E2eeKeyringChanged) return { kind: FailureKind.E2eeKeyringChanged };
+  if (synthetic === SyntheticKind.E2eeKeyringMissing) return { kind: FailureKind.E2eeKeyringMissing };
+  if (synthetic === SyntheticKind.E2eeUnsupportedBuild) return { kind: FailureKind.E2eeUnsupportedBuild };
   if (status === undefined) return { kind: FailureKind.Transient };      // network/DNS/timeout/malformed → retry
   if (status === 429) return { kind: FailureKind.LockedOut, retryAfterSecs: retryAfterSecs ?? SLOW_RETRY_SECS };
   if (status === 503) return { kind: FailureKind.ServerDegraded };
@@ -117,6 +138,10 @@ export function recoveryFor(fc: FailureClass): Recovery {
     case FailureKind.MustChangePassword:
     case FailureKind.VersionMismatch:
     case FailureKind.VaultGone:
+    case FailureKind.E2eeJoinRequired:
+    case FailureKind.E2eeKeyringChanged:
+    case FailureKind.E2eeKeyringMissing:
+    case FailureKind.E2eeUnsupportedBuild:
       return { kind: RecoveryKind.AwaitUser, reprobeSecs: SELF_HEAL_REPROBE_SECS };
   }
 }
@@ -209,5 +234,9 @@ export function blockedTip(reason: BlockReason): string {
     case FailureKind.MustChangePassword: return "You must change your password before syncing";
     case FailureKind.VersionMismatch: return "Update needed — the plugin and server aren't compatible"; // fallback; the specific wire-incompat reason comes from lastIssue (D0042)
     case FailureKind.VaultGone: return "This vault no longer exists on the server — re-create it or switch";
+    case FailureKind.E2eeJoinRequired: return "This vault is end-to-end encrypted — enter its encryption password to join (Join)";
+    case FailureKind.E2eeKeyringChanged: return "This vault's encryption key record changed on the server — Re-enrol with the encryption password, or ask the owner";
+    case FailureKind.E2eeKeyringMissing: return "This device pinned an encrypted vault, but the server now holds a plaintext vault under its name — not syncing. Delete it on the server and re-create it encrypted, or ask the owner";
+    case FailureKind.E2eeUnsupportedBuild: return "This plugin build does not support encrypted vaults — update the plugin";
   }
 }

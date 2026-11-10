@@ -1,7 +1,12 @@
 import { App, Modal, Notice, Plugin, Platform, MarkdownView, TAbstractFile, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import { HttpTransport, SharedVaultRef, SharePerm, ShareLinkInfo, VaultShares } from "./transport";
 import { SyncState, VaultIo, ChunkCache, AppendHandle, SyncApi, fetchFileBytes } from "./sync";
-import { sha256hex } from "./chunker";
+import { sha256hex } from "./chunker"; // the main.js build fingerprint ONLY (buildDigest); every content identity goes through the codec
+import { ContentCodec, E2eeCodec, PLAIN_CODEC, remoteIdentity } from "./e2ee/codec";
+import { parseKeyring } from "./e2ee/keyring";
+import { deriveSubkeys } from "./e2ee/subkeys";
+import { fromB64, fromHex } from "./e2ee/bytes";
+import { e2eeBuildEnabled, UNSUPPORTED_BUILD_REASON } from "./e2ee/build";
 import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy, keptBothName } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
@@ -410,6 +415,11 @@ export type ApiClient = SyncApi & {
   connectWs(onChanged: () => void): WebSocket | null;
   status(): Promise<{ status: string; detail: string; version: number; apiVersion?: number; schemaHash?: string }>;
   schema(): Promise<SchemaResponse>; // D0042: the server's wire-contract signature + its hash (GET /schema)
+  // E2EE (D0105): GET keyring, consumed as 200 (found) or 404 (not found); every other answer throws as
+  // status() does. Optional so an injected test fake without it reads as a plaintext vault (404).
+  keyring?(): Promise<{ found: true; text: string } | { found: false }>;
+  // E2EE (D0104): flip the x-selfsync-e2ee header once the codec is decided. Optional for test fakes.
+  setEncrypted?(on: boolean): void;
 };
 
 export default class SelfSyncPlugin extends Plugin {
@@ -420,6 +430,13 @@ export default class SelfSyncPlugin extends Plugin {
   private state: SyncState = { version: 0 };
   private base = new BaseStore();
   private cache: ChunkCache = new Map();
+  // E2EE (D0104/D0105): the content codec of the PRIMARY vault. PLAIN_CODEC until the connect effect reads
+  // GET keyring against this device's pin; never changed by a server answer alone (the pin wins). Mounts
+  // stay plaintext in v1 (D0110).
+  private codec: ContentCodec = PLAIN_CODEC;
+  // Once-per-episode latch for the join prompt (spec section 4.8): from the first E2eeJoinRequired block until
+  // a pin or Reconfigure, reset on a 404 and on Connected, like versionNoticeShown.
+  private e2eeJoinPromptShown = false;
   // --- composed vaults (D0039) ---
   // Live mount scopes (one per settings.mounts entry): each an ISOLATED MountRuntime (own base/state/guard) +
   // its FSM state. Empty ⇒ the whole subsystem is dormant (zero behaviour change). Rebuilt on connect.
@@ -603,6 +620,10 @@ export default class SelfSyncPlugin extends Plugin {
     // D0042: a wire-incompat block carries a SPECIFIC field/endpoint reason in lastIssue that the generic
     // blockedTip can't — prefer it (the whole point is telling the user WHAT is incompatible).
     if (link && link.kind === LinkKind.Blocked && link.reason === FailureKind.VersionMismatch && this.lastIssue) return this.lastIssue;
+    // E2EE (D0105): the three keyring blocks carry a SPECIFIC named reason in lastIssue (which id differed,
+    // why the record failed to parse, which remedy) that the generic blockedTip cannot — prefer it the same way.
+    if (link && link.kind === LinkKind.Blocked && this.lastIssue
+        && (link.reason === FailureKind.E2eeKeyringChanged || link.reason === FailureKind.E2eeKeyringMissing || link.reason === FailureKind.E2eeUnsupportedBuild)) return this.lastIssue;
     if (link && (link.kind === LinkKind.Blocked || (link.kind === LinkKind.Retrying && link.recovery.kind === RecoveryKind.After))) return linkPhase(link).detail;
     return this.lastIssue;
   }
@@ -615,7 +636,30 @@ export default class SelfSyncPlugin extends Plugin {
   // mount-exclusion, so the mount can read/write its own subtree (D0039; the A1 fix).
   protected buildMountIo(): VaultIo { return new ObsidianVaultIo(this, true); }
   protected buildApi(token: string): ApiClient {
-    return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "", this.deviceId(), this.deviceLabel());
+    // The E2EE header follows the PIN (spec section 4.8): a pinned device sends it from the first request.
+    return new HttpTransport(this.settings.serverUrl, token, this.settings.vaultId || "default", this.settings.vaultOwner || "", this.deviceId(), this.deviceLabel(), this.e2eePin() !== undefined);
+  }
+
+  // ---- E2EE custody (D0105) ----
+  /** This device's pin for the current primary vault, if it enrolled in an encrypted one. */
+  e2eePin(): { e2eeVaultId: string; vk: string } | undefined { return this.settings.e2ee?.[this.historyFloorKey()]; }
+  /** Pin {e2eeVaultId, vk} after a successful create or join (E3b calls this). Never the password. */
+  async pinE2ee(e2eeVaultId: string, vk: string): Promise<void> {
+    (this.settings.e2ee ??= {})[this.historyFloorKey()] = { e2eeVaultId, vk };
+    this.e2eeJoinPromptShown = false;
+    await this.saveSettings();
+  }
+  /** Drop the pin (the owner deleted the vault and re-creates it, or leaves it). */
+  async clearE2eePin(): Promise<void> {
+    if (this.settings.e2ee) { delete this.settings.e2ee[this.historyFloorKey()]; if (!Object.keys(this.settings.e2ee).length) this.settings.e2ee = undefined; }
+    await this.saveSettings();
+  }
+  /** The codec of the primary vault as decided by the last connect (plain until then). */
+  contentCodec(): ContentCodec { return this.codec; }
+  // The join prompt (E3b owns the modal): called ONCE per episode by the connect effect when an unpinned
+  // device meets an encrypted vault. Overridable; this build logs the reason and lets the card carry it.
+  protected openJoinPrompt(_keyringText: string): void {
+    this.log("This vault is end-to-end encrypted. Join it with its encryption password from the status card.");
   }
   protected async loginRemote(): Promise<string> {
     // Re-login for an ALREADY-set-up account (its password was set at setup, so must-change is cleared);
@@ -1213,7 +1257,8 @@ export default class SelfSyncPlugin extends Plugin {
     const files: { path: string; local: SideState; server: SideState }[] = [];
     for (const p of paths) {
       const meta = serverMetas.get(p);
-      const server: SideState = meta ? { present: true, hash: meta.hash } : { present: false };
+      // E2EE (D0104): the preview compares IDENTITIES through the codec (the cid on an encrypted vault).
+      const server: SideState = meta ? { present: true, hash: remoteIdentity(this.codec, meta) } : { present: false };
       const lEntry = local.get(p);
       let localSide: SideState;
       if (!lEntry) {
@@ -1222,7 +1267,7 @@ export default class SelfSyncPlugin extends Plugin {
         // Ambiguous (same size, small): a hash resolves unchanged-vs-overwrite. An unreadable file matches
         // what the REAL action sees — push's readOrNull treats it as absent (→ delete), pull's applyPull
         // overwrites the existing file — so presence is direction-aware here.
-        try { localSide = { present: true, hash: await sha256hex(await d.io.read(p)) }; }
+        try { localSide = { present: true, hash: await this.codec.fileIdentity(p, await d.io.read(p)) }; }
         catch { localSide = direction === "push" ? { present: false } : { present: true }; }
       } else {
         // Different size (→ definitely differs) or large (→ don't read): present, content uncompared.
@@ -1246,7 +1291,7 @@ export default class SelfSyncPlugin extends Plugin {
       if (Math.max(local.get(path)?.size ?? 0, meta?.size ?? 0) > DIFF_CAP) return "too-large";
       const dec = (b: Uint8Array): string | null => { try { return new TextDecoder("utf-8", { fatal: true }).decode(b); } catch { return null; } };
       const localText = local.has(path) ? dec(await d.io.read(path)) : "";
-      const serverText = meta ? dec(await fetchFileBytes(d.api, d.cache, meta.chunks)) : "";
+      const serverText = meta ? dec(await fetchFileBytes(d.api, d.cache, meta.chunks, this.codec)) : "";
       if (localText === null || serverText === null) return "binary";
       const [oldT, newT] = direction === "push" ? [serverText, localText] : [localText, serverText];
       return lineDiff(oldT, newT) ?? "too-large";
@@ -2416,6 +2461,7 @@ export default class SelfSyncPlugin extends Plugin {
   private deps(): ReconcileDeps {
     return {
       api: this.api!, io: this.io, base: this.base, cache: this.cache, state: this.state,
+      codec: this.codec, // E2EE (D0104): the one seam; PLAIN_CODEC on a plaintext vault
       device: this.deviceLabel(),
       ignorePatterns: this.ignorePatterns(),
       excludedFolders: this.settings.excludedFolders,
@@ -2602,8 +2648,13 @@ export default class SelfSyncPlugin extends Plugin {
     // resulting empty manifest could delete local files. Surface the operator action. status() is the first
     // authed call; if the stored token was rejected (401), re-login ONCE and rebuild the transport (reactive
     // auth — no proactive validation probe). A still-failing auth then throws → the engine backs off + retries.
+    // E2EE (D0105, spec section 4.8): GET keyring is the FIRST vault-scoped request, before status(), pinned or
+    // not, inside the same try whose catch does the one-shot 401 re-login. 200 and 404 are consumed by the
+    // transport, so neither reaches the classifier; a 503 takes the degraded path below with the server's body
+    // verbatim (both refusals of spec 4.4 answer here); every other answer throws exactly as status() does.
     let health;
-    try { health = await this.api.status(); }
+    let keyring: { found: true; text: string } | { found: false };
+    try { keyring = await this.fetchKeyring(); health = await this.api.status(); }
     catch (e) {
       // A 503 from /status means the server can't OPEN the vault — a schema-downgrade (an operator rolled the
       // server image BACK), or a poisoned lock. Its plain-text body is already a clear, actionable operator
@@ -2620,6 +2671,7 @@ export default class SelfSyncPlugin extends Plugin {
       activeToken = await this.freshLogin();
       this.api = this.buildApi(activeToken);
       this.sessionToken = activeToken;
+      keyring = await this.fetchKeyring();
       health = await this.api.status();
     }
     // Wire-contract compatibility (D0042): refuse to sync unless the server's wire signature is compatible
@@ -2637,15 +2689,79 @@ export default class SelfSyncPlugin extends Plugin {
     }
     this.versionNoticeShown = false; // compatible → reset so a later mismatch toasts again
     if (health.status !== "ready") {
-      this.lastIssue = `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
+      // An E2EE rebuild abort names its reason in the detail (spec section 4.5); show it when present.
+      this.lastIssue = health.detail && /keyring|encrypt/i.test(health.detail)
+        ? `This vault's data on the server needs an operator: ${health.detail}`
+        : `This vault's data on the server is damaged and can't sync safely. Someone with server access needs to repair it (run “reindex” on the server). Not syncing until then.`;
       this.log(this.lastIssue);
       throw new ConnError("server vault not ready (reindex needed)", { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.Other });
     }
+    // Every E2EE decision runs AFTER the ready check and the wire check (spec section 4.8): a status body of
+    // error takes the degraded path and wins over every keyring arm, and no join prompt or KDF runs against an
+    // unverified contract (D0042).
+    await this.resolveCodec(keyring);
     // If this is a vault shared TO us, re-derive our permission from the server's grant so the cached
     // vaultOwner/vaultReadOnly can't be stale (owner flipped read↔write, or revoked us).
     this.setConnectStage("checking your access");
     await this.refreshShareGrant(activeToken);
     await this.refreshSourceGrants(activeToken); // mounts: know each shared source's write-grant so the read-only rail follows the GRANT, not just direction
+  }
+
+  // GET keyring through the injected client. A fake without the method reads as a plaintext vault (404).
+  private fetchKeyring(): Promise<{ found: true; text: string } | { found: false }> {
+    return this.api!.keyring ? this.api!.keyring() : Promise.resolve({ found: false });
+  }
+
+  // The E2EE decision table of spec section 4.8, from a consumed GET keyring answer and this device's pin.
+  // The codec is NEVER changed by a server answer alone: the pin wins over the server, so a lying server, a
+  // restored pre-encryption backup, a same-name plaintext recreate or an operator-deleted keyring all block.
+  private async resolveCodec(keyring: { found: true; text: string } | { found: false }): Promise<void> {
+    const pin = this.e2eePin();
+    if (!keyring.found) {
+      this.e2eeJoinPromptShown = false; // a 404 resets the join latch
+      if (pin) {
+        // A pinned device met a plaintext vault under its name (404 then a ready status): never a plaintext push.
+        this.lastIssue = "This device pinned an encrypted vault, but the server now holds a plaintext vault under its name — not syncing (delete it on the server and re-create it encrypted, or ask the owner).";
+        this.log(this.lastIssue, true);
+        throw new ConnError("encrypted vault pinned, server holds plaintext", { synthetic: SyntheticKind.E2eeKeyringMissing, wasLogin: false, endpoint: Endpoint.Keyring });
+      }
+      this.codec = PLAIN_CODEC; this.api!.setEncrypted?.(false);
+      return;
+    }
+    if (!pin) {
+      if (!e2eeBuildEnabled()) {
+        this.lastIssue = `This vault is end-to-end encrypted and ${UNSUPPORTED_BUILD_REASON} — update the plugin.`;
+        this.log(this.lastIssue, true);
+        throw new ConnError(UNSUPPORTED_BUILD_REASON, { synthetic: SyntheticKind.E2eeUnsupportedBuild, wasLogin: false, endpoint: Endpoint.Keyring });
+      }
+      this.lastIssue = "This vault is end-to-end encrypted. Enter its encryption password to join it (Join on the status card).";
+      if (!this.e2eeJoinPromptShown) { this.e2eeJoinPromptShown = true; this.openJoinPrompt(keyring.text); }
+      throw new ConnError("encrypted vault, device not enrolled", { synthetic: SyntheticKind.E2eeJoinRequired, wasLogin: false, endpoint: Endpoint.Keyring });
+    }
+    // Pinned: the server's record must carry THIS pin's vault_id. An enrolled device never unwraps on reconnect
+    // (a same-id keyring with a foreign wrap cannot harm it); a parse failure or another id is "keyring changed".
+    let changed: string | undefined;
+    try {
+      const kr = parseKeyring(keyring.text);
+      if (kr.vault_id !== pin.e2eeVaultId) changed = "the server's key record belongs to a different vault id";
+    } catch (e: any) { changed = `the server's key record does not parse (${e?.message ?? e})`; }
+    if (changed) {
+      this.lastIssue = `This vault's encryption key record changed on the server: ${changed}. Re-enrol with the encryption password, or ask the owner.`;
+      this.log(this.lastIssue, true);
+      throw new ConnError("keyring changed", { synthetic: SyntheticKind.E2eeKeyringChanged, wasLogin: false, endpoint: Endpoint.Keyring });
+    }
+    if (!this.codec.encrypted || this.codec.tag !== (await this.pinnedCodec()).tag) this.codec = await this.pinnedCodec();
+    this.api!.setEncrypted?.(true);
+    this.e2eeJoinPromptShown = false;
+  }
+  private pinnedCodecCache?: { key: string; codec: E2eeCodec };
+  private async pinnedCodec(): Promise<E2eeCodec> {
+    const pin = this.e2eePin()!;
+    const key = `${this.historyFloorKey()}|${pin.e2eeVaultId}`;
+    if (this.pinnedCodecCache?.key !== key) {
+      this.pinnedCodecCache = { key, codec: E2eeCodec.fromKeys(await deriveSubkeys(fromHex(pin.vk), fromB64(pin.e2eeVaultId))) };
+    }
+    return this.pinnedCodecCache.codec;
   }
 
   // D0042 wire-contract compatibility decision (imperative shell over the pure hashCheck/diff cores). Cheap
@@ -2723,6 +2839,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.spinUpWs();
     this.startPolling();
     this.backoff = 3000;
+    this.e2eeJoinPromptShown = false; // Connected resets the join latch (spec section 4.8)
     this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
     this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
     this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy();
@@ -3582,7 +3699,11 @@ export default class SelfSyncPlugin extends Plugin {
   // underscore), so an OLD (pre-fix-③, server-blind `owner/vault`) stored key — which lacks it — is
   // recognizable and grandfathered by the guard rather than forcing a spurious merge on upgrade.
   private vaultIdentityKey(): string {
-    return `${this.serverHost()}|${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`;
+    // E2EE (D0104, spec section 4.8): an encrypted vault's key gains `|tag` (the tag derives from k_id, so it
+    // changes exactly when base identities would). A plaintext vault contributes no segment, so its key is
+    // byte-identical to the pre-E2EE key and vaultKeyMismatch never trips on an existing vault.
+    const tag = this.codec.encrypted ? `|${this.codec.tag}` : "";
+    return `${this.serverHost()}|${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}${tag}`;
   }
 
   // Is this (version, floor) a deletion-history RESET vs what this device last synced? True if the

@@ -1,5 +1,9 @@
 import { SyncApi, VaultIo, SyncState, ChunkCache, pushFile, pushBytes, fetchFileBytes, streamFileToDisk, mapPool } from "./sync";
-import { sha256hex } from "./chunker";
+// E2EE (D0104): every content identity goes through the codec (sha256 on a plain vault, the cid on an
+// encrypted one), never a bare sha256hex. The lint test in test/e2ee/lint.test.ts pins that this file
+// imports no hash primitive.
+import { codecOf } from "./sync";
+import { ContentCodec, remoteIdentity } from "./e2ee/codec";
 import { BaseStore, BaseEntry, conflictCopyName, isConflictCopy } from "./base";
 import { PathFs, identityIndex, identityKey, identityGroups, pathViolation } from "./pathidentity";
 import { isMergeable, merge3 } from "./merge";
@@ -298,6 +302,9 @@ function holdForRetry(d: ReconcileDeps, path: string, version: number): boolean 
 
 export interface ReconcileDeps {
   api: SyncApi; io: VaultIo; base: BaseStore; cache: ChunkCache; state: SyncState;
+  // E2EE (D0104): the content codec. Absent ⇒ PLAIN_CODEC (today's bytes and hashes exactly). The base and
+  // decide() hold IDENTITIES through it: sha256 on a plain vault, the cid on an encrypted one.
+  codec?: ContentCodec;
   device: string;
   // Timestamp-ignore (the redesigned feature). SelfSync NEVER writes timestamps; `ignorePatterns` is the set
   // of frontmatter key patterns (e.g. "updated", "updated-*", "date modified") whose TIMESTAMP-VALUED lines
@@ -637,7 +644,7 @@ async function baseNormHash(d: ReconcileDeps, path: string, baseEntry: BaseEntry
 type RaceOutcome = { kind: "none" } | { kind: "config-race" } | { kind: "copy"; path: string };
 async function conflictCopyIfRaced(d: ReconcileDeps, path: string, expectLocalHash: string | null): Promise<RaceOutcome> {
   const cur = await readOrNull(d.io, path);
-  const curHash = cur ? await sha256hex(cur) : null;
+  const curHash = cur ? await codecOf(d).fileIdentity(path, cur) : null;
   if (curHash !== expectLocalHash && cur) {
     // Panel ID1 (2026-09-11): the push→in-sync override stamps the scan-skip hint on a file whose RAW hash differs
     // from base (a cosmetic / timestamp-only local change). The next full pass trusts the hint (localHash := base
@@ -694,8 +701,8 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
         }
       : undefined;
     try {
-      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash, beforeRename)) {
-        d.base.set(path, { hash: rmeta.hash });
+      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash, beforeRename, rmeta.cid)) {
+        d.base.set(path, { hash: remoteIdentity(codecOf(d), rmeta) });
         d.onBaseChanged?.();
         return;
       }
@@ -720,7 +727,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
       if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } } // path untouched on a buffered-write throw → the copy is a redundant dup
       throw e;
     }
-    setBase(d, path, bytes, rmeta.hash);
+    setBase(d, path, bytes, remoteIdentity(codecOf(d), rmeta));
     return;
   }
   const bytes = await fetchVerified(d, rmeta);
@@ -736,7 +743,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
     if (race.kind === "copy") { try { await d.io.remove(race.path); } catch { /* best-effort cleanup */ } }
     throw e;
   }
-  setBase(d, path, bytes, rmeta.hash);
+  setBase(d, path, bytes, remoteIdentity(codecOf(d), rmeta));
 }
 
 // R13: cheap periodic pass — re-hash ONLY `.obsidian/` config files (small + few) to catch a LOCAL
@@ -758,7 +765,7 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
     // bytes each pass. Same (size,mtime) heuristic the whole-vault scan uses (a write bumps mtime).
     if (baseStatUnchanged(be, st)) continue;
     const cur = await readOrNull(d.io, p);
-    const curHash = cur ? await sha256hex(cur) : null;
+    const curHash = cur ? await codecOf(d).fileIdentity(p, cur) : null;
     if (curHash === (be?.hash ?? null)) {
       // Unchanged vs base, but the stat stamp was missing/stale — record it so the NEXT scan skips
       // the hash (the stamp is dropped on restart, so the first post-restart scan re-hashes once).
@@ -785,10 +792,17 @@ export async function reconcileLocalConfig(d: ReconcileDeps): Promise<void> {
 // re-served to every device. On mismatch we throw; reconcileAll's per-file guard logs + skips it,
 // leaving the good local copy untouched while the rest of the sync proceeds.
 async function fetchVerified(d: ReconcileDeps, meta: FileMeta): Promise<Uint8Array> {
-  const bytes = await fetchFileBytes(d.api, d.cache, meta.chunks);
-  const got = await sha256hex(bytes);
-  if (got !== meta.hash) {
-    throw new Error(`integrity check failed for '${meta.path}': got ${got.slice(0, 12)}, expected ${meta.hash.slice(0, 12)} — not applying (corrupt download?)`);
+  const codec = codecOf(d);
+  // E2EE (D0101, spec section 4.3): a row without cid in an encrypted vault is never written; the whole-file
+  // check is the cid over the plaintext (the cache holds plaintext, so the frame hash cannot be recomputed).
+  if (codec.encrypted && !meta.cid) {
+    throw new Error(`'${meta.path}' has no cid in an encrypted vault — not applying (a pre-E2EE row or a buggy client)`);
+  }
+  const bytes = await fetchFileBytes(d.api, d.cache, meta.chunks, codec);
+  const got = await codec.fileIdentity(meta.path, bytes);
+  const expected = remoteIdentity(codec, meta);
+  if (got !== expected) {
+    throw new Error(`integrity check failed for '${meta.path}': got ${got.slice(0, 12)}, expected ${expected.slice(0, 12)} — not applying (corrupt download?)`);
   }
   // Also enforce the SIZE contract on the buffered path (the streamed path already does, sync.ts) — a
   // FileMeta whose size disagrees from the assembled bytes is a self-inconsistent server response; reject it
@@ -1075,7 +1089,7 @@ export async function keepHeldPushes(d: ReconcileDeps, paths: readonly string[])
     try {
       const bytes = await readOrNull(d.io, p);
       if (bytes === null) continue; // gone locally before resolution → nothing to stabilize
-      setBase(d, p, bytes, await sha256hex(bytes));
+      setBase(d, p, bytes, await codecOf(d).fileIdentity(p, bytes));
     } catch (e) { d.onFileError?.(p, e); }
   }
   if (paths.length) d.onBaseChanged?.();
@@ -1198,12 +1212,12 @@ async function reconcileEnabledPluginList(d: ReconcileDeps, path: string, rmeta:
   const localHasExtra = localIds.some((id) => !remoteIds.includes(id));
   if (!localHasExtra) {
     await d.io.write(path, remoteBytes); // remote ⊇ local → adopt it; nothing is disabled, nothing to push
-    setBase(d, path, remoteBytes, rmeta.hash);
+    setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta));
   } else {
     const mergedBytes = new TextEncoder().encode(merged); // local has ids the server lacks → preserve them
     await d.io.write(path, mergedBytes);
     if (d.readOnly) {
-      setBase(d, path, remoteBytes, rmeta.hash); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
+      setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta)); // can't push on a read-only share; keep the union locally (reads as a kept local edit next pass)
     } else {
       const { hash: mh, bytes: mb } = await pushBytes(d, path, mergedBytes, rmeta.version); // converge the server to the union
       setBase(d, path, mb, mh);
@@ -1229,7 +1243,7 @@ async function reconcileMergeOrConflict(
   const liveLocal = (await readOrNull(d.io, path)) ?? localBytes!;
   // Tag the conflict copy with the hash of the bytes we actually write into it (liveLocal), NOT a stale
   // pre-fetch hash — a save racing the fetch changes liveLocal, and a stale tag would mislabel the copy.
-  const liveLocalHash = await sha256hex(liveLocal);
+  const liveLocalHash = await codecOf(d).fileIdentity(path, liveLocal);
   // Same CONTENT IDENTITY (EOL/BOM normalized; timestamp-valued keys masked where they apply) ⇒ NOT a real
   // conflict, even when raw bytes differ. Adopt the remote copy, record base, spawn NO copy — covers cross-OS
   // EOL/BOM diffs AND timestamp-only diffs uniformly. We never rewrite timestamp VALUES (SelfSync doesn't own
@@ -1247,7 +1261,7 @@ async function reconcileMergeOrConflict(
     const localNorm = await normalizedHash(liveLocal, patterns), remoteNorm = await normalizedHash(remoteBytes, patterns);
     if (localNorm === remoteNorm && sameMaskedKeys) {
       await d.io.write(path, remoteBytes);
-      setBase(d, path, remoteBytes, rmeta.hash);
+      setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta));
       return;
     }
     // Panel ID2 (2026-09-11): identity was ONE-SIDED — the push→in-sync override recognised a cosmetic LOCAL change, but
@@ -1262,7 +1276,7 @@ async function reconcileMergeOrConflict(
         const keysL = ignoredTimestampKeysPresent(dec.decode(liveLocal), patterns), keysR = ignoredTimestampKeysPresent(dec.decode(remoteBytes), patterns);
         const keysB = baseEntry.text !== undefined ? ignoredTimestampKeysPresent(baseEntry.text, patterns) : undefined;
         if (localNorm === bnorm && remoteNorm !== bnorm && (keysB === undefined || keysL === keysB)) {
-          await d.io.write(path, remoteBytes); setBase(d, path, remoteBytes, rmeta.hash); return; // only the remote really changed → pull
+          await d.io.write(path, remoteBytes); setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta)); return; // only the remote really changed → pull
         }
         if (remoteNorm === bnorm && localNorm !== bnorm && !d.readOnly && (keysB === undefined || keysR === keysB)) {
           if (d.pushFlipHold?.(path, liveLocalHash, liveLocal)) { d.onFlipHeld?.(path); return; } // SR-47
@@ -1299,7 +1313,7 @@ async function reconcileMergeOrConflict(
     case "adoptRemote":
       // cosmetic-only, OR a read-only NO-base first-contact — adopt the remote, record base, spawn NO copy.
       await d.io.write(path, remoteBytes);
-      setBase(d, path, remoteBytes, rmeta.hash);
+      setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta));
       return;
     case "readOnlyKeepCopy": {
       // Read-only share, known-base divergence: the owner's version is canonical and we push nothing, so
@@ -1311,14 +1325,14 @@ async function reconcileMergeOrConflict(
       // reads the local path expecting the edit, would otherwise copy the just-restored SOURCE — F1).
       d.onConflict?.(path, copy);
       await d.io.write(path, remoteBytes);
-      setBase(d, path, remoteBytes, rmeta.hash);
+      setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta));
       return;
     }
     case "pushMerged": {
       // DI-R2#3: base from the COMMITTED bytes pushBytes returns, not the pre-write merged bytes. CAS
       // base = the remote version we merged against; a server advance between fetch and push 409s → re-merge.
       const mergedBytes = new TextEncoder().encode(mergeResult!.merged);
-      if (d.pushFlipHold?.(path, await sha256hex(mergedBytes), mergedBytes)) { d.onFlipHeld?.(path); return; } // SR-47: a merge that keeps producing an already-seen result is the same two-writer loop
+      if (d.pushFlipHold?.(path, await codecOf(d).fileIdentity(path, mergedBytes), mergedBytes)) { d.onFlipHeld?.(path); return; } // SR-47: a merge that keeps producing an already-seen result is the same two-writer loop
       const { hash: h, bytes: committed } = await pushBytes(d, path, mergedBytes, rmeta.version);
       setBase(d, path, committed, h);
       return;
@@ -1333,7 +1347,7 @@ async function reconcileMergeOrConflict(
       await d.io.write(path, remoteBytes);
       const { hash: ch, bytes: cb } = await pushFile(d, copy);
       d.base.set(copy, isMergeable(copy, cb) ? { hash: ch, text: new TextDecoder().decode(cb) } : { hash: ch });
-      setBase(d, path, remoteBytes, rmeta.hash);
+      setBase(d, path, remoteBytes, remoteIdentity(codecOf(d), rmeta));
       return;
     }
   }
@@ -1419,12 +1433,12 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
       throw new Error(`'${path}' is present but couldn't be read right now — skipping (won't be treated as deleted)`);
     }
     localBytes = local.kind === "present" ? local.bytes : null;
-    localHash = localBytes ? await sha256hex(localBytes) : null;
+    localHash = localBytes ? await codecOf(d).fileIdentity(path, localBytes) : null;
   }
   let action = decide(
     localHash ? { hash: localHash } : null,
     baseEntry ? { hash: baseEntry.hash } : null,
-    rmeta ? { hash: rmeta.hash } : null,
+    rmeta ? { hash: remoteIdentity(codecOf(d), rmeta) } : null,
   );
   // CONTENT-IDENTITY OVERRIDE (post-decide, client-side; the raw manifest/CAS axis is untouched). A change
   // whose only difference vs base is cosmetic (EOL/BOM) or a timestamp-only frontmatter diff is NOT genuine.

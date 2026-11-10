@@ -13,6 +13,10 @@ export interface FileMeta {
   // treats an absent author as UNKNOWN → notify conservatively. Mapped from the wire's snake_case
   // (author / device_id / device_name) in validateFileMeta.
   author?: string; deviceId?: string; deviceName?: string;
+  // E2EE (D0101): the keyed file identity of an encrypted vault's row, HMAC over the folded path and the
+  // plaintext, hex. Only clients compute and verify it. Absent on a plaintext row; in an encrypted vault an
+  // absent cid fails the pull closed (spec section 4.3).
+  cid?: string;
 }
 // Provenance of a DELETION — same shape/rules as FileMeta's (recorded on the tombstone, so a peer can
 // attribute an incoming config/plugin REMOVAL to WHO made it, issueDeletionProvenanceUnnotified). Optional: an
@@ -36,6 +40,9 @@ export interface CommitRequest {
   // pairs them with the authenticated user (it never trusts a client-sent username) and records them as
   // the file's last writer. Serialized as snake_case device_id / device_name by the transport.
   deviceId?: string; deviceName?: string;
+  // E2EE (D0101): the keyed identity, sent on every commit to an encrypted vault (the server refuses one
+  // without it). Omitted on a plaintext vault, so the wire is unchanged there.
+  cid?: string;
 }
 // `apiVersion` is retained only as a cosmetic display/log label (D0042) — the authority is `schemaHash`,
 // the hash of the server's wire-contract signature (see wiresignature.ts). Both optional: an older server
@@ -110,6 +117,7 @@ export function validateFileMeta(o: unknown): FileMeta {
     author: asOptStr(m.author, "author"),
     deviceId: asOptStr(m.device_id, "device_id"),
     deviceName: asOptStr(m.device_name, "device_name"),
+    cid: asOptStr(m.cid, "cid"),
   };
 }
 // R12-PB5: status() was the one consumed response NOT shape-validated — a garbage `{}` made
