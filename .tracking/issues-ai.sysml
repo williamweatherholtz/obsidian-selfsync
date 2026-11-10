@@ -59,5 +59,5 @@ package IssuesAi {
         :>> discoveredInField = false;
         :>> severity = Severity::Low;
     }
-    #Resolves dependency from e2eeServerKeyringAndGuard to issue011;
+    #Resolves dependency from e2eeMirrorScanCap to issue011;
 }
