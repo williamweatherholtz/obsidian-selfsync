@@ -450,4 +450,69 @@ package ProjectRequirements {
     satisfy nProtocolCompat by srCompatVerdict;
     satisfy nProtocolCompat by srCompatFailClosed;
     satisfy nProtocolCompat by srContractDriftGate;
+
+    // ---- End-to-end content privacy (nE2eeContentPrivacy; D0096/D0097/D0098, 2026-11-10) ----
+    requirement srE2eeServerNeverSeesPlaintext : SystemRequirement {
+        :>> id = "413bcf69-960e-4292-80cb-ff46a89a8687";
+        :>> title = "In an encrypted vault no plaintext content reaches the server";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "While a vault is end-to-end encrypted, the client shall send every content chunk as an AES-256-GCM frame and shall send the file identity as a keyed HMAC, so that no request body, chunk, commit field, or mirror file on the server holds plaintext file content.";
+        :>> rationale = "The confidentiality goal of nE2eeContentPrivacy. Verified by a real-server test that greps every stored chunk, mirror file, and index row for a known plaintext marker and finds none.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eeKeysNeverLeaveDevice : SystemRequirement {
+        :>> id = "ee91ca77-d2d7-465b-96ef-1b2c811729e7";
+        :>> title = "The encryption password and the vault key never leave the device";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "The client shall never transmit the encryption password or the unwrapped vault key, and shall never place either in a setup link, a share link, or a composition recipe. The device shall store the vault key, and never the password, in its local plugin data.";
+        :>> rationale = "D0098 custody. A link that carried key material would grant decryption to anyone who sees it, which breaks the D0007 guarantee that a link never grants content access.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eeIntegrityDetected : SystemRequirement {
+        :>> id = "231b441c-e91a-4d2f-802a-d3d65a54f68f";
+        :>> title = "A substituted, truncated, or reordered chunk set is detected before the local file changes";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "When the client assembles a pulled file in an encrypted vault, it shall verify the keyed file identity of the decrypted plaintext against the committed identity before it writes the file. On a mismatch it shall leave the local file unchanged, log the path and the cause, and not advance the sync cursor past that file.";
+        :>> rationale = "The server knows every frame hash, so a per-chunk content address cannot detect a server that swaps one valid chunk of the vault for another. The keyed identity can.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eeDedupPreserved : SystemRequirement {
+        :>> id = "4b1ae73f-afb5-40ec-9113-71d836123281";
+        :>> title = "Encryption preserves content-addressed deduplication within a vault";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "For one vault key, the client shall produce byte-identical frames for byte-identical plaintext chunks, so that a chunk already on the server is reported by chunks/missing as present and is not uploaded again.";
+        :>> rationale = "Dedup is a founding efficiency property (README). A random nonce per chunk would re-upload every chunk on every edit.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eeDowngradeGuard : SystemRequirement {
+        :>> id = "a0e1a6c7-69ef-4f31-bef5-6b2f54834709";
+        :>> title = "An encrypted vault refuses a client that does not declare E2EE support";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "When a vault holds a keyring, the server shall answer any vault-scoped changes, meta, chunk, or commit request that lacks the header x-selfsync-e2ee: 1 with HTTP 428 and a message that names the cause. It shall refuse a chunk upload whose bytes are not a well-formed frame with HTTP 422.";
+        :>> rationale = "A pre-E2EE client must fail at its first call, visibly, instead of writing ciphertext into the user's vault or plaintext into the server. The D0042 fail-closed posture, applied to content encoding.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eePasswordChangeRewrap : SystemRequirement {
+        :>> id = "6e398da2-4c7f-4d0b-8e63-f98fa8b1c29f";
+        :>> title = "Changing the encryption password re-wraps the vault key and re-encrypts no content";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "The vault key shall be a random key independent of the password, wrapped by a key derived from the password. A password change shall replace only the wrapped key in the keyring, and every existing frame shall stay valid.";
+        :>> rationale = "The key hierarchy of D0097. Password change on a large vault must not be a full re-upload.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
+    }
+    requirement srE2eeWrongPasswordDistinct : SystemRequirement {
+        :>> id = "3fe07b32-a19c-48ca-bc21-c1fdf11513a2";
+        :>> title = "A wrong password, a corrupt keyring, and a swapped keyring are told apart before any content is read";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> statement = "When a device joins an encrypted vault, the client shall report a wrong encryption password, a keyring that fails to parse, and a keyring whose check value does not verify as three distinct outcomes, and shall read no content chunk until the vault key verifies.";
+        :>> rationale = "D0097 keyring check. A user who mistypes must not be told the vault is corrupt, and a swapped keyring must not be silently accepted.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+    }
+    satisfy nE2eeContentPrivacy by srE2eeServerNeverSeesPlaintext;
+    satisfy nE2eeContentPrivacy by srE2eeKeysNeverLeaveDevice;
+    satisfy nE2eeContentPrivacy by srE2eeIntegrityDetected;
+    satisfy nE2eeContentPrivacy by srE2eeDedupPreserved;
+    satisfy nE2eeContentPrivacy by srE2eeDowngradeGuard;
+    satisfy nE2eeContentPrivacy by srE2eePasswordChangeRewrap;
+    satisfy nE2eeContentPrivacy by srE2eeWrongPasswordDistinct;
 }

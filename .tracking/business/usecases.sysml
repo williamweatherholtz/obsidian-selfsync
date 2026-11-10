@@ -304,6 +304,27 @@ package ProjectUseCases {
     #DependsOn dependency from ucRedeemSharedVault to collaborator;
     #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
     #DependsOn dependency from ucDeployServer to selfHostOperator;
+
+    // ---- End-to-end content privacy (nE2eeContentPrivacy, 2026-11-10, D0096/D0098) ----
+    use case ucCreateEncryptedVault : UseCase {
+        :>> id = "812e64ce-39b5-4462-b386-eaff9734314a"; :>> title = "Create a vault whose content the server cannot read";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> description = "A self-hoster creating a new vault, in the setup wizard or the create-vault dialog, wants its content unreadable by the server from the first upload.";
+        :>> mainSuccess = "The user ticks 'Encrypt (end-to-end)', types an encryption password twice, and reads that losing it loses the data. The client creates the vault, writes its keyring, and uploads every file as encrypted frames. The status card shows the vault as end-to-end encrypted. A later look at the server's mirror shows file names and unreadable content.";
+        :>> extensions = "The two password entries differ: the dialog refuses and says so. | The user wants to encrypt an existing vault: the dialog explains the route, create an encrypted vault, switch to it, delete the old one. | The server is older than the keyring endpoint: the client refuses to create an encrypted vault and names the server version needed.";
+    }
+    use case ucJoinEncryptedVault : UseCase {
+        :>> id = "62d67fff-5e14-422e-868a-1cc2ab7b629c"; :>> title = "Join an encrypted vault from a second device or as a collaborator";
+        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
+        :>> description = "A second device of the owner, or a collaborator who redeemed a share, connects to a vault that is end-to-end encrypted and needs the vault key before any content can be read or written.";
+        :>> mainSuccess = "After login the client finds the vault's keyring and asks once for the encryption password. With the right password it unwraps the vault key, verifies it, caches it on this device, and syncs normally. The password itself is not stored and never leaves the device.";
+        :>> extensions = "Wrong password: the client says 'wrong encryption password' before touching any content, and offers to try again. | The keyring is corrupt or was swapped: the client says the vault key does not verify and refuses to sync. | A pre-E2EE client version connects: the server answers 428 and the client shows the server's message; the local vault is untouched. | The vault is mounted as a composed source: v1 refuses the mount and names the reason.";
+    }
+    #DependsOn dependency from ucCreateEncryptedVault to selfHoster;
+    #DependsOn dependency from ucCreateEncryptedVault to nE2eeContentPrivacy;
+    #DependsOn dependency from ucJoinEncryptedVault to selfHoster;
+    #DependsOn dependency from ucJoinEncryptedVault to collaborator;
+    #DependsOn dependency from ucJoinEncryptedVault to nE2eeContentPrivacy;
     #DependsOn dependency from ucDeployServer to goal2SimpleBackend;
     #DependsOn dependency from ucCopyPreservesTimestamp to selfHoster;
     #DependsOn dependency from ucCopyPreservesTimestamp to nTimestampFidelity;

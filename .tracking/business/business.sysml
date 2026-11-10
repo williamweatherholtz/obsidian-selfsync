@@ -389,4 +389,18 @@ package ProjectBusiness {
     // Protocol compatibility (D0042) is the honest-status principle applied to the version handshake:
     // never silently proceed when the two ends can't safely speak the same wire contract; name the cause.
     #DependsOn dependency from nProtocolCompat to nHonestStatus;
+
+    // ---- End-to-end content privacy (st009 / us012, 2026-11-10; D0096 reverses D0009) ----
+    // The threat model and the "content only" boundary are the AI's proposal, not elicited: the owner
+    // said "end to end encryption" and did not state a threat model or a threshold (us012 triage note).
+    requirement nE2eeContentPrivacy : Need {
+        :>> id = "99d12bae-b287-41d2-9408-cb61d7a43740";
+        :>> title = "Note content is unreadable by the server";
+        :>> source = NeedSource::customer;
+        :>> statement = "When I choose it for a vault, the content of every synced file is encrypted on my devices before upload and decrypted only on my devices. A compromised, curious, or seized server, and anyone with its data volume, cannot read note content. The server still cannot read it when I share the vault with another account. If the server alters, swaps, or drops any part of a file, my device detects it and does not overwrite my local copy. A device of mine that runs an older SelfSync build never writes ciphertext into my vault and never writes plaintext into the encrypted vault. Paths, sizes, and timing stay visible to the server; this is content-only encryption. Losing the encryption password loses the data, and the setup says so before I choose it.";
+        :>> marketJustification = "A self-hosted sync tool whose host can read every note cannot be run on rented or shared infrastructure. Obsidian Sync and LiveSync both offer content E2EE; without it SelfSync is only safe on hardware the user fully controls, which excludes the common VPS deployment.";
+        :>> priority = Priority::must;
+    }
+    #DependsOn dependency from nE2eeContentPrivacy to nxSecurity;
+    #DerivedFrom dependency from nE2eeContentPrivacy to us012;
 }
