@@ -311,7 +311,7 @@ package ProjectUseCases {
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
         :>> description = "A self-hoster creating a new vault, in the setup wizard or the create-vault dialog, wants its content unreadable by the server from the first upload.";
         :>> mainSuccess = "The user ticks 'Encrypt (end-to-end)', types an encryption password twice, and reads that losing it loses the data. The client creates the vault, writes its keyring, and uploads every file as encrypted frames. The status card shows the vault as end-to-end encrypted. A later look at the server's mirror shows file names and unreadable content.";
-        :>> extensions = "The two password entries differ: the dialog refuses and says so. | The user wants to encrypt an existing vault: the dialog explains the route, create an encrypted vault, switch to it, delete the old one. | The server is older than the keyring endpoint: the client refuses to create an encrypted vault and names the server version needed.";
+        :>> extensions = "The two password entries differ: the dialog refuses and says so. | The password is shorter than 12 characters or equals the login password: the dialog refuses and says so. | The user wants to encrypt an existing vault: the dialog explains the route, create an encrypted vault, switch to it, delete the old one. | The server is older than the keyring endpoint: the client deletes the vault it just created, discards the key, and names the server version needed. No file is uploaded.";
     }
     use case ucJoinEncryptedVault : UseCase {
         :>> id = "62d67fff-5e14-422e-868a-1cc2ab7b629c"; :>> title = "Join an encrypted vault from a second device or as a collaborator";

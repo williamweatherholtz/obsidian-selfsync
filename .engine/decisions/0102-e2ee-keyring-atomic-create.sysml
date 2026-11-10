@@ -1,0 +1,23 @@
+// D0102 (PROPOSED — NOT YET ACCEPTED) — E2EE clause 4 of 6 - a per-vault keyring sidecar, created atomically with the vault
+// Recorded via `keel record decision` (D0105 RMWX axis; issue054). Acceptance is a separate explicit
+// human gate (method=confirmation, D0106): flip status + add the d0102Accept event on sign-off.
+package Decision0102 {
+    private import EngineElement::*;
+    private import EngineWork::*;
+    private import EngineVerification::*;
+    private import EngineRelationships::*;
+
+    part d0102 : Decision {
+        :>> id = "589da583-12d1-4cd1-96d9-51271460a818";
+        :>> title = "E2EE clause 4 of 6 - a per-vault keyring sidecar, created atomically with the vault";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> status = DecisionStatus::proposed;
+        :>> context = "Clause 4 of 6 of D0097. POST /api/vaults returns a bare status with no id (server/src/vaults.rs:15-41). The index meta table is integer-valued only (server/src/index_store.rs:47). The round-1 draft created the vault and then PUT a keyring, and a panelist showed the gap accepts plaintext.";
+        :>> decision = "A per-vault sidecar .keyring.json holds version, vault_id, the KDF parameters and salt, the check value, the wrapped VK, and server-written provenance. POST /api/vaults takes an optional keyring field and writes the vault and its keyring in one call. GET keyring exists on the own-vault route and the owner-qualified route, needs a Read grant, and answers 404 when the vault is not encrypted. There is no PUT keyring and no DELETE keyring in v1. The keyring dies with the vault. After creation the client reads GET keyring. On 404, which means an old server, it deletes the vault, discards the generated VK and names the minimum server version.";
+        :>> rationale = "Atomic creation leaves no window in which an encrypted vault accepts plaintext. A sidecar fits the existing .version-hwm pattern (server/src/vault.rs:279-292). The owner-qualified route is what every shared-vault call uses, so a collaborator can join. The post-creation read fails closed on a server that ignored the field. ALTERNATIVES: (i) create then PUT keyring - rejected, the gap accepts plaintext and a crash leaves a plaintext vault. (ii) a keyring field on status - rejected, an old client would ignore it and an old server would not refuse.";
+        :>> consequences = "CreateVaultRequest gains an optional keyring field, additive on the wire. Two new GET routes. Password change and rotation need a later re-wrap route and are tracked follow-ups.";
+    }
+    #DerivedFrom dependency from d0102 to us013;
+    #DependsOn dependency from d0102 to d0101;
+}
