@@ -1,6 +1,6 @@
 // D0111 (PROPOSED — NOT YET ACCEPTED) — E2EE recovery - lose the password, lose the data, with a 12-character floor
-// Recorded via `keel record decision` (D0105 RMWX axis; issue054). Acceptance is a separate explicit
-// human gate (method=confirmation, D0106): flip status + add the d0111Accept event on sign-off.
+// Recorded via `keel record decision` (engine D0105 RMWX axis; issue054). Acceptance is a separate explicit
+// human gate (method=confirmation, engine D0106): flip status + add the d0111Accept event on sign-off.
 package Decision0111 {
     private import EngineElement::*;
     private import EngineWork::*;
@@ -14,9 +14,9 @@ package Decision0111 {
         :>> createdBy = "ai";
         :>> status = DecisionStatus::proposed;
         :>> context = "Clause 7 of 7 of D0098. Anyone with the keyring can run Argon2id against the wrapped key offline. A weak password makes that cheap. Obsidian Sync states that a lost password is unrecoverable.";
-        :>> decision = "The creation dialog refuses an encryption password under 12 characters and refuses a password equal to the login password. It asks for the password twice and states that a lost password loses the data. There is no recovery in v1. A recovery key is the tracked task e2eeRecoveryKey. The dialog shows progress during derivation. The real-device perf protocol gains a row for KDF wall time and peak memory. KDF wall time and peak memory are measured on one real iOS and one real Android device before the release tag, and the default is chosen from that. The floor is a length, not an entropy bound.";
+        :>> decision = "The creation dialog refuses an encryption password under 12 characters and refuses a password equal to the login password. It asks for the password twice and states that a lost password loses the data. There is no recovery in v1. A recovery key is the tracked task e2eeRecoveryKey. The dialog shows progress during derivation. The real-device perf protocol gains a row for KDF wall time and peak memory. KDF wall time and peak memory on one real iOS and one real Android device are an owner-run manual Measurement, recorded with keel record measurement. E4 cites it by id and the default follows it. Without it the release ships with Encrypt hidden behind a build flag. The floor is a length, not an entropy bound.";
         :>> rationale = "The password floor and Argon2id cost are the only brakes on offline guessing. Double entry prevents a typo from locking the user out at creation. A recovery key is a second wrap and is small, but it is scope the owner did not ask for. ALTERNATIVES: (i) a recovery key in v1 - deferred. (ii) no floor - rejected, the keyring is served to every grant.";
-        :>> consequences = "The create dialog gains the floor, the equality check and the warning. The perf protocol gains a row. The parameters live in the keyring, so a change is a re-wrap.";
+        :>> consequences = "The create dialog gains the floor, the equality check and the warning. The perf protocol gains a row. The parameters live in the keyring. A later change needs e2eePasswordChange, because v1 has no re-wrap route.";
     }
     #DerivedFrom dependency from d0111 to us013;
     #DependsOn dependency from d0111 to d0107;

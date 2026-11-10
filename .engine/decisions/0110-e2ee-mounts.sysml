@@ -1,6 +1,6 @@
 // D0110 (PROPOSED — NOT YET ACCEPTED) — E2EE mounts - an encrypted source vault is refused in v1
-// Recorded via `keel record decision` (D0105 RMWX axis; issue054). Acceptance is a separate explicit
-// human gate (method=confirmation, D0106): flip status + add the d0110Accept event on sign-off.
+// Recorded via `keel record decision` (engine D0105 RMWX axis; issue054). Acceptance is a separate explicit
+// human gate (method=confirmation, engine D0106): flip status + add the d0110Accept event on sign-off.
 package Decision0110 {
     private import EngineElement::*;
     private import EngineWork::*;
@@ -20,4 +20,5 @@ package Decision0110 {
     }
     #DerivedFrom dependency from d0110 to us013;
     #DependsOn dependency from d0110 to d0104;
+    #DependsOn dependency from d0110 to d0102;
 }

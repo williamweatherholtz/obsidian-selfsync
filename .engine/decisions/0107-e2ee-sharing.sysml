@@ -1,6 +1,6 @@
 // D0107 (PROPOSED — NOT YET ACCEPTED) — E2EE sharing - one vault key per grant, the ACL decides access
-// Recorded via `keel record decision` (D0105 RMWX axis; issue054). Acceptance is a separate explicit
-// human gate (method=confirmation, D0106): flip status + add the d0107Accept event on sign-off.
+// Recorded via `keel record decision` (engine D0105 RMWX axis; issue054). Acceptance is a separate explicit
+// human gate (method=confirmation, engine D0106): flip status + add the d0107Accept event on sign-off.
 package Decision0107 {
     private import EngineElement::*;
     private import EngineWork::*;

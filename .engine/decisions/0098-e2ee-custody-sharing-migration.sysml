@@ -1,6 +1,6 @@
 // D0098 (PROPOSED — NOT YET ACCEPTED) — E2EE custody and sharing - vault key cached on the device, join by password, ACL-only revocation
-// Recorded via `keel record decision` (D0105 RMWX axis; issue054). Acceptance is a separate explicit
-// human gate (method=confirmation, D0106): flip status + add the d0098Accept event on sign-off.
+// Recorded via `keel record decision` (engine D0105 RMWX axis; issue054). Acceptance is a separate explicit
+// human gate (method=confirmation, engine D0106): flip status + add the d0098Accept event on sign-off.
 package Decision0098 {
     private import EngineElement::*;
     private import EngineWork::*;
