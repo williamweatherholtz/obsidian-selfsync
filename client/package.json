@@ -26,6 +26,7 @@
     "ws": "^8.18.0"
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
     "qrcode-generator": "^1.5.2"
   }
 }
