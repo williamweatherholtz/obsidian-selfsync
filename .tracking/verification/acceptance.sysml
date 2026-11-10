@@ -498,7 +498,6 @@ package ProjectAcceptance {
     #Verify dependency from mountRoConflictCopyKeeperDoD to sr68;
 
     // ---- End-to-end encryption (2026-11-10, e2eeCapability; panel SE finding 1: typed, not prose) ----
-    #Verify dependency from e2eeCryptoCoreDoD to srE2eePasswordChangeRewrap;
     #Verify dependency from e2eeCryptoCoreDoD to srE2eeDedupPreserved;
     #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eeDowngradeGuard;
     #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eePlaintextChunkRefused;
@@ -506,11 +505,13 @@ package ProjectAcceptance {
     #Verify dependency from e2eeClientWiringDoD to srE2eeServerNeverSeesPlaintext;
     #Verify dependency from e2eeClientWiringDoD to srE2eeKeysNeverLeaveDevice;
     #Verify dependency from e2eeClientWiringDoD to srE2eeIntegrityDetected;
-    #Verify dependency from e2eeClientWiringDoD to srE2eeNoSilentFallback;
+    #Verify dependency from e2eeClientWiringDoD to srE2eeWrongPasswordDistinct;
     #Verify dependency from e2eeClientFlowsDoD to srE2eeWrongPasswordDistinct;
     #Verify dependency from e2eeClientFlowsDoD to srE2eeCreateFailsClosed;
     #Verify dependency from e2eeClientFlowsDoD to srE2eeKeysNeverLeaveDevice;
+    #Verify dependency from e2eeClientFlowsDoD to srE2eePasswordFloorAndWarning;
     #Verify dependency from e2eeRealServerE2eDoD to srE2eeServerNeverSeesPlaintext;
+    #Verify dependency from e2eeRealServerE2eDoD to srE2eeIntegrityDetected;
     #Verify dependency from e2eeRealServerE2eDoD to srE2eeDedupPreserved;
     #Verify dependency from e2eeRealServerE2eDoD to srE2eeDowngradeGuard;
 }

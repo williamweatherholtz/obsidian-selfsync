@@ -451,7 +451,7 @@ package ProjectRequirements {
     satisfy nProtocolCompat by srCompatFailClosed;
     satisfy nProtocolCompat by srContractDriftGate;
 
-    // ---- End-to-end content privacy (nE2eeContentPrivacy; D0096/D0097/D0098, 2026-11-10) ----
+    // ---- End-to-end content privacy (nE2eeContentPrivacy; D0096, the D0099-D0104 and D0105-D0111 chains, 2026-11-10) ----
     // Revision 3 after the 2026-11-10 panel: observables only (SE finding 5), one obligation per SR,
     // the password-change SR restated as the structural invariant (SE 2), and a fail-closed create SR (SE 3).
     requirement srE2eeServerNeverSeesPlaintext : SystemRequirement {
@@ -502,20 +502,15 @@ package ProjectRequirements {
         :>> rationale = "The load-bearing server guard (OPTIMIST-1 wall 8): with the whole-file plaintext check gone for encrypted vaults, this is what stops a buggy client from landing plaintext in the mirror.";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
-    requirement srE2eePasswordChangeRewrap : SystemRequirement {
-        :>> id = "6e398da2-4c7f-4d0b-8e63-f98fa8b1c29f";
-        :>> title = "The vault key is independent of the encryption password";
-        :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "The vault key shall be independent of the encryption password, so that re-wrapping the vault key under a new password leaves every existing encrypted chunk valid.";
-        :>> rationale = "The structural invariant of D0099, testable at the library level in E1. The user-facing password-change flow is the tracked follow-up e2eePasswordChange (D0108).";
-        :>> kind = RequirementKind::functional; :>> priority = Priority::should; :>> verificationMethod = VerificationMethod::test;
-    }
+    // srE2eePasswordChangeRewrap (6e398da2) was removed in revision 4 (panel round 2, REDUCER 1 and SE 4): it traced
+    // to no clause of the Need and restated D0099's decision. The hierarchy choice stays in D0099. The user-facing
+    // password-change flow is the tracked follow-up e2eePasswordChange, which gets its own observable SR when chartered.
     requirement srE2eeWrongPasswordDistinct : SystemRequirement {
         :>> id = "3fe07b32-a19c-48ca-bc21-c1fdf11513a2";
-        :>> title = "A wrong password, a corrupt keyring, and a changed keyring are told apart before any content is read";
+        :>> title = "A wrong password, a corrupt key record, a changed key record, and a missing key record are told apart, and none sends plaintext";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "When a device joins or reconnects to an encrypted vault, the client shall report a wrong encryption password, a key record that fails to verify, and a key record that differs from the one this device enrolled with as three distinct outcomes, and shall read no content before the vault key verifies.";
-        :>> rationale = "D0099 verifier from the KEK and D0105 pin. A user who mistypes must not be told the vault is corrupt, and a changed keyring must not be silently accepted.";
+        :>> statement = "When a device joins or reconnects to an encrypted vault, the client shall report a wrong encryption password, a key record that fails to verify, a key record that differs from the one this device enrolled with, and a key record the server no longer reports as four distinct named outcomes. In each outcome the client shall block the link, read no content before the vault key verifies, and send no plaintext content.";
+        :>> rationale = "D0099 verifier from the KEK and D0105 pin. A user who mistypes must not be told the vault is corrupt. A changed or missing keyring must never switch an enrolled device to plaintext, which three panelists showed a server answer could otherwise do.";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
     requirement srE2eeCreateFailsClosed : SystemRequirement {
@@ -526,12 +521,13 @@ package ProjectRequirements {
         :>> rationale = "An old server ignores the keyring field and creates a plaintext vault. Without this the client would upload frames into a vault with no keyring, which locks every other device out (SE finding 3, D0102).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
-    requirement srE2eeNoSilentFallback : SystemRequirement {
-        :>> id = "f0255ed4-bfff-45f3-a904-239470e77189";
-        :>> title = "An enrolled device never falls back to plaintext on a server answer";
+    // srE2eeNoSilentFallback (f0255ed4) was merged into srE2eeWrongPasswordDistinct in revision 4 (REDUCER 14).
+    requirement srE2eePasswordFloorAndWarning : SystemRequirement {
+        :>> id = "901694ec-6424-45fb-a678-975c010891ee";
+        :>> title = "Choosing encryption needs a password of at least 12 characters and states that a lost password loses the data";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "When a device that enrolled in an encrypted vault connects and the server reports no key record, a different key record, or an unreadable key record, the client shall block the link with a named reason and shall send no plaintext content.";
-        :>> rationale = "Three panelists showed a 404 on the keyring would otherwise switch the codec to plaintext and push every note in the clear (D0105 pin).";
+        :>> statement = "When a user chooses encryption at vault creation, the client shall refuse an encryption password shorter than 12 characters or equal to the login password, shall ask for it twice, and shall state before the choice is confirmed that a lost password loses the data.";
+        :>> rationale = "The Need frames the floor and the warning as the user's knowing acceptance (business.sysml). The floor is a length, not an entropy bound, and the Need and the spec say so (D0111).";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
     satisfy nE2eeContentPrivacy by srE2eeServerNeverSeesPlaintext;
@@ -540,8 +536,7 @@ package ProjectRequirements {
     satisfy nE2eeContentPrivacy by srE2eeDedupPreserved;
     satisfy nE2eeContentPrivacy by srE2eeDowngradeGuard;
     satisfy nE2eeContentPrivacy by srE2eePlaintextChunkRefused;
-    satisfy nE2eeContentPrivacy by srE2eePasswordChangeRewrap;
     satisfy nE2eeContentPrivacy by srE2eeWrongPasswordDistinct;
     satisfy nE2eeContentPrivacy by srE2eeCreateFailsClosed;
-    satisfy nE2eeContentPrivacy by srE2eeNoSilentFallback;
+    satisfy nE2eeContentPrivacy by srE2eePasswordFloorAndWarning;
 }

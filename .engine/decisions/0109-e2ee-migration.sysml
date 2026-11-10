@@ -14,10 +14,9 @@ package Decision0109 {
         :>> createdBy = "ai";
         :>> status = DecisionStatus::proposed;
         :>> context = "Clause 5 of 7 of D0098. Vault purge removes the directory and is best-effort (server/src/state.rs:343-376). docs/deployment.md tells the operator to back up the whole data volume. The round-1 draft claimed no plaintext residue, and two panelists showed that is false.";
-        :>> decision = "Encryption is chosen when a vault is created. An existing plaintext vault is encrypted in three steps. Create an encrypted vault. Switch to it through the existing switch and upload flow. Delete the old vault. On the switch the client clears the old vault's base entries from data.json. The server-side plaintext copy is deleted, not scrubbed. Earlier operator backups still hold it. docs/deployment.md says so and tells the operator to rotate or destroy pre-encryption backups.";
+        :>> decision = "Encryption is chosen when a vault is created. An existing plaintext vault is encrypted in three steps. Delete the old vault. Create the encrypted vault under the same name. Switch to it through the existing switch and upload flow. A device still pointed at the old name then meets the 403 or the join prompt, never a plaintext re-create prompt. The base-ownership key carries the codec tag, so the switch clears the old base. The server-side plaintext copy is deleted, not scrubbed. Earlier operator backups still hold it. docs/deployment.md says so and tells the operator to rotate or destroy pre-encryption backups.";
         :>> rationale = "Creation-time opt-in reuses two flows that exist and are tested. In-place encryption would need history rewriting and chunk GC coordination. Honest residue copy is what the threat model promises. ALTERNATIVES: (i) in-place encrypt-this-vault - rejected for v1. (ii) claim no residue - rejected by the panel.";
         :>> consequences = "No migration code. The create dialog explains the route for an existing vault. The threat model names pre-encryption copies as not protected.";
     }
     #DerivedFrom dependency from d0109 to us013;
-    #DependsOn dependency from d0109 to d0108;
 }

@@ -305,7 +305,7 @@ package ProjectUseCases {
     #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
     #DependsOn dependency from ucDeployServer to selfHostOperator;
 
-    // ---- End-to-end content privacy (nE2eeContentPrivacy, 2026-11-10, D0096/D0098) ----
+    // ---- End-to-end content privacy (nE2eeContentPrivacy, 2026-11-10, D0096 and the D0105-D0111 custody chain) ----
     use case ucCreateEncryptedVault : UseCase {
         :>> id = "812e64ce-39b5-4462-b386-eaff9734314a"; :>> title = "Create a vault whose content the server cannot read";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
@@ -318,7 +318,7 @@ package ProjectUseCases {
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
         :>> description = "A second device of the owner, or a collaborator who redeemed a share, connects to a vault that is end-to-end encrypted and needs the vault key before any content can be read or written.";
         :>> mainSuccess = "After login the client finds the vault's keyring and asks once for the encryption password. With the right password it unwraps the vault key, verifies it, caches it on this device, and syncs normally. The password itself is not stored and never leaves the device.";
-        :>> extensions = "Wrong password: the client says 'wrong encryption password' before touching any content, and offers to try again. | The keyring is corrupt or was swapped: the client says the vault key does not verify and refuses to sync. | A pre-E2EE client version connects: the server answers 428 and the client shows the server's message; the local vault is untouched. | The vault is mounted as a composed source: v1 refuses the mount and names the reason.";
+        :>> extensions = "Wrong password: the client says 'wrong encryption password' before touching any content, and offers to try again. | The key record fails to verify: the client says the key record is corrupt and refuses to sync. | The key record differs from the one this device enrolled with: the client blocks the link, names the reason, and offers to re-enrol with the password. | A pre-E2EE client version connects: the server refuses with a message that blocks the link, the client shows that it lost access to the vault, and the local vault is untouched. | The vault is mounted as a composed source: v1 refuses the mount and names the reason.";
     }
     #DependsOn dependency from ucCreateEncryptedVault to selfHoster;
     #DependsOn dependency from ucCreateEncryptedVault to nE2eeContentPrivacy;

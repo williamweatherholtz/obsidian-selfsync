@@ -19,5 +19,5 @@ package Decision0110 {
         :>> consequences = "Mount creation checks GET keyring on the source. The follow-up task carries the full support.";
     }
     #DerivedFrom dependency from d0110 to us013;
-    #DependsOn dependency from d0110 to d0109;
+    #DependsOn dependency from d0110 to d0104;
 }
