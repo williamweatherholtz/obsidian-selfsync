@@ -38,4 +38,15 @@ package IssuesAi {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from configSectionRenderStorm to issue009;
+
+    part issue010 : Issue {
+        :>> id = "6a5fc680-7fa1-4c45-9313-ba2cdfd0cb99";
+        :>> title = "cargo-audit fails: libsqlite3-sys 0.30.1 carries SQLite CVE-2026-119375 (RUSTSEC-2026-0459)";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "The CI job cargo-audit fails on every push since the scheduled run of 2026-11-09, run 42656295355 at 4f5d298, before any E2EE commit. The report names RUSTSEC-2026-0459. The crate libsqlite3-sys 0.30.1 carries C SQLite CVE-2026-119375, severity 6.8 medium, published 2026-10-30. The fix is libsqlite3-sys 0.39.0 or newer, which rusqlite 0.41 pulls in. server/Cargo.toml pins rusqlite 0.32 with the bundled feature, so the vulnerable SQLite is compiled into the server binary. The owner reported the failing CI on 2026-11-10. The bump is a dependency change with a bundled C library behind it. So it is tracked and verified by the full server test suite, not patched silently.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from rusqliteAuditBump to issue010;
 }

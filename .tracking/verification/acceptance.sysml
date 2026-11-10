@@ -499,7 +499,7 @@ package ProjectAcceptance {
 
     // ---- End-to-end encryption (2026-11-10, e2eeCapability; panel SE finding 1: typed, not prose) ----
     #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eeDowngradeGuard;
-    #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eeRolledBackServerRefuses;
+    #Verify dependency from e2eeRolledBackRefusalAnalysisDoD to srE2eeRolledBackServerRefuses;
     #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eePlaintextChunkRefused;
     #Verify dependency from e2eeServerKeyringAndGuardDoD to srE2eeDedupPreserved;
     #Verify dependency from e2eeClientWiringDoD to srE2eeServerNeverSeesPlaintext;

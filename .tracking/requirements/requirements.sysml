@@ -451,7 +451,7 @@ package ProjectRequirements {
     satisfy nProtocolCompat by srCompatFailClosed;
     satisfy nProtocolCompat by srContractDriftGate;
 
-    // ---- End-to-end content privacy (nE2eeContentPrivacy; D0096, the D0099-D0104 and D0105-D0111 chains, 2026-11-10) ----
+    // ---- End-to-end content privacy (nE2eeContentPrivacy; D0096, the D0099-D0104 and D0105-D0112 sets, 2026-11-10) ----
     // Revision 3 after the 2026-11-10 panel: observables only (SE finding 5), one obligation per SR,
     // the password-change SR restated as the structural invariant (SE 2), and a fail-closed create SR (SE 3).
     requirement srE2eeServerNeverSeesPlaintext : SystemRequirement {
@@ -517,7 +517,7 @@ package ProjectRequirements {
         :>> id = "3fe07b32-a19c-48ca-bc21-c1fdf11513a2";
         :>> title = "A wrong password, a corrupt key record, a changed key record, and a missing key record are told apart, and none sends plaintext";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "When a device joins or reconnects to an encrypted vault, the client shall report a wrong encryption password, a key record that fails to verify, a key record that differs from the one this device enrolled with, and a key record the server no longer reports as four distinct named outcomes. In each outcome the client shall block the link, read no content before the vault key verifies, and send no plaintext content.";
+        :>> statement = "When a device joins or reconnects to an encrypted vault, the client shall report a wrong encryption password, a key record that fails to verify or carries unsupported KDF parameters, a key record that differs from the one this device enrolled with, and a key record the server no longer reports as four distinct named outcomes. In each outcome the client shall block the link, read no content before the vault key verifies, and send no plaintext content.";
         :>> rationale = "D0099 verifier from the KEK and D0105 pin. A user who mistypes must not be told the vault is corrupt. A changed or missing keyring must never switch an enrolled device to plaintext, which three panelists showed a server answer could otherwise do.";
         :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
     }
