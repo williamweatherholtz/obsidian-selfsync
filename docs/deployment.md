@@ -25,8 +25,9 @@ stacks live in [`deploy/`](../deploy/): `docker-compose.yml` (bundled Caddy, aut
 Caddy provisions a Let's Encrypt certificate for your domain, terminates TLS, and proxies
 to the server. In the plugin's setup wizard, use `https://sync.example.com`.
 
-Pin `image:` to a version tag (e.g. `:1.0.15`) in production for reproducible upgrades; `:latest`
-tracks the newest release.
+Pin `image:` to a version tag (e.g. `:1.0.15`) in production for reproducible upgrades. `:latest`
+tracks every server change merged to `main` (server-image.yml), not the newest release, so it can run
+ahead of any published plugin.
 
 ## Why TLS is not optional for remote access
 
