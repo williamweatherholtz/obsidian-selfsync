@@ -25,9 +25,21 @@ describe("E3a (7) sha256hex stays behind the codec", () => {
     for (const file of walk(SRC)) {
       const rel = relative(SRC, file).replace(/\\/g, "/");
       const text = readFileSync(file, "utf8");
-      const imports = /import\s*\{[^}]*\bsha256hex\b[^}]*\}\s*from/.test(text);
+      const imports = /import\s*\{[^}]*\bsha256hex\b[^}]*\}\s*from/.test(text)
+        || /import\s*\*\s*as\s+\w+\s+from\s+["']\.\/chunker["']/.test(text)      // a namespace import of chunker
+        || /export\s*\{[^}]*\bsha256hex\b[^}]*\}\s*from/.test(text);              // a re-export
+      // Any OTHER hash primitive outside the e2ee directory (noble's sha2/hmac/hkdf, the streaming Sha256) is the
+      // same hole by another door: plaintext hashed past the codec.
+      const otherPrimitive = /from\s+["']@noble\/hashes\/[^"']+["']/.test(text) || /from\s+["']\.\/streamhash["']/.test(text);
       if (rel === "chunker.ts") { expect(text).toMatch(/export (async )?function sha256hex/); continue; }
       if (imports && !ALLOWED_IMPORTERS.has(rel)) offenders.push(rel);
+      if (otherPrimitive && !rel.startsWith("e2ee/") && rel !== "streamhash.ts") offenders.push(`${rel} (hash primitive)`);
+      // A bare identifier use or a direct WebCrypto digest outside the allowlist is the same hole.
+      const code = text.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*")).join("\n");
+      if (!ALLOWED_IMPORTERS.has(rel) && !rel.startsWith("e2ee/") && rel !== "chunker.ts" && rel !== "streamhash.ts") {
+        if (/\bsha256hex\b/.test(code)) offenders.push(`${rel} (bare sha256hex)`);
+        if (/subtle\.digest\(/.test(code)) offenders.push(`${rel} (subtle.digest)`);
+      }
       if (rel === "main.ts") {
         const calls = text.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("import")).filter((l) => l.includes("sha256hex(")).length;
         expect(calls, "main.ts: exactly one sha256hex call, the main.js build fingerprint").toBe(1);

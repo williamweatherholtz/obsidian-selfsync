@@ -10,15 +10,18 @@ import { checkE2eeDefine, readDecisionTexts } from "./scripts/e2ee-define-check.
 // control, D0047). release.yml and verify-released.yml run `npm run build`, so the publishing path enforces it.
 const SELFSYNC_E2EE = false;
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const verdict = checkE2eeDefine({
-  literal: SELFSYNC_E2EE,
-  decisionTexts: readDecisionTexts(new URL("../.engine/decisions/", import.meta.url)),
-  kdfSource: readFileSync(`${here}src/e2ee/kdf.ts`, "utf8"),
-});
-if (!verdict.ok) {
-  console.error(`[selfsync build] ${verdict.reason}`);
-  process.exit(1);
+// A false literal needs no model: a client-only checkout or a tarball without .engine/ still builds.
+if (SELFSYNC_E2EE) {
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const verdict = checkE2eeDefine({
+    literal: SELFSYNC_E2EE,
+    decisionTexts: readDecisionTexts(new URL("../.engine/decisions/", import.meta.url)),
+    kdfSource: readFileSync(`${here}src/e2ee/kdf.ts`, "utf8"),
+  });
+  if (!verdict.ok) {
+    console.error(`[selfsync build] ${verdict.reason}`);
+    process.exit(1);
+  }
 }
 
 await esbuild.build({

@@ -642,16 +642,21 @@ export default class SelfSyncPlugin extends Plugin {
 
   // ---- E2EE custody (D0105) ----
   /** This device's pin for the current primary vault, if it enrolled in an encrypted one. */
-  e2eePin(): { e2eeVaultId: string; vk: string } | undefined { return this.settings.e2ee?.[this.historyFloorKey()]; }
+  // The pin is keyed by the HOST-qualified vault identity (`host|owner/vault`, the untagged base key), so a
+  // repoint to another server that hosts the same owner/vault name never reuses this server's pin.
+  private e2eePinKey(): string { return `${this.serverHost()}|${this.settings.vaultOwner ?? ""}/${this.settings.vaultId ?? ""}`; }
+  e2eePin(): { e2eeVaultId: string; vk: string } | undefined { return this.settings.e2ee?.[this.e2eePinKey()]; }
   /** Pin {e2eeVaultId, vk} after a successful create or join (E3b calls this). Never the password. */
   async pinE2ee(e2eeVaultId: string, vk: string): Promise<void> {
-    (this.settings.e2ee ??= {})[this.historyFloorKey()] = { e2eeVaultId, vk };
+    (this.settings.e2ee ??= {})[this.e2eePinKey()] = { e2eeVaultId, vk };
+    this.pinnedCodecCache = undefined;
     this.e2eeJoinPromptShown = false;
     await this.saveSettings();
   }
   /** Drop the pin (the owner deleted the vault and re-creates it, or leaves it). */
   async clearE2eePin(): Promise<void> {
-    if (this.settings.e2ee) { delete this.settings.e2ee[this.historyFloorKey()]; if (!Object.keys(this.settings.e2ee).length) this.settings.e2ee = undefined; }
+    if (this.settings.e2ee) { delete this.settings.e2ee[this.e2eePinKey()]; if (!Object.keys(this.settings.e2ee).length) this.settings.e2ee = undefined; }
+    this.pinnedCodecCache = undefined;
     await this.saveSettings();
   }
   /** The codec of the primary vault as decided by the last connect (plain until then). */
@@ -961,6 +966,7 @@ export default class SelfSyncPlugin extends Plugin {
     // each ~30s attempt opened ANOTHER wizard, stacking modals the user couldn't escape. Open at most one.
     if (this.setupOpen) return;
     this.setupOpen = true;
+    this.e2eeJoinPromptShown = false; // Reconfigure ends the join-prompt episode (spec section 4.8)
     const modal = new SetupWizardModal(this.app, this);
     const done = modal.onClose.bind(modal);
     modal.onClose = () => { this.setupOpen = false; done(); };
@@ -1203,8 +1209,12 @@ export default class SelfSyncPlugin extends Plugin {
   // file only one side has is added/removed accordingly. Reuses the tested per-path resolveConfigConflict.
   async pushPlugin(id: string): Promise<number> { return this.forcePlugin(id, "local"); }
   async pullPlugin(id: string): Promise<number> { return this.forcePlugin(id, "remote"); }
+  // E2EE (D0105): a manual push, pull, preview or remove never runs while the link is BLOCKED (a keyring
+  // block, a revoked share, a version mismatch). The codec of a blocked connect is plaintext by construction,
+  // and the server would refuse a plaintext write to an encrypted vault, but the gesture must not start at all.
+  private linkBlocked(): boolean { const l = this.engine?.linkState(); return !!l && l.kind === LinkKind.Blocked; }
   private async forcePlugin(id: string, choice: "local" | "remote"): Promise<number> {
-    if (!this.api) { new Notice("SelfSync: connect first, then push or pull a plugin"); return 0; }
+    if (!this.api || this.linkBlocked()) { new Notice("SelfSync: connect first, then push or pull a plugin"); return 0; }
     // Defense in depth: never push to a read-only share (the UI only offers Push on a read-write vault).
     if (choice === "local" && this.settings.vaultReadOnly) { new Notice("SelfSync: this is a read-only vault — you can only pull"); return 0; }
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) { new Notice(`SelfSync: '${id}' is not a valid plugin id`); return 0; }
@@ -1240,7 +1250,7 @@ export default class SelfSyncPlugin extends Plugin {
   // Uses the SAME union (pluginFilePaths) + hash basis (server FileMeta.hash vs local sha256, both whole-file
   // sha256 for un-normalized config) as forcePlugin, so the preview can't disagree with what Push/Pull does.
   async pluginPushPullPreview(id: string, direction: PushDirection): Promise<PluginPushPreview | null> {
-    if (!this.api) { new Notice("SelfSync: connect first to preview a push or pull"); return null; }
+    if (!this.api || this.linkBlocked()) { new Notice("SelfSync: connect first to preview a push or pull"); return null; }
     if (isSelfPluginId(id, this.selfFolderId())) return null; // never inspect SelfSync's own credential folder
     const d = this.deps();
     // SCOPED local walk (perf, owner-reported ~2s on mobile): only this plugin's folder, not the whole vault
@@ -1451,7 +1461,7 @@ export default class SelfSyncPlugin extends Plugin {
   // device wants it); a fleet-wide tombstone was deliberately NOT chosen (would change the catastrophe-proof
   // merge). Local installed copy is untouched.
   async removePluginFromServer(id: string): Promise<number> {
-    if (!this.api) { new Notice("SelfSync: connect first, then remove a plugin from the server"); return 0; }
+    if (!this.api || this.linkBlocked()) { new Notice("SelfSync: connect first, then remove a plugin from the server"); return 0; }
     // S3 (2026-08-02): `id` is a single plugin-folder SEGMENT and (via pluginIdOf) is server/peer-influenced.
     // Validate it before it builds a delete prefix, so a crafted id (`..`, a slash, empty) can never widen the
     // deletion beyond one plugin folder. A real Obsidian plugin id starts alphanumeric and has no separators.
@@ -2640,6 +2650,10 @@ export default class SelfSyncPlugin extends Plugin {
     // the closing socket during the await would let its close enqueue a spurious {rews} that re-dials on top
     // of this connect. (Round-6 CONC)
     this.ws?.close(); this.ws = undefined;
+    // E2EE (D0105): no connect attempt starts with the PREVIOUS session's codec. A block in resolveCodec below
+    // (keyring changed, keyring missing) must never leave an encrypted codec behind for a manual push to use
+    // under the wrong key; the pinned codec is re-derived from the pin on every successful resolve.
+    this.codec = PLAIN_CODEC;
     let activeToken = await this.acquireToken();
     this.api = this.buildApi(activeToken);
     this.sessionToken = activeToken; // stash so a mount transport (same server+token, source vault) can be built without re-login
@@ -2652,28 +2666,34 @@ export default class SelfSyncPlugin extends Plugin {
     // not, inside the same try whose catch does the one-shot 401 re-login. 200 and 404 are consumed by the
     // transport, so neither reaches the classifier; a 503 takes the degraded path below with the server's body
     // verbatim (both refusals of spec 4.4 answer here); every other answer throws exactly as status() does.
-    let health;
-    let keyring: { found: true; text: string } | { found: false };
-    try { keyring = await this.fetchKeyring(); health = await this.api.status(); }
-    catch (e) {
-      // A 503 from /status means the server can't OPEN the vault — a schema-downgrade (an operator rolled the
-      // server image BACK), or a poisoned lock. Its plain-text body is already a clear, actionable operator
-      // message, so surface THAT as a synthetic degraded state (like the corrupt-index case below) — doConnect
-      // preserves a synthetic lastIssue verbatim, so the operator sees the real reason instead of the generic
-      // "Can't reach the server (…). Retrying…" wrapper (the server DID respond). Retrying{Slow} self-heals on redeploy.
-      if (e instanceof ConnError && e.info.status === 503) {
-        this.lastIssue = e.message; // the server's plain-text body (errText)
-        throw new ConnError(e.message, { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: Endpoint.VaultStatus });
+    // A 503 from GET keyring or /status means the server can't OPEN the vault — a schema-downgrade (an operator
+    // rolled the server image BACK), a poisoned lock, or an E2EE refusal (spec section 4.4). Its plain-text body
+    // is already a clear, actionable operator message, so surface THAT as a synthetic degraded state (like the
+    // corrupt-index case below) — doConnect preserves a synthetic lastIssue verbatim, so the operator sees the
+    // real reason instead of the generic "Can't reach the server (…). Retrying…" wrapper (the server DID
+    // respond). Retrying{Slow} self-heals on redeploy. The same translation covers the pair after a re-login.
+    const probe = async () => {
+      try { const keyring = await this.fetchKeyring(); const health = await this.api!.status(); return { keyring, health }; }
+      catch (e) {
+        if (e instanceof ConnError && e.info.status === 503) {
+          this.lastIssue = e.message; // the server's plain-text body (errText)
+          throw new ConnError(e.message, { synthetic: SyntheticKind.ServerDegraded, wasLogin: false, endpoint: e.info.endpoint }); // keep the Keyring or VaultStatus tag
+        }
+        throw e;
       }
+    };
+    let probed: Awaited<ReturnType<typeof probe>>;
+    try { probed = await probe(); }
+    catch (e) {
       if (!this.isAuthError(e)) throw e;
       this.log("token rejected — re-logging in");
       this.settings.authToken = undefined;
       activeToken = await this.freshLogin();
       this.api = this.buildApi(activeToken);
       this.sessionToken = activeToken;
-      keyring = await this.fetchKeyring();
-      health = await this.api.status();
+      probed = await probe();
     }
+    const { keyring, health } = probed;
     // Wire-contract compatibility (D0042): refuse to sync unless the server's wire signature is compatible
     // with the one THIS build was compiled against — replacing the old single-integer version handshake. A
     // self-hoster auto-updates the plugin (BRAT) independently of the server, so a clear, SPECIFIC reason
@@ -2757,7 +2777,7 @@ export default class SelfSyncPlugin extends Plugin {
   private pinnedCodecCache?: { key: string; codec: E2eeCodec };
   private async pinnedCodec(): Promise<E2eeCodec> {
     const pin = this.e2eePin()!;
-    const key = `${this.historyFloorKey()}|${pin.e2eeVaultId}`;
+    const key = `${this.e2eePinKey()}|${pin.e2eeVaultId}|${pin.vk}`; // vk in the key: a re-pin under the same id never reuses a stale codec
     if (this.pinnedCodecCache?.key !== key) {
       this.pinnedCodecCache = { key, codec: E2eeCodec.fromKeys(await deriveSubkeys(fromHex(pin.vk), fromB64(pin.e2eeVaultId))) };
     }

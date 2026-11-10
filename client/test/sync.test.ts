@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { pushFile, pushBytes, fetchFileBytes, mapPool, streamFileToDisk, SyncApi, VaultIo, ChunkCache } from "../src/sync";
 import { chunk, sha256hex } from "../src/chunker";
 import { ChangesResponse, CommitRequest, FileMeta } from "../src/protocol";
+import { PLAIN_CODEC } from "../src/e2ee/codec";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -101,7 +102,7 @@ describe("chunk sync engine", () => {
     const ioA = fakeIo({ "n.md": "the quick brown fox" });
     await pushFile({ api, io: ioA, state: { version: 0 }, cache: new Map() }, "n.md");
     const meta = (await api.changes(0)).upserts.find((f) => f.path === "n.md")!;
-    const bytes = await fetchFileBytes(api, new Map(), meta.chunks);
+    const bytes = await fetchFileBytes(api, new Map(), meta.chunks, PLAIN_CODEC);
     expect(dec(bytes)).toBe("the quick brown fox");
   });
 
@@ -111,7 +112,7 @@ describe("chunk sync engine", () => {
     const ioA = fakeIo(); ioA.m.set("img.bin", bin);
     await pushFile({ api, io: ioA, state: { version: 0 }, cache: new Map() }, "img.bin");
     const meta = (await api.changes(0)).upserts.find((f) => f.path === "img.bin")!;
-    expect(await fetchFileBytes(api, new Map(), meta.chunks)).toEqual(bin);
+    expect(await fetchFileBytes(api, new Map(), meta.chunks, PLAIN_CODEC)).toEqual(bin);
   });
 
   it("mapPool preserves order and bounds concurrency (B11)", async () => {
@@ -234,7 +235,7 @@ describe("chunk sync engine", () => {
         return enc(store[h]);
       },
     } as unknown as SyncApi;
-    const bytes = await fetchFileBytes(api, new Map() as ChunkCache, order);
+    const bytes = await fetchFileBytes(api, new Map() as ChunkCache, order, PLAIN_CODEC);
     expect(dec(bytes)).toBe("abcde");
   });
 });

@@ -200,7 +200,8 @@ export function parseSettings(raw: unknown): SelfSyncSettings {
     if (raw && typeof raw === "object") {
       for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
         const e = v as { e2eeVaultId?: unknown; vk?: unknown } | undefined;
-        if (e && typeof e.e2eeVaultId === "string" && e.e2eeVaultId && typeof e.vk === "string" && /^[0-9a-f]{64}$/.test(e.vk)) {
+        // a 16-byte id in canonical base64 (24 chars ending in ==, see e2ee/bytes fromB64) and a 64-hex vk
+        if (e && typeof e.e2eeVaultId === "string" && /^[A-Za-z0-9+/]{22}==$/.test(e.e2eeVaultId) && typeof e.vk === "string" && /^[0-9a-f]{64}$/.test(e.vk)) {
           pins[k] = { e2eeVaultId: e.e2eeVaultId, vk: e.vk };
         }
       }

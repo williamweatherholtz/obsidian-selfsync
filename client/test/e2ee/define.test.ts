@@ -44,6 +44,15 @@ describe("E3a (10) the define and its build-time control", () => {
     // a Decision that depends on something else does not count
     expect(checkE2eeDefine({ literal: true, decisionTexts: [accepted(want, "d0111")], kdfSource }).ok).toBe(false);
     expect(acceptedKdfDecisions(accepted(want))).toEqual([KDF_DEFAULT]);
+    // the cost must sit in the decision field of the block that OWNS the edge: a sibling part in the same
+    // file, or the rationale quoting a rejected cost, never counts
+    const sibling = `
+    part d0998 : Decision { :>> status = DecisionStatus::accepted; :>> decision = "we reject ${want}"; }
+    part d0999 : Decision { :>> status = DecisionStatus::accepted; :>> decision = "no cost here"; :>> rationale = "not ${want}"; }
+    #DependsOn dependency from d0999 to d0112;
+`;
+    expect(acceptedKdfDecisions(sibling)).toEqual([]);
+    expect(checkE2eeDefine({ literal: true, decisionTexts: [sibling], kdfSource }).ok).toBe(false);
     const r = checkE2eeDefine({ literal: true, decisionTexts: [], kdfSource });
     expect(r.ok ? "" : r.reason).toContain("d0112");
   });

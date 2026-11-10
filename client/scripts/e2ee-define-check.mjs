@@ -14,13 +14,25 @@ export function parseKdfDefault(kdfSource) {
   return { m_kib: Number(m[1]), t: Number(m[2]), p: Number(m[3]) };
 }
 
-/** Every accepted Decision in `text` that depends on d0112 and states a cost literal. */
+/**
+ * Every accepted Decision in `text` that depends on d0112 and states a cost literal in ITS OWN decision
+ * field. The match is scoped to the `part dNNNN : Decision { ... }` block that owns the DependsOn edge.
+ * So a file with several parts cannot satisfy the rule by a sibling, and a rationale that quotes a
+ * rejected cost does not count.
+ */
 export function acceptedKdfDecisions(text) {
   const out = [];
-  if (!/status\s*=\s*DecisionStatus::accepted/.test(text)) return out;
-  if (!/#DependsOn\s+dependency\s+from\s+\w+\s+to\s+d0112\s*;/.test(text)) return out;
-  for (const m of text.matchAll(/m_kib=(\d+),\s*t=(\d+),\s*p=(\d+)/g)) {
-    out.push({ m_kib: Number(m[1]), t: Number(m[2]), p: Number(m[3]) });
+  const owners = [...text.matchAll(/#DependsOn\s+dependency\s+from\s+(\w+)\s+to\s+d0112\s*;/g)].map((m) => m[1]);
+  for (const name of owners) {
+    const block = text.match(new RegExp(`part\\s+${name}\\s*:\\s*Decision\\s*\\{([\\s\\S]*?)\\n\\s*\\}`));
+    if (!block) continue;
+    const body = block[1];
+    if (!/status\s*=\s*DecisionStatus::accepted/.test(body)) continue;
+    const field = body.match(/:>>\s*decision\s*=\s*"((?:[^"\\]|\\.)*)"/);
+    if (!field) continue;
+    for (const m of field[1].matchAll(/m_kib=(\d+),\s*t=(\d+),\s*p=(\d+)/g)) {
+      out.push({ m_kib: Number(m[1]), t: Number(m[2]), p: Number(m[3]) });
+    }
   }
   return out;
 }

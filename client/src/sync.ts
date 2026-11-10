@@ -114,7 +114,7 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
 // (redundant fetch+verify, correctness-safe via idempotent cachePut) — only worth a Map<hash,Promise> if profiled.
 // E2EE (D0104): the cache holds PLAINTEXT under the codec-tagged key of the STORED bytes' address. A fresh
 // fetch verifies sha256(stored) == hash, then decodes (tag, pad, iv checks), then caches the plaintext.
-async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string, codec: ContentCodec = PLAIN_CODEC): Promise<Uint8Array> {
+async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string, codec: ContentCodec): Promise<Uint8Array> {
   const key = cacheKey(codec, hash);
   const hit = cache.get(key);
   if (hit) return hit; // NOTE: aliases the cache entry — callers must treat it as read-only (see @audit above)
@@ -129,7 +129,8 @@ async function getVerifiedChunk(api: SyncApi, cache: ChunkCache, hash: string, c
 // fetched with bounded concurrency but reassembled in order (mapPool preserves it).
 // @audit r2 2026-07-18 — clean, no change: near-perfect concision; the order guarantee is correctly
 // delegated to mapPool. (Shares the 6-7-arg positional-list smell of pushBytes/pushFile — see below.)
-export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[], codec: ContentCodec = PLAIN_CODEC): Promise<Uint8Array> {
+// `codec` has no plain default: a caller that forgot it would skip decoding and compare a frame hash.
+export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: string[], codec: ContentCodec): Promise<Uint8Array> {
   const parts = await mapPool(chunks, TRANSFER_CONCURRENCY, (h) => getVerifiedChunk(api, cache, h, codec));
   return concat(parts);
 }
@@ -141,14 +142,16 @@ export async function fetchFileBytes(api: SyncApi, cache: ChunkCache, chunks: st
 // E2EE (D0101, spec section 4.3): on an encrypted vault the whole-file check is the cid over the plaintext,
 // not the hash (the cache holds plaintext, so sha256 of the frames cannot be recomputed on a cache hit).
 // `expectedCid` is the row's cid; a row without one in an encrypted vault is refused before any write.
-export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: string[], expectedSize: number, expectedHash: string, beforeRename?: () => Promise<void>, expectedCid?: string): Promise<boolean> {
+// `identityPath` is the SERVER row's path (the cid folds that, spec section 4.3), which can differ from the
+// local write target `path` on a folding device; it defaults to `path`.
+export async function streamFileToDisk(ctx: SyncCtx, path: string, chunks: string[], expectedSize: number, expectedHash: string, beforeRename?: () => Promise<void>, expectedCid?: string, identityPath: string = path): Promise<boolean> {
   if (!ctx.io.appendWrite) return false;
   const codec = codecOf(ctx);
   if (codec.encrypted && !expectedCid) throw new Error(`'${path}' has no cid in an encrypted vault — not applying (a pre-E2EE row or a buggy client)`);
   const h = await ctx.io.appendWrite(path);
   try {
     let written = 0;
-    const hasher = codec.identityStream(path);
+    const hasher = codec.identityStream(identityPath);
     for (const hash of chunks) {
       // DI-2/DI-R2#1: getVerifiedChunk verifies a freshly-fetched chunk before caching, and a
       // cache hit is authentic by construction — so a streamed file is never assembled from an

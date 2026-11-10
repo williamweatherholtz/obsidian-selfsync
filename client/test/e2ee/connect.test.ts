@@ -175,7 +175,7 @@ describe("E3a (6) the connect flow over GET keyring", () => {
   it("pinned + 404 then ready: blocks with E2eeKeyringMissing, never a plaintext push", async () => {
     const { pin } = await pinFor();
     const api = spyApi({ found: false });
-    const p = await boot(api, { e2ee: { "/notes": pin } });
+    const p = await boot(api, { e2ee: { "x|/notes":pin } });
     expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringMissing);
     expect(api.calls).not.toContain("changes");
     expect(api.encrypted()).toBeUndefined(); // the transport was built with the header on and never flipped
@@ -184,11 +184,11 @@ describe("E3a (6) the connect flow over GET keyring", () => {
 
   it("pinned + 200 with another vault_id, or an unparseable record: E2eeKeyringChanged with a named reason", async () => {
     const a = await pinFor(); const b = await pinFor();
-    const p = await boot(spyApi({ found: true, text: b.text }), { e2ee: { "/notes": a.pin } });
+    const p = await boot(spyApi({ found: true, text: b.text }), { e2ee: { "x|/notes":a.pin } });
     expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
     expect(p.getLastIssue()).toMatch(/different vault id/);
     p.onunload();
-    const q = await boot(spyApi({ found: true, text: "{not json" }), { e2ee: { "/notes": a.pin } });
+    const q = await boot(spyApi({ found: true, text: "{not json" }), { e2ee: { "x|/notes":a.pin } });
     expect(blockedReason(q)).toBe(FailureKind.E2eeKeyringChanged);
     expect(q.getLastIssue()).toMatch(/does not parse/);
     q.onunload();
@@ -197,7 +197,7 @@ describe("E3a (6) the connect flow over GET keyring", () => {
   it("pinned + 200 with the pinned vault_id: the codec is encrypted, the header is on, the base key carries the tag", async () => {
     const { text, pin, tag } = await pinFor();
     const api = spyApi({ found: true, text });
-    const p = await boot(api, { e2ee: { "/notes": pin } });
+    const p = await boot(api, { e2ee: { "x|/notes":pin } });
     expect(p.statusText()).toBe("idle");
     expect(p.contentCodec().encrypted).toBe(true);
     expect(p.contentCodec().tag).toBe(tag);
@@ -210,10 +210,60 @@ describe("E3a (6) the connect flow over GET keyring", () => {
     p.onunload();
   });
 
+  it("a pinned device syncs regardless of the define", async () => {
+    setE2eeBuildEnabledForTests(false);
+    const { text, pin, tag } = await pinFor();
+    const p = await boot(spyApi({ found: true, text }), { e2ee: { "x|/notes": pin } });
+    expect(p.statusText()).toBe("idle");
+    expect(p.contentCodec().encrypted).toBe(true);
+    expect(p.contentCodec().tag).toBe(tag);
+    p.onunload();
+  });
+
+  it("a pin for the same owner/vault name on ANOTHER host is not this host's pin", async () => {
+    const { text, pin } = await pinFor();
+    const p = await boot(spyApi({ found: true, text }), { e2ee: { "other.example|/notes": pin } });
+    expect(blockedReason(p)).toBe(FailureKind.E2eeJoinRequired); // unpinned here: the join prompt, never the other host's key
+    expect(p.e2eePin()).toBeUndefined();
+    p.onunload();
+  });
+
+  it("the real buildApi builds the transport with the header on exactly when the vault is pinned", async () => {
+    const { pin } = await pinFor();
+    const p = await boot(spyApi({ found: false }));
+    const real = Object.getPrototypeOf(TestPlugin.prototype).buildApi as (this: unknown, t: string) => { isEncrypted(): boolean };
+    p.settings.serverUrl = "https://x.example"; // the real transport refuses a cleartext remote
+    expect(real.call(p, "tok").isEncrypted()).toBe(false);
+    p.settings.e2ee = { "x.example|/notes": pin };
+    expect(real.call(p, "tok").isEncrypted()).toBe(true);
+    p.onunload();
+  });
+
+  it("a block for a changed keyring leaves NO encrypted codec behind for a manual push", async () => {
+    const a = await pinFor(); const b = await pinFor();
+    const api = spyApi({ found: true, text: a.text });
+    const p = await boot(api, { e2ee: { "x|/notes": a.pin } });
+    expect(p.contentCodec().encrypted).toBe(true);
+    api.setAnswer({ found: true, text: b.text }); await p.reconnect(); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(p.contentCodec().encrypted).toBe(false);
+    p.onunload();
+  });
+
+  it("Reconfigure ends the join-prompt episode", async () => {
+    const { text } = await pinFor();
+    const p = await boot(spyApi({ found: true, text }));
+    expect(p.joinPrompts.length).toBe(1);
+    (p as any).e2eeJoinPromptShown = true;
+    p.openSetup(); (p as any).setupOpen = false; // the wizard opens (stubbed) and the latch resets
+    expect((p as any).e2eeJoinPromptShown).toBe(false);
+    p.onunload();
+  });
+
   it("a same-id keyring with a foreign wrap does not change the codec (an enrolled device never unwraps on reconnect)", async () => {
     const { text, pin, tag, keyring } = await pinFor();
     const foreign = { ...keyring, wrap: { ...keyring.wrap, ct: b64(new Uint8Array(80)) }, check: "0".repeat(64) };
-    const p = await boot(spyApi({ found: true, text: JSON.stringify(foreign) }), { e2ee: { "/notes": pin } });
+    const p = await boot(spyApi({ found: true, text: JSON.stringify(foreign) }), { e2ee: { "x|/notes":pin } });
     expect(p.statusText()).toBe("idle");
     expect(p.contentCodec().tag).toBe(tag);
     expect(text).not.toBe(JSON.stringify(foreign));

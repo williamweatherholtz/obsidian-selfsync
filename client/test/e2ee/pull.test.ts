@@ -88,11 +88,13 @@ describe("E3a (3) pull over the codec", () => {
     await reconcileAll(d);
     expect(dec(io.m.get("n.md")!)).toBe("hello from device A\n");
     expect(d.base.get("n.md")!.hash).toBe(srv.files.get("n.md")!.cid);
-    // the same rows through PLAIN_CODEC: the "file" would be frames, and the hash check refuses them
+    // the same rows through PLAIN_CODEC: the "file" would be the frame itself. Its sha256 IS the row's hash
+    // (one frame, one stream), so the identity check passes and the plaintext-vs-frame SIZE check refuses it.
     const io2 = fakeIo(); const errors: string[] = [];
-    await reconcileAll({ ...deps(srv, io2, c), codec: PLAIN_CODEC, onFileError: (p) => errors.push(p) });
+    await reconcileAll({ ...deps(srv, io2, c), codec: PLAIN_CODEC, onFileError: (p, e: any) => errors.push(`${p}: ${e?.message ?? e}`) });
     expect(io2.m.has("n.md")).toBe(false);
-    expect(errors).toEqual(["n.md"]);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toMatch(/^n\.md: integrity check failed for 'n\.md': size \d+ != declared/);
   });
 
   it("a cid mismatch is not written, is logged, and holds the cursor below the row", async () => {

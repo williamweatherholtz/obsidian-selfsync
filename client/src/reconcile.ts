@@ -701,7 +701,7 @@ async function applyPull(d: ReconcileDeps, path: string, rmeta: FileMeta, expect
         }
       : undefined;
     try {
-      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash, beforeRename, rmeta.cid)) {
+      if (await streamFileToDisk(d, path, rmeta.chunks, rmeta.size, rmeta.hash, beforeRename, rmeta.cid, rmeta.path)) {
         d.base.set(path, { hash: remoteIdentity(codecOf(d), rmeta) });
         d.onBaseChanged?.();
         return;

@@ -1,7 +1,8 @@
 // E3a (8): a runtime capture. Create, join and a conflict-copy flow run with MARKER values for the password
 // and the keys. Every log line, request body, error body, conflict-copy name and composition recipe is
-// captured, and the markers appear nowhere: password, KEK, VK, k_enc, k_iv, k_id, and the keyring's own
-// wrapped blob. The codec tag is public by design (a cache namespace), so it is not a marker.
+// captured, and the markers appear nowhere: password, KEK, VK, k_wrap, k_check, k_iv, k_id. The keyring
+// record itself (salt, check, wrapped blob) is the server's public text, and the codec tag is a cache
+// namespace by design, so neither is a marker.
 import { describe, it, expect, vi } from "vitest";
 import { reconcileAll, ReconcileDeps } from "../../src/reconcile";
 import { BaseStore, conflictCopyName } from "../../src/base";
@@ -43,6 +44,58 @@ function fakeIo(seed: Record<string, string> = {}) {
   return io;
 }
 
+// The plugin-level surfaces: boot the real plugin (injected io and api, no Obsidian) through the keyring
+// arms that write log lines and card text, and return every line it wrote plus getLastIssue. `vk` is a
+// marker, and the keyring record is the server's public text (it holds no secret, but it rides the log
+// capture too so a future leak of its wrapped blob into a line would show).
+async function pluginSurfaces(markers: string[], keyringText: string): Promise<string[]> {
+  const { default: SelfSyncPlugin } = await import("../../src/main");
+  const { TFile } = await import("obsidian");
+  const { ConnError, Endpoint } = await import("../../src/connstate");
+  class P extends SelfSyncPlugin {
+    answer: { found: true; text: string } | { found: false } = { found: false };
+    files = new Map<string, Uint8Array>();
+    protected buildIo() { const f = this.files; return { async list() { return new Map(); }, async read(p: string) { return f.get(p)!; }, async write(p: string, b: Uint8Array) { f.set(p, b); }, async remove(p: string) { f.delete(p); } }; }
+    protected buildApi() {
+      const a = this.answer;
+      return {
+        async keyring() { return a; }, setEncrypted() {},
+        async status() { return { status: "ready", detail: "", version: 0, apiVersion: 1, schemaHash: "sha256:test-compat" }; },
+        async schema() { return { hash: "sha256:test-compat", signature: (await import("../../src/wiresignature")).EMBEDDED_SIGNATURE }; },
+        async changes() { return { version: 0, upserts: [], deletes: [] }; },
+        async fileMeta() { return null; }, async missing(h: string[]) { return h; }, async getChunk() { return new Uint8Array(0); }, async putChunk() {},
+        async commit(r: any) { return { ...r, version: 1 }; }, async deleteFile() {},
+        connectWs() { return { addEventListener() {}, close() {} } as unknown as WebSocket; },
+      } as any;
+    }
+    protected loginRemote() { return Promise.resolve("tok"); }
+    protected openJoinPrompt(_t: string) { this.log("join prompt opened"); }
+    surfaces(): string[] { return [...(this as any).logs, this.getLastIssue() ?? ""]; }
+  }
+  const app: any = {
+    vault: { on: () => ({}), getAbstractFileByPath: (p: string) => { const f = new TFile(); f.path = p; return f; }, getFiles: () => [], adapter: {} },
+    workspace: { onLayoutReady: (cb: Function) => cb(), on: () => ({}), getActiveViewOfType: () => null, trigger: () => {} },
+  };
+  (globalThis as any).window ??= { setTimeout, clearTimeout, setInterval, clearInterval };
+  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)); };
+  const out: string[] = [];
+  void ConnError; void Endpoint;
+  // pinned with a vk MARKER, and a server record that does not parse
+  const pinned = new P(app, { id: "obsidian-selfsync", dir: "x" } as any);
+  pinned.answer = { found: true, text: "{not json " + keyringText.slice(0, 20) };
+  (pinned as any)._data = { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "notes", e2ee: { "x|/notes": { e2eeVaultId: "AAAAAAAAAAAAAAAAAAAAAA==", vk: markers[1] } } } };
+  await pinned.onload(); await flush();
+  out.push(...pinned.surfaces()); pinned.onunload();
+  // unpinned, meets the real record: the join prompt
+  const joiner = new P(app, { id: "obsidian-selfsync", dir: "x" } as any);
+  joiner.answer = { found: true, text: keyringText };
+  (joiner as any)._data = { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "notes" } };
+  await joiner.onload(); await flush();
+  out.push(...joiner.surfaces()); joiner.onunload();
+  if (!out.some((l) => l.includes("does not parse")) || !out.some((l) => l.includes("join prompt opened"))) throw new Error("the plugin surfaces did not run the two keyring arms");
+  return out;
+}
+
 describe("E3a (8) secrets reach no log, body, name or recipe", () => {
   it("create, join, push, conflict copy and a recipe leak none of the markers", async () => {
     const logs: string[] = [];
@@ -72,11 +125,15 @@ describe("E3a (8) secrets reach no log, body, name or recipe", () => {
       await reconcileAll(d);
       const names = [...ioB.m.keys()];
       expect(names.some((n) => n.includes("(conflict"))).toBe(true);
-      // the composition recipe over a settings-like shape that carries the pin
+      // the composition recipe carries mounts, never a pin: encode one beside the pin and confirm no key text rides it
       const recipe = encodeCompositionRecipe([{ source: { owner: "alice", vaultId: "notes", sourcePath: "Shared" }, mountPoint: "Shared", direction: "pull" } as any], "https://s.example", "me");
       logs.push(recipe);
       // a conflict-copy name built directly, with the identity tag
       logs.push(conflictCopyName("Notes/Plan.md", "Dev", new Date(), (await codec.fileIdentity("Notes/Plan.md", enc("x"))).slice(0, 6)));
+      // the PLUGIN's own log ring and card text, through the real connect flow: a pinned device whose server
+      // record does not parse (the error text is logged), and a join prompt on an unpinned one
+      const pluginLogs = await pluginSurfaces(markers, JSON.stringify(created.keyring));
+      logs.push(...pluginLogs);
       const capture = [...logs, ...bodies, ...errors, ...names].join("\n");
       for (const m of markers) expect(capture, `marker leaked: ${m.slice(0, 12)}…`).not.toContain(m);
       // the plaintext note body reached the server in no form either

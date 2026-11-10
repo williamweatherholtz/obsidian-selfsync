@@ -71,4 +71,15 @@ package IssuesAi {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from apiLockDisciplineGuard to issue012;
+
+    part issue013 : Issue {
+        :>> id = "501e9a88-0b4c-4897-9c07-93c690f326ed";
+        :>> title = "A RED test committed at standup turned CI red on main for one commit";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "The Sprint 3 standup commit a465b38 carried the RED codec test, client/test/e2ee/codec.test.ts, before its module existed. CI on main went red for that one commit with Cannot find module ../../src/e2ee/codec. The RED-first discipline needs the RED evidence in the standup record, not the test file in the commit. The class can recur at every standup. Guard: .githooks/pre-commit runs client/scripts/check-staged-test-imports.mjs, which refuses a staged client test whose relative import resolves to no file in the index. A vitest test pins the resolver.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from stagedTestImportGuard to issue013;
 }
