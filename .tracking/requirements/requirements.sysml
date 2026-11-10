@@ -496,11 +496,11 @@ package ProjectRequirements {
     }
     requirement srE2eeRolledBackServerRefuses : SystemRequirement {
         :>> id = "05dfab54-75a3-4ae9-9fcc-0739620492b2";
-        :>> title = "A pre-E2EE server build refuses to open a vault the E2EE server opened";
+        :>> title = "The E2EE server writes every vault so that a pre-E2EE build refuses to open it";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
-        :>> statement = "When a server build that predates E2EE opens a vault whose index the E2EE server wrote, the server shall refuse to open it and serve nothing from it.";
-        :>> rationale = "An encrypted vault's frames are addressed and hashed exactly like plaintext chunks, so a rolled-back server would hand frames to an old client as content and accept plaintext commits. The existing newer-schema refusal carries this, through the schema bump to 4 (D0102). Panel round 4, SE finding 1.";
-        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::test;
+        :>> statement = "When the E2EE server opens a vault, it shall write the vault's index in a form that a server build predating E2EE refuses to open, so that build serves nothing from the vault.";
+        :>> rationale = "An encrypted vault's frames are addressed and hashed exactly like plaintext chunks, so a rolled-back server would hand frames to an old client as content and accept plaintext commits. The existing newer-schema refusal carries this, through the schema bump to 4 (D0102). Verified by analysis: index_store.rs:102 at the pre-E2EE tag refuses a newer schema, and E2 asserts the stamp. Panel round 4, SE finding 1, round 5, SE finding 3.";
+        :>> kind = RequirementKind::functional; :>> priority = Priority::must; :>> verificationMethod = VerificationMethod::analyze;
     }
     requirement srE2eePlaintextChunkRefused : SystemRequirement {
         :>> id = "5b523b9a-ed01-44e4-a24e-47a25e16c0fc";

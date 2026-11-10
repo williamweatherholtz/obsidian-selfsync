@@ -305,7 +305,7 @@ package ProjectUseCases {
     #DependsOn dependency from ucRedeemSharedVault to nVaultSharing;
     #DependsOn dependency from ucDeployServer to selfHostOperator;
 
-    // ---- End-to-end content privacy (nE2eeContentPrivacy, 2026-11-10, D0096 and the D0105-D0111 custody chain) ----
+    // ---- End-to-end content privacy (nE2eeContentPrivacy, 2026-11-10, D0096 and the D0105-D0112 custody set) ----
     use case ucCreateEncryptedVault : UseCase {
         :>> id = "812e64ce-39b5-4462-b386-eaff9734314a"; :>> title = "Create a vault whose content the server cannot read";
         :>> createdAt = "2026-11-10"; :>> createdBy = "ai";
