@@ -63,4 +63,12 @@ package ProjectIntake20261111 {
         :>> triageNote = "verifiedRequirement: E4 proved the E2EE engine against the real server through the test transport, not through the plugin in Obsidian (E4 result R1 named that deviation). The route is a delivery sprint under d0112 whose task verifies srE2eeServerNeverSeesPlaintext and srE2eeDedupPreserved through the real-Obsidian Playwright layer, plus Measurements of the desktop KDF and the encrypted convergence time. The owner's real vaults are never touched: the spec spawns its own server and vault, and the optional real-server mode creates and deletes a vault named for the run.";
     }
     #DerivedFrom dependency from us016 to st013;
+
+    part st014 : Statement {
+        :>> id = "ca631c6f-f050-4907-a5ed-bdda49b23ac0";
+        :>> title = "Owner makes the AI an account on the containerized server for the real-server e2e run";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "i'll just make you an account, you're presumign i have this running on a desktop when it's containerized on a server.";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }
