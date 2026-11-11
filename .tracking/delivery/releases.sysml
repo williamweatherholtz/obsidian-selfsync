@@ -27,4 +27,14 @@ package ProjectReleases {
         :>> tag = "1.34.0";
         :>> purpose = "The first release with SELFSYNC_E2EE true. The Encrypt option shows in the setup wizard and the Switch dialog, Join and Re-enrol work, and new keyrings use the D0115 default of 32 MiB, three passes, one lane. The server is unchanged from 1.33.0. Published by release.yml run 43028163537 and verified by check-release; the server image 1.34.0 by server-image.yml run 43028208136 at index digest sha256:fb95a3decbd6383a058c15e004247ca22742b530db6f14a15acbb37cec49e1d1.";
     }
+
+    occurrence release1341 : Release {
+        :>> id = "18f2c183-49dc-44f9-ba54-5169195933e6";
+        :>> title = "SelfSync 1.34.1: a second device can join an encrypted vault (issue019), restart recovery documented (issue020)";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> commit = "4abf7cf";
+        :>> tag = "1.34.1";
+        :>> purpose = "Patch release. The 1.34.0 status probe sent no x-selfsync-e2ee header before the pin, so the server guard answered 403 and the Join dialog never opened on a second device. The probe now sets the header when the keyring is found, verified by the real-Obsidian e2ee spec in loopback and real-server mode. The live change latency after a server restart is the reconnect backoff, documented in docs/deployment.md on the owner's accept-risk (st019). The server is unchanged from 1.34.0. Published by release.yml run 43103494822 and verified by check-release; the server image 1.34.1 by server-image.yml run 43103534474 at digest sha256:7ef48dc88e92df7d3576857317686b5a2eaf621c62b70b3cd47aba043f9db605.";
+    }
 }
