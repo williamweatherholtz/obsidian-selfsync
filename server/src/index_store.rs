@@ -19,6 +19,16 @@ use crate::protocol::{ChangesResponse, Deletion, FileMeta};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 use std::sync::Mutex;
+use unicode_normalization::UnicodeNormalization;
+
+/// The ONE server fold: what "the same file" means for the index key (D0116, issue006). NFC-normalise the
+/// path, then full-Unicode to_lowercase. Every site that folds a path — insert_file, colliding_key, the
+/// migration backfill and the reindex collision scan — calls this, so the write path, the guard and the
+/// migration can never drift (the ASCII-only backfill defect was exactly such a drift). NFC before case is
+/// the rule macOS and iOS apply, so the server refuses the state those devices cannot hold.
+pub fn fold_key(path: &str) -> String {
+    path.nfc().collect::<String>().to_lowercase()
+}
 
 fn io<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::other(e.to_string())
@@ -80,7 +90,10 @@ impl SqliteIndex {
     //   v4: add `cid` to `files` (E2EE keyed file identity, D0101) and the `encrypted` meta key (D0102). Bumped for
     //       EVERY vault, plaintext too, so a rolled-back pre-E2EE binary refuses any vault this server opened and
     //       can never serve frames as content or accept plaintext into an encrypted vault (spec section 4.4).
-    pub const CURRENT_SCHEMA: u64 = 4;
+    //   v5: `fold` is recomputed with fold_key (NFC then lower-case, D0116 / issue006), so an NFC and an NFD
+    //       spelling of one name share a fold and the collision guard refuses the second. Rows that already
+    //       collide under the new rule are KEPT and logged (a migration never drops a note).
+    pub const CURRENT_SCHEMA: u64 = 5;
 
     // Open (creating if absent) the per-vault index DB, apply the schema (idempotent), seed the
     // version + history_floor. WAL makes concurrent readers + a single writer crash-safe.
@@ -131,7 +144,7 @@ impl SqliteIndex {
                 rows.collect::<Result<Vec<_>, _>>().map_err(io)?
             };
             for p in &paths {
-                conn.execute("UPDATE files SET fold=?1 WHERE path=?2", params![p.to_lowercase(), p]).map_err(io)?;
+                conn.execute("UPDATE files SET fold=?1 WHERE path=?2", params![fold_key(p), p]).map_err(io)?;
             }
         }
         // Create the fold index here (moved out of SCHEMA) — now that the column is guaranteed to
@@ -147,6 +160,25 @@ impl SqliteIndex {
         Self::ensure_provenance_columns(conn, "deletions")?;
         // v4: the opaque E2EE file identity. Probe-idempotent like the provenance columns; '' = absent.
         Self::ensure_column(conn, "files", "cid")?;
+        // v5: recompute every fold with fold_key (NFC then lower-case). Runs once per index (gated on the
+        // stamped version, so a healed pre-fold DB above is folded twice at most, harmlessly). A pair of
+        // rows that already collides under the new rule is KEPT: a migration never drops a note. It is
+        // logged so the operator knows which twins a macOS/iOS device will hold (D0116).
+        if v < 5 {
+            let paths: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT path FROM files").map_err(io)?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(io)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(io)?
+            };
+            let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for p in &paths {
+                let f = fold_key(p);
+                if let Some(prev) = seen.insert(f.clone(), p.clone()) {
+                    log::warn!("index: '{p}' and '{prev}' fold to one key under the v5 rule (NFC + case); both kept — remove one spelling by hand");
+                }
+                conn.execute("UPDATE files SET fold=?1 WHERE path=?2", params![f, p]).map_err(io)?;
+            }
+        }
         if v != Self::CURRENT_SCHEMA {
             conn.execute("UPDATE meta SET value=?1 WHERE key='schema_version'", params![Self::CURRENT_SCHEMA as i64]).map_err(io)?;
         }
@@ -255,7 +287,7 @@ impl SqliteIndex {
                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                     ON CONFLICT(path) DO UPDATE SET hash=?2, size=?3, mtime=?4, version=?5, fold=?6,
                     author_user=?7, author_device_id=?8, author_device_name=?9, cid=?10",
-                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, meta.path.to_lowercase(), au, ad, an, cid]).map_err(io)?;
+                   params![meta.path, meta.hash, meta.size as i64, meta.mtime, meta.version as i64, fold_key(&meta.path), au, ad, an, cid]).map_err(io)?;
         tx.execute("DELETE FROM file_chunks WHERE path=?1", params![meta.path]).map_err(io)?;
         let mut ins = tx.prepare_cached("INSERT INTO file_chunks(path, seq, chunk) VALUES (?1,?2,?3)").map_err(io)?;
         for (i, c) in meta.chunks.iter().enumerate() {
@@ -404,17 +436,16 @@ impl SqliteIndex {
         Ok(n)
     }
 
-    // An existing index key that folds (full Unicode lower-case) to the same name as `path` but is
-    // NOT `path` — the case/Unicode-collision guard commit uses (a folding FS would collapse them).
-    // Uses the `fold` column (computed in Rust with to_lowercase, so it matches Rust's fold, not
-    // SQLite's ASCII-only lower()).
+    // An existing index key that folds (fold_key: NFC, then full Unicode lower-case) to the same name as
+    // `path` but is NOT `path` — the case/Unicode-collision guard commit uses (a folding FS would collapse
+    // them). Uses the `fold` column, written by the same fold_key, so the probe and the stored key agree.
     // @audit r2 2026-07-18 — clean: `fold=?1 AND path<>?2 LIMIT 1` + .optional() is exactly right, and it
-    // reuses the same to_lowercase fold as the write path (soundness depends on that lockstep). (Note:
-    // to_lowercase is lowercasing, not true Unicode case-fold — documented + internally consistent; fine.)
+    // reuses the same fold as the write path (soundness depends on that lockstep). (Note: to_lowercase is
+    // lowercasing, not true Unicode case-fold — documented + internally consistent; fine.)
     pub fn colliding_key(&self, path: &str) -> std::io::Result<Option<String>> {
         let conn = self.conn.lock().map_err(io)?;
         conn.query_row("SELECT path FROM files WHERE fold=?1 AND path<>?2 LIMIT 1",
-                       params![path.to_lowercase(), path], |r| r.get::<_, String>(0)).optional().map_err(io)
+                       params![fold_key(path), path], |r| r.get::<_, String>(0)).optional().map_err(io)
     }
 
     // Transactionally REPLACE all file rows (+ their chunk lists) with `metas` and set the version —
@@ -517,8 +548,8 @@ mod tests {
     fn schema_v4_stamps_fresh_and_upgrades_v3_with_cid() {
         let dir = tempfile::tempdir().unwrap();
         let fresh = SqliteIndex::open(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(fresh.schema_version().unwrap(), 4);
-        assert_eq!(SqliteIndex::CURRENT_SCHEMA, 4);
+        assert_eq!(fresh.schema_version().unwrap(), 5); // v5: the NFC fold (D0116) stamps every index
+        assert_eq!(SqliteIndex::CURRENT_SCHEMA, 5);
         assert!(!fresh.encrypted().unwrap());
         let p = dir.path().join("v3.db");
         {
@@ -534,7 +565,7 @@ mod tests {
             ).unwrap();
         }
         let s = SqliteIndex::open(&p).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 4, "a v3 index is stamped 4");
+        assert_eq!(s.schema_version().unwrap(), 5, "a v3 index is stamped to CURRENT (5)");
         let old = s.file_meta("old.md").unwrap().unwrap();
         assert_eq!(old.cid, None, "a pre-v4 row reads cid as absent");
         s.put(&FileMeta { path: "enc.md".into(), hash: "h2".into(), size: 1, mtime: 1, version: 3, chunks: vec![], cid: Some("ab".repeat(32)), ..Default::default() }).unwrap();
@@ -726,6 +757,45 @@ mod tests {
         assert_eq!(s.colliding_key("café.md").unwrap().as_deref(), Some("CAFÉ.md")); // Unicode fold
         assert_eq!(s.colliding_key("CAFÉ.md").unwrap(), None);                        // same key, not a collision
         assert_eq!(s.colliding_key("other.md").unwrap(), None);
+    }
+
+    // D0116 / issue006: an NFD spelling (e + U+0301) of a stored NFC name (U+00E9) is the SAME file on a
+    // macOS/iOS filesystem, so the guard must see it as a collision; before v5 both committed as two files.
+    #[test]
+    fn colliding_key_finds_nfd_twin_of_an_nfc_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SqliteIndex::open(&dir.path().join("i.db")).unwrap();
+        s.put(&meta("caf\u{e9}.md", "h", 2, &["c"])).unwrap();
+        assert_eq!(s.colliding_key("cafe\u{301}.md").unwrap().as_deref(), Some("caf\u{e9}.md"), "NFD twin");
+        assert_eq!(s.colliding_key("CAFE\u{301}.md").unwrap().as_deref(), Some("caf\u{e9}.md"), "NFD + case twin");
+        assert_eq!(s.colliding_key("caf\u{e9}.md").unwrap(), None, "the stored spelling is not its own collision");
+        assert_eq!(fold_key("Cafe\u{301}.md"), fold_key("caf\u{e9}.md"));
+    }
+
+    // D0116: a v4 index whose fold column was written with the old rule (lower-case only) is refolded on
+    // open; the NFD probe then finds the NFC row. Twin rows that already collide are kept, not dropped.
+    #[test]
+    fn migrate_v5_refolds_with_nfc_and_keeps_existing_twins() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("i.db");
+        {
+            let s = SqliteIndex::open(&p).unwrap();
+            s.put(&meta("caf\u{e9}.md", "h", 2, &["c"])).unwrap();
+            // Simulate the pre-v5 state: an NFD twin row stored under the OLD fold (no NFC), and the v4 stamp.
+            let conn = s.conn.lock().unwrap();
+            conn.execute("INSERT INTO files(path, hash, size, mtime, version, fold) VALUES (?1,'h',1,0,3,?2)",
+                         params!["cafe\u{301}.md", "cafe\u{301}.md".to_lowercase()]).unwrap();
+            conn.execute("UPDATE files SET fold=?1 WHERE path=?2", params!["caf\u{e9}.md".to_lowercase(), "caf\u{e9}.md"]).unwrap();
+            conn.execute("UPDATE meta SET value=4 WHERE key='schema_version'", []).unwrap();
+        }
+        let s = SqliteIndex::open(&p).unwrap(); // v4 -> v5: refold
+        assert_eq!(s.schema_version().unwrap(), 5);
+        assert_eq!(s.row_count().unwrap(), 2, "a migration never drops a note: both twins survive");
+        // A THIRD spelling now collides with one of them (the guard fires), and the two stored twins share a fold.
+        assert!(s.colliding_key("CAF\u{c9}.md").unwrap().is_some());
+        let conn = s.conn.lock().unwrap();
+        let distinct: i64 = conn.query_row("SELECT COUNT(DISTINCT fold) FROM files", [], |r| r.get(0)).unwrap();
+        assert_eq!(distinct, 1, "both rows fold to one key under v5");
     }
 
     #[test]

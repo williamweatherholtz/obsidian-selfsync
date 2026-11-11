@@ -406,7 +406,7 @@ export interface ReconcileDeps {
   // `4 Archive/x.md` and `4 archive/x.md` are ONE file, but the server's index and this base are exact-case.
   // When a folder's capitalisation diverges (a case-only rename on one device), the local listing shows a
   // path with no exact server/base key while a case-fold match exists: decide() then sees a brand-new local
-  // file (push -> the server refuses it: 'a path differing only in case already exists') plus a server file
+  // file (push -> the server refuses it: 'a path differing only in case or Unicode form already exists') plus a server file
   // the presence re-probe says is still present - so the two never converge, and EDITS under the local
   // spelling never sync. Owner's vault 2026-09-07: ~500 such files, every pass. With this flag the local
   // spelling is ALIASED to the existing server/base key for sync identity (reads/writes go through the

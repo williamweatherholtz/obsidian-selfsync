@@ -53,7 +53,7 @@ fn encrypted_flag_derives_from_the_sidecar_on_a_fresh_open_and_persists() {
     {
         let v = Vault::open(dir.path()).unwrap();
         assert!(v.encrypted());
-        assert_eq!(v.index.schema_version().unwrap(), 4);
+        assert_eq!(v.index.schema_version().unwrap(), crate::index_store::SqliteIndex::CURRENT_SCHEMA); // at least v4 (E2EE); v5 since D0116
         assert_eq!(v.keyring_bytes().unwrap().unwrap(), KEYRING);
     }
     let v = Vault::open(dir.path()).unwrap();

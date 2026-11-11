@@ -92,7 +92,7 @@ fn conflicting_or_unsafe_rels(rels: &[String]) -> Vec<String> {
     let mut bad: Vec<String> = Vec::new();
     for rel in rels {
         if safe_rel_path(rel).is_none() { bad.push(format!("{rel} (unsafe name)")); continue; }
-        if let Some(prev) = fold.insert(rel.to_lowercase(), rel.clone()) {
+        if let Some(prev) = fold.insert(crate::index_store::fold_key(rel), rel.clone()) {
             bad.push(format!("{rel} vs {prev} (case/fold collision)"));
         }
     }
@@ -813,7 +813,7 @@ impl Vault {
         // lower()). InvalidInput (→ 400): a permanent, client-side-fixable bad request, kept distinct
         // from the CAS AlreadyExists below (→ 409, so the client re-reconciles rather than skips).
         if self.index.colliding_key(&req.path)?.is_some() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a path differing only in case already exists"));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a path differing only in case or Unicode form already exists"));
         }
         // Reject a hostile/absurd declared size before allocating (a client-supplied u64 must never
         // drive a capacity hint — 2^60 would panic/abort).
@@ -1237,6 +1237,12 @@ mod tests {
         // (InvalidInput → 400: a permanent bad request, distinct from the CAS AlreadyExists → 409.)
         let err = v.commit(CommitRequest { path: "café.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None, cid: None }, "").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        // D0116 / issue006: the NFD spelling (E + U+0301) of the same name is the same file on macOS/iOS;
+        // the server now refuses it too, with the Unicode form named in the message.
+        let err = v.commit(CommitRequest { path: "CAFE\u{301}.md".into(), hash: h.clone(), size: 1, mtime: 0, chunks: vec![h.clone()], expected_version: None, device_id: None, device_name: None, cid: None }, "").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Unicode form"), "{err}");
+        assert_eq!(conflicting_or_unsafe_rels(&["caf\u{e9}.md".into(), "cafe\u{301}.md".into()]).len(), 1, "reindex scan folds NFC too");
         // DI-R5#4: an index key that safe_rel_path now rejects is still deletable (evicted). Insert it
         // straight into the index (commit would reject the name) to simulate a legacy key.
         v.index.put(&FileMeta { path: "legacy.md.".into(), hash: h.clone(), size: 1, mtime: 0, version: v.version() + 1, chunks: vec![h.clone()], ..Default::default() }).unwrap();

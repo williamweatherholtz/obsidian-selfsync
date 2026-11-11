@@ -26,6 +26,9 @@ sha2 = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+# The server's same-file rule folds Unicode normalisation (NFC) before case (D0116, issue006), so an NFC
+# and an NFD spelling of one name cannot both be live. index_store::fold_key is the ONE fold function.
+unicode-normalization = "0.1"
 # Embedded SQLite (bundled = compiled in, no system dep) — the per-vault index store (D0018).
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Leveled logging via the `log` façade; env_logger reads the LOG_LEVEL env var (set in compose) so

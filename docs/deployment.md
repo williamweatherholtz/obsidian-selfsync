@@ -163,6 +163,10 @@ is **1.33.0**. It stamps every vault it opens with index schema 4, encrypted or 
 stamp, no server release below 1.33.0 can open the vault. An older server answers a 503 that
 names the schema. The remedy is to upgrade the server again.
 
+The release after 1.34.1 stamps schema 5 (D0116). The same-file rule then folds Unicode
+normalisation (NFC) before case. An NFC and an NFD spelling of one name cannot both be live.
+Twin rows that already exist survive the upgrade. The server log lists them as warnings at open.
+
 Upgrade the server before the plugin. A plugin below 1.33.0 that meets an encrypted vault gets a
 403 on every sync call. Its card shows "Access to this vault was removed". The server log names
 the real cause: the vault is end-to-end encrypted, and that client version does not support it.
