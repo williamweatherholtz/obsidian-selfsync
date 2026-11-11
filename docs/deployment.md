@@ -143,16 +143,22 @@ is **1.33.0**. It stamps every vault it opens with index schema 4, encrypted or 
 stamp, no server release below 1.33.0 can open the vault. An older server answers a 503 that
 names the schema. The remedy is to upgrade the server again.
 
-Upgrade the server before the plugin. A plugin below 1.33.0 that meets an encrypted vault shows
-the card text "This plugin build does not support encrypted vaults. Update the plugin." It syncs
-nothing. A plugin at or above 1.33.0 syncs plaintext vaults on an older server unchanged.
+Upgrade the server before the plugin. A plugin below 1.33.0 that meets an encrypted vault gets a
+403 on every sync call. Its card shows "Access to this vault was removed". The server log names
+the real cause: the vault is end-to-end encrypted, and that client version does not support it.
+The plugin syncs nothing and changes nothing locally.
+
+A plugin at or above 1.33.0 that was built without the encryption entries shows "This plugin
+build does not support encrypted vaults. Update the plugin." A plugin at or above 1.33.0 syncs
+plaintext vaults on an older server unchanged.
 
 **Backups.** Back up the whole vault directory, including the dotfiles. These are
 `.keyring.json` (the key record), `.sync-index.db` (the index), `.version-hwm` (the version
 high-water mark) and `.chunks` (the chunk store). Restore all of them from one point in time.
-A backup of an encrypted vault holds ciphertext, so an operator cannot read it. Keep a
-pre-encryption backup of a vault you migrate. The delete that migration needs does not scrub
-the old files from earlier backups.
+A backup of an encrypted vault holds ciphertext, so an operator cannot read it. The delete that
+migration needs does not scrub the old plaintext files from earlier backups. After you migrate a
+vault, rotate or destroy its pre-encryption backups (D0109), or the plaintext outlives the
+migration.
 
 **Stale-file refusals.** The server refuses to open an encrypted vault whose files disagree, and
 answers a 503 with one of three bodies. Each body names what to move aside and what that costs.

@@ -8,7 +8,7 @@ import { deriveSubkeys } from "./e2ee/subkeys";
 import { b64, fromB64, fromHex, hex } from "./e2ee/bytes";
 import { e2eeBuildEnabled, UNSUPPORTED_BUILD_REASON } from "./e2ee/build";
 import { createConflictDecision, postCreateCheck, UNSUPPORTED_BUILD_TEXT, type CreateConflictDecision } from "./e2ee/flows";
-import { EncryptionPasswordModal, JoinVaultModal, CreateConflictModal } from "./e2eeui";
+import { EncryptionPasswordModal, JoinVaultModal, CreateConflictModal, RecreateVaultModal } from "./e2eeui";
 import { classifyPushPull, lineDiff, stampsConverged, PushDirection, DiffLine, PluginPushPreview, FileChangeView, SideState } from "./pushpreview";
 import { BaseStore, deriveNoteConflicts, isConflictCopy, keptBothName } from "./base";
 import { walkConfigTree, WalkAdapter } from "./configwalk";
@@ -622,6 +622,7 @@ export default class SelfSyncPlugin extends Plugin {
     // D0042: a wire-incompat block carries a SPECIFIC field/endpoint reason in lastIssue that the generic
     // blockedTip can't — prefer it (the whole point is telling the user WHAT is incompatible).
     if (link && link.kind === LinkKind.Blocked && link.reason === FailureKind.VersionMismatch && this.lastIssue) return this.lastIssue;
+    if (link && link.kind === LinkKind.Blocked && link.reason === FailureKind.E2eeLinkMismatch && this.lastIssue) return this.lastIssue;
     // E2EE (D0105): the three keyring blocks carry a SPECIFIC named reason in lastIssue (which id differed,
     // why the record failed to parse, which remedy) that the generic blockedTip cannot — prefer it the same way.
     if (link && link.kind === LinkKind.Blocked && this.lastIssue
@@ -655,12 +656,6 @@ export default class SelfSyncPlugin extends Plugin {
     this.e2eeJoinPromptShown = false;
     await this.saveSettings();
   }
-  /** Drop the pin (the owner deleted the vault and re-creates it, or leaves it). */
-  async clearE2eePin(): Promise<void> {
-    if (this.settings.e2ee) { delete this.settings.e2ee[this.e2eePinKey()]; if (!Object.keys(this.settings.e2ee).length) this.settings.e2ee = undefined; }
-    this.pinnedCodecCache = undefined;
-    await this.saveSettings();
-  }
   /** The codec of the primary vault as decided by the last connect (plain until then). */
   contentCodec(): ContentCodec { return this.codec; }
   /** The pin key of ANOTHER own vault on this server (a create, a share link, a mount source). */
@@ -669,10 +664,19 @@ export default class SelfSyncPlugin extends Plugin {
   // The keyring text the server answered on the last connect (200), kept so the Join card action can open the
   // prompt without a second fetch. A public record: it holds no secret.
   private e2eeServerKeyring?: string;
-  // A vid a setup or share link named (D0106): the next connect's unpinned-200 arm must see THIS vault id,
-  // and a 404 under the flag fails closed. Transient, never persisted.
-  private e2eeExpectedVid?: string;
-  setExpectedVaultId(vid: string | undefined): void { this.e2eeExpectedVid = vid; }
+  // A vid a setup or share link named (D0106): that vault's next connect must see THIS vault id in the
+  // unpinned-200 arm, and a 404 under the flag fails closed. Keyed to the vault the link named once that is
+  // known (a share link learns it at redeem, a setup link carries it); an unkeyed vid binds to the next repoint.
+  // Transient, never persisted; cleared by a connected link, a repoint to another vault, Setup and Sign out.
+  private e2eeExpected?: { vid: string; key?: string };
+  setExpectedVaultId(vid: string | undefined, owner?: string, vault?: string): void {
+    this.e2eeExpected = vid ? { vid, key: vault !== undefined ? this.e2eePinKeyFor(owner ?? "", vault) : undefined } : undefined;
+  }
+  /** The link's vid for THIS primary vault, or undefined when the link named another vault or none. */
+  private expectedVidHere(): string | undefined {
+    const e = this.e2eeExpected;
+    return e && (!e.key || e.key === this.e2eePinKey()) ? e.vid : undefined;
+  }
 
   // The join prompt: called ONCE per episode by the connect effect when an unpinned device meets an
   // encrypted vault (the latch), and by the Join action on the card. Overridable in tests.
@@ -680,13 +684,16 @@ export default class SelfSyncPlugin extends Plugin {
     if (!e2eeBuildEnabled()) { new Notice(`SelfSync: ${UNSUPPORTED_BUILD_TEXT}`, 9000); return; }
     if (this.joinModal) return; // a resume re-uses the open modal (E3b clause 12)
     const label = this.settings.vaultOwner ? `${this.settings.vaultOwner}/${this.settings.vaultId}` : this.settings.vaultId;
-    const m = new JoinVaultModal(this.app, (pw, progress) => this.joinEncryptedVault(keyringText, pw, progress, this.e2eeExpectedVid), { vaultLabel: label });
-    this.joinModal = m;
-    const close = m.onClose.bind(m);
-    m.onClose = () => { close(); if (this.joinModal === m) this.joinModal = undefined; }; // an interrupted join leaves no state; Join re-prompts
-    m.open();
+    this.joinModal = this.trackJoinModal(new JoinVaultModal(this.app, (pw, progress) => this.joinEncryptedVault(keyringText, pw, progress, this.expectedVidHere()), { vaultLabel: label }));
+    this.joinModal.open();
   }
   private joinModal?: JoinVaultModal;
+  /** One join modal at a time: a close (an interrupted join) leaves no state, and the next Join re-prompts. */
+  private trackJoinModal(m: JoinVaultModal): JoinVaultModal {
+    const close = m.onClose.bind(m);
+    m.onClose = () => { close(); if (this.joinModal === m) this.joinModal = undefined; };
+    return m;
+  }
   /** The card's Join action: reopen the prompt with the record from the last connect. */
   openJoinFromCard(): void {
     if (!this.e2eeServerKeyring) { void this.reconnect(); return; }
@@ -696,8 +703,10 @@ export default class SelfSyncPlugin extends Plugin {
   reenrol(): void {
     if (!e2eeBuildEnabled()) { new Notice(`SelfSync: ${UNSUPPORTED_BUILD_TEXT}`, 9000); return; }
     if (!this.e2eeServerKeyring) { void this.reconnect(); return; }
-    new JoinVaultModal(this.app, (pw, progress) => this.joinEncryptedVault(this.e2eeServerKeyring!, pw, progress, undefined, true),
-      { title: "Re-enrol this device", intro: "The vault's encryption key record changed on the server. Enter the vault's encryption password to join the record the server holds now. Content stays encrypted throughout." }).open();
+    if (this.joinModal) return;
+    this.joinModal = this.trackJoinModal(new JoinVaultModal(this.app, (pw, progress) => this.joinEncryptedVault(this.e2eeServerKeyring!, pw, progress, undefined, true),
+      { title: "Re-enrol this device", intro: "The vault's encryption key record changed on the server. Enter the vault's encryption password to join the record the server holds now. Content stays encrypted throughout." }));
+    this.joinModal.open();
   }
 
   // ---- E2EE flows (E3b, D0102, D0106, D0109) ----
@@ -710,20 +719,24 @@ export default class SelfSyncPlugin extends Plugin {
   async createEncryptedVault(name: string, password: string, progress?: (f: number) => void): Promise<void> {
     if (!e2eeBuildEnabled()) throw new Error(UNSUPPORTED_BUILD_TEXT);
     const created = await createKeyring(password, { onProgress: progress });
-    const text = JSON.stringify(created.keyring);
-    await this.withAuth((t) => HttpTransport.createVault(this.settings.serverUrl, t, name, text));
-    const answer = await this.withAuth((t) => HttpTransport.keyringOf(this.settings.serverUrl, t, name));
-    const check = postCreateCheck(created.keyring.vault_id, answer);
-    if (check.kind === "oldServer") {
-      await this.withAuth((t) => HttpTransport.deleteOwnVault(this.settings.serverUrl, t, name));
-      created.vk.fill(0);
-      throw new Error(`This server is older than ${check.minVersion}, the first release that supports encrypted vaults. It created a plaintext vault, which was deleted again. Update the server first.`);
+    try {
+      const text = JSON.stringify(created.keyring);
+      await this.withAuth((t) => HttpTransport.createVault(this.settings.serverUrl, t, name, text));
+      const answer = await this.withAuth((t) => HttpTransport.keyringOf(this.settings.serverUrl, t, name));
+      const check = postCreateCheck(created.keyring.vault_id, answer);
+      if (check.kind === "oldServer") {
+        const older = `This server is older than ${check.minVersion}, the first release that supports encrypted vaults. It created a plaintext vault '${name}'`;
+        try { await this.withAuth((t) => HttpTransport.deleteOwnVault(this.settings.serverUrl, t, name)); }
+        catch (e: any) { throw new Error(`${older}, and deleting it failed (${e?.message ?? e}). Delete it from the server, then update the server before you retry.`); }
+        throw new Error(`${older}, which was deleted again. Update the server first.`);
+      }
+      if (check.kind === "mismatch") {
+        throw new Error(`The server returned a key record for a different vault id. Nothing was pinned and nothing was deleted. Check the server, then try again.`);
+      }
+      (this.settings.e2ee ??= {})[this.e2eePinKeyFor("", name)] = { e2eeVaultId: created.keyring.vault_id, vk: hex(created.vk) };
+    } finally {
+      created.vk.fill(0); // every exit: the pin holds its own hex copy on success, nothing holds VK otherwise
     }
-    if (check.kind === "mismatch") {
-      created.vk.fill(0);
-      throw new Error(`The server returned a key record for a different vault id. Nothing was pinned and nothing was deleted. Check the server, then try again.`);
-    }
-    (this.settings.e2ee ??= {})[this.e2eePinKeyFor("", name)] = { e2eeVaultId: created.keyring.vault_id, vk: hex(created.vk) };
     this.pinnedCodecCache = undefined;
     this.e2eeJoinPromptShown = false;
     await this.saveSettings();
@@ -745,18 +758,19 @@ export default class SelfSyncPlugin extends Plugin {
     const opened = await openKeyring(password, keyringText, progress); // throws KeyringError: corrupt | unsupported | wrongPassword
     await this.pinE2ee(b64(opened.vaultId), hex(opened.vk));
     opened.vk.fill(0);
-    this.e2eeExpectedVid = undefined;
+    this.e2eeExpected = undefined;
     this.log(reenrol ? "re-enrolled this device in the vault's current key record" : "joined the encrypted vault on this device");
     await this.reconnect();
   }
 
   /** The owner-scoped delete (D0109): DELETE /api/vault, every link state, only the token and the name. */
-  async deleteVaultOnServer(name = this.settings.vaultId): Promise<void> {
+  async deleteVaultOnServer(name = this.settings.vaultId, opts: { reconnect?: boolean } = {}): Promise<void> {
     await this.withAuth((t) => HttpTransport.deleteOwnVault(this.settings.serverUrl, t, name));
-    if (this.settings.e2ee?.[this.e2eePinKeyFor("", name)]) { delete this.settings.e2ee[this.e2eePinKeyFor("", name)]; if (!Object.keys(this.settings.e2ee).length) this.settings.e2ee = undefined; this.pinnedCodecCache = undefined; }
-    await this.saveSettings();
+    // The pin SURVIVES the delete (spec section 4.8): it changes only on a successful encrypted create's
+    // vault_id. So a device mid-migration still refuses a plaintext create under the name, and the next
+    // connect blocks with E2eeKeyringMissing until the encrypted re-create replaces the pin.
     this.log(`deleted the vault '${name}' on the server (grants and share links purged; re-share afterwards)`, true);
-    if (name === this.settings.vaultId && !this.settings.vaultOwner) void this.reconnect();
+    if (opts.reconnect !== false && name === this.settings.vaultId && !this.settings.vaultOwner) void this.reconnect();
   }
 
   /** The 409 rule of spec section 6 for the plugin's create dialog: decide from GET keyring and a FRESH signature. */
@@ -780,11 +794,22 @@ export default class SelfSyncPlugin extends Plugin {
       new EncryptionPasswordModal(this.app, this.settings.password, async (pw, progress) => {
         try { await this.createEncryptedVault(name, pw, progress); }
         catch (e: any) {
-          if (/vault exists|HTTP 409/i.test(String(e?.message ?? e))) {
+          const conflict = (e instanceof ConnError && e.info.status === 409) || /vault exists|HTTP 409/i.test(String(e?.message ?? e));
+          if (conflict) {
             const decision = await this.createConflict(name);
             new CreateConflictModal(this.app, name, decision, {
-              join: () => { this.openJoinForName(name); resolve(); },
-              deleteThenRetry: async () => { await this.deleteVaultOnServer(name); await this.createEncryptedVault(name, pw, progress); await onDone(); resolve(); },
+              join: () => { void this.openJoinForName(name); resolve(); },
+              deleteThenRetry: async () => {
+                // The password modal is closed by now: the retry's derivation reports into a Notice (DoD 1, progress).
+                const n = new Notice("SelfSync: deleting the plaintext vault, then deriving the key…", 0);
+                try {
+                  await this.deleteVaultOnServer(name, { reconnect: false }); // onDone runs the one reconnect
+                  await this.createEncryptedVault(name, pw, (f) => n.setMessage?.(`SelfSync: deriving the key… ${Math.round(f * 100)}%`));
+                } catch (err) { reject(err); throw err; }
+                finally { n.hide?.(); }
+                await onDone(); resolve();
+              },
+              onCancel: () => reject(new Error("cancelled")),
             }).open();
             return; // the conflict modal carries the flow; the password modal closes clean
           }
@@ -795,8 +820,8 @@ export default class SelfSyncPlugin extends Plugin {
     });
   }
   /** Join an encrypted vault by NAME (the 409 join arm): fetch its record, prompt, pin for that name, then switch. */
-  private openJoinForName(name: string): void {
-    void (async () => {
+  private async openJoinForName(name: string): Promise<void> {
+    try {
       const answer = await this.withAuth((t) => HttpTransport.keyringOf(this.settings.serverUrl, t, name));
       if (!answer.found) { new Notice("SelfSync: that vault is not encrypted after all — switch to it instead."); return; }
       new JoinVaultModal(this.app, async (pw, progress) => {
@@ -806,12 +831,18 @@ export default class SelfSyncPlugin extends Plugin {
         await this.saveSettings();
         await this.switchToVault(name, "merge");
       }, { vaultLabel: name }).open();
-    })();
+    } catch (e: any) {
+      new Notice(`SelfSync: could not read the vault's key record — ${e?.message ?? e}`, 9000);
+    }
   }
   /** A mount source that holds a keyring is refused in v1 (D0110). */
   async sourceVaultEncrypted(owner: string, vaultId: string): Promise<boolean> {
     try { return (await this.withAuth((t) => HttpTransport.keyringOf(this.settings.serverUrl, t, vaultId, owner))).found; }
-    catch { return false; } // an unreadable answer is not a keyring; the mount's own connect reports the real state
+    catch (e: any) {
+      // The refusal-one 503 (spec section 4.4) is an encrypted vault whose sidecar is gone: still encrypted, refuse.
+      if (e instanceof ConnError && e.info.endpoint === Endpoint.Keyring && e.info.status === 503) return true;
+      return false; // any other failure is not a keyring; the mount's own connect reports the real state
+    }
   }
   protected async loginRemote(): Promise<string> {
     // Re-login for an ALREADY-set-up account (its password was set at setup, so must-change is cleared);
@@ -1112,6 +1143,7 @@ export default class SelfSyncPlugin extends Plugin {
     // R11-#8: token-only mode with an expired token retries {connect} forever; without this guard,
     // each ~30s attempt opened ANOTHER wizard, stacking modals the user couldn't escape. Open at most one.
     if (this.setupOpen) return;
+    this.e2eeExpected = undefined; // a link's expectation never outlives a Setup (D0106)
     this.setupOpen = true;
     this.e2eeJoinPromptShown = false; // Reconfigure ends the join-prompt episode (spec section 4.8)
     const modal = new SetupWizardModal(this.app, this);
@@ -1818,6 +1850,7 @@ export default class SelfSyncPlugin extends Plugin {
   async signOut() {
     this.settings.authToken = undefined;
     this.settings.password = "";
+    this.e2eeExpected = undefined;
     await this.disconnect();
   }
 
@@ -1845,9 +1878,16 @@ export default class SelfSyncPlugin extends Plugin {
     this.settings.vaultId = name;
     this.settings.vaultOwner = owner || undefined; // empty = own vault
     this.settings.vaultReadOnly = readOnly;
+    this.bindExpectedVid(owner, name); // D0106: a link's vid applies to the vault the link named, never another
     this.settings.pendingSwitch = mode; // persist the resolution WITH the vaultId (atomic) so a restart mid-switch replays it (R12-CA1)
     await this.saveSettings();
     await this.reconnect();
+  }
+  /** A repoint: an unkeyed link vid binds to this target; a vid keyed to another vault is dropped. */
+  bindExpectedVid(owner: string, name: string): void {
+    const e = this.e2eeExpected; if (!e) return;
+    const key = this.e2eePinKeyFor(owner, name);
+    this.e2eeExpected = !e.key ? { vid: e.vid, key } : e.key === key ? e : undefined;
   }
   // FORK: copy the CURRENT vault's local content into a NEW vault you own, and switch this device to it
   // (the original is untouched). Especially useful on a read-only shared vault — it yields your own
@@ -1928,12 +1968,13 @@ export default class SelfSyncPlugin extends Plugin {
   // walks the user through sign-in and then redeems + adopts the shared vault automatically.
   async startRedeem(link: string): Promise<void> {
     let server: string;
+    let linkVid: string | undefined;
     try {
       const parsed = parseShareLink(link);
       server = parsed.server;
       // D0106 / spec section 4.9: an e2ee=1 link on a build without the entries blocks here, before any sign-in.
       if (parsed.e2ee && !e2eeBuildEnabled()) { new Notice(`SelfSync: ${UNSUPPORTED_BUILD_TEXT}`, 9000); return; }
-      this.e2eeExpectedVid = parsed.e2ee ? parsed.vid : undefined;
+      linkVid = parsed.e2ee ? parsed.vid : undefined;
     } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`); return; }
     if (redeemTargetError(server, this.settings.serverUrl)) {
       new SetupWizardModal(this.app, this, { shareLink: link }).open();
@@ -1941,6 +1982,8 @@ export default class SelfSyncPlugin extends Plugin {
     }
     try {
       const ref = await this.redeemShareLink(link);
+      // D0106: the vid is keyed to the vault the redeem named; it binds to nothing else and dies with the next Setup/Sign out.
+      this.setExpectedVaultId(linkVid, this.isOwnAccount(ref.owner) ? "" : ref.owner, ref.vault);
       // SELF-REDEEM: a link for a vault THIS account owns mints no grant (it's already yours), so it won't
       // appear in the "Shared with you" list. Say so plainly instead of "choose it below" (it's under your OWN
       // vaults) — and never treat it as a shared vault.
@@ -2730,8 +2773,14 @@ export default class SelfSyncPlugin extends Plugin {
   // E2EE (spec section 4.8): the VaultGone recovery runs the full create flow with the Encrypt option. On a
   // pinned name the create is encrypted and a plaintext create is refused, so a lying server that answers 404
   // then 200 cannot walk the user into a plaintext push. The pin changes only on a successful encrypted create.
-  async recreateVault(encrypt = this.e2eePin() !== undefined): Promise<void> {
+  async recreateVault(encrypt?: boolean): Promise<void> {
     try {
+      if (encrypt === undefined) {
+        // The full create dialog with the Encrypt choice (spec section 4.8), pinned or not. A pinned name
+        // comes with Encrypt on and locked, so a lying server cannot walk the device into a plaintext push.
+        encrypt = await new Promise<boolean | undefined>((resolve) => new RecreateVaultModal(this.app, this.settings.vaultId, this.e2eePin() !== undefined, resolve).open());
+        if (encrypt === undefined) return; // cancelled
+      }
       await this.createVaultFlow(this.settings.vaultId, encrypt, async () => {
         this.log(`re-created vault '${this.settings.vaultId}'${encrypt ? " (encrypted)" : ""} — repopulating from this device`, true);
         this.vaultGone = false;
@@ -2901,15 +2950,16 @@ export default class SelfSyncPlugin extends Plugin {
     this.e2eeServerKeyring = keyring.found ? keyring.text : undefined;
     if (!keyring.found) {
       this.e2eeJoinPromptShown = false; // a 404 resets the join latch
-      if (!pin && this.e2eeExpectedVid) {
+      if (!pin && this.expectedVidHere()) {
         // A link named an encrypted vault (D0106) and the server holds none: never enrol in plaintext.
         this.lastIssue = "The link named an encrypted vault, but the server holds no key record for it. Not syncing. Ask the owner for a current link, or check the server version.";
         this.log(this.lastIssue, true);
-        throw new ConnError("link expected an encrypted vault", { synthetic: SyntheticKind.E2eeKeyringChanged, wasLogin: false, endpoint: Endpoint.Keyring });
+        throw new ConnError("link expected an encrypted vault", { synthetic: SyntheticKind.E2eeLinkMismatch, wasLogin: false, endpoint: Endpoint.Keyring });
       }
       if (pin) {
         // A pinned device met a plaintext vault under its name (404 then a ready status): never a plaintext push.
         this.lastIssue = "This device pinned an encrypted vault, but the server now holds a plaintext vault under its name — not syncing (delete it on the server and re-create it encrypted, or ask the owner).";
+        if (!e2eeBuildEnabled()) this.throwUnsupportedBuild("The encrypted re-create"); // spec section 4.9: the missing-keyring dialog needs the KDF
         this.log(this.lastIssue, true);
         throw new ConnError("encrypted vault pinned, server holds plaintext", { synthetic: SyntheticKind.E2eeKeyringMissing, wasLogin: false, endpoint: Endpoint.Keyring });
       }
@@ -2922,13 +2972,14 @@ export default class SelfSyncPlugin extends Plugin {
         this.log(this.lastIssue, true);
         throw new ConnError(UNSUPPORTED_BUILD_REASON, { synthetic: SyntheticKind.E2eeUnsupportedBuild, wasLogin: false, endpoint: Endpoint.Keyring });
       }
-      if (this.e2eeExpectedVid) {
+      const expected = this.expectedVidHere();
+      if (expected) {
         let vid: string | undefined;
         try { vid = parseKeyring(keyring.text).vault_id; } catch { vid = undefined; }
-        if (vid !== this.e2eeExpectedVid) {
+        if (vid !== expected) {
           this.lastIssue = "The link named a different encrypted vault than the server holds. Not joining. Ask the owner for a current link.";
           this.log(this.lastIssue, true);
-          throw new ConnError("link vid differs from the server's keyring", { synthetic: SyntheticKind.E2eeKeyringChanged, wasLogin: false, endpoint: Endpoint.Keyring });
+          throw new ConnError("link vid differs from the server's keyring", { synthetic: SyntheticKind.E2eeLinkMismatch, wasLogin: false, endpoint: Endpoint.Keyring });
         }
       }
       this.lastIssue = "This vault is end-to-end encrypted. Enter its encryption password to join it (Join on the status card).";
@@ -2944,12 +2995,19 @@ export default class SelfSyncPlugin extends Plugin {
     } catch (e: any) { changed = `the server's key record does not parse (${e?.message ?? e})`; }
     if (changed) {
       this.lastIssue = `This vault's encryption key record changed on the server: ${changed}. Re-enrol with the encryption password, or ask the owner.`;
+      if (!e2eeBuildEnabled()) this.throwUnsupportedBuild("Re-enrol"); // spec section 4.9: the changed-keyring card's action needs the KDF
       this.log(this.lastIssue, true);
       throw new ConnError("keyring changed", { synthetic: SyntheticKind.E2eeKeyringChanged, wasLogin: false, endpoint: Endpoint.Keyring });
     }
     if (!this.codec.encrypted || this.codec.tag !== (await this.pinnedCodec()).tag) this.codec = await this.pinnedCodec();
     this.api!.setEncrypted?.(true);
     this.e2eeJoinPromptShown = false;
+  }
+  /** The define-off block of a surface whose recovery needs the KDF (spec section 4.9): the reason names the surface (a sentence start, capitalised by the caller). */
+  private throwUnsupportedBuild(surface: string): never {
+    this.lastIssue = `${this.lastIssue} ${surface} needs encryption support, and ${UNSUPPORTED_BUILD_REASON} — update the plugin.`;
+    this.log(this.lastIssue, true);
+    throw new ConnError(UNSUPPORTED_BUILD_REASON, { synthetic: SyntheticKind.E2eeUnsupportedBuild, wasLogin: false, endpoint: Endpoint.Keyring });
   }
   private pinnedCodecCache?: { key: string; codec: E2eeCodec };
   private async pinnedCodec(): Promise<E2eeCodec> {
@@ -3037,6 +3095,7 @@ export default class SelfSyncPlugin extends Plugin {
     this.startPolling();
     this.backoff = 3000;
     this.e2eeJoinPromptShown = false; // Connected resets the join latch (spec section 4.8)
+    this.e2eeExpected = undefined; // a connected link consumed (or never needed) the link's expected vid
     this.lastIssue = undefined; // a connected LinkState (engine) is the source of truth for "no issue"
     this.settings.baseVaultKey = this.vaultIdentityKey(); // stamp the (server-qualified) vault this base belongs to (D0047 guard, fix ③)
     this.settings.lastSyncedAt = Date.now(); this.schedulePersistLazy();

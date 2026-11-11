@@ -91,3 +91,22 @@ describe("E3a (6) the four E2EE failure kinds", () => {
     expect(blockedTip(FailureKind.E2eeUnsupportedBuild)).toMatch(/update the plugin/);
   });
 });
+
+describe("E3b (1) freshSignatureEndpoints anchors the signature on the /health hash", () => {
+  it("returns the endpoints when the hashes agree, null when they disagree or /health has no hash", async () => {
+    const { EMBEDDED_SIGNATURE } = await import("../../src/wiresignature");
+    req.mockResolvedValueOnce(res(200, { json: { schemaHash: "sha256:h" } })).mockResolvedValueOnce(res(200, { json: { hash: "sha256:h", signature: EMBEDDED_SIGNATURE } }));
+    expect(await HttpTransport.freshSignatureEndpoints(HTTPS)).toEqual(EMBEDDED_SIGNATURE.endpoints);
+    expect((req.mock.calls[0][0] as { url: string }).url).toBe(`${HTTPS}/health`);
+    expect((req.mock.calls[1][0] as { url: string }).url).toBe(`${HTTPS}/schema`);
+    req.mockReset();
+    req.mockResolvedValueOnce(res(200, { json: { schemaHash: "sha256:other" } })).mockResolvedValueOnce(res(200, { json: { hash: "sha256:h", signature: EMBEDDED_SIGNATURE } }));
+    expect(await HttpTransport.freshSignatureEndpoints(HTTPS)).toBeNull();
+    req.mockReset();
+    req.mockResolvedValueOnce(res(200, { json: {} })).mockResolvedValueOnce(res(200, { json: { hash: "sha256:h", signature: EMBEDDED_SIGNATURE } }));
+    expect(await HttpTransport.freshSignatureEndpoints(HTTPS)).toBeNull();
+    req.mockReset();
+    req.mockRejectedValueOnce(new Error("down"));
+    expect(await HttpTransport.freshSignatureEndpoints(HTTPS)).toBeNull();
+  });
+});

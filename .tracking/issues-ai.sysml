@@ -82,4 +82,26 @@ package IssuesAi {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from stagedTestImportGuard to issue013;
+
+    part issue014 : Issue {
+        :>> id = "706ac76b-625d-4a3c-a84b-dc44eb2eeb62";
+        :>> title = "MIN_E2EE_SERVER_VERSION 1.33.0 is not tied to the first schema-4 server tag";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "The client constant MIN_E2EE_SERVER_VERSION in client/src/e2ee/flows.ts is 1.33.0. docs/deployment.md, README.md and docs/cmmc-posture.md name the same version as the first tagged server release that stamps index schema 4. No tag with that number exists yet. The latest tag is 1.32.2. Nothing ties the constant to the tag that first ships schema 4, so the two can drift. The E4 release step must cut the first E2EE server tag as 1.33.0. Otherwise it must change the constant and the four doc sites to the tag it cuts, in the same commit. A release-process check that compares the constant with the tag makes the rule permanent.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from e2eeRealServerE2e to issue014;
+
+    part issue015 : Issue {
+        :>> id = "c53dafb4-e145-45d3-b33e-859614be5a80";
+        :>> title = "D0108 removed-collaborator-keeps-the-key sentence exists in docs only, not in the share UI";
+        :>> createdAt = "2026-11-10";
+        :>> createdBy = "ai";
+        :>> description = "D0108 says the UI copy tells the owner that a removed collaborator keeps the vault key until a rotation. After Sprint 4 that sentence exists in docs/deployment.md only. No share-management surface in the plugin says it. The ShareManageModal revoke action and the Leave action carry no such text. The sentence belongs next to the revoke action, and the rotation follow-up owns the fix, because the sentence changes once rotation exists.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from e2eeVaultKeyRotation to issue015;
 }

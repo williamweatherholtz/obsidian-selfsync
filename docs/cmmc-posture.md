@@ -17,10 +17,11 @@
 > for privileged/admin accounts), IA.3.5.8 (password-reuse history — last 5 hashes) and IA.3.5.9
 > (forced-change-on-reset — `must_change` enforced in the auth extractor), all real-tested; their POA&M
 > Issues are now resolved. **FIPS (3.13.11) is DEFERRED** — this deployment stores no genuine CUI, so
-> FIPS-validated crypto is not required. SC.3.13.11 (FIPS) and SC.3.13.16 (CUI-at-rest) are **Not
-> Applicable** — no CUI in scope — recorded as the accepted scope decision **D0027** (`.engine/decisions/
-> 0027-no-cui-cmmc-scope.sysml`); both reopen only if a deployment ever stores CUI. Deliberate decisions,
-> not unfinished work.
+> FIPS-validated crypto is not needed. SC.3.13.11 (FIPS) is **Not Applicable** — no CUI in scope —
+> recorded as the accepted scope decision **D0027** (`.engine/decisions/0027-no-cui-cmmc-scope.sysml`).
+> SC.3.13.16 (CUI-at-rest) was Not Applicable under the same decision. Since 1.33 an encrypted vault
+> MEETS it for note content (D0096), and a plaintext vault keeps the D0027 scope. Both reopen only
+> if a deployment ever stores CUI. Deliberate decisions, not unfinished work.
 
 
 > **Scope & honesty note.** CMMC 2.0 Level 2 = the 110 practices of NIST SP 800-171 rev2 across 14
@@ -109,11 +110,11 @@ The two remaining open items are **deliberate architecture decisions**, not unfi
 feature-sized IA gaps (MFA 3.5.3, forced-change 3.5.9, reuse history 3.5.8) are now **implemented and
 real-tested** — see the IA table above; their `issueCmmc*` Issues are resolved.
 
-1. **SC.3.13.16 — CUI at rest (HIGH, decision).** **Recommendation: operator volume encryption now**
-   (LUKS/dm-crypt or a cloud-provider encrypted volume on `/data`) — a legitimate, assessor-accepted
-   at-rest control needing zero code. Application-level E2EE is the only defense against a *compromised
-   server* but is a major redesign against the current trusted-server model; keep deferred and record the
-   residual "a server-side attacker/insider reads plaintext" risk in the SSP.
+1. **SC.3.13.16 — CUI at rest (decision, updated 1.33).** An **encrypted vault** (D0096) meets the
+   control for note content: AES-256-GCM under a device-held key, and the server holds no key. The SSP
+   records paths, sizes and timing as metadata the server still sees. For a **plaintext vault** the
+   recommendation stays operator volume encryption (LUKS/dm-crypt or a cloud-provider encrypted volume
+   on `/data`). Record the residual "a server-side attacker/insider reads plaintext" risk in the SSP.
 2. **SC.3.13.11 — FIPS-validated cryptography (DEFERRED, decision).** This deployment stores **no genuine
    CUI**, so FIPS-validated crypto is not required and the item is formally deferred. If genuine CUI is ever
    stored, revisit: move the server to a FIPS-validated provider (e.g. an OpenSSL 3 FIPS provider for the

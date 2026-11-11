@@ -473,6 +473,8 @@ export class SelfSyncSettingTab extends PluginSettingTab {
         const grantee = Boolean(s.vaultOwner);
         if (reason === FailureKind.E2eeJoinRequired) {
           st.addButton((b) => this.iconBtn(b, "key-round", "Join").setCta().onClick(() => this.plugin.openJoinFromCard()));
+        } else if (reason === FailureKind.E2eeLinkMismatch) {
+          st.setDesc(st.descEl.textContent + " · ask the owner for a current link"); // D0106: fail closed, no action
         } else if (reason === FailureKind.E2eeKeyringChanged) {
           st.addButton((b) => this.iconBtn(b, "key-round", "Re-enrol").setCta().onClick(() => this.plugin.reenrol()));
           if (grantee) st.setDesc(st.descEl.textContent + " · or ask the owner");

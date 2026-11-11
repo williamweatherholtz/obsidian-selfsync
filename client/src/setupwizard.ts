@@ -187,7 +187,7 @@ export class SetupWizardModal extends Modal {
           const link = parseSetupLink(text);
           // D0106 / spec section 4.9: an e2ee=1 setup link on a build without the entries stops here, before sign-in.
           if (link.e2ee && !e2eeBuildEnabled()) { new Notice(`SelfSync: ${UNSUPPORTED_BUILD_TEXT}`, 9000); return; }
-          this.s.e2eeVid = link.e2ee ? link.vid : undefined;
+          this.s.e2eeVid = link.e2ee ? link.vid : undefined; this.s.e2eeLinkVault = link.e2ee ? link.vault : undefined;
           this.s.server = link.server; this.s.username = (link.user ?? "").trim().toLowerCase(); this.s.serverOk = false; this.serverMsg = ""; // lowercase (a link may carry an as-typed name from an older client)
           if (link.vault) this.s.chosenVault = link.vault; // pre-select the shared vault (kept if the account has it)
           this.render();
@@ -352,6 +352,8 @@ export class SetupWizardModal extends Modal {
           // first, then the password modal runs createEncryptedVault. On a 409 the wizard offers NO delete (spec
           // section 6): it names the Switch dialog, whose create carries the decision table.
           if (!e2eeBuildEnabled()) { new Notice(`SelfSync: ${UNSUPPORTED_BUILD_TEXT}`, 9000); return; }
+          const st0 = this.plugin.settings;
+          const before = { serverUrl: st0.serverUrl, username: st0.username, authToken: st0.authToken, password: st0.password };
           this.persistSession();
           await this.plugin.saveSettings();
           this.s.newVaultCreated = await new Promise<boolean>((resolve) => {
@@ -364,7 +366,7 @@ export class SetupWizardModal extends Modal {
               resolve(true);
             }, { onCancel: () => resolve(false) }).open();
           });
-          if (!this.s.newVaultCreated) return;
+          if (!this.s.newVaultCreated) { Object.assign(this.plugin.settings, before); await this.plugin.saveSettings(); return; } // a cancel leaves no half-setup behind
         } else {
           await HttpTransport.createVault(this.s.server, this.token, name);
         }
@@ -372,7 +374,7 @@ export class SetupWizardModal extends Modal {
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       // D0106: a setup link named an encrypted vault; the connect's unpinned-200 arm must see this id, and a 404 fails closed.
-      this.plugin.setExpectedVaultId(this.s.e2eeVid && vault === this.s.chosenVault ? this.s.e2eeVid : undefined);
+      this.plugin.setExpectedVaultId(this.s.e2eeVid && vault === this.s.e2eeLinkVault ? this.s.e2eeVid : undefined, "", vault);
       const st = this.plugin.settings;
       // Token-only-at-rest is the default (st.storePassword === false): we already hold a session token,
       // so the plaintext password must NOT be written to data.json. wizardCredentials() decides this

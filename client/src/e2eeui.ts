@@ -6,7 +6,8 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import type SelfSyncPlugin from "./main";
 import { KeyringError } from "./e2ee/keyring";
-import { CreateConflictDecision, DELETE_VAULT_WARNING, LOST_PASSWORD_WARNING, MIGRATION_ROUTE, PASSWORD_FLOOR, joinOutcomeText, passwordProblem } from "./e2ee/flows";
+import { CreateConflictDecision, DELETE_VAULT_WARNING, LOST_PASSWORD_WARNING, MIGRATION_ROUTE, PASSWORD_FLOOR, UNSUPPORTED_BUILD_TEXT, joinOutcomeText, passwordProblem } from "./e2ee/flows";
+import { e2eeBuildEnabled } from "./e2ee/build";
 
 /** What a modal does with the password once it is accepted: the caller's work, with a progress sink. */
 export type PasswordWork = (password: string, progress: (fraction: number) => void) => Promise<void>;
@@ -19,8 +20,9 @@ export class EncryptionPasswordModal extends Modal {
   private status = "";
   constructor(app: App, private loginPassword: string, private work: PasswordWork, private opts: { title?: string; intro?: string; onCancel?: () => void } = {}) { super(app); }
   onOpen() { this.render(); }
-  onClose() { this.contentEl.empty(); if (!this.busy && !this.done) this.opts.onCancel?.(); }
+  onClose() { this.contentEl.empty(); if (this.busy) { this.closedWhileBusy = true; return; } if (!this.done) this.opts.onCancel?.(); }
   private done = false;
+  private closedWhileBusy = false;
 
   private render() {
     const c = this.contentEl; c.empty();
@@ -55,6 +57,7 @@ export class EncryptionPasswordModal extends Modal {
       this.close();
     } catch (e: any) {
       this.setStatus(String(e?.message ?? e));
+      if (this.closedWhileBusy) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); this.opts.onCancel?.(); } // dismissed mid-derivation, then failed: settle the caller
     } finally {
       this.busy = false;
     }
@@ -109,11 +112,38 @@ export class JoinVaultModal extends Modal {
   }
 }
 
+// The VaultGone re-create dialog (spec section 4.8): the full create choice, pinned or not. A pinned name
+// has Encrypt on and locked, so the only plaintext path is an unpinned name with the toggle off.
+export class RecreateVaultModal extends Modal {
+  private encrypt: boolean;
+  private answered = false;
+  constructor(app: App, private name: string, private pinned: boolean, private resolve: (encrypt: boolean | undefined) => void) { super(app); this.encrypt = pinned; }
+  onOpen() {
+    const c = this.contentEl; c.empty();
+    this.titleEl.setText(`Re-create '${this.name}' on the server`);
+    c.createEl("p", { text: this.pinned
+      ? "This device pinned this vault as end-to-end encrypted. It is re-created encrypted, and the content on this device is pushed under the new key."
+      : "The vault is gone on the server. Re-create it from this device's content, plaintext or end-to-end encrypted." })
+      .setAttribute("style", "font-size:13px;margin-bottom:8px;");
+    new Setting(c).setName("Encrypt the vault")
+      .setDesc(e2eeBuildEnabled()
+        ? (this.pinned ? "Locked on: this device holds the vault's key." : "End-to-end encrypt its content with a separate encryption password. The server never sees the notes. There is no recovery if the password is lost.")
+        : UNSUPPORTED_BUILD_TEXT)
+      .addToggle((t) => t.setValue(this.encrypt).setDisabled(this.pinned || !e2eeBuildEnabled()).onChange((v) => { if (!this.pinned) this.encrypt = v; }));
+    new Setting(c)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((b) => b.setButtonText("Re-create").setCta().onClick(() => { this.answered = true; this.close(); this.resolve(this.encrypt); }));
+  }
+  onClose() { this.contentEl.empty(); if (!this.answered) { this.answered = true; this.resolve(undefined); } }
+}
+
 // The 409 offer of the plugin's create dialog (spec section 6, D0109). Join only on an encrypted name; the
-// delete behind the residue and re-share warnings on a plaintext name; nothing on an old server.
+// delete behind the residue and re-share warnings on a plaintext name; nothing on an old server. A close
+// without a choice reports onCancel, so the caller's flow settles.
 export class CreateConflictModal extends Modal {
+  private chose = false;
   constructor(app: App, private name: string, private decision: CreateConflictDecision,
-              private actions: { join: () => void; deleteThenRetry: () => Promise<void> }) { super(app); }
+              private actions: { join: () => void; deleteThenRetry: () => Promise<void>; onCancel?: () => void }) { super(app); }
   onOpen() {
     const c = this.contentEl; c.empty();
     this.titleEl.setText(`A vault named "${this.name}" already exists`);
@@ -122,7 +152,7 @@ export class CreateConflictModal extends Modal {
       c.createEl("p", { text: `"${this.name}" is an encrypted vault on this server. You can join it with its encryption password. A different vault needs a different name.` }).setAttribute("style", "font-size:13px;");
       new Setting(c)
         .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
-        .addButton((b) => b.setButtonText("Join it").setCta().onClick(() => { this.close(); this.actions.join(); }));
+        .addButton((b) => b.setButtonText("Join it").setCta().onClick(() => { this.chose = true; this.close(); this.actions.join(); }));
       return;
     }
     if (d.kind === "upgradeServer") {
@@ -136,9 +166,9 @@ export class CreateConflictModal extends Modal {
     new Setting(c)
       .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((b) => b.setButtonText("Delete it on the server and create encrypted").setWarning().onClick(async () => {
-        this.close();
+        this.chose = true; this.close();
         try { await this.actions.deleteThenRetry(); } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); }
       }));
   }
-  onClose() { this.contentEl.empty(); }
+  onClose() { this.contentEl.empty(); if (!this.chose) { this.chose = true; this.actions.onCancel?.(); } }
 }

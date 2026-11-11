@@ -7,8 +7,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../src/confirm", () => ({ confirmModal: vi.fn(async () => true) }));
 vi.mock("../src/pushpreviewmodal", () => ({ pushPreviewModal: vi.fn(async () => true) }));
-import { __notices } from "./obsidian-stub"; // the same module instance as the "obsidian" alias
-import { EncryptionPasswordModal, JoinVaultModal, CreateConflictModal } from "../src/e2eeui";
+import { __notices, __opened } from "./obsidian-stub"; // the same module instance as the "obsidian" alias
+import { EncryptionPasswordModal, JoinVaultModal, CreateConflictModal, RecreateVaultModal } from "../src/e2eeui";
 import { SwitchVaultModal } from "../src/vaultswitch";
 import { SetupWizardModal } from "../src/setupwizard";
 import { SelfSyncSettingTab } from "../src/settings";
@@ -232,5 +232,92 @@ describe("the status card and the Connection card (E3b 4, 6, 9, 12)", () => {
     expect(plugin.deleteVaultOnServer).toHaveBeenCalledTimes(1);
     const { confirmModal } = await import("../src/confirm");
     expect((confirmModal as any).mock.calls.at(-1)[1].body).toBe(DELETE_VAULT_WARNING);
+  });
+});
+
+describe("the review fixes of Sprint 4 (E3b 1, 4, 5)", () => {
+  it("CreateConflictModal: a close without a choice reports onCancel; a choice does not", async () => {
+    const plugin = fakePlugin();
+    const onCancel = vi.fn(); const join = vi.fn();
+    const a = new CreateConflictModal(plugin.app, "notes", { kind: "join" }, { join, deleteThenRetry: async () => {}, onCancel });
+    a.onOpen(); buttonByText(a.contentEl, "Cancel").click(); a.onClose();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    const b = new CreateConflictModal(plugin.app, "notes", { kind: "join" }, { join, deleteThenRetry: async () => {}, onCancel });
+    b.onOpen(); buttonByText(b.contentEl, "Join it").click(); b.onClose();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(join).toHaveBeenCalledTimes(1);
+  });
+
+  it("RecreateVaultModal: a pinned name has Encrypt on and locked; an unpinned one offers the choice; a close answers undefined", async () => {
+    const plugin = fakePlugin();
+    let answer: boolean | undefined | "unset" = "unset";
+    const pinned = new RecreateVaultModal(plugin.app, "notes", true, (v) => { answer = v; });
+    pinned.onOpen();
+    expect(toggleByName(pinned.contentEl, "Encrypt the vault").checked).toBe(true);
+    expect(pinned.contentEl.textContent).toContain("Locked on");
+    flipToggle(toggleByName(pinned.contentEl, "Encrypt the vault")); // locked: ignored
+    buttonByText(pinned.contentEl, "Re-create").click(); pinned.onClose();
+    expect(answer).toBe(true);
+    answer = "unset";
+    const plain = new RecreateVaultModal(plugin.app, "notes", false, (v) => { answer = v; });
+    plain.onOpen();
+    expect(toggleByName(plain.contentEl, "Encrypt the vault").checked).toBe(false);
+    flipToggle(toggleByName(plain.contentEl, "Encrypt the vault"));
+    buttonByText(plain.contentEl, "Re-create").click(); plain.onClose();
+    expect(answer).toBe(true);
+    answer = "unset";
+    const closed = new RecreateVaultModal(plugin.app, "notes", false, (v) => { answer = v; });
+    closed.onOpen(); closed.onClose();
+    expect(answer).toBeUndefined();
+  });
+
+  it("the switch dialog stays open across the create and continues to the switch", async () => {
+    const plugin = fakePlugin();
+    plugin.currentVaults = vi.fn(async () => ["notes"]);
+    const m = new SwitchVaultModal(plugin.app, plugin as any);
+    m.onOpen(); await flush(); await flush();
+    typeInto(inputByPlaceholder(m.contentEl, "e.g. notes"), "secret");
+    flipToggle(toggleByName(m.contentEl, "Encrypt the new vault"));
+    buttonByText(m.contentEl, "Switch").click(); await flush(); await flush(); await flush();
+    expect(plugin.createVaultFlow).toHaveBeenCalledTimes(1);
+    expect(plugin.switchToVault).toHaveBeenCalledWith("secret", "download", "", false); // no local data: adopt directly
+  });
+
+  it("E2eeLinkMismatch: the card says ask the owner for a current link and offers no Join or Re-enrol", () => {
+    const plugin = fakePlugin();
+    plugin.statusText = () => "blocked";
+    plugin.blockReason = () => FailureKind.E2eeLinkMismatch;
+    plugin.getLastIssue = () => "the reason";
+    const t = new SelfSyncSettingTab(plugin.app, plugin); t.display();
+    expect(t.containerEl.textContent).toContain("ask the owner for a current link");
+    expect(buttonByText(t.containerEl, "Join")).toBeFalsy();
+    expect(buttonByText(t.containerEl, "Re-enrol")).toBeFalsy();
+  });
+
+  it("the wizard's encrypted create on a 409 names the join and the Switch dialog, offers no delete, and a cancel restores the session", async () => {
+    const plugin = fakePlugin();
+    plugin.createEncryptedVault = vi.fn(async () => { throw new Error("create vault: HTTP 409 vault exists"); });
+    const w = new SetupWizardModal(plugin.app, plugin as any);
+    (w as any).s.loggedIn = true; (w as any).s.vaults = ["notes"]; (w as any).s.server = "https://new.example"; (w as any).s.username = "bob"; (w as any).s.password = "login-pw-123";
+    (w as any).token = "tok-new";
+    w.onOpen(); await flush();
+    typeInto(inputByPlaceholder(w.contentEl, "e.g. notes"), "taken");
+    flipToggle(toggleByName(w.contentEl, "Encrypt the new vault"));
+    buttonByText(w.contentEl, "Start syncing").click(); await flush();
+    // the password modal is the newest Modal; drive it through the plugin's app (the stub opens nothing), so find it by its work
+    const modal = __opened.at(-1) as unknown as EncryptionPasswordModal;
+    expect(modal).toBeInstanceOf(EncryptionPasswordModal);
+    expect(plugin.settings.serverUrl).toBe("https://new.example"); // persisted for the create
+    {
+      modal.onOpen();
+      typeInto(textByName(modal.contentEl, "Encryption password"), GOOD);
+      typeInto(textByName(modal.contentEl, "Confirm encryption password"), GOOD);
+      buttonByText(modal.contentEl, "Encrypt and continue").click(); await flush();
+      expect(status(modal.contentEl)).toMatch(/already exists.*Switch vault/);
+      expect(buttonByText(modal.contentEl, "Delete")).toBeFalsy();
+      modal.onClose(); await flush();
+    }
+    expect(plugin.settings.serverUrl).toBe("https://sync.example"); // the cancel restored the session
+    expect(plugin.settings.authToken).toBe("tok-abc");
   });
 });

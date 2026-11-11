@@ -296,7 +296,7 @@ describe("E3b the link flags and the define surfaces on the real plugin", () => 
     api.calls.length = 0; // the plaintext boot above read changes; the flagged connect must not
     p.setExpectedVaultId("EBESExQVFhcYGRobHB0eHw==");
     await p.reconnect(); await flush();
-    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(blockedReason(p)).toBe(FailureKind.E2eeLinkMismatch);
     expect(p.getLastIssue()).toMatch(/no key record/);
     expect(api.calls).not.toContain("changes");
     expect(p.contentCodec().encrypted).toBe(false);
@@ -310,13 +310,13 @@ describe("E3b the link flags and the define surfaces on the real plugin", () => 
     p.joinPrompts.length = 0;
     p.setExpectedVaultId("AAAAAAAAAAAAAAAAAAAAAA==");
     await p.reconnect(); await flush();
-    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(blockedReason(p)).toBe(FailureKind.E2eeLinkMismatch);
     expect(p.getLastIssue()).toMatch(/different encrypted vault/);
     expect(p.joinPrompts.length).toBe(0);
     p.setExpectedVaultId(keyring.vault_id);
     api.setAnswer({ found: false }); await p.reconnect(); await flush(); // reset the latch through a 404 arm
     // the 404 under the flag fails closed too; back to 200 with the right vid prompts
-    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(blockedReason(p)).toBe(FailureKind.E2eeLinkMismatch);
     api.setAnswer({ found: true, text }); await p.reconnect(); await flush();
     expect(blockedReason(p)).toBe(FailureKind.E2eeJoinRequired);
     expect(p.joinPrompts).toEqual([text]);
@@ -408,6 +408,129 @@ describe("E3b the link flags and the define surfaces on the real plugin", () => 
       await expect(p.addMount({ source: { owner: "alice", vaultId: "secret", sourcePath: "" }, mountPoint: "Shared", direction: "pull" } as any)).rejects.toThrow(/end-to-end encrypted. Mounting/);
       expect(p.settings.mounts ?? []).toEqual([]);
     } finally { spy.mockRestore(); }
+    p.onunload();
+  });
+});
+
+// ---- the review fixes of Sprint 4 (E3b clauses 1, 4, 8, 12) ----
+describe("E3b review: re-enrol, the join modal, the define-off blocks, the delete, the 409 path", () => {
+  it("(4) re-enrol replaces the pin's vault_id with the changed record's and reconnects encrypted", async () => {
+    const a = await pinFor();
+    const b = await pinFor();
+    const api = spyApi({ found: true, text: b.text });
+    const p = await boot(api, { e2ee: { "x|/notes": a.pin } });
+    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(p.e2eePin()?.e2eeVaultId).toBe(a.pin.e2eeVaultId);
+    await p.joinEncryptedVault(b.text, "correct horse battery staple!", undefined, undefined, true); await flush();
+    expect(p.e2eePin()?.e2eeVaultId).toBe(b.keyring.vault_id);
+    expect(p.e2eePin()?.vk).toBe(b.pin.vk);
+    expect(p.contentCodec().encrypted).toBe(true);
+    expect(p.settings.baseVaultKey).toBe(`x|/notes|${b.tag}`);
+    expect(p.statusText()).toBe("idle");
+    p.onunload();
+  });
+
+  it("(12) a resume re-uses the open join modal; a close leaves no state and the next Join re-prompts", async () => {
+    setE2eeBuildEnabledForTests(true);
+    const { text } = await pinFor();
+    const api = spyApi({ found: true, text });
+    const p = await boot(api);
+    const open = (SelfSyncPlugin.prototype as any).openJoinPrompt as (this: any, t: string) => void;
+    open.call(p, text);
+    const first = (p as any).joinModal;
+    expect(first).toBeDefined();
+    open.call(p, text); // a resume
+    expect((p as any).joinModal).toBe(first);
+    first.onClose(); // an interrupted join
+    expect((p as any).joinModal).toBeUndefined();
+    expect(p.e2eePin()).toBeUndefined();
+    expect(p.contentCodec().encrypted).toBe(false);
+    open.call(p, text); // Join re-prompts
+    expect((p as any).joinModal).toBeDefined();
+    expect((p as any).joinModal).not.toBe(first);
+    (p as any).joinModal.onClose();
+    // reenrol shares the single-instance rule
+    (p as any).e2eeServerKeyring = text;
+    p.reenrol(); const r = (p as any).joinModal; p.reenrol();
+    expect((p as any).joinModal).toBe(r);
+    r.onClose();
+    p.onunload();
+  });
+
+  it("(12) with the define off, a pinned device meeting a changed record or a plaintext vault blocks with E2eeUnsupportedBuild and the reason", async () => {
+    setE2eeBuildEnabledForTests(false);
+    const a = await pinFor();
+    const b = await pinFor();
+    const api = spyApi({ found: true, text: b.text });
+    const p = await boot(api, { e2ee: { "x|/notes": a.pin } });
+    expect(blockedReason(p)).toBe(FailureKind.E2eeUnsupportedBuild);
+    expect(p.getLastIssue()).toMatch(/key record changed/);
+    expect(p.getLastIssue()).toMatch(/Re-enrol needs encryption support/);
+    api.setAnswer({ found: false }); await p.reconnect(); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeUnsupportedBuild);
+    expect(p.getLastIssue()).toMatch(/holds a plaintext vault/);
+    expect(p.getLastIssue()).toMatch(/The encrypted re-create needs encryption support/);
+    expect(api.calls).not.toContain("changes");
+    p.onunload();
+  });
+
+  it("(4) (6) the delete keeps the pin, so a plaintext create under the name is still refused and the next connect blocks on the missing keyring", async () => {
+    const a = await pinFor();
+    const api = spyApi({ found: true, text: a.text });
+    const p = await boot(api, { e2ee: { "x|/notes": a.pin } });
+    expect(p.statusText()).toBe("idle");
+    const { HttpTransport } = await import("../../src/transport");
+    const spy = vi.spyOn(HttpTransport, "deleteOwnVault").mockResolvedValue(undefined);
+    try {
+      api.setAnswer({ found: false });
+      await p.deleteVaultOnServer(); await flush();
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(p.e2eePin()?.e2eeVaultId).toBe(a.pin.e2eeVaultId);
+      expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringMissing);
+      await expect(p.createVaultFlow("notes", false, async () => {})).rejects.toThrow(/pinned 'notes' as an encrypted vault/);
+      // the retry arm's delete does not race the create with a reconnect
+      api.calls.length = 0;
+      await p.deleteVaultOnServer("notes", { reconnect: false }); await flush();
+      expect(api.calls).toEqual([]);
+    } finally { spy.mockRestore(); }
+    p.onunload();
+  });
+
+  it("(1) createConflict: 200 is join; 404 with the keyring route in the FRESH signature is delete; 404 without it names the version", async () => {
+    const api = spyApi({ found: false });
+    const p = await boot(api);
+    const { HttpTransport } = await import("../../src/transport");
+    let keyring: { found: true; text: string } | { found: false } = { found: true, text: "{}" };
+    let endpoints: string[] | null = [...EMBEDDED_SIGNATURE.endpoints];
+    const spies = [
+      vi.spyOn(HttpTransport, "keyringOf").mockImplementation((async () => keyring) as any),
+      vi.spyOn(HttpTransport, "freshSignatureEndpoints").mockImplementation((async () => endpoints) as any),
+    ];
+    try {
+      expect(await p.createConflict("v")).toEqual({ kind: "join" });
+      expect(spies[1]).not.toHaveBeenCalled(); // a 200 needs no signature fetch
+      keyring = { found: false };
+      expect(await p.createConflict("v")).toEqual({ kind: "delete" });
+      endpoints = endpoints.filter((e) => !e.endsWith("/keyring"));
+      expect(await p.createConflict("v")).toEqual({ kind: "upgradeServer", minVersion: "1.33.0" });
+      endpoints = null; // the hash disagreed with /health, or no signature
+      expect(await p.createConflict("v")).toEqual({ kind: "upgradeServer", minVersion: "1.33.0" });
+    } finally { for (const s of spies) s.mockRestore(); }
+    p.onunload();
+  });
+
+  it("(7) a link vid keyed to another vault does not touch this vault's connect; a repoint drops it; a connected link clears it", async () => {
+    const api = spyApi({ found: false });
+    const p = await boot(api);
+    p.setExpectedVaultId("EBESExQVFhcYGRobHB0eHw==", "alice", "other");
+    await p.reconnect(); await flush();
+    expect(p.statusText()).toBe("idle"); // keyed to alice/other: not this vault
+    p.setExpectedVaultId("EBESExQVFhcYGRobHB0eHw=="); // unkeyed: binds to the next repoint
+    await p.switchToVault("second", "merge"); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeLinkMismatch);
+    await p.switchToVault("notes", "merge"); await flush(); // a repoint to another vault drops the keyed vid
+    expect(p.statusText()).toBe("idle");
+    expect((p as any).e2eeExpected).toBeUndefined();
     p.onunload();
   });
 });

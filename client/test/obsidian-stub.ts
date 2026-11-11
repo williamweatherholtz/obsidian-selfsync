@@ -167,10 +167,11 @@ export class Plugin {
 }
 export const __notices: string[] = []; // test-visible record of Notice messages (cleared per test that asserts)
 export class Notice { constructor(m?: string) { if (m) __notices.push(m); } }
+export const __opened: Modal[] = []; // test-visible record of modals plugin code opened (a test drives onOpen itself)
 export class Modal {
   app: any; titleEl = fakeEl(); contentEl = fakeEl(); closed = false;
   constructor(app: any) { this.app = app; }
-  open() {} close() { this.closed = true; }
+  open() { __opened.push(this); } close() { this.closed = true; }
   onOpen() {} onClose() {}
 }
 export class PluginSettingTab {

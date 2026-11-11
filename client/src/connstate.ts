@@ -24,6 +24,7 @@ export enum Endpoint { Login = "login", VaultStatus = "vaultStatus", Chunk = "ch
 export enum SyntheticKind {
   VersionMismatch = "versionMismatch", SessionExpired = "sessionExpired", ServerDegraded = "serverDegraded",
   E2eeJoinRequired = "e2eeJoinRequired", E2eeKeyringChanged = "e2eeKeyringChanged", E2eeKeyringMissing = "e2eeKeyringMissing", E2eeUnsupportedBuild = "e2eeUnsupportedBuild",
+  E2eeLinkMismatch = "e2eeLinkMismatch",
 }
 
 // The failure taxonomy — the classifier's output alphabet.
@@ -46,6 +47,10 @@ export enum FailureKind {
   E2eeKeyringChanged = "e2eeKeyringChanged",
   E2eeKeyringMissing = "e2eeKeyringMissing",
   E2eeUnsupportedBuild = "e2eeUnsupportedBuild",
+  // D0106: a setup or share link named an encrypted vault (e2ee=1&vid=) and the server holds no record, or a
+  // record for another id. Fail closed with NO action: a Re-enrol here would be the substitution the link check
+  // exists to refuse. The only exit is a current link from the owner.
+  E2eeLinkMismatch = "e2eeLinkMismatch",
 }
 
 // The recovery policy alphabet.
@@ -83,7 +88,8 @@ export type FailureClass =
   | { kind: FailureKind.E2eeJoinRequired }
   | { kind: FailureKind.E2eeKeyringChanged }
   | { kind: FailureKind.E2eeKeyringMissing }
-  | { kind: FailureKind.E2eeUnsupportedBuild };
+  | { kind: FailureKind.E2eeUnsupportedBuild }
+  | { kind: FailureKind.E2eeLinkMismatch };
 
 // `AwaitUser` still arms a SLOW self-heal re-probe so a TRANSIENT server-side cause (a mid-deploy 401, a
 // reindex 404) recovers without the user having to act — pure no-timer would strand. `Slow` is the bounded
@@ -108,6 +114,7 @@ export function classifyConnectError(info: ConnErrorInfo): FailureClass {
   if (synthetic === SyntheticKind.E2eeKeyringChanged) return { kind: FailureKind.E2eeKeyringChanged };
   if (synthetic === SyntheticKind.E2eeKeyringMissing) return { kind: FailureKind.E2eeKeyringMissing };
   if (synthetic === SyntheticKind.E2eeUnsupportedBuild) return { kind: FailureKind.E2eeUnsupportedBuild };
+  if (synthetic === SyntheticKind.E2eeLinkMismatch) return { kind: FailureKind.E2eeLinkMismatch };
   if (status === undefined) return { kind: FailureKind.Transient };      // network/DNS/timeout/malformed → retry
   if (status === 429) return { kind: FailureKind.LockedOut, retryAfterSecs: retryAfterSecs ?? SLOW_RETRY_SECS };
   if (status === 503) return { kind: FailureKind.ServerDegraded };
@@ -142,6 +149,7 @@ export function recoveryFor(fc: FailureClass): Recovery {
     case FailureKind.E2eeKeyringChanged:
     case FailureKind.E2eeKeyringMissing:
     case FailureKind.E2eeUnsupportedBuild:
+    case FailureKind.E2eeLinkMismatch:
       return { kind: RecoveryKind.AwaitUser, reprobeSecs: SELF_HEAL_REPROBE_SECS };
   }
 }
@@ -238,5 +246,6 @@ export function blockedTip(reason: BlockReason): string {
     case FailureKind.E2eeKeyringChanged: return "This vault's encryption key record changed on the server — Re-enrol with the encryption password, or ask the owner";
     case FailureKind.E2eeKeyringMissing: return "This device pinned an encrypted vault, but the server now holds a plaintext vault under its name — not syncing. Delete it on the server and re-create it encrypted, or ask the owner";
     case FailureKind.E2eeUnsupportedBuild: return "This plugin build does not support encrypted vaults — update the plugin";
+    case FailureKind.E2eeLinkMismatch: return "The link named an encrypted vault the server does not hold — not joining. Ask the owner for a current link";
   }
 }

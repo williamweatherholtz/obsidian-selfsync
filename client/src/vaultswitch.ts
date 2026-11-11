@@ -117,10 +117,9 @@ export class SwitchVaultModal extends Modal {
         // encrypted name, the delete behind the warnings on a plaintext one, nothing on an old server. Its
         // onDone continues the switch; the join and delete arms close this modal themselves.
         let created = false;
-        this.close();
-        await this.plugin.createVaultFlow(name, this.encrypt, async () => { created = true; });
-        if (!created) return;
-        this.open(); this.loading = false; this.error = ""; // back to the modal for the resolve step
+        try { await this.plugin.createVaultFlow(name, this.encrypt, async () => { created = true; }); }
+        catch (e: any) { if (String(e?.message) === "cancelled") return; throw e; }
+        if (!created) { this.close(); return; } // the join arm took over (its own modal switches afterwards)
         vault = name;
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
