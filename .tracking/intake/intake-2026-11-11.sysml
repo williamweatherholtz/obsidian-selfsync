@@ -71,4 +71,12 @@ package ProjectIntake20261111 {
         :>> text = "i'll just make you an account, you're presumign i have this running on a desktop when it's containerized on a server.";
         :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
     }
+
+    part st015 : Statement {
+        :>> id = "aaf197e4-bd43-4ae3-bf5d-e867d75c59af";
+        :>> title = "Owner wants a short summary and next steps, not narrative";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "too much talk, not enough clear summary and next steps.";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }
