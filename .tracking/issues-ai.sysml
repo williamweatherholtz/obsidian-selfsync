@@ -148,4 +148,15 @@ package IssuesAi {
         :>> severity = Severity::High;
     }
     #Resolves dependency from e2eeRealObsidianE2e to issue019;
+
+    part issue020 : Issue {
+        :>> id = "20da67b5-908a-460c-9a7e-8054ea26cdef";
+        :>> title = "Live change latency 62 s against the owner's server, 0.58 s on loopback: the WebSocket change path needs evidence";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> description = "Measured 2026-11-11 by e2ee.pwspec.ts run mwceeanp against the owner's server https://notes2.willweatherholtz.com. A note made on device A after both devices were pinned reached device B in 62.47 seconds. The same step on loopback took 0.58 seconds. The note made before B joined arrived in 1.02 seconds, so the pull path is fast and the live change path is slow. What is checked: a WebSocket upgrade to /api/ws through the proxy answers 101 with the plugin's auth protocol. The proxy does not refuse the socket. What is not checked: whether the changed message reaches device B over that socket, and whether B's socket dropped before the change. Also whether the proxy buffers frames. The 62 seconds match a poll fallback, but no log confirms that. The resolver reruns the spec against the server with the plugin log on both devices captured, reads the WebSocket events, and names the cause. If the cause is the proxy, the fix is a documented proxy setting. If the cause is the client, the fix is a code change with a test.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from e2eeRemoteLiveLatency to issue020;
 }
