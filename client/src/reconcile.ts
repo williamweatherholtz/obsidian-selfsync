@@ -1512,7 +1512,9 @@ async function reconcileOne(d: ReconcileDeps, path: string, opts: ReconcileOneOp
     case "noop":
       return;
     case "setBaseInSync":
-      setBase(d, path, localBytes!, rmeta!.hash);
+      // issue017: the base holds the content IDENTITY (the cid on an encrypted vault), never the raw frame hash.
+      // This site stored rmeta.hash and made every in-sync file read as changed on the next pass (a conflict cascade).
+      setBase(d, path, localBytes!, remoteIdentity(codecOf(d), rmeta!));
       if (localStat) d.base.stampStat(path, localStat.size, localStat.mtime); // cache the scan-skip hint (Finding 2)
       return;
     case "clearBase":

@@ -45,6 +45,12 @@ describe("E3a (7) sha256hex stays behind the codec", () => {
         expect(calls, "main.ts: exactly one sha256hex call, the main.js build fingerprint").toBe(1);
       }
       if (rel === "reconcile.ts" || rel === "sync.ts") expect(imports, `${rel} must not import sha256hex`).toBe(false);
+      // issue017 (E4): the base holds the content IDENTITY. A setBase call that passes a raw meta hash (the frame
+      // hash on an encrypted vault) stored the wrong identity once and cascaded conflict copies on every round trip.
+      if (rel === "reconcile.ts") {
+        const rawHashBase = code.split("\n").filter((l) => /setBase\([^)]*\b\w*meta!?\.hash\b/.test(l));
+        expect(rawHashBase, "reconcile.ts: setBase must take remoteIdentity(codec, meta), never meta.hash").toEqual([]);
+      }
     }
     expect(offenders).toEqual([]);
   });

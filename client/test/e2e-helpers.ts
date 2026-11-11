@@ -34,7 +34,7 @@ if (process.env.SELFSYNC_REQUIRE_E2E === "1" && !canRun) {
 /** Node HTTP transport (global fetch — server-to-server, no Obsidian CSP). Chunk API. */
 export class NodeTransport implements SyncApi {
   // owner "" = own vault (/api/v/{vault}); set = a shared vault (/api/u/{owner}/{vault}).
-  constructor(private base: string, private token: string, private vault = "default", private owner = "") {}
+  constructor(protected base: string, protected token: string, protected vault = "default", protected owner = "") {}
   static async login(base: string, u: string, p: string): Promise<string> {
     const r = await fetch(`${base}/api/login`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: u, password: p }),
@@ -137,8 +137,8 @@ export class NodeTransport implements SyncApi {
     const r = await fetch(`${base}/api/u/${encodeURIComponent(owner)}/${encodeURIComponent(vault)}/changes?since=0`, { headers: { authorization: `Bearer ${token}` } });
     return r.status;
   }
-  private h() { return { authorization: `Bearer ${this.token}` }; }
-  private v(suffix: string) {
+  protected h(): Record<string, string> { return { authorization: `Bearer ${this.token}` }; }
+  protected v(suffix: string) {
     const scope = this.owner
       ? `/api/u/${encodeURIComponent(this.owner)}/${encodeURIComponent(this.vault)}`
       : `/api/v/${encodeURIComponent(this.vault)}`;
@@ -246,12 +246,13 @@ export const enc = (s: string) => new TextEncoder().encode(s);
 export const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 export const exists = (p: string) => fs.access(p).then(() => true, () => false);
 
-export interface RunningServer { base: string; dataDir: string; stop: () => Promise<void>; }
+export interface RunningServer { base: string; dataDir: string; stop: () => Promise<void>; stopKeepData: () => Promise<void>; }
 
 // Spawn the server binary (or target SYNC_SERVER_URL) and resolve once it's listening.
-export async function startServer(): Promise<RunningServer> {
-  if (externalUrl) return { base: externalUrl, dataDir: "", stop: async () => {} };
-  const dataDir = mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
+// `dataDir`: a GIVEN data dir (the E2EE corrupt-index clause restarts the server on the same dir); fresh when omitted.
+export async function startServer(dataDir?: string): Promise<RunningServer> {
+  if (externalUrl) return { base: externalUrl, dataDir: "", stop: async () => {}, stopKeepData: async () => {} };
+  dataDir ??= mkdtempSync(path.join(os.tmpdir(), "nls-e2e-data-"));
   const srv = spawn(serverBin, [], {
     // ALLOW_WEAK_ADMIN=1: the throwaway test server deliberately uses admin/admin, so it must
     // opt past the SEC-2 default-credential boot guard (which refuses admin/admin otherwise).
@@ -267,20 +268,22 @@ export async function startServer(): Promise<RunningServer> {
     const onData = (b: Buffer) => { const m = b.toString().match(/listening on (\S+)/); if (m) { clearTimeout(timer); resolve(`http://${m[1]}`); } };
     srv.stderr!.on("data", onData); srv.stdout!.on("data", onData);
   });
+  const exit = () => new Promise<void>((resolve) => {
+    if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
+    srv.once("exit", () => resolve());
+    const t = setTimeout(resolve, 5000);
+    if (typeof t.unref === "function") t.unref();
+    try { srv.kill(); } catch { resolve(); /* already gone */ }
+  });
   return {
     base, dataDir,
     // Wait for the process to actually EXIT before removing dataDir: the server holds the per-vault
     // SQLite DB (+ WAL/SHM) open for its lifetime, so on Windows those files stay locked until the OS
     // reaps the killed process — an immediate rm would hit EPERM. Kill, await exit (with a timeout
     // fallback so the suite never hangs), then remove with retries as a backstop for handle-release lag.
+    stopKeepData: exit,
     stop: async () => {
-      await new Promise<void>((resolve) => {
-        if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
-        srv.once("exit", () => resolve());
-        const t = setTimeout(resolve, 5000);
-        if (typeof t.unref === "function") t.unref();
-        try { srv.kill(); } catch { resolve(); /* already gone */ }
-      });
+      await exit();
       if (dataDir) { try { rmSync(dataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); } catch { /* best-effort temp cleanup */ } }
     },
   };

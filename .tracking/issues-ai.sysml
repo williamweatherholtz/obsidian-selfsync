@@ -115,4 +115,15 @@ package IssuesAi {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from e2eeReleaseNotesDefineState to issue016;
+
+    part issue017 : Issue {
+        :>> id = "8485e38d-4021-48f3-9ef8-dae135ffc232";
+        :>> title = "Encrypted vault: an in-sync file's base stored the frame hash, so round trips cascaded conflict copies";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> description = "In an encrypted vault, a no-op reconcile of an in-sync file rewrote its base entry with the frame hash instead of the content identity. The in-sync branch of reconcileOne called setBase with rmeta.hash, the one site E3a did not route through remoteIdentity. On the next pass every such file read as locally changed and remotely changed, so each round-trip spawned a new conflict copy. The real-server spec found it in Sprint 5: a binary conflict cascaded into nested conflict copies by the second round, while a plaintext vault converged. The fix routes that site through remoteIdentity. The guard is a lint assertion over reconcile.ts that no setBase call passes a raw meta hash, plus the convergence assertion of the real-server spec.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from e2eeRealServerE2e to issue017;
 }
