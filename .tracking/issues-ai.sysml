@@ -126,4 +126,15 @@ package IssuesAi {
         :>> severity = Severity::High;
     }
     #Resolves dependency from e2eeRealServerE2e to issue017;
+
+    part issue018 : Issue {
+        :>> id = "a8a95e06-77c5-4558-9c69-8e3fe12b3f67";
+        :>> title = "Phone KDF protocol cannot run on the release build because D0112 hides the Encrypt option it gates";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> description = "The phone KDF protocol in docs/architecture/93-real-device-perf-protocol.md tells the owner to create or join an encrypted vault on the phone. D0112 hides the Encrypt option until that protocol delivers its Measurements. So the release build 1.33.0 cannot run the protocol. The gate depends on the thing it gates. Found 2026-11-11 when the owner asked what to run on the phone. A browser page that runs the same @noble/hashes Argon2id at KDF_DEFAULT gives a wall-time estimate today. It does not run inside Obsidian and cannot read process memory. The fix is a plugin command that runs the derivation at KDF_DEFAULT independent of SELFSYNC_E2EE and shows the wall time. The protocol then names that command as the wall-time instrument. The memory instrument stays dumpsys or Instruments.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Medium;
+    }
+    #Resolves dependency from e2eeKdfMeasureCommand to issue018;
 }
