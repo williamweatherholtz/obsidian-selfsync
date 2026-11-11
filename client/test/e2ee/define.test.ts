@@ -40,7 +40,8 @@ describe("E3a (10) the define and its build-time control", () => {
     // a proposed Decision does not count
     expect(checkE2eeDefine({ literal: true, decisionTexts: [accepted(want).replace("accepted", "proposed")], kdfSource }).ok).toBe(false);
     // a different cost does not count
-    expect(checkE2eeDefine({ literal: true, decisionTexts: [accepted("m_kib=32768, t=3, p=1")], kdfSource }).ok).toBe(false);
+    const other = `m_kib=${KDF_DEFAULT.m_kib * 2}, t=${KDF_DEFAULT.t}, p=${KDF_DEFAULT.p}`;
+    expect(checkE2eeDefine({ literal: true, decisionTexts: [accepted(other)], kdfSource }).ok).toBe(false);
     // a Decision that depends on something else does not count
     expect(checkE2eeDefine({ literal: true, decisionTexts: [accepted(want, "d0111")], kdfSource }).ok).toBe(false);
     expect(acceptedKdfDecisions(accepted(want))).toEqual([KDF_DEFAULT]);

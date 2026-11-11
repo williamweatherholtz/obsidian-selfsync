@@ -58,8 +58,11 @@ Do this run **twice**: once with the phone on **wifi**, once on **cellular**.
 | notify path observed (WS / poll) | n/a | | | |
 | E2EE KDF: Argon2id at the default cost, wall time (s) and peak memory (MB) | n/a | | | |
 
-**E2EE KDF row (D0112).** Create or join an encrypted vault on the phone with the default cost
-(64 MiB, 3 passes, 1 lane). Time the password prompt from Join to the card going green. Record two
+**E2EE KDF row (D0112, default set by D0115).** The shipped default is 32 MiB, 3 passes, 1 lane.
+Until the plugin command of issue018 ships, time the derivation with the KDF Timer page, which runs
+the plugin's own Argon2id in the phone browser. The Encrypt option is hidden before acceptance, so
+Join cannot be timed in the plugin yet. Once it shows, time the password prompt from Join to the
+card going green. The owner dropped the iOS device on 2026-11-11 (st010, st011). Record two
 `Measurement` datapoints per device under the Indicators `e2eePhoneKdfWallTime` and
 `e2eePhoneKdfPeakMemory`, with the source prefixed `ios:` or `android:`. Instrument per OS:
 

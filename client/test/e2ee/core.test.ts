@@ -33,8 +33,8 @@ describe("E1 (1) deriveKek", () => {
     expect(hex(c)).not.toBe(hex(a));
   });
 
-  it("the defaults are 64 MiB, three passes, one lane; the ceiling is twice the maximum default", () => {
-    expect(KDF_DEFAULT).toEqual({ m_kib: 65536, t: 3, p: 1 });
+  it("the defaults are 32 MiB, three passes, one lane (D0115); the ceiling stays 128 MiB, t=6, p=2", () => {
+    expect(KDF_DEFAULT).toEqual({ m_kib: 32768, t: 3, p: 1 });
     expect(KDF_CEILING).toEqual({ m_kib: 131072, t: 6, p: 2 });
   });
 

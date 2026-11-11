@@ -11,7 +11,9 @@ export interface KdfCost { m_kib: number; t: number; p: number }
 export interface KdfParams extends KdfCost { alg: string; salt: Uint8Array }
 
 /** Candidate default, final under D0112 once the owner's phone Measurements are recorded. */
-export const KDF_DEFAULT: KdfCost = { m_kib: 65536, t: 3, p: 1 };
+// D0115: 32 MiB, three passes, one lane. Basis: the owner's Android Measurement e2eePhoneKdfWallTimeM1
+// (4.77 s at 64 MiB in Firefox) with iOS assumed similar (st010, st011). Each keyring stores its own cost.
+export const KDF_DEFAULT: KdfCost = { m_kib: 32768, t: 3, p: 1 };
 /** Absolute ceiling (spec §4.4): twice the maximum default. */
 export const KDF_CEILING: KdfCost = { m_kib: 131072, t: 6, p: 2 };
 
