@@ -99,4 +99,12 @@ package ProjectIntake20261111 {
         :>> triageNote = "bug: issue020 already tracks the latency with the resolver task e2eeRemoteLiveLatency. The route is sprint 8 on that task, chartered by d0096. The owner also waives the per-sitting review until the open issues are resolved, which is recorded here as their words and not as a process change.";
     }
     #DerivedFrom dependency from us017 to st016;
+
+    part st017 : Statement {
+        :>> id = "10c236a5-295b-4113-a631-60d9680bc669";
+        :>> title = "Owner redid the server, asks for the full test run again";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "just redid server.  try full test suite again? seems to be no issue but this is a new version now";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }
