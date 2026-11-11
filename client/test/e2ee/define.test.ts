@@ -58,11 +58,14 @@ describe("E3a (10) the define and its build-time control", () => {
     expect(r.ok ? "" : r.reason).toContain("d0112");
   });
 
-  it("today's model holds no accepted KDF default Decision, so a true literal would fail the build", () => {
+  it("today's model holds the accepted D0115 at KDF_DEFAULT, so a true literal passes the build; a different default would not", () => {
     const texts = readDecisionTexts(fileURLToPath(new URL("../../../.engine/decisions/", import.meta.url)));
     expect(texts.length).toBeGreaterThan(10);
-    expect(checkE2eeDefine({ literal: true, decisionTexts: texts, kdfSource }).ok).toBe(false);
+    expect(checkE2eeDefine({ literal: true, decisionTexts: texts, kdfSource }).ok).toBe(true);
     expect(checkE2eeDefine({ literal: false, decisionTexts: texts, kdfSource }).ok).toBe(true);
+    // the control still bites: a KDF_DEFAULT that drifts from the accepted literal fails the build
+    const drifted = kdfSource.replace(/m_kib:\s*\d+/, `m_kib: ${KDF_DEFAULT.m_kib * 2}`);
+    expect(checkE2eeDefine({ literal: true, decisionTexts: texts, kdfSource: drifted }).ok).toBe(false);
   });
 
   it("in tests the entries are on, and the override flips them for one scenario", () => {

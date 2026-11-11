@@ -8,7 +8,8 @@ import { checkE2eeDefine, readDecisionTexts } from "./scripts/e2ee-define-check.
 // commit that follows the owner's acceptance of the KDF default Decision flips it to true, and this
 // script refuses a true literal with no such accepted Decision in the model (manual vigilance is not the
 // control, D0047). release.yml and verify-released.yml run `npm run build`, so the publishing path enforces it.
-const SELFSYNC_E2EE = false;
+// Flipped 2026-11-11 on the owner's acceptance of D0115 (m_kib=32768, t=3, p=1).
+const SELFSYNC_E2EE = true;
 
 // A false literal needs no model: a client-only checkout or a tarball without .engine/ still builds.
 if (SELFSYNC_E2EE) {
