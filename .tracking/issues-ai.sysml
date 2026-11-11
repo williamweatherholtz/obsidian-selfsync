@@ -137,4 +137,15 @@ package IssuesAi {
         :>> severity = Severity::Medium;
     }
     #Resolves dependency from e2eeKdfMeasureCommand to issue018;
+
+    part issue019 : Issue {
+        :>> id = "a21a71b6-e06e-4f1a-8d65-f3be70077601";
+        :>> title = "A second device cannot join an encrypted vault: the unpinned status probe meets the server downgrade guard";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> description = "Found 2026-11-11 by the first run of client/e2e-obsidian/e2ee.pwspec.ts against the HEAD server binary through real Obsidian. A second device with no pin cannot join an encrypted vault through the plugin. Its status stays blocked with the server text 'vault is end-to-end encrypted. This client version does not support it. Update the plugin.' inside the retry wrapper. Cause, read at client/src/main.ts probe in doConnect: GET keyring runs first and is exempt from the server guard. GET status runs next without the x-selfsync-e2ee header. HttpTransport sends the header only when the device is pinned (main.ts buildApi). The server guard (api.rs scoped) answers 403. The probe treats it as a retry, so resolveCodec and the Join dialog never run. Why the unit layer passed: the fake api in client/test/e2ee/connect.test.ts answered status without the guard. The connect flow passed there and failed against the real server. E4 proved the engine through the test transport, which sent the header on every request. Fix in this sprint: the probe sends the header once GET keyring finds a record and the build supports encryption. A build without support maps the 403 on status to the E2eeUnsupportedBuild block of spec section 4.9. Guards: the fake api mirrors the server guard and starts with the pin like the real transport. The real-Obsidian spec drives the join through the dialog.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::High;
+    }
+    #Resolves dependency from e2eeRealObsidianE2e to issue019;
 }

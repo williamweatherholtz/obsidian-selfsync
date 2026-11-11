@@ -2883,7 +2883,28 @@ export default class SelfSyncPlugin extends Plugin {
     // real reason instead of the generic "Can't reach the server (…). Retrying…" wrapper (the server DID
     // respond). Retrying{Slow} self-heals on redeploy. The same translation covers the pair after a re-login.
     const probe = async () => {
-      try { const keyring = await this.fetchKeyring(); const health = await this.api!.status(); return { keyring, health }; }
+      try {
+        const keyring = await this.fetchKeyring();
+        // issue019 (found by e2ee.pwspec.ts, 2026-11-11): the header says "this build understands encrypted
+        // vaults", not "this device is pinned". An UNPINNED device learned here that the vault is encrypted;
+        // without the header its very next request, GET status, met the server's downgrade guard (403, "update
+        // the plugin"), the probe failed as a retry, and resolveCodec (the join prompt) was never reached. So
+        // a second device could not join at all. resolveCodec still decides the codec and the header after.
+        if (keyring.found && e2eeBuildEnabled()) this.api!.setEncrypted?.(true);
+        try {
+          const health = await this.api!.status();
+          return { keyring, health };
+        } catch (e) {
+          // A build WITHOUT encryption support sends no header, so the same guard answers its status probe with
+          // 403: that is the unsupported-build block of spec section 4.9, not a retry and not a revoked grant.
+          if (keyring.found && !e2eeBuildEnabled() && e instanceof ConnError && e.info.status === 403) {
+            this.lastIssue = `This vault is end-to-end encrypted and ${UNSUPPORTED_BUILD_REASON} — update the plugin.`;
+            this.log(this.lastIssue, true);
+            throw new ConnError(UNSUPPORTED_BUILD_REASON, { synthetic: SyntheticKind.E2eeUnsupportedBuild, wasLogin: false, endpoint: Endpoint.VaultStatus });
+          }
+          throw e;
+        }
+      }
       catch (e) {
         if (e instanceof ConnError && e.info.status === 503) {
           this.lastIssue = e.message; // the server's plain-text body (errText)

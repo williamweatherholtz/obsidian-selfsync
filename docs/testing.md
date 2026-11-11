@@ -58,7 +58,7 @@ with `keel record-measurement` after a meaningful change.
 - **Playwright (server admin only)** — `client/e2e-admin/*.pwspec.ts` drives the `/admin` page in
   Chromium (`npm run test:admin-e2e`). Not the Obsidian plugin.
 - **Real-Obsidian e2e (Playwright + CDP)** — BUILT (Phase 3). `client/e2e-obsidian/` + `npm run
-  test:obsidian-e2e` (config `playwright.obsidian.config.ts`). `helpers/obsidian.ts` launches an
+  test:obsidian-e2e` (config `playwright.obsidian.config.ts`). `helpers/obsidianDriver.ts` launches an
   ISOLATED Obsidian instance — it pre-seeds the temp `--user-data-dir`'s `obsidian.json` vault registry
   and uses a fixed `--remote-debugging-port` + `chromium.connectOverCDP()`, deliberately NOT the
   `obsidian://` URI (which the OS routes to a running Obsidian and would hijack the user's session).
@@ -70,6 +70,26 @@ with `keel record-measurement` after a meaningful change.
   Needs Obsidian installed (`OBSIDIAN_PATH` to override the auto-detected path) → **local/nightly gate,
   self-skips when absent, NOT wired into per-PR CI**. Not covered here (flaky through live GUIs, and
   covered headlessly instead): forced divergent-edit conflicts.
+- **Real-Obsidian e2e, encrypted vault (Sprint 7, D0112)** — `e2ee.pwspec.ts` in the same layer. Device A
+  starts on a plaintext seed vault. It then creates an ENCRYPTED vault through the plugin's own Encryption
+  password dialog (two fields + CTA, driven by Playwright). Device B is staged on that vault with no pin
+  and gets the plugin's own Join dialog. A wrong password is refused, the right one joins. A note
+  converges A → B and B → A through the real plugins.
+
+  The server's data volume is grepped. The plaintext seed note's marker IS there (positive control).
+  The encrypted note's marker and the password are NOT.
+
+  The spec prints one `E2EE-MEASURE {...}` JSON line and writes it to
+  `<os tmpdir>/selfsync-e2ee-measure.json`. The line holds the desktop KDF wall time on create and
+  join, and the push time of one note plaintext vs encrypted. It also holds the encrypted A → B
+  convergence. Record those under the `e2eeDesktopKdfWallTime` and `e2eeSyncWallTime` Indicators with
+  `keel record measurement`.
+
+  **Real-server mode:** set `SELFSYNC_E2E_SERVER_URL` (+ `SELFSYNC_E2E_USERNAME` /
+  `SELFSYNC_E2E_PASSWORD`) to run the same flow against a server you operate. It creates vaults named
+  `e2e-seed-<run>` and `e2e-enc-<run>` and never opens an existing vault. It deletes both at the end.
+  The grep clause prints the command to run on the host instead. Use a test account, never one that
+  owns real vaults.
 
 ## Resolved: local coverage on Node 24
 

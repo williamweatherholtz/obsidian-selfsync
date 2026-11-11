@@ -41,7 +41,16 @@ function spyApi(keyringAnswer: KeyringAnswer, health = "ready") {
       return keyringAnswer;
     },
     setEncrypted(on) { encrypted = on; },
-    async status() { calls.push("status"); return { status: health, detail: health === "ready" ? "" : "rebuild aborted: no .keyring.json, see the server log", version: 0, apiVersion: 1, schemaHash: "sha256:test-compat" }; },
+    async status() {
+      calls.push("status");
+      // The server's downgrade guard (D0103, api.rs scoped()): every vault-scoped request but GET keyring answers
+      // 403 on an encrypted vault without x-selfsync-e2ee: 1. The fake mirrors it so the connect flow cannot pass
+      // here while failing against the real server (issue019: the unpinned probe did, and no device could join).
+      if ("found" in keyringAnswer && keyringAnswer.found && encrypted !== true) {
+        throw new ConnError("vault is end-to-end encrypted. This client version does not support it. Update the plugin.", { status: 403, endpoint: Endpoint.VaultStatus, wasLogin: false });
+      }
+      return { status: health, detail: health === "ready" ? "" : "rebuild aborted: no .keyring.json, see the server log", version: 0, apiVersion: 1, schemaHash: "sha256:test-compat" };
+    },
     async schema() { calls.push("schema"); return { hash: "sha256:test-compat", signature: EMBEDDED_SIGNATURE }; },
     async changes(since) { calls.push("changes"); return { version: 0, upserts: [], deletes: [] }; },
     async fileMeta() { return null; },
@@ -61,7 +70,9 @@ class TestPlugin extends SelfSyncPlugin {
   loginCount = 0;
   joinPrompts: string[] = [];
   protected buildIo() { return this.io_; }
-  protected buildApi() { return this.api_; }
+  // The real HttpTransport is constructed with the header on iff this device is pinned (main.ts buildApi); the
+  // fake starts the same way, so the server-guard mirror in status() sees what the real server sees.
+  protected buildApi() { this.api_.setEncrypted(this.e2eePin() !== undefined); return this.api_; }
   protected loginRemote() { this.loginCount++; return Promise.resolve("test-token"); }
   protected openJoinPrompt(text: string) { this.joinPrompts.push(text); }
 }
@@ -179,7 +190,7 @@ describe("E3a (6) the connect flow over GET keyring", () => {
     const p = await boot(api, { e2ee: { "x|/notes":pin } });
     expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringMissing);
     expect(api.calls).not.toContain("changes");
-    expect(api.encrypted()).toBeUndefined(); // the transport was built with the header on and never flipped
+    expect(api.encrypted()).toBe(true); // the transport was built with the header on (pinned) and never flipped
     p.onunload();
   });
 

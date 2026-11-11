@@ -41,30 +41,45 @@ export function startServer(dataRoot: string): Promise<RunningServer> {
   });
 }
 
-/** Log in as admin and create a vault via the server API (so the plugin has a real vault to sync). */
-export async function createVault(serverUrl: string, vault: string): Promise<void> {
+export interface Creds { username: string; password: string; }
+/** The account every spec uses on the spawned server. The e2ee spec overrides it in real-server mode. */
+export const ADMIN: Creds = { username: "admin", password: "admin" };
+
+async function loginToken(serverUrl: string, creds: Creds): Promise<string> {
   const login = await fetch(`${serverUrl}/api/login`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "admin", password: "admin" }),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(creds),
   });
   if (!login.ok) throw new Error(`login ${login.status}`);
-  const token = ((await login.json()) as { token: string }).token;
+  return ((await login.json()) as { token: string }).token;
+}
+
+/** Log in and create a vault via the server API (so the plugin has a real vault to sync). */
+export async function createVault(serverUrl: string, vault: string, creds: Creds = ADMIN): Promise<void> {
+  const token = await loginToken(serverUrl, creds);
   const r = await fetch(`${serverUrl}/api/vaults`, {
     method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ name: vault }),
   });
   if (!r.ok && r.status !== 409) throw new Error(`create vault ${r.status}`);
 }
 
-/** True once the server has a committed file at `path` in `vault` — i.e. the plugin actually synced it. */
-export async function serverHasFile(serverUrl: string, vault: string, filePath: string): Promise<boolean> {
-  const login = await fetch(`${serverUrl}/api/login`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "admin", password: "admin" }),
-  });
-  if (!login.ok) return false;
-  const token = ((await login.json()) as { token: string }).token;
+/** True once the server has a committed file at `path` in `vault` — i.e. the plugin actually synced it.
+ * An encrypted vault answers 403 to a request without the E2EE header (D0104), so the caller says which it is. */
+export async function serverHasFile(serverUrl: string, vault: string, filePath: string, creds: Creds = ADMIN, e2ee = false): Promise<boolean> {
+  let token: string;
+  try { token = await loginToken(serverUrl, creds); } catch { return false; }
   const r = await fetch(`${serverUrl}/api/v/${encodeURIComponent(vault)}/meta?path=${encodeURIComponent(filePath)}`, {
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, ...(e2ee ? { "x-selfsync-e2ee": "1" } : {}) },
   });
   return r.status === 200;
+}
+
+/** Delete an own vault through the server API (the e2ee spec's real-server mode cleans up after itself). */
+export async function deleteVault(serverUrl: string, vault: string, creds: Creds = ADMIN): Promise<void> {
+  const token = await loginToken(serverUrl, creds);
+  const r = await fetch(`${serverUrl}/api/vault`, {
+    method: "DELETE", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ vault }),
+  });
+  if (!r.ok && r.status !== 404) throw new Error(`delete vault ${r.status}`);
 }
 
 export interface StagedVault { root: string; vaultDir: string; appDataDir: string; }
@@ -72,7 +87,7 @@ export interface StagedVault { root: string; vaultDir: string; appDataDir: strin
 /** Create a temp vault dir with the built plugin + data.json + community-plugins.json (auto-enable).
  * `settings` is merged into data.settings (e.g. to turn config sync on); a `seedFiles` entry for
  * `.obsidian/community-plugins.json` overrides the default enabled-list. */
-export function stageVault(serverUrl: string, vault: string, seedFiles: Record<string, string> = {}, settings: Record<string, unknown> = {}): StagedVault {
+export function stageVault(serverUrl: string, vault: string, seedFiles: Record<string, string> = {}, settings: Record<string, unknown> = {}, creds: Creds = ADMIN): StagedVault {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "selfsync-e2e-"));
   const vaultDir = path.join(root, "vault");
   const pluginDir = path.join(vaultDir, ".obsidian", "plugins", "selfsync");
@@ -90,7 +105,7 @@ export function stageVault(serverUrl: string, vault: string, seedFiles: Record<s
   // plugin auto-connects on load (onLayoutReady -> reconnect) instead of opening the setup wizard.
   fs.writeFileSync(
     path.join(pluginDir, "data.json"),
-    JSON.stringify({ settings: { serverUrl, username: "admin", password: "admin", vaultId: vault, storePassword: true, ...settings } }),
+    JSON.stringify({ settings: { serverUrl, username: creds.username, password: creds.password, vaultId: vault, storePassword: true, ...settings } }),
   );
   fs.writeFileSync(path.join(vaultDir, ".obsidian", "community-plugins.json"), JSON.stringify(["selfsync"]));
   for (const [rel, content] of Object.entries(seedFiles)) {

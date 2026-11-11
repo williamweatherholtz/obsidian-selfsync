@@ -99,4 +99,40 @@ package ProjectIndicators {
     }
     part e2eePhoneKdfWallTimeM1 : Measurement { :>> id = "3ba2d590-c65e-48bc-97e8-068a1901fc5b"; :>> value = "4.77"; :>> measuredAt = "2026-11-11"; :>> source = "android:firefox-page:64MiB-t3-p1 runs 4.73,4.80,4.77 Firefox 160 Gecko, owner phone, reported in chat"; :>> createdBy = "wweatherholtz"; }
     #Measures dependency from e2eePhoneKdfWallTimeM1 to e2eePhoneKdfWallTime;
+    // ---- End-to-end encryption on the desktop through real Obsidian (Sprint 7, 2026-11-11): pulled by the
+    // Playwright spec client/e2e-obsidian/e2ee.pwspec.ts from its E2EE-MEASURE line, one Measurement per run and metric.
+    part e2eeDesktopKdfWallTime : Indicator {
+        :>> id = "82b91cc2-770a-4850-a4f6-865ebd583c05";
+        :>> title = "E2EE Argon2id wall time on the desktop through real Obsidian";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> measures = "Seconds from the dialog button to the dialog closing in real Obsidian at the shipped KDF parameters, on create (keyring mint) and on join (keyring open), source prefixed create: or join:.";
+        :>> goal = IndicatorGoal::minimize;
+        :>> unit = "s";
+        :>> method = MeasurementMethod::pulled;
+        :>> collectionRef = "client/e2e-obsidian/e2ee.pwspec.ts, kdfCreateSeconds and kdfJoinSeconds of the E2EE-MEASURE line";
+    }
+    part e2eeSyncWallTime : Indicator {
+        :>> id = "03a4ac01-908f-4199-bf2c-cc5b1dbc1964";
+        :>> title = "Sync wall time of one note through real Obsidian, plaintext and encrypted";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> measures = "Seconds from a note create in real Obsidian to the server holding it (push:plain, push:encrypted) or to the second device holding it (converge:encrypted), on loopback unless the source says otherwise.";
+        :>> goal = IndicatorGoal::minimize;
+        :>> unit = "s";
+        :>> method = MeasurementMethod::pulled;
+        :>> collectionRef = "client/e2e-obsidian/e2ee.pwspec.ts, pushPlainSeconds, pushEncryptedSeconds, convergeEncryptedSeconds and convergeEncryptedSecondsLive of the E2EE-MEASURE line";
+    }
+    part e2eeDesktopKdfWallTimeM1 : Measurement { :>> id = "ab60b777-628b-4c0f-b1c0-68026c907554"; :>> value = "2.22"; :>> measuredAt = "2026-11-11"; :>> source = "create: kdfCreateSeconds; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeDesktopKdfWallTimeM1 to e2eeDesktopKdfWallTime;
+    part e2eeDesktopKdfWallTimeM2 : Measurement { :>> id = "6858367e-6646-47ba-bea3-c67e624ef6a0"; :>> value = "2.12"; :>> measuredAt = "2026-11-11"; :>> source = "join: kdfJoinSeconds; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeDesktopKdfWallTimeM2 to e2eeDesktopKdfWallTime;
+    part e2eeSyncWallTimeM1 : Measurement { :>> id = "350d125a-3f53-40f0-9674-73fa940f4ed6"; :>> value = "0.47"; :>> measuredAt = "2026-11-11"; :>> source = "push:plain pushPlainSeconds; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM1 to e2eeSyncWallTime;
+    part e2eeSyncWallTimeM2 : Measurement { :>> id = "abc65470-3598-48e3-a973-56ee79a84982"; :>> value = "0.46"; :>> measuredAt = "2026-11-11"; :>> source = "push:encrypted pushEncryptedSeconds; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM2 to e2eeSyncWallTime;
+    part e2eeSyncWallTimeM3 : Measurement { :>> id = "efb7aebf-a041-4189-a9bb-92a6e76a882b"; :>> value = "1.02"; :>> measuredAt = "2026-11-11"; :>> source = "converge:encrypted convergeEncryptedSeconds, a note made before B joined; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM3 to e2eeSyncWallTime;
+    part e2eeSyncWallTimeM4 : Measurement { :>> id = "25d4deb5-1764-4c3f-b3f5-c9c4a519264c"; :>> value = "0.58"; :>> measuredAt = "2026-11-11"; :>> source = "converge:encrypted-live convergeEncryptedSecondsLive, both devices pinned; e2ee.pwspec.ts run mwcboq98 2026-11-11, loopback, owner desktop (Windows 11), Obsidian renderer, plugin 1.34.0 build at HEAD, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM4 to e2eeSyncWallTime;
 }
