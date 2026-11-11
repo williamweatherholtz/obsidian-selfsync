@@ -1,0 +1,21 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index d0e7ddb..73826c0 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -89,7 +89,15 @@ jobs:
+           (cd client && sha256sum main.js styles.css) > SHA256SUMS
+           sha256sum manifest.json versions.json >> SHA256SUMS
+           cat SHA256SUMS
+-          NOTES="$(printf 'SelfSync %s — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync.\n\nSHA-256 of the published assets (also the SHA256SUMS asset; verify-released.yml rebuilds this tag daily and compares):\n\n```\n%s\n```' "$VER" "$(cat SHA256SUMS)")"
++          # D0112: the release notes state whether this build offers the Encrypt option. The committed literal in
++          # client/esbuild.config.mjs is the only source (the build itself refuses `true` without the accepted
++          # KDF default Decision), so the note can never disagree with the bytes BRAT installs.
++          if grep -q '^const SELFSYNC_E2EE = true;' client/esbuild.config.mjs; then
++            E2EE_NOTE='End-to-end encrypted vaults: the Encrypt option is ON in this build (the KDF default Decision is accepted).'
++          else
++            E2EE_NOTE='End-to-end encrypted vaults: the Encrypt option is HIDDEN in this build until the owner records the phone KDF measurements and accepts the KDF default Decision (D0112). A device already enrolled in an encrypted vault keeps syncing it. The server side is complete: run the server image at this version or newer before any client joins an encrypted vault.'
++          fi
++          NOTES="$(printf 'SelfSync %s — install via BRAT: add the repo williamweatherholtz/obsidian-selfsync.\n\n%s\n\nSHA-256 of the published assets (also the SHA256SUMS asset; verify-released.yml rebuilds this tag daily and compares):\n\n```\n%s\n```' "$VER" "$E2EE_NOTE" "$(cat SHA256SUMS)")"
+           # DRAFT: not installable, no tag yet. The tag is created at publish (below), at this commit.
+           gh release create "$VER" --draft --target "$GITHUB_SHA" \
+             client/main.js client/styles.css manifest.json versions.json SHA256SUMS \

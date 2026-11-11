@@ -104,4 +104,15 @@ package IssuesAi {
         :>> severity = Severity::Low;
     }
     #Resolves dependency from e2eeVaultKeyRotation to issue015;
+
+    part issue016 : Issue {
+        :>> id = "43d95dd3-d7c1-4eff-936d-81585a220f00";
+        :>> title = "Release notes say nothing about the hidden Encrypt option (D0112)";
+        :>> createdAt = "2026-11-11";
+        :>> createdBy = "ai";
+        :>> description = "D0112 says the release notes state that a release cut before the KDF default Decision ships with the Encrypt option hidden. release.yml writes the notes from a fixed template with the asset digests, and no sentence about the define exists. The workflow is a locked enforcement surface (D0465), so the AI cannot edit it. The edit is recorded as the proposed D0114 with its diff. Until the owner accepts D0114 and the edit lands, a release note says nothing about the hidden option.";
+        :>> discoveredInField = false;
+        :>> severity = Severity::Low;
+    }
+    #Resolves dependency from e2eeReleaseNotesDefineState to issue016;
 }
