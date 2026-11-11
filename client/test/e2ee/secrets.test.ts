@@ -91,8 +91,23 @@ async function pluginSurfaces(markers: string[], keyringText: string): Promise<s
   joiner.answer = { found: true, text: keyringText };
   (joiner as any)._data = { settings: { serverUrl: "http://x", username: "u", password: "p", vaultId: "notes" } };
   await joiner.onload(); await flush();
-  out.push(...joiner.surfaces()); joiner.onunload();
+  out.push(...joiner.surfaces());
   if (!out.some((l) => l.includes("does not parse")) || !out.some((l) => l.includes("join prompt opened"))) throw new Error("the plugin surfaces did not run the two keyring arms");
+  // E3b (13): the real join and re-enrol flows with the marker password. A wrong password first (its error
+  // text is in the capture), then the join that pins and reconnects encrypted, then a re-enrol against the
+  // same record. Every log line and getLastIssue of those flows is captured.
+  const { setE2eeBuildEnabledForTests } = await import("../../src/e2ee/build");
+  setE2eeBuildEnabledForTests(true);
+  try {
+    try { await joiner.joinEncryptedVault(keyringText, markers[0] + "typo"); } catch (e: any) { out.push(String(e?.message ?? e)); }
+    await joiner.joinEncryptedVault(keyringText, markers[0]); await flush();
+    out.push(...joiner.surfaces());
+    if (!joiner.contentCodec().encrypted) throw new Error("the join did not leave the plugin encrypted");
+    await joiner.joinEncryptedVault(keyringText, markers[0], undefined, undefined, true); await flush();
+    out.push(...joiner.surfaces());
+    out.push(JSON.stringify((joiner as any)._data ?? {}).replace(markers[1], "<vk-pin>")); // the settings file: the pin holds VK by design, nothing else may
+  } finally { setE2eeBuildEnabledForTests(undefined); joiner.onunload(); }
+  if (!out.some((l) => /re-enrolled/.test(l))) throw new Error("the re-enrol flow did not run");
   return out;
 }
 

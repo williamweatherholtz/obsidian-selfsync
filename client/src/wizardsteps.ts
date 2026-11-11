@@ -28,6 +28,9 @@ export interface WizardState {
   newVault: string;           // a to-be-created vault name
   invite?: string;            // D0037: an account-creation invite token (from an invite link), consumed
                               // by register on a CLOSED server. Empty/undefined ⇒ ordinary registration.
+  encrypt?: boolean;          // E2EE (spec section 4.8): create the new vault end-to-end encrypted.
+  e2eeVid?: string;           // D0106: a setup link named an encrypted vault with this id; the connect must see it.
+  newVaultCreated?: boolean;  // transient: the encrypted create of newVault ran (the password modal resolved).
 }
 
 // The single-pane wizard has no step machine — it enables two actions as their inputs fill in:

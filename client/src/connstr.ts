@@ -1,7 +1,9 @@
 // A shareable setup link for bootstrapping another device. Carries the server URL, the
 // username, and (optionally) the vault to sync — never the password (there is no password
 // field here by design; the new device still logs in / redeems its own credential).
-export interface SetupLink { server: string; user: string; vault?: string; }
+// `e2ee` and `vid` (D0106, spec section 4.8): the vault is end-to-end encrypted and this is its vault_id, so a
+// joining device that receives 404 on GET keyring, or a different id, fails closed. Never VK or the password.
+export interface SetupLink { server: string; user: string; vault?: string; e2ee?: boolean; vid?: string; }
 
 // A parsed, validated server origin with the cleartext-remote verdict computed ONCE at parse time rather
 // than re-derived from a bare string at each call site (parse-don't-validate, issueBoolPredicatesNoRefined
@@ -47,10 +49,11 @@ export function isInsecureRemote(server: string): boolean {
   return urlIsInsecureRemote(u);
 }
 
-export function encodeSetupLink({ server, user, vault }: SetupLink): string {
+export function encodeSetupLink({ server, user, vault, e2ee, vid }: SetupLink): string {
   if (!user) throw new Error("username required");
   const p = new URLSearchParams({ server: normalizeServer(server), user });
   if (vault) p.set("vault", vault);
+  if (e2ee) { p.set("e2ee", "1"); if (vid) p.set("vid", vid); }
   return `selfsync://connect?${p.toString()}`;
 }
 
@@ -66,5 +69,7 @@ export function parseSetupLink(str: string): SetupLink {
   const user = params.get("user") ?? "";
   const vault = params.get("vault") ?? undefined;
   if (!server || !user) throw new Error("Setup link is missing server or username");
-  return { server: normalizeServer(server), user, ...(vault ? { vault } : {}) };
+  const e2ee = params.get("e2ee") === "1";
+  const vid = params.get("vid") ?? undefined;
+  return { server: normalizeServer(server), user, ...(vault ? { vault } : {}), ...(e2ee ? { e2ee: true } : {}), ...(e2ee && vid ? { vid } : {}) };
 }

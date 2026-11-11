@@ -6,11 +6,16 @@ import { normalizeServer } from "./connstr";
 export interface ShareLink {
   server: string;
   token: string;
+  // D0106: the shared vault is end-to-end encrypted and this is its vault_id. A joining device with the flag
+  // that receives 404 on GET keyring, or a different id, fails closed. Never VK or the password.
+  e2ee?: boolean;
+  vid?: string;
 }
 
-export function encodeShareLink({ server, token }: ShareLink): string {
+export function encodeShareLink({ server, token, e2ee, vid }: ShareLink): string {
   if (!token) throw new Error("token required");
   const p = new URLSearchParams({ server: normalizeServer(server), token });
+  if (e2ee) { p.set("e2ee", "1"); if (vid) p.set("vid", vid); }
   return `selfsync-share://redeem?${p.toString()}`;
 }
 
@@ -26,7 +31,9 @@ export function parseShareLink(str: string): ShareLink {
   const server = params.get("server") ?? "";
   const token = params.get("token") ?? "";
   if (!server || !token) throw new Error("Share link is missing server or token");
-  return { server: normalizeServer(server), token };
+  const e2ee = params.get("e2ee") === "1";
+  const vid = params.get("vid") ?? undefined;
+  return { server: normalizeServer(server), token, ...(e2ee ? { e2ee: true } : {}), ...(e2ee && vid ? { vid } : {}) };
 }
 
 export function isShareLink(str: string): boolean {

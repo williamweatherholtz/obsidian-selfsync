@@ -1,9 +1,11 @@
 # Deploying SelfSync securely
 
-SelfSync uses a **trusted-server + TLS-in-transit** model (decision D0007): your notes are
-encrypted in transit to *your own* server and stored there as real files. There is **no
-client-side end-to-end encryption yet**, so the server (and anyone with access to its disk)
-can read your notes — run it on infrastructure you control.
+SelfSync uses a **trusted-server + TLS-in-transit** model (decision D0007) by default. Your notes
+are encrypted in transit to *your own* server and stored there as real files. A vault can also be
+**end-to-end encrypted** (D0096): the client encrypts note content before upload, and the server
+never holds the key. The server still sees file paths, sizes and timing. See the E2EE section
+below for custody, the upgrade order and the recovery rules. Run the server on infrastructure
+you control either way.
 
 The server speaks **plain HTTP/WS** and is meant to sit **behind a TLS-terminating reverse
 proxy**. It ships as a **prebuilt image** (`ghcr.io/williamweatherholtz/obsidian-selfsync-server`,
@@ -121,6 +123,64 @@ location / {
 
 - **Protected:** note content, passwords, and tokens are encrypted **in transit** (your TLS)
   and the data lives at rest on **your** server.
-- **Not protected:** a compromised or malicious server can read your notes — there is no
-  content E2EE yet. Optional client-side encryption is tracked but deferred (D0007). If that
-  threat matters to you, keep the server on trusted, access-controlled infrastructure.
+- **Plaintext vault (the default):** a compromised or malicious server can read your notes. If
+  that threat matters to you, create the vault encrypted, or keep the server on trusted,
+  access-controlled infrastructure.
+- **Encrypted vault (E2EE, D0096):** the server holds ciphertext only. It cannot read note
+  content, and it cannot decrypt a backup. It still sees every file path, size, and change
+  time. A removed collaborator keeps any key they already hold until the owner rotates it
+  (rotation is a follow-up, D0108).
+
+## End-to-end encrypted vaults
+
+**Custody.** The vault key never leaves the devices that hold the encryption password. The
+server stores one public key record per encrypted vault, `.keyring.json`, which wraps the vault
+key under a password-derived key. The record holds no secret on its own. SelfSync cannot reset
+the password. A lost password loses the vault content, and no operator action recovers it.
+
+**Upgrade order: server first.** The first tagged server release that supports encrypted vaults
+is **1.33.0**. It stamps every vault it opens with index schema 4, encrypted or not. After that
+stamp, no server release below 1.33.0 can open the vault. An older server answers a 503 that
+names the schema. The remedy is to upgrade the server again.
+
+Upgrade the server before the plugin. A plugin below 1.33.0 that meets an encrypted vault shows
+the card text "This plugin build does not support encrypted vaults. Update the plugin." It syncs
+nothing. A plugin at or above 1.33.0 syncs plaintext vaults on an older server unchanged.
+
+**Backups.** Back up the whole vault directory, including the dotfiles. These are
+`.keyring.json` (the key record), `.sync-index.db` (the index), `.version-hwm` (the version
+high-water mark) and `.chunks` (the chunk store). Restore all of them from one point in time.
+A backup of an encrypted vault holds ciphertext, so an operator cannot read it. Keep a
+pre-encryption backup of a vault you migrate. The delete that migration needs does not scrub
+the old files from earlier backups.
+
+**Stale-file refusals.** The server refuses to open an encrypted vault whose files disagree, and
+answers a 503 with one of three bodies. Each body names what to move aside and what that costs.
+
+- *Index stale:* every mirror file is a frame stream, but the index has no encrypted flag. Move
+  `.sync-index.db` and its journal aside. Cost: the deletion history resets. A device that lags
+  can push notes that other devices deleted. Restore the matching index from a backup first when
+  you can.
+- *Keyring stale:* no mirror file is a frame stream, but `.keyring.json` exists. Move the
+  keyring aside. Cost: the vault opens as plaintext, and every enrolled device blocks until the
+  owner re-creates the vault encrypted.
+- *Mixed:* both kinds of file exist. The body gives both counts, and the server log lists the
+  first 20 paths. Restore the index, the mirror files and the keyring from one point in time.
+  The server chooses no remedy for you.
+
+**Lost keyring.** When `.keyring.json` is gone but the index says the vault is encrypted, the
+server answers a 503 that names the sidecar. Restore it from a backup. A vault that never
+synced can be deleted from the plugin instead. The admin page at `/admin` shows the vault as
+refused until then.
+
+**Host filesystem edits.** Do not edit the files of an encrypted vault on the host. Every file is
+a frame stream with an integrity trailer, and a plaintext edit becomes a lost file on the next
+rebuild. Edit through a device that holds the key.
+
+**Migration and re-share.** To encrypt an existing vault, work from the device that holds its
+content. Delete the old vault on the server, create the encrypted vault under the same name,
+then switch to it. The delete purges every share grant and share link, so re-share with each
+collaborator afterwards. Each collaborator joins with the encryption password, which the owner
+gives them out of band.
+
+**Mounts.** A composed vault cannot mount an encrypted source vault in this release (D0110).

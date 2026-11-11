@@ -2,7 +2,8 @@
 // io and api (no Obsidian, no server). GET keyring is the first vault-scoped request, before status(); 200
 // and 404 are consumed; every E2EE decision runs after the ready check; the four block reasons; the once-
 // per-episode join latch; the pin wins over the server; the base key carries the tag only when encrypted.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { UNSUPPORTED_BUILD_TEXT } from "../../src/e2ee/flows";
 import SelfSyncPlugin, { ApiClient } from "../../src/main";
 import { VaultIo } from "../../src/sync";
 import { ConnError, Endpoint, FailureKind, LinkKind } from "../../src/connstate";
@@ -267,6 +268,146 @@ describe("E3a (6) the connect flow over GET keyring", () => {
     expect(p.statusText()).toBe("idle");
     expect(p.contentCodec().tag).toBe(tag);
     expect(text).not.toBe(JSON.stringify(foreign));
+    p.onunload();
+  });
+});
+
+// ---- E3b (2) (7) (12): the flows on the real plugin ----
+describe("E3b the link flags and the define surfaces on the real plugin", () => {
+  it("(7) addDeviceLink carries e2ee=1 and the pinned vid, never VK; a plaintext vault's link carries neither", async () => {
+    const { text, pin } = await pinFor();
+    const api = spyApi({ found: true, text });
+    const p = await boot(api, { e2ee: { "x|/notes": pin } });
+    const link = p.addDeviceLink();
+    expect(link).toContain("e2ee=1");
+    expect(link).toContain("vid=");
+    expect(link).not.toContain(pin.vk);
+    expect(link).not.toContain(pin.vk.slice(0, 16));
+    p.onunload();
+    const q = await boot(spyApi({ found: false }));
+    expect(q.addDeviceLink()).not.toContain("e2ee");
+    q.onunload();
+  });
+
+  it("(7) a link's vid against a 404 fails closed: never enrols in plaintext, blocks with E2eeKeyringChanged", async () => {
+    const api = spyApi({ found: false });
+    const p = await boot(api);
+    expect(p.statusText()).toBe("idle");
+    api.calls.length = 0; // the plaintext boot above read changes; the flagged connect must not
+    p.setExpectedVaultId("EBESExQVFhcYGRobHB0eHw==");
+    await p.reconnect(); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(p.getLastIssue()).toMatch(/no key record/);
+    expect(api.calls).not.toContain("changes");
+    expect(p.contentCodec().encrypted).toBe(false);
+    p.onunload();
+  });
+
+  it("(7) a link's vid against a different record fails closed before the join prompt; the right vid prompts", async () => {
+    const { text, keyring } = await pinFor();
+    const api = spyApi({ found: true, text });
+    const p = await boot(api, {});
+    p.joinPrompts.length = 0;
+    p.setExpectedVaultId("AAAAAAAAAAAAAAAAAAAAAA==");
+    await p.reconnect(); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    expect(p.getLastIssue()).toMatch(/different encrypted vault/);
+    expect(p.joinPrompts.length).toBe(0);
+    p.setExpectedVaultId(keyring.vault_id);
+    api.setAnswer({ found: false }); await p.reconnect(); await flush(); // reset the latch through a 404 arm
+    // the 404 under the flag fails closed too; back to 200 with the right vid prompts
+    expect(blockedReason(p)).toBe(FailureKind.E2eeKeyringChanged);
+    api.setAnswer({ found: true, text }); await p.reconnect(); await flush();
+    expect(blockedReason(p)).toBe(FailureKind.E2eeJoinRequired);
+    expect(p.joinPrompts).toEqual([text]);
+    p.onunload();
+  });
+
+  it("(3) (12) joinEncryptedVault pins and reconnects encrypted on the right password; a wrong one throws the outcome and pins nothing", async () => {
+    const { text, tag } = await pinFor();
+    const api = spyApi({ found: true, text });
+    const p = await boot(api);
+    expect(blockedReason(p)).toBe(FailureKind.E2eeJoinRequired);
+    await expect(p.joinEncryptedVault(text, "not the password at all")).rejects.toMatchObject({ outcome: "wrongPassword" });
+    expect(p.e2eePin()).toBeUndefined();
+    expect(api.calls).not.toContain("changes");
+    await p.joinEncryptedVault(text, "correct horse battery staple!"); await flush();
+    expect(p.e2eePin()).toBeDefined();
+    expect(p.contentCodec().encrypted).toBe(true);
+    expect(api.encrypted()).toBe(true);
+    expect(p.settings.baseVaultKey).toBe(`x|/notes|${tag}`);
+    expect(p.statusText()).toBe("idle");
+    p.onunload();
+  });
+
+  it("(12) with the define off: an e2ee=1 share link stops before sign-in, the join prompt shows the reason, create and join throw it", async () => {
+    setE2eeBuildEnabledForTests(false);
+    const { __notices } = await import("../obsidian-stub"); // the same module instance as the "obsidian" alias
+    __notices.length = 0;
+    const { text } = await pinFor();
+    const api = spyApi({ found: true, text });
+    const p = await boot(api);
+    expect(blockedReason(p)).toBe(FailureKind.E2eeUnsupportedBuild);
+    const { encodeShareLink } = await import("../../src/sharelink");
+    const before = p.loginCount;
+    await p.startRedeem(encodeShareLink({ server: "http://x", token: "tok", e2ee: true, vid: "EBESExQVFhcYGRobHB0eHw==" }));
+    expect(__notices.some((n: string) => n.includes(UNSUPPORTED_BUILD_TEXT))).toBe(true);
+    expect(p.loginCount).toBe(before);
+    expect((p as any).e2eeExpectedVid).toBeUndefined();
+    // the base-class prompt (TestPlugin overrides it for the latch tests)
+    __notices.length = 0;
+    (SelfSyncPlugin.prototype as any).openJoinPrompt.call(p, text);
+    expect(__notices.some((n: string) => n.includes(UNSUPPORTED_BUILD_TEXT))).toBe(true);
+    await expect(p.createEncryptedVault("v", "correct horse battery staple!")).rejects.toThrow(UNSUPPORTED_BUILD_TEXT);
+    await expect(p.joinEncryptedVault(text, "correct horse battery staple!")).rejects.toThrow(UNSUPPORTED_BUILD_TEXT);
+    expect(p.e2eePin()).toBeUndefined();
+    p.onunload();
+  });
+
+  it("(2) createEncryptedVault: pins on the sent vault_id; an old server (404 after POST) deletes the created vault and names the version; another id deletes nothing", async () => {
+    const api = spyApi({ found: false });
+    const p = await boot(api);
+    const calls: string[] = [];
+    let answer: (name: string) => { found: true; text: string } | { found: false } = () => ({ found: false });
+    const { HttpTransport } = await import("../../src/transport");
+    const spies = [
+      vi.spyOn(HttpTransport, "createVault").mockImplementation((async (_u: string, _t: string, name: string, keyring?: string) => { calls.push(`create ${name} ${keyring ? "keyring" : "plain"}`); }) as any),
+      vi.spyOn(HttpTransport, "keyringOf").mockImplementation((async (_u: string, _t: string, name: string) => { calls.push(`keyringOf ${name}`); return answer(name); }) as any),
+      vi.spyOn(HttpTransport, "deleteOwnVault").mockImplementation((async (_u: string, _t: string, name: string) => { calls.push(`delete ${name}`); }) as any),
+    ];
+    try {
+      await expect(p.createEncryptedVault("old", "correct horse battery staple!")).rejects.toThrow(/older than 1\.33\.0/);
+      expect(calls).toEqual(["create old keyring", "keyringOf old", "delete old"]);
+      expect(p.e2eePinFor("", "old")).toBeUndefined();
+      calls.length = 0;
+      answer = () => ({ found: true, text: JSON.stringify({ v: 1 }) });
+      await expect(p.createEncryptedVault("odd", "correct horse battery staple!")).rejects.toThrow(/different vault id/);
+      expect(calls).toEqual(["create odd keyring", "keyringOf odd"]); // no delete
+      expect(p.e2eePinFor("", "odd")).toBeUndefined();
+      calls.length = 0;
+      // the honest server echoes the record it was sent
+      const sent: string[] = [];
+      spies[0].mockImplementation((async (_u: string, _t: string, name: string, keyring?: string) => { calls.push(`create ${name}`); sent.push(keyring!); }) as any);
+      answer = () => ({ found: true, text: sent[0] });
+      await p.createEncryptedVault("good", "correct horse battery staple!");
+      expect(calls).toEqual(["create good", "keyringOf good"]);
+      expect(p.e2eePinFor("", "good")?.e2eeVaultId).toBe(JSON.parse(sent[0]).vault_id);
+      expect(p.e2eePinFor("", "good")?.vk).toMatch(/^[0-9a-f]{64}$/);
+      // the refusal of a plaintext create under the pinned name (spec section 4.8)
+      await expect(p.createVaultFlow("good", false, async () => {})).rejects.toThrow(/pinned 'good' as an encrypted vault/);
+    } finally { for (const s of spies) s.mockRestore(); }
+    p.onunload();
+  });
+
+  it("(8) addMount refuses a source vault that holds a keyring, with the reason", async () => {
+    const api = spyApi({ found: false });
+    const p = await boot(api);
+    const { HttpTransport } = await import("../../src/transport");
+    const spy = vi.spyOn(HttpTransport, "keyringOf").mockImplementation((async (_u: string, _t: string, name: string, owner?: string) => (owner === "alice" && name === "secret" ? { found: true, text: "{}" } : { found: false })) as any);
+    try {
+      await expect(p.addMount({ source: { owner: "alice", vaultId: "secret", sourcePath: "" }, mountPoint: "Shared", direction: "pull" } as any)).rejects.toThrow(/end-to-end encrypted. Mounting/);
+      expect(p.settings.mounts ?? []).toEqual([]);
+    } finally { spy.mockRestore(); }
     p.onunload();
   });
 });

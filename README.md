@@ -4,8 +4,10 @@ Self-hosted sync for [Obsidian](https://obsidian.md). Keep your notes on a serve
 in step across every device — desktop and mobile — without a subscription and without a
 database to babysit.
 
-> **No end-to-end encryption yet.** Your notes travel encrypted in transit by your TLS and
-> rest as real files on **your** server, so run it on infrastructure you trust. See the
+> **Two trust levels.** By default your notes travel encrypted in transit by your TLS and rest
+> as real files on **your** server. Run it on infrastructure you trust. A vault can also be
+> **end-to-end encrypted**: the server then holds ciphertext and no key. It still sees file
+> paths, sizes and timing. See the
 > [trust model](docs/deployment.md#trust-model-stated-plainly).
 
 ## The idea
@@ -126,8 +128,10 @@ address.
 ## Status
 
 **1.0** — the core sync contract is implemented, tested, and hardened: integrity, durability,
-conflict handling, multi-tenant isolation, config and plugin sync, and sharing. There is no
-client-side end-to-end encryption yet; it is tracked and deferred — see the trust model.
+conflict handling, multi-tenant isolation, config and plugin sync, and sharing.
+**1.33** adds optional end-to-end encrypted vaults. Content is encrypted on the device, and the
+server sees paths, sizes and timing only. Encrypted source vaults cannot be mounted yet, and key
+rotation is a follow-up. See the trust model.
 
 ## Prior art
 

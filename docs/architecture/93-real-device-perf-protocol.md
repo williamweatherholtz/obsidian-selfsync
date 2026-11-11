@@ -56,6 +56,22 @@ Do this run **twice**: once with the phone on **wifi**, once on **cellular**.
 | propagation A→B, median (ms) | 29 (transfer only) | | | |
 | propagation A→B, worst (ms) | 43 (transfer only) | | | |
 | notify path observed (WS / poll) | n/a | | | |
+| E2EE KDF: Argon2id at the default cost, wall time (s) and peak memory (MB) | n/a | | | |
+
+**E2EE KDF row (D0112).** Create or join an encrypted vault on the phone with the default cost
+(64 MiB, 3 passes, 1 lane). Time the password prompt from Join to the card going green. Record two
+`Measurement` datapoints per device under the Indicators `e2eePhoneKdfWallTime` and
+`e2eePhoneKdfPeakMemory`, with the source prefixed `ios:` or `android:`. Instrument per OS:
+
+- **Android:** `adb shell dumpsys meminfo <obsidian package>` before and during the derivation. Record
+  the peak of the TOTAL PSS column.
+- **iOS:** Xcode Instruments (Allocations) on a developer-signed Obsidian build. When no such build is
+  available, record `not measurable` with the reason as the datapoint note.
+
+**Fold fixture check.** On the same two devices, run the plugin's identity fold over
+`client/test/e2ee/fold-fixture.json`. Use the vitest file `test/e2ee/fold.test.ts` through the harness
+until a plugin command ships. Record pass or the first mismatching code point. A mismatch means that
+device folds a path differently from the server, which breaks the content-identity check for that path.
 
 **Pass criteria (proposed):** steady-state propagation feels instant on wifi with the WS up (sub-second);
 initial sync of a few-thousand-note vault completes without error or runaway memory; no-op resync is

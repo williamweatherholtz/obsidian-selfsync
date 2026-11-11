@@ -7,6 +7,8 @@ import { confirmModal } from "./confirm";
 import type SelfSyncPlugin from "./main";
 import type { SwitchMode } from "./reconcile";
 import type { SharedVaultRef } from "./transport";
+import { e2eeBuildEnabled } from "./e2ee/build";
+import { UNSUPPORTED_BUILD_TEXT } from "./e2ee/flows";
 
 // Switch which remote vault this Obsidian vault syncs to — WITHOUT re-asking for the
 // server or account. We're already signed in, so this reuses the existing session
@@ -22,6 +24,7 @@ export class SwitchVaultModal extends Modal {
   private targetOwner = "";      // set when switching to a vault shared BY someone else
   private targetReadOnly = false; // that share is read-only
   private forkName = "";         // name for a Fork of the current vault
+  private encrypt = false;       // E2EE (spec section 4.8): create the new vault end-to-end encrypted
 
   constructor(app: App, private plugin: SelfSyncPlugin) { super(app); }
 
@@ -70,6 +73,13 @@ export class SwitchVaultModal extends Modal {
     }
     new Setting(c).setName("Or create a new vault")
       .addText((t) => t.setPlaceholder("e.g. notes").onChange((v) => { const n = sanitizeVaultName(v); this.newName = n; if (t.inputEl.value !== n) t.inputEl.value = n; }));
+    // E2EE (spec section 4.8): the Encrypt option on the create path only. A pinned name is created encrypted and
+    // refuses plaintext (createVaultFlow). Off on a build without the entries, with the reason.
+    new Setting(c).setName("Encrypt the new vault")
+      .setDesc(e2eeBuildEnabled()
+        ? "End-to-end encrypt its content with a separate encryption password. The server never sees the notes. There is no recovery if the password is lost."
+        : UNSUPPORTED_BUILD_TEXT)
+      .addToggle((t) => t.setValue(this.encrypt).setDisabled(!e2eeBuildEnabled()).onChange((v) => { this.encrypt = v; }));
     new Setting(c).addButton((b) => this.gated(b).setButtonText("Switch").setCta().onClick(() => void this.doSwitch()));
 
     // Fork: copy THIS vault's current content into a NEW vault you own, and switch to it. The clearest
@@ -103,7 +113,15 @@ export class SwitchVaultModal extends Modal {
       if (this.newName) {
         const name = sanitizeVaultName(this.newName);
         if (!isValidVaultName(name)) { new Notice("SelfSync: vault name — lowercase letters, numbers, dots, dashes or underscores (max 64)."); return; }
-        await this.plugin.createRemoteVault(name); vault = name;
+        // The create flow owns the Encrypt path and the 409 decision table (spec section 6): join only on an
+        // encrypted name, the delete behind the warnings on a plaintext one, nothing on an old server. Its
+        // onDone continues the switch; the join and delete arms close this modal themselves.
+        let created = false;
+        this.close();
+        await this.plugin.createVaultFlow(name, this.encrypt, async () => { created = true; });
+        if (!created) return;
+        this.open(); this.loading = false; this.error = ""; // back to the modal for the resolve step
+        vault = name;
       }
       if (!vault) { new Notice("SelfSync: pick or name a vault"); return; }
       this.target = vault; this.targetOwner = ""; this.targetReadOnly = false; // own vault

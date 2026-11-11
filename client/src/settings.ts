@@ -33,6 +33,8 @@ import { light } from "./syncstate";
 import { DeviceLinkModal } from "./devicelink";
 import { SwitchVaultModal } from "./vaultswitch";
 import { ChangePasswordModal, ShareManageModal } from "./accountui";
+import { FailureKind } from "./connstate";
+import { DELETE_VAULT_WARNING } from "./e2ee/flows";
 
 // Case-insensitive set equality for the ignored-date-field list (so "Restore defaults" only shows when the
 // list has genuinely drifted from the defaults, regardless of order/case).
@@ -465,6 +467,24 @@ export class SelfSyncSettingTab extends PluginSettingTab {
       // A down link (any reason) — offer the fix inline.
       if (phase === "retrying" || phase === "blocked" || phase === "lockedOut") {
         st.addButton((b) => this.iconBtn(b, "refresh-cw", "Reconnect").onClick(() => this.plugin.reconnect()));
+        // E2EE (D0105): the action matches the block reason. A grantee is told to ask the owner on the two
+        // owner-only recoveries; an owner gets the action itself. Define-off shows the reason, no action.
+        const reason = this.plugin.blockReason();
+        const grantee = Boolean(s.vaultOwner);
+        if (reason === FailureKind.E2eeJoinRequired) {
+          st.addButton((b) => this.iconBtn(b, "key-round", "Join").setCta().onClick(() => this.plugin.openJoinFromCard()));
+        } else if (reason === FailureKind.E2eeKeyringChanged) {
+          st.addButton((b) => this.iconBtn(b, "key-round", "Re-enrol").setCta().onClick(() => this.plugin.reenrol()));
+          if (grantee) st.setDesc(st.descEl.textContent + " · or ask the owner");
+        } else if (reason === FailureKind.E2eeKeyringMissing) {
+          // The owner's two exits: the full create dialog with Encrypt on (its 409 arm offers the delete behind the
+          // warnings), or the delete action itself. A grantee cannot do either.
+          if (grantee) st.setDesc(st.descEl.textContent + " · ask the owner");
+          else {
+            st.addButton((b) => this.iconBtn(b, "lock", "Re-create encrypted").setCta().onClick(() => void this.plugin.recreateVault(true)));
+            st.addButton((b) => this.iconBtn(b, "trash-2", "Delete on server", true).onClick(() => void this.deleteVaultOnServerFlow()));
+          }
+        }
         // D0021: the vault was deleted server-side — offer a deliberate re-create-from-this-device.
         if (this.plugin.isVaultGone()) {
           st.addButton((b) => this.iconBtn(b, "upload-cloud", "Re-create vault from this device").setCta().onClick(() => void this.plugin.recreateVault()));
@@ -494,7 +514,8 @@ export class SelfSyncSettingTab extends PluginSettingTab {
         if (!(await confirmModal(this.app, { title: "Sign out?", body: `Sign out of ${s.serverUrl}? You'll need your password to sign back in. Your local files are kept.`, confirmText: "Sign out", warn: true }))) return;
         await this.plugin.signOut(); this.display();
       })));
-    this.factRow(g, "Vault", s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId,
+    const encrypted = this.plugin.e2eePin() !== undefined;
+    this.factRow(g, "Vault", (s.vaultOwner ? `${s.vaultOwner}/${s.vaultId}${s.vaultReadOnly ? " · read-only" : ""}` : s.vaultId) + (encrypted ? " · end-to-end encrypted" : ""),
       (st) => {
         // "Share" here = share this vault with OTHER people (owned vaults only). Distinct from syncing
         // one of YOUR OWN devices below — kept as two clearly-different labels, not two "Share"s.
@@ -508,6 +529,23 @@ export class SelfSyncSettingTab extends PluginSettingTab {
     g.addSetting((st) => st.setName("Sync a device")
       .setDesc("Get another of your devices syncing with a one-time setup link.")
       .addButton((b) => this.iconBtn(b, "link", "Create link").onClick(() => this.showDeviceLink())));
+    // D0109: the owner-scoped delete, offered in every link state (a blocked device must still be able to
+    // run the migration route). Behind the residue + re-share warnings. Owned vaults only.
+    if (!s.vaultOwner) {
+      g.addSetting((st) => st.setName("Delete this vault on the server")
+        .setDesc("Removes the server copy, every share grant and every share link. Your local files are kept.")
+        .addButton((b) => this.iconBtn(b, "trash-2", "Delete on server", true).onClick(() => void this.deleteVaultOnServerFlow())));
+    }
+  }
+
+  private async deleteVaultOnServerFlow(): Promise<void> {
+    const s = this.plugin.settings;
+    if (!(await confirmModal(this.app, { title: `Delete '${s.vaultId}' on the server?`, body: DELETE_VAULT_WARNING, confirmText: "Delete on server", warn: true }))) return;
+    try {
+      await this.plugin.deleteVaultOnServer();
+      new Notice(`SelfSync: deleted '${s.vaultId}' on the server. Re-create it from Switch vault, encrypted if you want.`, 9000);
+      this.display();
+    } catch (e: any) { new Notice(`SelfSync: ${e?.message ?? e}`, 9000); }
   }
 
   private showDeviceLink(): void {

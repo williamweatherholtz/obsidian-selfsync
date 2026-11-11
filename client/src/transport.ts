@@ -233,11 +233,48 @@ export class HttpTransport implements SyncApi {
     return (await apiJson<{ vaults: string[] }>({ url: `${normBase(baseUrl)}/api/vaults`, method: "GET", headers: bearer(token) }, "vaults")).vaults;
   }
 
-  static async createVault(baseUrl: string, token: string, name: string): Promise<void> {
+  // `keyring` (D0102): the keyring record's JSON text, sent with the name so the server creates the vault and
+  // its sidecar atomically. An old server ignores the field and creates plaintext; the caller reads GET
+  // keyring afterwards and pins only when the returned vault_id is the one it sent (spec section 4.4).
+  static async createVault(baseUrl: string, token: string, name: string, keyring?: string): Promise<void> {
     await apiVoid({
       url: `${normBase(baseUrl)}/api/vaults`, method: "POST", contentType: "application/json",
-      headers: bearer(token), body: JSON.stringify({ name }),
+      headers: bearer(token), body: JSON.stringify(keyring ? { name, keyring } : { name }),
     }, "create vault");
+  }
+
+  // Owner-scoped vault delete (D0109, spec section 6): DELETE /api/vault {vault}, the route the admin page
+  // already uses. Needs only the token and the name, so it works in every link state. The server purges
+  // every grant and share link with the directory (the keyring sidecar goes with it).
+  static async deleteOwnVault(baseUrl: string, token: string, name: string): Promise<void> {
+    await apiVoid({
+      url: `${normBase(baseUrl)}/api/vault`, method: "DELETE", contentType: "application/json",
+      headers: bearer(token), body: JSON.stringify({ vault: name }),
+    }, "delete vault");
+  }
+
+  // GET keyring for a vault by NAME on this account (the create dialog's 409 rule and the mount refusal):
+  // 200 is the record, 404 is "no keyring" (a plaintext vault, or an old server). Other answers throw.
+  static async keyringOf(baseUrl: string, token: string, name: string, owner = ""): Promise<{ found: true; text: string } | { found: false }> {
+    const scope = owner ? `/api/u/${encodeURIComponent(owner)}/${encodeURIComponent(name)}` : `/api/v/${encodeURIComponent(name)}`;
+    const r = await httpReq({ url: `${normBase(baseUrl)}${scope}/keyring`, method: "GET", headers: bearer(token), throw: false });
+    if (r.status === 200) return { found: true, text: r.text ?? "" };
+    if (r.status === 404) return { found: false };
+    throw httpFail(r, { endpoint: Endpoint.Keyring }, "keyring");
+  }
+
+  // The server's FRESH wire signature anchored on its /health hash (D0109: the 409 delete is offered only
+  // when the signature lists the keyring route, so an old server never sees the delete). Null when the
+  // signature cannot be fetched or its hash disagrees with /health.
+  static async freshSignatureEndpoints(baseUrl: string): Promise<string[] | null> {
+    try {
+      const health = tryJson(await httpReq({ url: `${normBase(baseUrl)}/health`, method: "GET", throw: false })) as { schemaHash?: unknown } | undefined;
+      const sr = validateSchemaResponse(tryJson(await httpReq({ url: `${normBase(baseUrl)}/schema`, method: "GET", throw: false })));
+      if (typeof health?.schemaHash !== "string" || sr.hash !== health.schemaHash) return null;
+      return sr.signature.endpoints;
+    } catch {
+      return null;
+    }
   }
 
   // Vaults shared WITH this account (owned by others) — the complement of listVaults.

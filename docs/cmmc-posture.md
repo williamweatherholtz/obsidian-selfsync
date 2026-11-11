@@ -31,9 +31,10 @@
 > are a deliberate design decision or a feature-sized effort. It is engineering evidence for an SSP, not
 > a certification. Actual CUI handling requires a full SSP, an assessor, and the operator controls below.
 
-**Threat model (unchanged):** trusted self-hosted server, TLS-in-transit via a reverse proxy, **no
-end-to-end encryption** (the server sees note content in plaintext). This is the deliberate architecture
-(brief §constraints); it drives the SC.3.13.16 / FIPS decisions below.
+**Threat model:** trusted self-hosted server, TLS-in-transit via a reverse proxy. A plaintext vault
+lets the server see note content. An **end-to-end encrypted vault** (D0096, since 1.33) hides note
+content from the server, and the server sees file paths, sizes and timing only. The boundary is
+content-only by design. This drives the SC.3.13.16 / FIPS decisions below.
 
 Legend: **MET** (in code) · **MET\*** (in code, operator must retain/route) · **OPERATOR** (SSP /
 deployment, code supports it) · **POA&M** (planned; see bottom).
@@ -83,7 +84,7 @@ deployment, code supports it) · **POA&M** (planned; see bottom).
 | 3.13.10 key management | MET | random UUID tokens hashed at rest; per-user OsRng salts; env-rotatable bootstrap key |
 | **3.13.11 FIPS-validated crypto** | **POA&M** | argon2/sha2 crates + client SHA-256 are not FIPS-validated modules; decision below |
 | 3.13.15 authenticity of sessions | MET | bearer token off-URL (WS subprotocol); live WS re-authorization every ping/message |
-| **3.13.16 protect CUI at rest** | **POA&M / OPERATOR** | notes stored plaintext (no E2EE); operator volume encryption is the near-term control; decision below |
+| **3.13.16 protect CUI at rest** | **MET (encrypted vault) / POA&M (plaintext vault)** | an encrypted vault (D0096, 1.33) stores note content as AES-256-GCM ciphertext under a device-held key, and the server holds no key. Paths, sizes and timing stay visible, so the SSP records them as metadata at rest. A plaintext vault keeps the operator volume encryption control below |
 
 ## System & Information Integrity (SI 3.14.x)
 | Practice | Status | Evidence / note |
