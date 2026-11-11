@@ -131,4 +131,12 @@ package ProjectIntake20261111 {
         :>> text = "go ahead with next frontier";
         :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
     }
+
+    part st021 : Statement {
+        :>> id = "7a4a078a-f8ba-42f3-b704-f9e07df21ef1";
+        :>> title = "Owner accepts the scan-skip residual, the L3 demo, and says continue to the next item";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "accept all recommendations.  proceed";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }

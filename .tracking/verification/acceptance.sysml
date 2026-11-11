@@ -315,15 +315,17 @@ package ProjectAcceptance {
         :>> disposition = DispositionKind::acceptRisk;
         :>> procedureText = "ACCEPT-RISK: the (size,mtime) scan-skip residual is knowingly kept. Basis: it turns each whole-vault pass from O(vault bytes) into O(changed files) - a measured battery/CPU drain on large and mobile vaults - and the destructive branch is structurally excluded and now PINNED by reconcile tests (a scan-hit is gated on the remote being present, delete-local exists only when it is absent, so a stale-stat local edit can never be deleted; the hole is exactly the stat gate, caught the moment mtime moves). Consequence when it hits: a same-size-and-same-mtime out-of-band change is LATE, not lost - picked up by the next real edit or a full re-hash. The owner attests acceptance of this residual on these terms.";
     }
+    // RAN: Owner's words: 'accept all recommendations. proceed' (console, 2026-11-11, Statement st021). The AI's prompt named the claim: accept the scan-skip residual, a same-size same-mtime out-of-band change syncs late, not lost, and keeps the O(changed files) scan. The owner accepts that residual on the terms of scanSkipResidualAccept. The #Dispositions edge to issueScanSkipMtimePreservedBlindspot is authored in the same commit.
+    part scanSkipResidualAcceptR1 : TestResult { :>> id = "5bbf37f5-c878-466c-9780-caf12cc9de27"; :>> outcome = VerdictKind::pass; :>> judgedAgainst = "475ef54"; :>> judgedAt = "2026-11-11"; :>> judgedBy = "wweatherholtz"; }
     // The #Dispositions edge to issueScanSkipMtimePreservedBlindspot is deliberately NOT authored yet.
     // keel 0.3.1's open-issues lens treats a finding with a #Dispositions edge as closed EVEN WHEN the
     // disposition Test has no TestResult - i.e. an unattested acceptRisk hid this issue from the open
     // list (verified: removing the edge made it reappear; issueUnattestedDispositionClosesFinding).
-    // Author the edge in the same change that records the owner's attestation:
-    //   #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
     // Re-checked 2026-11-11 on keel 0.4.1 (keelDispositionLensReport clause 2): with the edge authored
-    // the open count dropped from 11 to 10 and the issue vanished, so upstream #62 is still unfixed.
-    // The edge stays withheld.
+    // and no TestResult, the open count dropped from 11 to 10 and the issue vanished, so upstream #62 is
+    // still unfixed. The edge below is authored in the same commit as the owner's attestation
+    // (scanSkipResidualAcceptR1, Statement st021), so the closure it implies is now true.
+    #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
 
     // ---- STPA SafetyRequirement #Verify edges (Test -> SafetyRequirement), authored 2026-09-07 ----
     // stpaSafetyAnalysis's DoD requires each mitigating Safety Requirement to carry a verify-linked Test.
