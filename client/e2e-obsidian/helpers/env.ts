@@ -12,6 +12,8 @@ import type { ChildProcess } from "node:child_process";
 // rather than import.meta.url. This module is imported only by the Playwright e2e, never by vitest.
 const clientDir = path.resolve(__dirname, "../.."); // client/
 const repoRoot = path.resolve(clientDir, "..");
+// The DEBUG binary: after a server change run `cargo build` in server/ (not only `cargo test --release`),
+// or every spec here runs against the previous server (sprint 10 retro, 2026-11-11).
 const serverBin = path.join(
   repoRoot, "server", "target", "debug", "selfsync-server" + (process.platform === "win32" ? ".exe" : ""),
 );
