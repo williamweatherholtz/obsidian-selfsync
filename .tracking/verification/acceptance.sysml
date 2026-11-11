@@ -321,6 +321,9 @@ package ProjectAcceptance {
     // list (verified: removing the edge made it reappear; issueUnattestedDispositionClosesFinding).
     // Author the edge in the same change that records the owner's attestation:
     //   #Dispositions dependency from scanSkipResidualAccept to issueScanSkipMtimePreservedBlindspot;
+    // Re-checked 2026-11-11 on keel 0.4.1 (keelDispositionLensReport clause 2): with the edge authored
+    // the open count dropped from 11 to 10 and the issue vanished, so upstream #62 is still unfixed.
+    // The edge stays withheld.
 
     // ---- STPA SafetyRequirement #Verify edges (Test -> SafetyRequirement), authored 2026-09-07 ----
     // stpaSafetyAnalysis's DoD requires each mitigating Safety Requirement to carry a verify-linked Test.
