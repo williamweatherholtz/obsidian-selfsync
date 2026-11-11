@@ -119,6 +119,26 @@ location / {
 
 (Caddy handles the upgrade automatically, so the shipped `Caddyfile` needs no special config.)
 
+## After a server restart
+
+A restart, a redeploy or an image pull closes every WebSocket and refuses new connections for the
+length of the outage. Each plugin then reconnects on its own. It retries with a jittered backoff of
+3, 6, 12 and 24 seconds, capped at 30 seconds. A refused connect costs about 2 seconds more. A
+change made during the outage reaches the other device after the outage plus one backoff interval.
+The worst case is the outage plus about 30 seconds.
+
+Measured with the loopback reproduction in `docs/testing.md` (issue020):
+
+| Outage | Live change A to B |
+|-------:|-------------------:|
+| 0 s | 0.5 to 1.6 s |
+| 10 s | 13.5 s |
+| 35 s | 47.3 s |
+
+The cap is deliberate: it spreads a fleet of devices after a restart instead of a reconnect storm.
+The owner accepted this latency as a known risk on 2026-11-11 (st019). No setting changes it. A
+device that must sync at once after a restart can use the "Reconnect now" command.
+
 ## Trust model, stated plainly
 
 - **Protected:** note content, passwords, and tokens are encrypted **in transit** (your TLS)

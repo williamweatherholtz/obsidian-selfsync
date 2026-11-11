@@ -72,7 +72,7 @@ class TestPlugin extends SelfSyncPlugin {
   protected buildIo() { return this.io_; }
   // The real HttpTransport is constructed with the header on iff this device is pinned (main.ts buildApi); the
   // fake starts the same way, so the server-guard mirror in status() sees what the real server sees.
-  protected buildApi() { this.api_.setEncrypted(this.e2eePin() !== undefined); return this.api_; }
+  protected buildApi() { this.api_.setEncrypted?.(this.e2eePin() !== undefined); return this.api_; }
   protected loginRemote() { this.loginCount++; return Promise.resolve("test-token"); }
   protected openJoinPrompt(text: string) { this.joinPrompts.push(text); }
 }

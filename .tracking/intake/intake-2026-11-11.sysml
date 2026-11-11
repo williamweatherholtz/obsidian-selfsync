@@ -107,4 +107,20 @@ package ProjectIntake20261111 {
         :>> text = "just redid server.  try full test suite again? seems to be no issue but this is a new version now";
         :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
     }
+
+    part st018 : Statement {
+        :>> id = "9ab73700-4a49-4235-aa3a-1ef236b140a0";
+        :>> title = "Owner confirms a server restart near 17:33 UTC, the window of the 62 second run";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "yes i restarted";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
+
+    part st019 : Statement {
+        :>> id = "9fa7691e-e70c-4edc-8a64-60e96680e433";
+        :>> title = "Owner accepts the restart recovery latency as a risk and says continue";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "accept risk is fine.  continue";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }

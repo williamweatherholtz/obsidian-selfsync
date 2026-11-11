@@ -18,11 +18,12 @@ const serverBin = path.join(
 
 export interface RunningServer { url: string; close: () => void; dataRoot: string; }
 
-/** Spawn the real server on an ephemeral loopback port; resolve once it prints "listening on". */
-export function startServer(dataRoot: string): Promise<RunningServer> {
+/** Spawn the real server on an ephemeral loopback port; resolve once it prints "listening on".
+ *  `bindAddr` pins the port instead (a RESTART on the same address, so a running plugin can find it again). */
+export function startServer(dataRoot: string, bindAddr = "127.0.0.1:0"): Promise<RunningServer> {
   fs.mkdirSync(dataRoot, { recursive: true });
   const proc: ChildProcess = spawn(serverBin, [], {
-    env: { ...process.env, BIND_ADDR: "127.0.0.1:0", ADMIN_USER: "admin", ADMIN_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", DATA_ROOT: dataRoot, RUST_LOG: "info" },
+    env: { ...process.env, BIND_ADDR: bindAddr, ADMIN_USER: "admin", ADMIN_PASSWORD: "admin", ALLOW_WEAK_ADMIN: "1", DATA_ROOT: dataRoot, RUST_LOG: "info" },
   });
   return new Promise((resolve, reject) => {
     let buf = "";

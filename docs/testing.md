@@ -91,6 +91,15 @@ with `keel record-measurement` after a meaningful change.
   The grep clause prints the command to run on the host instead. Use a test account, never one that
   owns real vaults.
 
+  **Log capture:** set `SELFSYNC_E2E_KEEP_LOGS=<dir>` to keep each device's plugin log as
+  `deviceA-<run>.log` and `deviceB-<run>.log` before the vaults go.
+
+  **Restart reproduction (loopback only, issue020):** set `SELFSYNC_E2E_RESTART_AT_LIVE=<secs>`. The
+  spec kills the server the moment device A writes the live note and restarts it on the same address
+  that many seconds later. The live measure then holds the outage plus the plugin's own recovery time.
+  The kept logs show the recovery path: `ERR_CONNECTION_REFUSED`, then `retrying in 3s`, `6s`, `12s`.
+  See "After a server restart" in `deployment.md` for the expected numbers.
+
 ## Resolved: local coverage on Node 24
 
 Previously, `vitest 2.1.9` predated Node 24 and its v8 coverage provider crashed nondeterministically

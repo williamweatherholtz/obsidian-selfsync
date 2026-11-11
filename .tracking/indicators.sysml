@@ -147,4 +147,8 @@ package ProjectIndicators {
     #Measures dependency from e2eeSyncWallTimeM7 to e2eeSyncWallTime;
     part e2eeSyncWallTimeM8 : Measurement { :>> id = "34c649af-20d0-4c04-b3d4-c24e690d1ac1"; :>> value = "62.47"; :>> measuredAt = "2026-11-11"; :>> source = "converge:encrypted-live convergeEncryptedSecondsLive, remote, both devices pinned; loopback gave 0.58, see issue020; e2ee.pwspec.ts run mwceeanp 2026-11-11, real-server mode against https://notes2.willweatherholtz.com (owner container, TLS proxy), test account, Obsidian on the owner desktop over the internet, plugin build at 58c4269, KDF default 32 MiB t=3 p=1"; :>> createdBy = "ai"; }
     #Measures dependency from e2eeSyncWallTimeM8 to e2eeSyncWallTime;
+    part e2eeSyncWallTimeM9 : Measurement { :>> id = "1eaaf89d-e27b-43f3-adfe-e8929428c576"; :>> value = "13.51"; :>> measuredAt = "2026-11-11"; :>> source = "converge:encrypted-live convergeEncryptedSecondsLive, loopback, issue020 reproduction SELFSYNC_E2E_RESTART_AT_LIVE=10: server killed at the live note, back 10 s later; e2ee.pwspec.ts run mwcm9clw 2026-11-11, plugin build at be3f5ae"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM9 to e2eeSyncWallTime;
+    part e2eeSyncWallTimeM10 : Measurement { :>> id = "36094ab0-58e9-402d-9599-df29c0da86db"; :>> value = "47.26"; :>> measuredAt = "2026-11-11"; :>> source = "converge:encrypted-live convergeEncryptedSecondsLive, loopback, issue020 reproduction SELFSYNC_E2E_RESTART_AT_LIVE=35: server killed at the live note, back 35 s later; device A backoff ladder 3s 4s 9s 22s; e2ee.pwspec.ts run mwcmbk4j 2026-11-11, plugin build at be3f5ae"; :>> createdBy = "ai"; }
+    #Measures dependency from e2eeSyncWallTimeM10 to e2eeSyncWallTime;
 }

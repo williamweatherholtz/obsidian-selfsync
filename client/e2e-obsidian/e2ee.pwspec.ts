@@ -33,6 +33,10 @@ const CREDS: Creds = REAL_URL
   ? { username: process.env.SELFSYNC_E2E_USERNAME ?? "", password: process.env.SELFSYNC_E2E_PASSWORD ?? "" }
   : ADMIN;
 const RUN = Date.now().toString(36);
+// issue020 reproduction (loopback only): SELFSYNC_E2E_RESTART_AT_LIVE=<secs> kills the server the moment A
+// writes the live note and restarts it on the same address <secs> later. The live measure then holds the
+// outage PLUS the plugin's own recovery time, and the kept logs show which recovery path ran.
+const RESTART_DOWN_SECS = Number(process.env.SELFSYNC_E2E_RESTART_AT_LIVE ?? "0");
 const SEED_VAULT = REAL_URL ? `e2e-seed-${RUN}` : "seed";
 const ENC_VAULT = REAL_URL ? `e2e-enc-${RUN}` : "enc";
 // 16 chars, not the login password (the dialog refuses a password equal to it), never reused anywhere.
@@ -232,9 +236,24 @@ test("an encrypted vault created and joined through the plugin's dialogs syncs b
     const p = (globalThis as unknown as { app: { plugins: { plugins: Record<string, { transport?: string; lastWsActivity?: number; ws?: { readyState?: number } }> } } }).app.plugins.plugins["selfsync"];
     return `transport=${p.transport} wsReadyState=${p.ws?.readyState} msSinceLastWsFrame=${p.lastWsActivity ? Date.now() - p.lastWsActivity : "n/a"}`;
   });
+  if (server && RESTART_DOWN_SECS > 0) {
+    const { dataRoot } = server;
+    const bind = server.url.replace(/^https?:\/\//, "");
+    server.close();
+    server = undefined;
+    measure.serverDownSecs = RESTART_DOWN_SECS;
+    measure.serverDownAt = new Date().toISOString();
+    setTimeout(() => {
+      void startServer(dataRoot, bind).then((s) => { server = s; measure.serverBackAt = new Date().toISOString(); });
+    }, RESTART_DOWN_SECS * 1000);
+  }
   await createNote(pageA, "second.md", `${MARKER} second note`);
-  await expect.poll(() => readNote(pageB, "second.md"), { timeout: 120_000, intervals: [500] }).toBe(`${MARKER} second note`);
+  await expect.poll(() => readNote(pageB, "second.md"), { timeout: 180_000, intervals: [500] }).toBe(`${MARKER} second note`);
   measure.convergeEncryptedSecondsLive = seconds(tNote2);
+  measure.deviceBTransportAfter = await pageB.evaluate(() => {
+    const p = (globalThis as unknown as { app: { plugins: { plugins: Record<string, { transport?: string; ws?: { readyState?: number } }> } } }).app.plugins.plugins["selfsync"];
+    return `transport=${p.transport} wsReadyState=${p.ws?.readyState}`;
+  });
 
   // The plaintext clause. Loopback mode: grep the data volume. The control marker from the plaintext seed
   // vault must be there (the grep works); the encrypted vault's marker must be nowhere: not in a chunk, not
