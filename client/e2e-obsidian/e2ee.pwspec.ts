@@ -50,6 +50,16 @@ let appB: ObsidianHandle | undefined;
 
 test.afterEach(async () => {
   for (const a of [appA, appB]) { if (a) await a.close(); }
+  // SELFSYNC_E2E_KEEP_LOGS=<dir>: keep each device's plugin log (selfsync-debug.log) before the vaults go,
+  // so a slow run can be read (issue020: the live change took 62 s against the owner's server).
+  const keep = process.env.SELFSYNC_E2E_KEEP_LOGS;
+  if (keep) {
+    fs.mkdirSync(keep, { recursive: true });
+    for (const [name, s] of [["A", stagedA], ["B", stagedB]] as const) {
+      const src = s && path.join(s.vaultDir, ".obsidian", "plugins", "selfsync", "selfsync-debug.log");
+      if (src && fs.existsSync(src)) fs.copyFileSync(src, path.join(keep, `device${name}-${RUN}.log`));
+    }
+  }
   for (const s of [stagedA, stagedB]) { if (s) cleanup(s.root); }
   if (REAL_URL) {
     // Real-server mode: the run's own vaults go, nothing else is touched.
@@ -216,6 +226,12 @@ test("an encrypted vault created and joined through the plugin's dialogs syncs b
   await expect.poll(() => readNote(pageA, "secret.md"), { timeout: 120_000, intervals: [1_000] }).toBe(`${MARKER} edited on B`);
   // A second encrypted note made after both devices are pinned, timed A -> B end to end.
   const tNote2 = Date.now();
+  measure.liveNoteAt = new Date(tNote2).toISOString();
+  // issue020 diagnostics: what device B believes about its socket at the moment A writes the live note.
+  measure.deviceBTransportBefore = await pageB.evaluate(() => {
+    const p = (globalThis as unknown as { app: { plugins: { plugins: Record<string, { transport?: string; lastWsActivity?: number; ws?: { readyState?: number } }> } } }).app.plugins.plugins["selfsync"];
+    return `transport=${p.transport} wsReadyState=${p.ws?.readyState} msSinceLastWsFrame=${p.lastWsActivity ? Date.now() - p.lastWsActivity : "n/a"}`;
+  });
   await createNote(pageA, "second.md", `${MARKER} second note`);
   await expect.poll(() => readNote(pageB, "second.md"), { timeout: 120_000, intervals: [500] }).toBe(`${MARKER} second note`);
   measure.convergeEncryptedSecondsLive = seconds(tNote2);

@@ -79,4 +79,24 @@ package ProjectIntake20261111 {
         :>> text = "too much talk, not enough clear summary and next steps.";
         :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
     }
+
+    part st016 : Statement {
+        :>> id = "63e08c4c-3b79-47e8-b9d1-8eb8fb7ec4f1";
+        :>> title = "Find the 62 s cause before any release, skip the sitting review, continue until the issues are resolved";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "Find the 62s cause before cutting a problematic release.\n\nIgnore sprint review acceptance - continue until issues are resolved";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
+
+    part us017 : UserStory {
+        :>> id = "3e851630-e7a2-4240-b9ed-7756bba52188";
+        :>> title = "Find and fix the 62 second live change latency against the real server before any release";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> asA = "SelfSync owner";
+        :>> iWant = "the cause of the 62 second live change latency on my containerized server named from evidence and fixed, before 1.34.1 is cut";
+        :>> soThat = "the release I update my devices to is not a problematic one";
+        :>> implication = ImplicationKind::bug;
+        :>> triageNote = "bug: issue020 already tracks the latency with the resolver task e2eeRemoteLiveLatency. The route is sprint 8 on that task, chartered by d0096. The owner also waives the per-sitting review until the open issues are resolved, which is recorded here as their words and not as a process change.";
+    }
+    #DerivedFrom dependency from us017 to st016;
 }
