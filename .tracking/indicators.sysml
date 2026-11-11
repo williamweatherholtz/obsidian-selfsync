@@ -97,4 +97,6 @@ package ProjectIndicators {
         :>> method = MeasurementMethod::manual;
         :>> collectionRef = "docs/architecture/93-real-device-perf-protocol.md, KDF row added by E3b (OS memory readout)";
     }
+    part e2eePhoneKdfWallTimeM1 : Measurement { :>> id = "3ba2d590-c65e-48bc-97e8-068a1901fc5b"; :>> value = "4.77"; :>> measuredAt = "2026-11-11"; :>> source = "android:firefox-page:64MiB-t3-p1 runs 4.73,4.80,4.77 Firefox 160 Gecko, owner phone, reported in chat"; :>> createdBy = "wweatherholtz"; }
+    #Measures dependency from e2eePhoneKdfWallTimeM1 to e2eePhoneKdfWallTime;
 }
