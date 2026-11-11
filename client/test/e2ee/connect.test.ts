@@ -397,7 +397,7 @@ describe("E3b the link flags and the define surfaces on the real plugin", () => 
       await expect(p.createVaultFlow("good", false, async () => {})).rejects.toThrow(/pinned 'good' as an encrypted vault/);
     } finally { for (const s of spies) s.mockRestore(); }
     p.onunload();
-  });
+  }, 180_000); // three real Argon2id derivations at the default cost: slow on a shared CI runner (dde748a timed out at 30 s)
 
   it("(8) addMount refuses a source vault that holds a keyring, with the reason", async () => {
     const api = spyApi({ found: false });
