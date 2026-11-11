@@ -100,6 +100,16 @@ with `keel record-measurement` after a meaningful change.
   The kept logs show the recovery path: `ERR_CONNECTION_REFUSED`, then `retrying in 3s`, `6s`, `12s`.
   See "After a server restart" in `deployment.md` for the expected numbers.
 
+- **Real-Obsidian GUI pass (Sprint 9, l3GuiPass)** — `guipass.pwspec.ts` in the same layer. It drives the
+  four surfaces of the L3 pass through the real UI. The setup wizard opens by the `selfsync:setup`
+  command from a vault with no connection and ends on a synced vault. The settings tab shows the Status,
+  Connection and What syncs groups, Advanced collapsed until its chevron. Conflicts is absent while
+  nothing is pending.
+
+  Exactly one status-bar indicator carries the plugin label. The switch-vault modal offers Merge,
+  Download and Upload, and Merge converges to the target vault. Run it with
+  `npm run test:obsidian-e2e -- guipass`.
+
 ## Resolved: local coverage on Node 24
 
 Previously, `vitest 2.1.9` predated Node 24 and its v8 coverage provider crashed nondeterministically

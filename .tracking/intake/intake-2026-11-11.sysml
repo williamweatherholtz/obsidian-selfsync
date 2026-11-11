@@ -123,4 +123,12 @@ package ProjectIntake20261111 {
         :>> text = "accept risk is fine.  continue";
         :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
     }
+
+    part st020 : Statement {
+        :>> id = "bef3d176-f4fe-4dcb-8660-97551018ef30";
+        :>> title = "Owner says take the next ready frontier item";
+        :>> createdAt = "2026-11-11"; :>> createdBy = "ai";
+        :>> text = "go ahead with next frontier";
+        :>> saidBy = "wweatherholtz"; :>> saidAt = "2026-11-11"; :>> channel = StatementChannel::console;
+    }
 }
